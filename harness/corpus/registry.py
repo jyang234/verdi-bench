@@ -1,0 +1,226 @@
+"""``CorpusManifest`` — the versioned record of a task corpus [EVAL-8 §4.1].
+
+A finding cites a corpus by ``(semver, task shas)``; this manifest is the
+byte-reconstructible commitment behind that citation [AC-6]. Validation is
+structural, not advisory:
+
+* every task is in **Harbor task format** — a non-harbor ``format`` fails
+  validation [D003, master plan §7.4/EVAL-1-D005];
+* mutating task content without a semver bump fails validation; a bump
+  re-triggers the flake baseline for the changed tasks [AC-6];
+* an ``internal`` corpus ``boundary_path`` is realpath-resolved and refused if
+  it resolves inside the instrument repo tree [AC-5, EVAL-1 invariant].
+
+The admission gate lives in :mod:`harness.corpus.admit`; this module owns the
+manifest shape and its self-consistency rules only (single responsibility).
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, field_validator
+
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+HARBOR_FORMAT = "harbor"
+
+# Repo root of *this instrument* (…/harness/corpus/registry.py → parents[2]).
+INSTRUMENT_ROOT = Path(__file__).resolve().parents[2]
+
+
+class CorpusError(ValueError):
+    """Base for corpus-manifest failures."""
+
+
+class CorpusMutationError(CorpusError):
+    """Task content changed without a semver bump [AC-6]."""
+
+
+class BoundaryViolationError(CorpusError):
+    """An internal corpus targeted a path inside the instrument repo [AC-5]."""
+
+
+class TaskEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    sha: str
+    format: Literal["harbor"] = HARBOR_FORMAT
+    status: Literal["admitted", "pending-curation", "quarantined"] = "pending-curation"
+    baseline_ref: Optional[str] = None
+    plugins: list[str] = []
+    # dataset-provided metadata used for stratification (category/difficulty/…).
+    metadata: dict = {}
+    # ``format`` is a Literal ⇒ a non-harbor task fails schema by construction,
+    # the strongest form of the D003 rule (master plan §7.4 / EVAL-1-D005).
+
+
+class Dataset(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    version: str
+
+
+class CalibrationSubset(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    seed: int
+    strata: dict  # {stratum_key, allocation: {stratum: count}} — audit trail
+    task_ids: list[str]
+
+
+class Calibration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    subset: Optional[CalibrationSubset] = None
+    status: Literal["none", "subset-validated", "full-run-validated"] = "none"
+    runs: list[dict] = []
+
+
+class CorpusManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    corpus_id: str
+    semver: str
+    kind: Literal["public", "internal"]
+    dataset: Optional[Dataset] = None
+    tasks: list[TaskEntry] = []
+    calibration: Calibration = Calibration()
+    boundary_path: Optional[str] = None
+
+    @field_validator("semver")
+    @classmethod
+    def _semver_shape(cls, v: str) -> str:
+        if not _SEMVER_RE.match(v):
+            raise CorpusError(f"semver {v!r} is not MAJOR.MINOR.PATCH")
+        return v
+
+    # --- helpers -----------------------------------------------------------
+    def task(self, task_id: str) -> Optional[TaskEntry]:
+        for t in self.tasks:
+            if t.task_id == task_id:
+                return t
+        return None
+
+    def task_shas(self) -> dict[str, str]:
+        """``{task_id: sha}`` in sorted order — the provenance the finding cites."""
+        return {t.task_id: t.sha for t in sorted(self.tasks, key=lambda t: t.task_id)}
+
+    def provenance_ref(self) -> dict:
+        """Corpus provenance for the EVAL-6 findings block [AC-6]."""
+        return {
+            "corpus_id": self.corpus_id,
+            "semver": self.semver,
+            "kind": self.kind,
+            "task_shas": self.task_shas(),
+            "calibration_status": self.calibration.status,
+        }
+
+    # --- boundary enforcement [AC-5] --------------------------------------
+    def assert_boundary(self) -> None:
+        """Refuse an internal corpus whose boundary resolves inside this repo.
+
+        Public corpora cache locally and need no boundary. An internal corpus
+        must declare a ``boundary_path`` outside the instrument tree — the
+        instrument repo is a structurally-refused target.
+        """
+        if self.kind != "internal":
+            return
+        if not self.boundary_path:
+            raise BoundaryViolationError(
+                "an internal corpus must declare a boundary_path outside the "
+                "instrument repo [AC-5]"
+            )
+        resolved = Path(self.boundary_path).resolve()
+        if resolved == INSTRUMENT_ROOT or INSTRUMENT_ROOT in resolved.parents:
+            raise BoundaryViolationError(
+                f"boundary_path {resolved} is inside the instrument repo "
+                f"{INSTRUMENT_ROOT}; internal corpora never enter the instrument "
+                "repo [AC-5]"
+            )
+
+    # --- versioning / mutation rule [AC-6] --------------------------------
+    def assert_valid_successor(self, previous: "CorpusManifest") -> None:
+        """Reject content mutation that skipped a semver bump.
+
+        Same semver ⇒ the task (id, sha) set must be *identical*. Any content
+        change — a changed sha, an added or removed task — requires a bump.
+        """
+        if self.corpus_id != previous.corpus_id:
+            raise CorpusError("cannot compare manifests of different corpora")
+        if self.semver != previous.semver:
+            return  # a bump is exactly what a mutation requires; allowed
+        prev = previous.task_shas()
+        cur = self.task_shas()
+        if prev != cur:
+            changed = sorted(
+                tid
+                for tid in set(prev) | set(cur)
+                if prev.get(tid) != cur.get(tid)
+            )
+            raise CorpusMutationError(
+                f"tasks {changed} changed but semver stayed {self.semver}; "
+                "mutating task content requires a semver bump [AC-6]"
+            )
+
+    def retrigger_baselines(self, previous: "CorpusManifest") -> None:
+        """After a bump, changed tasks lose their stale baseline (must re-run).
+
+        A semver bump re-triggers the flake baseline [AC-6]: a task whose sha
+        changed cannot ride the previous version's baseline into ``admitted``.
+        """
+        prev = previous.task_shas()
+        for t in self.tasks:
+            if prev.get(t.task_id) not in (None, t.sha):
+                t.baseline_ref = None
+                if t.status == "admitted":
+                    t.status = "pending-curation"
+
+    def is_schedulable(self, task_id: str) -> bool:
+        """A task is schedulable only once admitted (not pending/quarantined)."""
+        t = self.task(task_id)
+        return t is not None and t.status == "admitted"
+
+    # --- calibration status lifecycle [AC-2] ------------------------------
+    def record_calibration_run(self, run: dict, *, kind: Literal["subset", "full"]) -> None:
+        """Record a calibration run and advance the status monotonically.
+
+        ``none → subset-validated → full-run-validated``. A subset run advances
+        to ``subset-validated``; a full run advances to ``full-run-validated``.
+        The first official internal finding requires ``full-run-validated``
+        (enforced on EVAL-6's official-render path).
+        """
+        self.calibration.runs.append(run)
+        if kind == "full":
+            self.calibration.status = "full-run-validated"
+        elif self.calibration.status == "none":
+            self.calibration.status = "subset-validated"
+
+    @property
+    def official_ready(self) -> bool:
+        """Whether an official finding may cite this corpus [AC-2]."""
+        return self.calibration.status == "full-run-validated"
+
+    # --- file I/O ----------------------------------------------------------
+    def to_json(self) -> str:
+        """Deterministic serialization: sorted keys, stable separators."""
+        return json.dumps(
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+
+    def save(self, path) -> Path:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # validate structural rules before persisting
+        self.assert_boundary()
+        path.write_text(self.to_json() + "\n", encoding="utf-8")
+        return path
+
+    @classmethod
+    def load(cls, path) -> "CorpusManifest":
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return cls.model_validate(data)

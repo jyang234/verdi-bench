@@ -266,9 +266,138 @@ def append_verdict(ledger_path, ctx: EventContext, *, verdict: dict) -> dict:
     return emit(ledger_path, ctx, JUDGE_VERDICT, {"verdict": verdict})
 
 
-def append_human_verdict(ledger_path, ctx: EventContext, *, verdict: dict) -> dict:
+def append_human_verdict(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    verdict: dict,
+    arm_recognized: Optional[bool] = None,
+    arm_guess: Optional[str] = None,
+    actual_arm: Optional[str] = None,
+) -> dict:
     """Human verdict — the only event that closes a comparison [D004, AC-7].
 
     Shares the Verdict schema family with judge verdicts so kappa is directly
-    computable. (EVAL-7 owns the review UI; the constructor lives here.)"""
-    return emit(ledger_path, ctx, HUMAN_VERDICT, {"verdict": verdict})
+    computable. When captured through the EVAL-7 review flow it additionally
+    carries the **blinding-integrity** answers ``{arm_recognized, arm_guess}``
+    plus the harness-known ``actual_arm`` (for guess-accuracy scoring); these
+    are captured strictly before any reveal [EVAL-7 §4.3, AC-4]. The bare form
+    (no integrity) remains valid so the low-level constructor stays reusable.
+    """
+    payload: dict = {"verdict": verdict}
+    if arm_recognized is not None:
+        payload["integrity"] = {
+            "arm_recognized": arm_recognized,
+            "arm_guess": arm_guess,
+            "actual_arm": actual_arm,
+        }
+    return emit(ledger_path, ctx, HUMAN_VERDICT, payload)
+
+
+# ---------------------------------------------------------------------------
+# EVAL-6 events
+# ---------------------------------------------------------------------------
+FINDINGS_RENDERED = register_event("findings_rendered")
+
+
+def record_findings_rendered(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    mode: str,
+    primary_metric: str,
+    ledger_head_hash: str,
+    findings_sha256: str,
+) -> dict:
+    """Provenance of a findings render [EVAL-6 §M6].
+
+    ``analyze`` is a pure function of ``(ledger, seed)``; the CLI writes only the
+    findings output and this single event recording what was rendered.
+    """
+    return emit(
+        ledger_path,
+        ctx,
+        FINDINGS_RENDERED,
+        {
+            "mode": mode,
+            "primary_metric": primary_metric,
+            "rendered_head_hash": ledger_head_hash,
+            "findings_sha256": findings_sha256,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# EVAL-7 events
+# ---------------------------------------------------------------------------
+REVEAL = register_event("reveal")
+
+
+def record_reveal(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    verdict_event_id: str,
+    revealed: dict,
+) -> dict:
+    """Unblinding checkpoint [EVAL-7 §4.3, AC-4].
+
+    Appendable only after the referenced human verdict exists; discloses the
+    judge verdict id and arm identities. This is also the unlock EVAL-9's human
+    process scoring keys off [EVAL-9 AC-3] — keep the shape stable.
+    """
+    return emit(
+        ledger_path,
+        ctx,
+        REVEAL,
+        {"verdict_event_id": verdict_event_id, "revealed": revealed},
+    )
+
+
+# ---------------------------------------------------------------------------
+# EVAL-8 events
+# ---------------------------------------------------------------------------
+CURATION_APPROVAL = register_event("curation_approval")
+
+
+def record_curation_approval(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    candidate_id: str,
+    task_sha: str,
+    approver: str,
+    notes: str = "",
+) -> dict:
+    """Human curation approval of a mined candidate [EVAL-8 §4.2, AC-4].
+
+    Admission is this event AND a clean flake baseline — both mechanical
+    preconditions; no code path admits a task without this event.
+    """
+    return emit(
+        ledger_path,
+        ctx,
+        CURATION_APPROVAL,
+        {
+            "candidate_id": candidate_id,
+            "task_sha": task_sha,
+            "approver": approver,
+            "notes": notes,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# EVAL-9 events
+# ---------------------------------------------------------------------------
+PROCESS_SCORE = register_event("process_score")
+
+
+def record_process_score(
+    ledger_path, ctx: EventContext, *, process_score: dict
+) -> dict:
+    """Openly-unblinded process score [EVAL-9 §4.2, AC-2].
+
+    Subsumes CANT_SCORE via per-dimension ``CANT_SCORE`` values. The score is
+    unrepresentable without unblinded provenance (schema-required)."""
+    return emit(ledger_path, ctx, PROCESS_SCORE, {"process_score": process_score})

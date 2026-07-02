@@ -1,0 +1,259 @@
+"""EVAL-7 — human review packet: blinding, sampling, capture-then-reveal, kappa."""
+
+from __future__ import annotations
+
+import pytest
+
+from harness.judge.calibrate import comparison_closed, kappa_by_class, pairs_from_ledger
+from harness.judge.schema import Evidence, Verdict, VerdictProvenance, Winner
+from harness.ledger.events import append_human_verdict, append_verdict
+from harness.review.kappa import (
+    KappaEstimator,
+    ReviewedItem,
+    estimate_kappa,
+    kappa_report,
+    weighted_kappa,
+)
+from harness.review.packet import ReviewPacketItem, ReviewResponse, build_review_packet
+from harness.review.record import (
+    RevealError,
+    record_human_verdict,
+    reveal_comparison,
+)
+from harness.review.sample import (
+    ComparisonRecord,
+    reviewed_kappa_items,
+    select_for_review,
+)
+from harness.review.scrub import ScrubError, assert_identity_free, blind_scrub
+from tests.fixtures.builders import fixed_ctx
+
+_CANARIES = ["control", "treatment", "anthropic/claude-3-5-sonnet-20241022",
+             "openai/gpt-4o-2024-08-06"]
+
+
+def _prov(model="google/gemini-1.5-pro-002"):
+    return VerdictProvenance(
+        judge_model=model, rubric_sha256="a", packet_sha256="b",
+        call_ids=["c1", "c2"], orders="both", temperature=0.0, ts="t",
+    )
+
+
+def _human(winner, cid, source="human", task_class="cls"):
+    ev = [Evidence(kind="diff", response=winner, hunk="h")] if winner in ("A", "B") else []
+    return Verdict(winner=Winner(winner), reason="r", evidence=ev, provenance=_prov("human"),
+                   source=source, comparison_id=cid, task_class=task_class)
+
+
+# --- AC-1: scrub shares the blinding core -----------------------------------
+def test_ac1_scrub_canaries():
+    item = ReviewPacketItem(
+        comparison_id="cmp-1",
+        task_prompt="Fix the bug. The control arm used claude-code.\nassistant: hi",
+        response1=ReviewResponse(diff="control changed foo.py", holdout_results=[{"r": "pass"}]),
+        response2=ReviewResponse(diff="treatment changed foo.py via openai/gpt-4o-2024-08-06",
+                                 holdout_results=[{"r": "fail"}]),
+    )
+    html = build_review_packet([item], canaries=_CANARIES)
+    for canary in ("control", "treatment", "claude-code", "openai", "gpt-4o", "assistant:"):
+        assert canary not in html, canary
+    # the shared core is what enforces it
+    assert "[REDACTED]" in blind_scrub("the control arm", _CANARIES)
+    with pytest.raises(ScrubError):
+        assert_identity_free("leftover claude-code", None)
+
+
+# --- AC-2: sampling ---------------------------------------------------------
+def _records():
+    return [
+        ComparisonRecord("c1", "cls", "A", False, "B"),          # det-vs-judge conflict
+        ComparisonRecord("c2", "cls", "TIE", True, "A"),         # order_inconsistent
+        ComparisonRecord("c3", "cls", "CANT_JUDGE", False, "A"), # cant judge
+        ComparisonRecord("c4", "cls", "A", False, "A"),          # agreement
+        ComparisonRecord("c5", "cls", "B", False, "B"),          # agreement
+        ComparisonRecord("c6", "cls", "A", False, "A"),          # agreement
+        ComparisonRecord("c7", "cls", "B", False, "B"),          # agreement
+        ComparisonRecord("c8", "cls", "A", False, "A"),          # agreement
+    ]
+
+
+def test_ac2_mandatory_set():
+    selected = select_for_review(_records(), seed=1234)
+    mandatory = {s.comparison_id for s in selected if s.stratum == "mandatory"}
+    assert mandatory == {"c1", "c2", "c3"}  # exactly the disagreements
+
+
+def test_ac2_random_floor_seeded():
+    a = select_for_review(_records(), seed=1234)
+    b = select_for_review(_records(), seed=1234)
+    floor_a = [s.comparison_id for s in a if s.stratum == "floor"]
+    floor_b = [s.comparison_id for s in b if s.stratum == "floor"]
+    assert floor_a == floor_b  # reproducible for a seed
+    # 5 agreements ⇒ ceil(0.2*5) = 1 floor item
+    assert len(floor_a) == 1
+    # a different seed can select a different floor member
+    others = {
+        tuple(s.comparison_id for s in select_for_review(_records(), seed=k) if s.stratum == "floor")
+        for k in range(20)
+    }
+    assert len(others) > 1
+
+
+def test_ac2_kappa_reviewed_only(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    # two comparisons judged; only one reviewed (has a human verdict + selected)
+    for cid, jw, hw in [("c1", "A", "A"), ("c2", "A", "B")]:
+        jv = Verdict(winner=Winner(jw), reason="x",
+                     evidence=[Evidence(kind="diff", response=jw, hunk="h")],
+                     provenance=_prov(), comparison_id=cid, task_class="cls")
+        append_verdict(ledger, ctx, verdict=jv.model_dump(mode="json"))
+    append_human_verdict(ledger, ctx, verdict=_human("A", "c1").model_dump(mode="json"),
+                         arm_recognized=False)
+    selected = select_for_review(
+        [ComparisonRecord("c1", "cls", "A", False, "A"),
+         ComparisonRecord("c2", "cls", "A", False, "B")],
+        seed=1,
+    )
+    items = reviewed_kappa_items(ledger, selected)
+    # c2 has no human verdict ⇒ excluded from kappa inputs; only c1 remains
+    assert len(items) == 1
+    assert items[0].a == "A" and items[0].b == "A"
+
+
+# --- AC-3: packet is self-contained + leaks nothing -------------------------
+def _packet_html():
+    item = ReviewPacketItem(
+        comparison_id="cmp-1", task_prompt="Fix the parser.",
+        response1=ReviewResponse(diff="--- a\n+++ b\n+ ok", holdout_results=[{"id": "h1"}]),
+        response2=ReviewResponse(diff="--- a\n+++ b\n+ nope", holdout_results=[{"id": "h1"}]),
+    )
+    return build_review_packet([item], canaries=_CANARIES)
+
+
+def test_ac3_html_selfcontained():
+    html = _packet_html()
+    assert html.startswith("<!doctype html>")
+    # no external requests: no absolute or protocol-relative URLs anywhere
+    assert "://" not in html
+    assert "src=" not in html and "//" not in html.replace("<!doctype", "")
+
+
+def test_ac3_no_judge_or_arm_content():
+    html = _packet_html()
+    # no arm identities and no judge-verdict fields leak into the packet
+    for forbidden in ("control", "treatment", "judge_verdict", "\"winner\"", "order_inconsistent"):
+        assert forbidden not in html
+    # responses are presented blinded as Response 1 / Response 2
+    assert "Response 1" in html and "Response 2" in html
+
+
+# --- AC-4: capture-then-reveal ----------------------------------------------
+def test_ac4_verdict_event_schema(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"),
+                         arm_recognized=True, arm_guess="A", actual_arm="A")
+    from harness.ledger.query import find_events
+    ev = find_events(ledger, "human_verdict")[0]
+    # mirrors judge verdict family + carries integrity
+    assert ev["verdict"]["winner"] == "A"
+    assert ev["verdict"]["source"] == "human"
+    assert ev["integrity"] == {"arm_recognized": True, "arm_guess": "A", "actual_arm": "A"}
+
+
+def test_ac4_integrity_pre_unblind(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    # reveal BEFORE any verdict is refused — the ordering is tool-enforced
+    with pytest.raises(RevealError):
+        reveal_comparison(ledger, ctx, comparison_id="cmp-1", arm_identities={"1": "a"})
+
+
+def test_ac4_reveal_after_verdict(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"),
+                         arm_recognized=False, arm_guess=None)
+    rec = reveal_comparison(ledger, ctx, comparison_id="cmp-1",
+                            arm_identities={"1": "arm_a", "2": "arm_b"})
+    assert rec["event"] == "reveal"
+    assert rec["verdict_event_id"] == "cmp-1"
+    assert rec["revealed"]["arm_identities"] == {"1": "arm_a", "2": "arm_b"}
+
+
+# --- AC-5: kappa feed + IPW estimator ---------------------------------------
+def test_ac5_kappa_feed(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    jv = Verdict(winner=Winner.A, reason="x",
+                 evidence=[Evidence(kind="diff", response="A", hunk="h")],
+                 provenance=_prov(), comparison_id="c1", task_class="cls")
+    append_verdict(ledger, ctx, verdict=jv.model_dump(mode="json"))
+    # before a human verdict, the comparison is open and kappa has no pair
+    assert comparison_closed(ledger, "c1") is False
+    assert pairs_from_ledger(ledger) == []
+    append_human_verdict(ledger, ctx, verdict=_human("A", "c1").model_dump(mode="json"),
+                         arm_recognized=False)
+    assert comparison_closed(ledger, "c1") is True
+    pairs = pairs_from_ledger(ledger)
+    assert len(pairs) == 1
+    table = kappa_by_class(pairs, min_human_verdicts=1)
+    assert table["cls"].n == 1
+
+
+def test_ac5_ipw_hand_checked():
+    # 1 mandatory disagreement + 4 floor agreements; floor reweighted 1/0.2 = 5
+    items = [
+        ReviewedItem("A", "B", "mandatory"),
+        ReviewedItem("A", "A", "floor"),
+        ReviewedItem("A", "A", "floor"),
+        ReviewedItem("B", "B", "floor"),
+        ReviewedItem("B", "B", "floor"),
+    ]
+    ipw = estimate_kappa(items, KappaEstimator.ipw)
+    # hand-derived: 1 - (21/221) (see kappa.py fixture derivation)
+    assert abs(ipw - (1 - 21 / 221)) < 1e-9
+    # raw pooled ignores the sampling bias and lands lower (8/13)
+    raw = estimate_kappa(items, KappaEstimator.raw_pooled)
+    assert abs(raw - 8 / 13) < 1e-9
+    assert ipw > raw
+
+    rep = kappa_report(items)
+    assert rep.headline_method == "ipw"
+    assert abs(rep.headline - ipw) < 1e-12
+    assert rep.sensitivity is not None  # floor-only sensitivity present
+
+
+def test_ac5_weighted_kappa_reduces_to_cohens():
+    from harness.judge.calibrate import cohens_kappa
+    a = ["A", "B", "A", "B", "TIE"]
+    b = ["A", "A", "A", "B", "TIE"]
+    assert abs(weighted_kappa(a, b, weight="unweighted") - cohens_kappa(a, b)) < 1e-12
+
+
+# --- AC-6: integrity rate rides every finding -------------------------------
+def test_ac6_integrity_rate_reported(tmp_path):
+    from harness.analyze.report import compute_findings, render_markdown
+    from tests.fixtures.builders import locked_experiment, seed_trial_and_grade
+
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    for i in range(4):
+        seed_trial_and_grade(ledger, ctx, trial_id=f"c-{i}", task_id=f"t{i}", arm="control",
+                             passed=True, provenance={"image_digest": "d"})
+        seed_trial_and_grade(ledger, ctx, trial_id=f"t-{i}", task_id=f"t{i}", arm="treatment",
+                             passed=True, provenance={"image_digest": "d"})
+    # two human reviews, one recognized the arm
+    record_human_verdict(ledger, ctx, verdict=_human("A", "t0"), arm_recognized=True,
+                         arm_guess="A", actual_arm="A")
+    record_human_verdict(ledger, ctx, verdict=_human("A", "t1"), arm_recognized=False,
+                         arm_guess=None)
+    findings = compute_findings(ledger, spec, spec.seed, coverage_n_sim=30, coverage_n_boot=80,
+                                n_boot=300)
+    assert findings.integrity["n_reviews"] == 2
+    assert abs(findings.integrity["rate"] - 0.5) < 1e-9
+    md = render_markdown(findings, ledger, "exploratory")
+    assert "blinding integrity rate" in md.lower()
+    # the field is schema-required — a findings doc cannot omit it
+    assert "integrity" in findings.model_dump()
