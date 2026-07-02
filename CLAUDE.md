@@ -1,101 +1,112 @@
 # CLAUDE.md
 
-Guidance for Claude when working in this repository. These directives are
-binding; when they conflict with convenience or speed, the directives win.
+Binding directives for working in this repository. When they conflict with
+convenience or speed, the directives win.
 
 ## Project overview
 
 verdi-bench is a benchmark-grade A/B evaluation instrument for agent stacks:
-pre-registered experiments, repeated paired trials in hermetic containers,
-insulated arms, deterministic-first grading, and an outcome-blind advisory LLM
-judge. Every operation is a hash-chained ledger event.
+pre-registered experiments, paired trials in hermetic containers, insulated
+arms, deterministic-first grading, an outcome-blind advisory LLM judge, and a
+hash-chained event ledger. Its credibility depends on its own correctness —
+treat every silent failure or gamed test as a defect in the instrument itself.
 
-- Package code lives in `harness/` (subsystems: `plan`, `run`, `grade`,
-  `judge`, `ledger`, `schema`, `adapters`, `blind`, plus scaffolded
-  `analyze`/`review`/`process`/`corpus`).
-- Tests live in `tests/`, named `test_eval<N>_*.py` per story. AC-mapped tests
-  are named `test_ac<N>_*` so acceptance-criteria coverage is recomputable
-  (`uv run pytest --ac-report`).
-- Tooling: `uv` for env/deps, `pytest` (+ `hypothesis`) for tests,
-  `import-linter` for structural contracts. Python code must stay
-  3.12-compatible even though the local floor is 3.11 (see `pyproject.toml`).
+- Code: `harness/` — one subsystem per concern (`plan`, `run`, `grade`,
+  `judge`, `ledger`, `schema`, `adapters`, `blind`; `analyze`/`review`/
+  `process`/`corpus` are scaffolded).
+- Tests: `tests/test_eval<N>_*.py`; AC-mapped tests are named `test_ac<N>_*`
+  (`uv run pytest --ac-report` recomputes coverage).
+- Tooling: `uv`, `pytest` + `hypothesis`, `import-linter`. Code must stay
+  3.12-compatible even though the local floor is 3.11.
 
-## Core engineering directives
-
-### 1. Single responsibility principle
-
-Every module, class, and function does one thing. Concretely:
-
-- Keep subsystem boundaries intact: `plan`, `run`, `grade`, `judge`, `ledger`,
-  etc. each own one concern. Do not reach across them except through their
-  public seams; the import-linter contracts enforce this and must stay green.
-- If a function grows a second responsibility (e.g. "validate and also
-  persist"), split it before merging.
-- New behavior goes in the subsystem that owns that concern — never bolted
-  onto whichever file was already open.
-- A change description that needs the word "and" between two unrelated
-  behaviors is a signal to split the change.
-
-### 2. `make verify` after every feature — no exceptions
-
-`make verify` runs all unit and integration tests in the repo plus the
-import-linter structural contracts:
+## Commands
 
 ```bash
-make verify
+make verify                        # full gate: all tests + import contracts
+uv run pytest -m "not docker" -q   # fast inner loop while developing
+uv run lint-imports                # structural contracts only
 ```
 
-It MUST be run — and MUST pass — after each feature, fix, or refactor is
-implemented, before the work is considered done or committed. No exceptions:
-not for "trivial" changes, not for docs-adjacent code changes, not under time
-pressure. If `make verify` fails, the feature is not finished; fix the code
-(or, when the test is genuinely wrong, fix the test per directive 3) and run
-it again until it passes.
+## Core directives
 
-### 3. Tests must evaluate real behavior — no tampering
+### Single responsibility
 
-Tests exist to catch real defects. Faking a passing result is forbidden:
+- One concern per module, class, and function. Split before merging if a
+  function grows a second responsibility ("validate and also persist").
+- Respect subsystem boundaries; cross them only through public seams. The
+  import-linter contracts enforce this and must stay green.
+- New behavior goes in the subsystem that owns the concern, never in
+  whichever file was already open.
 
-- Never weaken, delete, skip, or `xfail` a failing test to make the suite
-  green. A failing test means the code is wrong until proven otherwise.
-- Never hardcode expected outputs, stub out the code under test, overwrite
-  fixtures/holdouts to match buggy output, or add sleeps/retries to mask
-  nondeterminism.
-- Mocks and fakes are for isolating external boundaries (e.g. the fake engine
-  vs. a live Docker daemon, LLM clients), never for replacing the logic being
-  tested.
-- New features and bug fixes come with tests that exercise real observable
-  behavior — inputs and outputs a user or downstream subsystem would actually
-  see — and that fail if the feature is broken.
-- If a test is genuinely incorrect or obsolete, say so explicitly, explain
-  why, and get the human's agreement before changing it (see directive 4).
+### `make verify` after every change — no exceptions
 
-This repo is itself an evaluation instrument; its credibility depends on its
-own tests being honest. Treat any temptation to game the suite as a defect
-report on the design.
+- Run `make verify` after each feature, fix, or refactor, before the work is
+  called done or committed. Not skippable for "trivial" changes or under time
+  pressure.
+- If it fails, the work is not finished. Fix the code and rerun until green.
 
-### 4. The human decides — when in doubt, ask
+### Tests evaluate real behavior — no tampering
 
-Claude may (and should) hold opinions and make clear recommendations, but the
-human user always has final judgement on approach and design decisions.
+- Never weaken, delete, skip, or `xfail` a failing test to get green. A
+  failing test means the code is wrong until proven otherwise.
+- Never hardcode expected outputs, stub the code under test, or edit
+  fixtures/holdouts to match buggy output.
+- Mocks isolate external boundaries (Docker, LLM clients) only — never the
+  logic being tested.
+- Every feature or fix ships with tests that exercise observable behavior and
+  fail if it breaks.
+- Changing a genuinely wrong test requires saying so explicitly and getting
+  human agreement first.
 
-- When a requirement is ambiguous, when multiple reasonable designs exist,
-  when a change would alter public seams, schemas, ledger semantics, or
-  pre-registration behavior, or when work grows beyond the requested scope:
-  stop and ask before proceeding.
-- Present options with a concrete recommendation and its trade-offs — not an
-  open-ended "what do you want?".
-- Never silently substitute your preferred approach for one the human chose,
-  and never proceed on a guess when the guess is cheap to confirm.
-- Small, reversible implementation details within an agreed approach do not
-  need a check-in; direction-setting decisions do.
+### The human decides — when in doubt, ask
+
+- Ask before proceeding when requirements are ambiguous, multiple reasonable
+  designs exist, or work grows beyond the requested scope.
+- Give a concrete recommendation with trade-offs, not an open-ended question.
+- Never silently substitute your preferred approach for one the human chose.
+- Small reversible details within an agreed approach don't need a check-in;
+  direction-setting decisions do.
+
+## Quality directives
+
+### Reproduce before fixing
+
+- Write a failing test that reproduces a bug before writing the fix; the fix
+  is done when that test passes. No fixes "by inspection".
+
+### Public seams are contracts
+
+- Schemas, ledger event formats, and anything hash-chained or pre-registered
+  are versioned contracts. Changing one requires explicit human approval and
+  a migration/compatibility story — a silent serialization change can
+  invalidate every existing chain.
+
+### Determinism by default
+
+- No wall-clock time, unseeded randomness, dict-ordering assumptions, or
+  network calls outside designated seams. Deterministic grading must import
+  no LLM client (enforced by contract).
+
+### Fail loudly
+
+- No bare `except:`, no swallowed exceptions, no sentinel values that mask
+  failure. Validation errors say what was wrong and where. A crash is better
+  than a silently wrong grade.
+
+### Honest reporting
+
+- Report failures faithfully: failing tests, flakes, and skipped steps are
+  stated plainly, never presented as done.
+- List any judgment calls made without asking in the final summary so the
+  human can veto them cheaply.
 
 ## Working conventions
 
-- Match the existing code style: typed Python, module docstrings that cite the
-  master-plan section they implement, `from __future__ import annotations`.
-- Keep changes minimal and focused; do not refactor unrelated code in passing.
-- Fast iteration loop while developing: `uv run pytest -m "not docker" -q`.
-  The full gate is still `make verify` before finishing.
-- Docker-marked tests require a live daemon; everything else must run
-  hermetically.
+- Match existing style: typed Python, `from __future__ import annotations`,
+  module docstrings citing the master-plan section they implement.
+- Atomic commits: one logical change each; messages explain why, not just
+  what.
+- No dead code, commented-out code, or ownerless TODOs in a diff — every
+  line must be live.
+- Fix problems your change caused; mention unrelated problems you notice
+  instead of fixing them in the same diff.
