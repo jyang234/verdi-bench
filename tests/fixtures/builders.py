@@ -17,6 +17,72 @@ from harness.ledger.events import EventContext
 _counter = itertools.count()
 
 
+# --- richer fixtures: locked experiments with trials + grades ---------------
+def locked_experiment(dirpath, *, ctx=None, **overrides):
+    """Write + lock a miniature experiment; return ``(spec, spec_path, ledger)``.
+
+    Uses a tiny MDE simulation (fast, deterministic) so tests that need a real
+    ``experiment_locked`` event — with its MDE block — don't pay the full power
+    sweep. Shared across EVAL-6/7/9 fixtures.
+    """
+    from harness.plan.lock import lock_experiment
+
+    dirpath = Path(dirpath)
+    dirpath.mkdir(parents=True, exist_ok=True)
+    spec_path = write_experiment_yaml(dirpath / "experiment.yaml", **overrides)
+    ledger = dirpath / "ledger.ndjson"
+    ctx = ctx or fixed_ctx()
+    outcome = lock_experiment(
+        spec_path, ledger, ctx=ctx, n_sim=8, n_boot=40, deltas=[0.2, 0.4]
+    )
+    return outcome.spec, spec_path, ledger
+
+
+def seed_trial_and_grade(
+    ledger,
+    ctx,
+    *,
+    trial_id,
+    task_id,
+    arm,
+    repetition=0,
+    passed=True,
+    telemetry=None,
+    provenance=None,
+    flags=None,
+    egress_violation=False,
+):
+    """Append one trial record + its grade event, matching the real schemas."""
+    from harness.adapters.base import Flags, Outcome, Provenance, Telemetry, TrialRecord
+    from harness.ledger.events import record_grade, record_trial
+
+    tel = Telemetry(**(telemetry or {}))
+    prov = Provenance(**(provenance or {}))
+    flag_obj = Flags(egress_violation=egress_violation, **(flags or {}))
+    rec = TrialRecord.assemble(
+        trial_id=trial_id,
+        task_id=task_id,
+        arm=arm,
+        repetition=repetition,
+        outcome=Outcome.completed,
+        telemetry=tel,
+        provenance=prov,
+        flags=flag_obj,
+        artifacts_path=f"/tmp/{trial_id}/artifacts",
+    )
+    record_trial(ledger, ctx, trial_record=rec.model_dump(mode="json"))
+    record_grade(
+        ledger,
+        ctx,
+        trial_id=trial_id,
+        task_sha=f"sha-{task_id}",
+        assertions=[{"id": "h1", "source": "holdout_test",
+                     "result": "pass" if passed else "fail"}],
+        binary_score=passed,
+    )
+    return rec
+
+
 def fixed_ctx(experiment_id: str = "exp-fixture", actor: str = "tester") -> EventContext:
     """Deterministic EventContext: monotonic synthetic timestamps, fixed actor."""
     seq = itertools.count()
