@@ -92,6 +92,55 @@ def test_ac8_every_comparison_has_one_event(tmp_path):
         assert len(find_events(ledger, "judge_verdict")) == 1
 
 
+def test_ac7_comparison_id_propagated(tmp_path):
+    # regression: judge_pair must stamp comparison_id/task_class so calibration
+    # can join judge and human verdicts (previously always None)
+    from harness.judge.calibrate import pairs_from_ledger
+    from harness.ledger.events import append_human_verdict
+    from harness.judge.schema import Verdict, VerdictProvenance, Winner
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    v = judge_pair(make_packet(), make_config(), ledger, ctx, ts="t0",
+                   provider=FakeProvider([verdict_json("1"), verdict_json("2")]),
+                   comparison_id="cmp-9", task_class="refactor")
+    assert v.comparison_id == "cmp-9" and v.task_class == "refactor"
+    hv = Verdict(winner=Winner.A, reason="agree",
+                 evidence=[{"kind": "diff", "response": "A", "hunk": "h"}],
+                 provenance=VerdictProvenance(judge_model="m", rubric_sha256="a",
+                     packet_sha256="b", call_ids=["c1", "c2"], orders="both",
+                     temperature=0.0, ts="t"),
+                 source="human", comparison_id="cmp-9", task_class="refactor")
+    append_human_verdict(ledger, ctx, verdict=hv.model_dump(mode="json"))
+    pairs = pairs_from_ledger(ledger)
+    assert len(pairs) == 1 and pairs[0]["task_class"] == "refactor"
+
+
+def test_ac8_identity_leak_records_cant_judge(tmp_path):
+    # regression: a leaking packet must fail closed WITH a ledger event, not
+    # escape with none
+    ledger = tmp_path / "l.ndjson"
+    pkt = make_packet(diff_a="leaked arm-control identity")
+    v = judge_pair(pkt, make_config(), ledger, fixed_ctx(), ts="t0",
+                   provider=FakeProvider([verdict_json("1"), verdict_json("2")]),
+                   canaries=["arm-control"])
+    assert v.winner == Winner.CANT_JUDGE and v.reason == "identity_leak"
+    assert len(find_events(ledger, "judge_verdict")) == 1
+
+
+def test_judge_reason_preserves_rationale(tmp_path):
+    # regression: verdict reason carries the judge's rationale, not winner letters
+    import json as _json
+    raw = _json.dumps({"winner": "1", "reason": "Response 1 fixed the holdout",
+                       "evidence": [{"kind": "diff", "response": 1, "hunk": "@@"}],
+                       "confidence": 0.9})
+    raw2 = _json.dumps({"winner": "2", "reason": "Response 2 broke the build",
+                        "evidence": [{"kind": "diff", "response": 2, "hunk": "@@"}],
+                        "confidence": 0.9})
+    v, _ = _run(tmp_path, FakeProvider([raw, raw2]))
+    assert "fixed the holdout" in v.reason
+
+
 def test_ac1_no_vendor_denylist_in_code():
     """The client and provider dispatch carry no vendor allow/deny list [AC-1]."""
     import pathlib

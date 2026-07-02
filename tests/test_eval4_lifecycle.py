@@ -17,6 +17,24 @@ def _arm(name="A"):
     return Arm(name=name, platform="claude_code", model="anthropic/claude-3-5-sonnet-20241022")
 
 
+def test_ac5_explicit_zero_timeout_honored(tmp_path):
+    # regression: task.timeout_s=0 must not be dropped by a falsy-or to the default
+    from harness.run.engines.harbor import HarborEngine
+    from tests.fixtures.run_fakes import FakeDockerRunner
+
+    captured = {}
+
+    class RecordingRunner(FakeDockerRunner):
+        def run_container(self, cmd, timeout_s, env=None):
+            captured["timeout"] = timeout_s
+            return super().run_container(cmd, timeout_s, env)
+
+    task = Task(id="t", prompt="p", timeout_s=0)
+    run_trial(task, _arm(), tmp_path / "ws",
+              RunConfig(engine=HarborEngine(runner=RecordingRunner(native_log={}))))
+    assert captured["timeout"] == 0  # honored, not 1800
+
+
 def test_ac5_timeout_outcome(tmp_path):
     task = Task(id="t", prompt="p", fake_behavior={"outcome": "timeout", "exit_status": 124})
     rec = run_trial(task, _arm(), tmp_path / "ws", RunConfig(engine=FakeEngine()))

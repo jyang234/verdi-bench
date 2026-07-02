@@ -6,17 +6,9 @@ anything absent stays ``None`` and lands in ``telemetry_nulls`` — never estima
 
 from __future__ import annotations
 
-from typing import Optional
-
 from .base import Adapter, Telemetry
-
-
-def _int(v) -> Optional[int]:
-    return int(v) if isinstance(v, (int, float)) else None
-
-
-def _float(v) -> Optional[float]:
-    return float(v) if isinstance(v, (int, float)) else None
+from .base import coerce_float as _float
+from .base import coerce_int as _int
 
 
 class ClaudeCodeAdapter(Adapter):

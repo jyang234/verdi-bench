@@ -62,16 +62,15 @@ def test_ac2_quarantined_task_unschedulable(tmp_path):
                  quarantined_tasks=quarantined)
 
 
-def test_ac2_new_sha_clears_quarantine(tmp_path):
+def test_ac2_new_clean_baseline_clears_quarantine(tmp_path):
     ledger = tmp_path / "l.ndjson"
     ws = write_workspace(tmp_path)
-    # old version quarantined
+    # a task is quarantined by a flaky baseline...
     flake_baseline(GradeTask(id="t1", task_sha="old"), ledger, fixed_ctx(),
                    workspace=ws, container=GradingContainer(runner=SeqGradeRunner([FAIL] * 5)))
-    # new version (new sha) clean
+    assert load_quarantine(ledger) == {"t1"}
+    # ...then fixed and re-admitted with a new clean baseline (latest wins)
     flake_baseline(GradeTask(id="t1", task_sha="new"), ledger, fixed_ctx(),
                    workspace=ws, container=GradingContainer(runner=SeqGradeRunner([PASS] * 5)))
-    # t1 still appears quarantined because its OLD sha is; the scheduler keys on
-    # the sha it schedules — here both remain, so the id is reported quarantined
-    q = load_quarantine(ledger)
-    assert "t1" in q  # old sha still quarantined; admission uses the new sha
+    # the repaired task is schedulable again — quarantine cleared
+    assert load_quarantine(ledger) == set()

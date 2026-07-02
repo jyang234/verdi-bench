@@ -8,8 +8,9 @@ other seeded stages [master plan §7.5].
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
+
+from .seeds import index_at, sub_seed
 
 
 @dataclass(frozen=True)
@@ -22,11 +23,6 @@ class Trial:
 
     def key(self) -> str:
         return f"{self.task_id}|{self.arm}|{self.repetition}"
-
-
-def _sub_seed(seed: int, purpose: str) -> int:
-    h = hashlib.sha256(f"{seed}||{purpose}".encode("utf-8")).digest()
-    return int.from_bytes(h[:8], "big")
 
 
 def enumerate_trials(tasks: list[str], arms: list[str], repetitions: int) -> list[Trial]:
@@ -42,15 +38,15 @@ def enumerate_trials(tasks: list[str], arms: list[str], repetitions: int) -> lis
 def derive_schedule(seed: int, trials: list[Trial]) -> list[Trial]:
     """Fisher–Yates shuffle of ``trials`` under a namespaced sub-seed.
 
-    Pure and reproducible: no global RNG, no wall clock. The shuffle uses a
-    deterministic LCG stream seeded from ``sha256(seed || "interleave")`` so the
-    result depends only on ``(seed, trials)``.
+    Pure and reproducible: no global RNG, no wall clock. Each swap index is drawn
+    from the full-width bits of a per-step SHA-256 (``index_at``) rather than the
+    low bits of an LCG — the latter have very short periods and would bias a
+    schedule whose whole job is to decorrelate arm/order effects. The result
+    depends only on ``(seed, trials)``.
     """
     out = list(trials)
-    state = _sub_seed(seed, "interleave")
-    # A full-period LCG (Numerical Recipes constants) drives Fisher–Yates.
+    base = sub_seed(seed, "interleave")
     for i in range(len(out) - 1, 0, -1):
-        state = (state * 1664525 + 1013904223) & 0xFFFFFFFFFFFFFFFF
-        j = state % (i + 1)
+        j = index_at(base, i, i + 1)
         out[i], out[j] = out[j], out[i]
     return out

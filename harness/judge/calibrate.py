@@ -33,8 +33,13 @@ def cohens_kappa(labels_a: list[str], labels_b: list[str]) -> float:
     count_a = {c: labels_a.count(c) / n for c in categories}
     count_b = {c: labels_b.count(c) / n for c in categories}
     pe = sum(count_a[c] * count_b[c] for c in categories)
-    if pe == 1.0:
-        return 1.0  # degenerate: all one category and identical
+    # Near-degenerate marginals (almost all one category) make 1-pe tiny and
+    # kappa numerically unstable/extreme; a tolerance guard avoids both exact
+    # pe==1 float fragility and the wild swings when 1-pe ≈ 0. When the expected
+    # agreement is ~total, kappa is undefined — report perfect iff observed
+    # agreement is also ~total, else 0 (no reliable signal beyond chance).
+    if 1 - pe < 1e-9:
+        return 1.0 if po >= 1 - 1e-9 else 0.0
     return (po - pe) / (1 - pe)
 
 

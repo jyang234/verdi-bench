@@ -40,8 +40,9 @@ class FakeDockerRunner:
             return image.split("@", 1)[1]
         return self.digest
 
-    def run_container(self, cmd: list[str], timeout_s: int) -> RunOutput:
+    def run_container(self, cmd: list[str], timeout_s: int, env=None) -> RunOutput:
         self.last_cmd = cmd
+        self.last_env = env
         ws = _workspace_from_cmd(cmd)
         artifacts = ws / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)

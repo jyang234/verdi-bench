@@ -108,7 +108,10 @@ def validate_identity_free(packet: Packet, canaries: list[str] | None = None) ->
     sent. ``canaries`` are per-experiment literals (arm ids, model ids).
     """
     patterns = identity_pattern_list(extra_literals=canaries)
-    blobs = [packet.task_prompt, packet.response_a.diff, packet.response_b.diff]
+    # Scan every field render() emits to the judge — including the rubric, which
+    # is embedded verbatim in the message body and is otherwise an unscanned
+    # provenance channel if a rubric author references an arm/model.
+    blobs = [packet.task_prompt, packet.rubric, packet.response_a.diff, packet.response_b.diff]
     blobs.append(_canonical(packet.response_a.holdout_results))
     blobs.append(_canonical(packet.response_b.holdout_results))
     for blob in blobs:

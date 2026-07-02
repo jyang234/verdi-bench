@@ -19,6 +19,24 @@ ADVISORY = "ADVISORY"
 TELEMETRY_FIELDS = ("tokens_in", "tokens_out", "tokens_cache", "cost", "wall_time_s", "tool_calls")
 
 
+def coerce_int(v) -> Optional[int]:
+    """int(v) for real numbers only; anything else (incl. bool) ⇒ None.
+
+    bool is an int subclass, so ``True`` would coerce to ``1`` — but a boolean
+    where a count is expected is *unmeasurable*, and must become null, never an
+    imputed 1/0 [D004]."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return int(v)
+
+
+def coerce_float(v) -> Optional[float]:
+    """float(v) for real numbers only; anything else (incl. bool) ⇒ None [D004]."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v)
+
+
 class Outcome(str, Enum):
     completed = "completed"
     timeout = "timeout"

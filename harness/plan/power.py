@@ -17,16 +17,12 @@ unify with EVAL-6's once it lands.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
 import numpy as np
 
-
-def _sub_seed(seed: int, purpose: str) -> int:
-    h = hashlib.sha256(f"{seed}||{purpose}".encode("utf-8")).digest()
-    return int.from_bytes(h[:8], "big")
+from .seeds import sub_seed
 
 
 class VarianceSource(Protocol):
@@ -134,7 +130,6 @@ def mde_check(
     """
     if deltas is None:
         deltas = [round(0.02 * k, 4) for k in range(1, 26)]  # 0.02 .. 0.50
-    rng = np.random.default_rng(_sub_seed(spec.seed, "mde"))
     n = variance_source.n_tasks
     p = variance_source.p
     rho = variance_source.rho
@@ -142,6 +137,12 @@ def mde_check(
     mde: Optional[float] = None
     power_curve: list[dict] = []
     for delta in sorted(deltas):
+        # Common random numbers across deltas: reseed to the SAME base each
+        # delta so the underlying task-difficulty draws are shared and only the
+        # effect size varies. This makes the power curve monotone and prevents a
+        # noise-driven early crossing from understating the MDE. Deterministic in
+        # spec.seed.
+        rng = np.random.default_rng(sub_seed(spec.seed, "mde"))
         power = _power_at(
             rng,
             n=n,

@@ -19,7 +19,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..ledger import events
 from ..ledger.events import EventContext
-from .packet import Packet, validate_identity_free
+from .packet import IdentityLeakError, Packet, validate_identity_free
 from .providers.base import (
     Provider,
     ProviderError,
@@ -58,8 +58,8 @@ def _pos_to_arm(order: str) -> dict[int, str]:
     return {1: "A", 2: "B"} if order == "AB" else {1: "B", 2: "A"}
 
 
-def _map_call(raw: RawVerdict, order: str) -> tuple[str, list[Evidence]]:
-    """Map a raw call (Response 1/2) to an arm verdict (A/B) and evidence."""
+def _map_call(raw: RawVerdict, order: str) -> tuple[str, list[Evidence], str]:
+    """Map a raw call (Response 1/2) to an arm verdict (A/B), evidence, reason."""
     mapping = _pos_to_arm(order)
     if raw.winner == "TIE":
         winner = "TIE"
@@ -72,7 +72,7 @@ def _map_call(raw: RawVerdict, order: str) -> tuple[str, list[Evidence]]:
         for e in raw.evidence
         if e.response in mapping
     ]
-    return winner, evidence
+    return winner, evidence, raw.reason
 
 
 def _call(provider: Provider, model: str, packet: Packet, order: str, temperature: float):
@@ -90,11 +90,14 @@ def judge_pair(
     ts: str,
     provider: Optional[Provider] = None,
     canaries: Optional[list[str]] = None,
+    comparison_id: Optional[str] = None,
+    task_class: Optional[str] = None,
 ) -> Verdict:
-    """Judge one comparison. Always appends exactly one verdict event."""
-    # A leaking packet is never sent — the leak itself is fail-closed data.
-    validate_identity_free(packet, canaries)
+    """Judge one comparison. Always appends exactly one verdict event.
 
+    ``comparison_id``/``task_class`` ride onto the verdict so calibration
+    (kappa) can join judge and human verdicts by comparison [AC-7].
+    """
     provider = provider or get_provider(config.model)
     call_ids: list[str] = []
 
@@ -116,12 +119,22 @@ def judge_pair(
             evidence=[],
             confidence=0.0,
             provenance=_provenance(),
+            comparison_id=comparison_id,
+            task_class=task_class,
         )
         events.append_verdict(ledger_path, ctx, verdict=v.model_dump(mode="json"))
         return v
 
+    # A leaking packet is never sent — but the leak is fail-closed *data*, so it
+    # is recorded as CANT_JUDGE(identity_leak) rather than escaping with no event
+    # (an attempted comparison without a verdict event is unrepresentable) [AC-8].
+    try:
+        validate_identity_free(packet, canaries)
+    except IdentityLeakError:
+        return _cant("identity_leak")
+
     orders_to_run = ["AB", "BA"] if config.orders == "both" else ["AB"]
-    mapped: list[tuple[str, list[Evidence]]] = []
+    mapped: list[tuple[str, list[Evidence], str]] = []
     for order in orders_to_run:
         try:
             raw, call_id = _call(provider, config.model, packet, order, config.temperature)
@@ -138,8 +151,10 @@ def judge_pair(
         mapped.append(_map_call(raw, order))
 
     # Combine.
-    winners = [w for w, _ in mapped]
-    all_evidence: list[Evidence] = [e for _, evs in mapped for e in evs]
+    winners = [w for w, _, _ in mapped]
+    all_evidence: list[Evidence] = [e for _, evs, _ in mapped for e in evs]
+    # preserve the judge's own rationale(s), not just the winner letters
+    reasons = [r for _, _, r in mapped if r]
     if any(w == "CANT_JUDGE" for w in winners):
         return _cant("judge_cant_judge")
 
@@ -154,11 +169,13 @@ def judge_pair(
     try:
         verdict = Verdict(
             winner=Winner(winner_str),
-            reason="; ".join(m[0] for m in mapped) or winner_str,
+            reason=" | ".join(reasons) if reasons else winner_str,
             evidence=all_evidence,
             confidence=0.5 if order_inconsistent else 0.8,
             order_inconsistent=order_inconsistent,
             provenance=_provenance(),
+            comparison_id=comparison_id,
+            task_class=task_class,
         )
     except ValidationError:
         # e.g. a substantive winner with no evidence ⇒ malformed

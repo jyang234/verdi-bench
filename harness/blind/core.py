@@ -109,7 +109,9 @@ _SECRET_PATTERNS = [
     r"sk-ant-[A-Za-z0-9_\-]{16,}",      # Anthropic explicit
     r"AKIA[0-9A-Z]{16}",                # AWS access key id
     r"AIza[0-9A-Za-z_\-]{35}",          # Google API key
-    r"ghp_[A-Za-z0-9]{36}",             # GitHub PAT
+    r"gh[oprsu]_[A-Za-z0-9]{36,}",      # GitHub PAT/OAuth/app/user/refresh tokens
+    r"github_pat_[A-Za-z0-9_]{22,}",    # GitHub fine-grained PAT
+    r"glpat-[A-Za-z0-9_\-]{20,}",       # GitLab PAT
     r"xox[baprs]-[A-Za-z0-9\-]{10,}",   # Slack
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
 ]

@@ -52,6 +52,29 @@ def test_ac8_no_keys_in_images(tmp_path):
     assert total == 0  # nothing to scrub means no secrets were baked in
 
 
+def test_ac8_redacts_yml_and_toml(tmp_path):
+    # regression: .yml (not just .yaml) and .toml config are scanned
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "config.yml").write_text("key: sk-" + "y" * 30 + "\n")
+    (d / "settings.toml").write_text('token = "ghp_' + "z" * 36 + '"\n')
+    n = redact_artifacts(d)
+    assert n == 2
+    assert "sk-" not in (d / "config.yml").read_text()
+    assert "ghp_" not in (d / "settings.toml").read_text()
+
+
+def test_ac8_redacts_non_utf8_file(tmp_path):
+    # regression: a non-UTF-8 file must still be scrubbed, not silently skipped
+    d = tmp_path / "a"
+    d.mkdir()
+    secret = b"sk-" + b"q" * 30
+    (d / "log.txt").write_bytes(b"\xff\xfe binary preamble " + secret + b"\n")
+    n = redact_artifacts(d)
+    assert n == 1
+    assert b"sk-" not in (d / "log.txt").read_bytes()
+
+
 def test_ac8_extra_patterns_configurable(tmp_path):
     d = tmp_path / "a"
     d.mkdir()

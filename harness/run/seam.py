@@ -49,13 +49,24 @@ def run_trial(
     trial_id = trial_id or new_trial_id()
     ts = ts or _now_iso()
 
-    # Insulation by construction: the prompt is the task prompt + arm payload
-    # notes only. Holdouts/canaries are never placed into the request.
+    # Insulation by construction: the prompt is the task prompt only. Holdouts/
+    # canaries are never placed into the request. Defensively verify no canary
+    # reaches ANY request-bound channel — prompt, arm payload, or fake behavior —
+    # not just the prompt, since all three flow to the engine/workspace.
+    import json as _json
+
     prompt = task.prompt
+    request_blob = "\n".join(
+        [
+            prompt,
+            _json.dumps(arm.payload, sort_keys=True, default=str),
+            _json.dumps(task.fake_behavior, sort_keys=True, default=str),
+        ]
+    )
     for canary in task.holdout_canaries:
-        if canary and canary in prompt:
+        if canary and canary in request_blob:
             raise HoldoutLeakError(
-                f"holdout canary {canary!r} present in prompt payload for {task.id}"
+                f"holdout canary {canary!r} present in request payload for {task.id}"
             )
 
     request = TrialRequest(
@@ -67,7 +78,9 @@ def run_trial(
         repetition=repetition,
         workspace=workspace,
         quotas=config.quotas,
-        timeout_s=task.timeout_s or config.default_timeout_s,
+        timeout_s=(
+            task.timeout_s if task.timeout_s is not None else config.default_timeout_s
+        ),
         ts=ts,
         concurrency=config.concurrency,
         proxy=config.proxy,

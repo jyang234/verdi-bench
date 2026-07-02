@@ -69,6 +69,15 @@ def test_ac2_telemetry_nulls_must_match():
         )
 
 
+def test_ac2_bool_not_coerced_to_number():
+    # regression: a boolean where a count/cost is expected is unmeasurable (null),
+    # never imputed to 1/0 [D004]
+    log = {"usage": {"input_tokens": True}, "total_cost_usd": False}
+    t = ClaudeCodeAdapter().normalize(log)
+    assert t.tokens_in is None
+    assert t.cost is None
+
+
 def test_ac2_unknown_platform_rejected():
     from harness.adapters import UnknownPlatformError
 

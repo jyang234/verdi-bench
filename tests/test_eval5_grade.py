@@ -110,3 +110,20 @@ def test_ac5_exactly_one_event(tmp_path):
     from harness.ledger.query import read_events
 
     assert len(read_events(ledger)) == 1
+
+
+def test_ac5_fail_closed_non_iterable_assertions(tmp_path):
+    # regression: {"assertions": 5} must fail closed, not crash with TypeError
+    out, ledger = _grade(tmp_path, {"assertions": 5})
+    assert out.graded is False
+    assert find_events(ledger, "cant_grade")[0]["reason"] == REASON_MALFORMED
+    from harness.ledger.query import read_events
+
+    assert len(read_events(ledger)) == 1
+
+
+def test_ac3_empty_holdout_not_vacuous_pass(tmp_path):
+    # regression: an empty holdout set must NOT score binary True (would inflate
+    # holdout_pass_rate for a trial that verified nothing)
+    out, ledger = _grade(tmp_path, {"assertions": []})
+    assert find_events(ledger, "grade")[0]["binary_score"] is False

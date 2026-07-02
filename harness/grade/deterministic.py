@@ -15,7 +15,7 @@ from typing import Optional
 from ..ledger import events
 from ..ledger.events import EventContext
 from .container import GradingContainer, GradingContainerError
-from .plugins import UnknownPluginError, get_plugin
+from .plugins import get_plugin
 from .types import Assertion, AssertionResult, GradeTask
 
 
@@ -45,6 +45,10 @@ def parse_holdout_output(raw: dict) -> list[Assertion]:
     """
     if not isinstance(raw, dict) or "assertions" not in raw:
         raise MalformedHoldoutOutput("missing 'assertions' list")
+    if not isinstance(raw["assertions"], list):
+        raise MalformedHoldoutOutput(
+            f"'assertions' must be a list, got {type(raw['assertions']).__name__}"
+        )
     out: list[Assertion] = []
     for item in raw["assertions"]:
         try:
@@ -64,15 +68,21 @@ def parse_holdout_output(raw: dict) -> list[Assertion]:
 def compute_binary_score(assertions: list[Assertion]) -> bool:
     """All holdout-test assertions pass (abstain does not count as pass) [AC-3].
 
-    Plugin assertions are recorded data and do not affect the binary score.
+    Requires at least one holdout assertion: an empty holdout set is **not** a
+    vacuous pass (that would silently inflate holdout_pass_rate for a trial that
+    verified nothing). Plugin assertions are recorded data and do not affect the
+    binary score.
     """
     holdout = [a for a in assertions if a.is_holdout]
+    if not holdout:
+        return False
     return all(a.result == AssertionResult.passed for a in holdout)
 
 
 def compute_fractional_score(assertions: list[Assertion]) -> float:
-    """Fraction of scored (non-abstain) assertions that passed, over the full
-    vector. Only computed when the lock pre-registered fractional_scoring."""
+    """Fraction of *scored* (non-abstain) assertions across the full vector that
+    passed — abstains carry no signal and are excluded from the denominator.
+    Only computed when the lock pre-registered fractional_scoring."""
     scored = [a for a in assertions if a.result != AssertionResult.abstain]
     if not scored:
         return 0.0
@@ -113,11 +123,13 @@ def grade_trial(
     except MalformedHoldoutOutput:
         return _cant(REASON_MALFORMED)
 
-    # 3. Invoke declared plugins; any error ⇒ cant_grade(plugin_error).
+    # 3. Invoke declared plugins; any error ⇒ cant_grade(plugin_error). Fail
+    # closed by design (a broken plugin must not crash grading), but keep the
+    # reason machine-readable per the event contract.
     try:
         for plugin_id in task.plugin_ids:
             assertions.extend(get_plugin(plugin_id).grade(workspace, task))
-    except (UnknownPluginError, Exception):
+    except Exception:  # noqa: BLE001 - fail-closed by design
         return _cant(REASON_PLUGIN)
 
     # 4. Score and record.

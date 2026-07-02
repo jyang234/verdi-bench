@@ -73,16 +73,19 @@ def flake_baseline(
 
 
 def load_quarantine(ledger_path) -> set[str]:
-    """Task ids whose latest flake baseline quarantined them [scheduler hook].
+    """Task ids whose *most recent* flake baseline quarantined them.
 
-    Keyed by task_sha so a re-admitted (new sha) version can clear quarantine;
-    returns the set of task ids currently quarantined.
+    The scheduler matches on ``task_id`` (a ``Trial`` carries no sha), so the
+    quarantine reflects each task's latest baseline: a task re-admitted with a
+    new clean baseline clears quarantine, and a newly-flaky one enters it. Keyed
+    by ``task_id`` with latest-event-wins (the ledger is append-only, so later
+    events supersede earlier ones for the same task).
     """
-    latest_by_sha: dict[str, dict] = {}
+    latest_by_task: dict[str, dict] = {}
     for ev in find_events(ledger_path, events.FLAKE_BASELINE):
-        latest_by_sha[ev["task_sha"]] = ev
+        latest_by_task[ev["task_id"]] = ev  # append-order ⇒ last wins
     return {
         ev["task_id"]
-        for ev in latest_by_sha.values()
+        for ev in latest_by_task.values()
         if ev["verdict"] == "quarantined"
     }

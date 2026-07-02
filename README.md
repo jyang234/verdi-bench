@@ -23,7 +23,7 @@ EVAL-8 (corpus import/mining), EVAL-9 (process rubric). Their touchpoint
 namespaces (`analyze/`, `review/`, `process/`, `corpus/`) are scaffolded and a
 few shared seams already exist (`analyze/confounds.py`, `append_human_verdict`).
 
-136 tests green (full AC-1..AC-9 coverage per built story); 3 import-linter
+146 tests green (full AC-1..AC-9 coverage per built story); 3 import-linter
 contracts kept.
 
 ## Provisional decisions

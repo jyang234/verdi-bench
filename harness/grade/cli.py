@@ -84,6 +84,10 @@ def register(app: typer.Typer) -> None:
             task = grade_tasks.get(rec["task_id"])
             if task is None:
                 continue
+            if not rec.get("artifacts_path"):
+                # a record with no artifacts path cannot be graded here; skip
+                # this one rather than aborting the whole run
+                continue
             workspace = Path(rec["artifacts_path"]).parent
             # fake path: place the scripted holdout output in the workspace
             if task.fake_holdout_output is not None:

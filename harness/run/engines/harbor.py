@@ -20,6 +20,7 @@ container-inspect assertions are ``@pytest.mark.docker``.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,7 +40,9 @@ class RunOutput:
 
 
 class CommandRunner(Protocol):
-    def run_container(self, cmd: list[str], timeout_s: int) -> RunOutput: ...
+    def run_container(
+        self, cmd: list[str], timeout_s: int, env: Optional[dict] = None
+    ) -> RunOutput: ...
 
     def resolve_digest(self, image: str) -> Optional[str]: ...
 
@@ -63,9 +66,17 @@ class DockerCliRunner:
         digest = out.stdout.strip()
         return digest.split("@", 1)[1] if "@" in digest else None
 
-    def run_container(self, cmd: list[str], timeout_s: int) -> RunOutput:
+    def run_container(
+        self, cmd: list[str], timeout_s: int, env: Optional[dict] = None
+    ) -> RunOutput:
+        # Provider key VALUES are passed through the child environment (never on
+        # the argv), so `docker run --env KEY` picks them up without exposing
+        # them in the host process table.
+        child_env = {**os.environ, **(env or {})}
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout_s, env=child_env
+            )
         except subprocess.TimeoutExpired:
             return RunOutput(exit_status=124, timed_out=True)
         except (OSError, FileNotFoundError):
@@ -103,9 +114,12 @@ class HarborEngine:
             cmd += ["--network", "verdi-metered"]
         else:
             cmd += ["--network", "none"]
-        # provider keys injected as env — never in image layers or ledger [AC-8]
-        for k, v in (request.provider_keys or {}).items():
-            cmd += ["--env", f"{k}={v}"]
+        # provider keys injected as env — never in image layers or ledger [AC-8],
+        # and never as `KEY=VALUE` on the argv (visible in `ps`/proc). Pass only
+        # the NAME on the command; docker reads the value from the CLI process
+        # environment, which run_container populates from request.provider_keys.
+        for k in (request.provider_keys or {}):
+            cmd += ["--env", k]
         # workspace mount
         cmd += ["--volume", f"{Path(request.workspace).resolve()}:/workspace"]
         cmd += ["--workdir", "/workspace"]
@@ -119,16 +133,19 @@ class HarborEngine:
         artifacts.mkdir(parents=True, exist_ok=True)
 
         cmd = self.build_run_command(request, image)
-        result = self._runner.run_container(cmd, request.timeout_s)
+        result = self._runner.run_container(
+            cmd, request.timeout_s, env=request.provider_keys or {}
+        )
 
         if result.daemon_error:
             outcome = Outcome.infra_failed
         elif result.timed_out:
             outcome = Outcome.timeout
         else:
-            outcome = Outcome.completed if result.exit_status == 0 else Outcome.completed
             # a nonzero agent exit is still a completed *trial* (the agent ran);
-            # grading decides pass/fail. infra vs timeout are the only non-completions.
+            # grading decides pass/fail. infra vs timeout are the only
+            # non-completions, so a completed run is unconditionally `completed`.
+            outcome = Outcome.completed
 
         native_log = self._read_native_log(artifacts)
         egress_attempts, egress_violation = self._scan_proxy_log(request)
