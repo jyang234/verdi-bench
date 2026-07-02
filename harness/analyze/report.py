@@ -63,6 +63,10 @@ class ProvenanceError(AnalyzeError):
     """A finding is missing provenance, or the head hash no longer verifies."""
 
 
+class DisclosureError(AnalyzeError):
+    """Process scores rendered without the unblinded disclosure block [EVAL-9 AC-2]."""
+
+
 # --- schema ----------------------------------------------------------------
 class Provenance(BaseModel):
     # every field required ⇒ a render missing any provenance fails validation [AC-6]
@@ -262,6 +266,53 @@ def _secondary_metrics(ledger_path, spec) -> dict:
     }
 
 
+def _process_section(ledger_path) -> Optional[dict]:
+    """Openly-unblinded process diagnostics [EVAL-9 §M6].
+
+    Reads ``process_score`` events (ledger data — no import of the process
+    subsystem) into an EXPLORATORY-only section carrying the mandatory unblinded
+    disclosure block. Returns None when no process scores exist.
+    """
+    evs = find_events(ledger_path, events.PROCESS_SCORE)
+    if not evs:
+        return None
+    dims: dict[str, dict] = defaultdict(lambda: {"scores": [], "n_cant": 0, "scorer_kinds": set()})
+    rubric_versions: set[str] = set()
+    scorer_kinds: set[str] = set()
+    for ev in evs:
+        ps = ev["process_score"]
+        rubric_versions.add(ps["rubric_version"])
+        kind = ps["provenance"]["scorer"]["kind"]
+        scorer_kinds.add(kind)
+        for ds in ps["scores"]:
+            bucket = dims[ds["dim_id"]]
+            bucket["scorer_kinds"].add(kind)
+            if ds.get("score") is not None:
+                bucket["scores"].append(ds["score"])
+            else:
+                bucket["n_cant"] += 1
+    dimensions = {
+        dim: {
+            "mean_score": (sum(b["scores"]) / len(b["scores"])) if b["scores"] else None,
+            "n_scored": len(b["scores"]),
+            "n_cant_score": b["n_cant"],
+            "scorer_kinds": sorted(b["scorer_kinds"]),
+        }
+        for dim, b in sorted(dims.items())
+    }
+    return {
+        "exploratory": True,
+        "disclosure": {
+            "unblinded": True,
+            "note": "Process scores are an openly-unblinded diagnostic tier. They "
+            "are NEVER primary metrics and always carry disclosed scorer identity.",
+            "scorer_kinds": sorted(scorer_kinds),
+        },
+        "rubric_versions": sorted(rubric_versions),
+        "dimensions": dimensions,
+    }
+
+
 def compute_findings(
     ledger_path,
     spec,
@@ -389,6 +440,7 @@ def compute_findings(
         confounds=flag_confounds(ledger_path, spec),
         secondary_metrics=_secondary_metrics(ledger_path, spec),
         integrity=_integrity(ledger_path),
+        process=_process_section(ledger_path),
         provenance=provenance,
     )
 
@@ -403,6 +455,18 @@ def _validate_provenance(findings: FindingsDocument) -> None:
     for name in ("instrument_version", "instrument_git_sha", "ledger_head_hash", "judge"):
         if getattr(p, name) in (None, ""):
             raise ProvenanceError(f"findings provenance missing {name} [AC-6]")
+
+
+def _validate_process_disclosure(findings: FindingsDocument) -> None:
+    """Process scores may never render without the unblinded disclosure [EVAL-9 AC-2]."""
+    if findings.process is None:
+        return
+    disclosure = findings.process.get("disclosure")
+    if not disclosure or disclosure.get("unblinded") is not True:
+        raise DisclosureError(
+            "findings include process scores but no unblinded disclosure block; "
+            "process scores never render without disclosure [EVAL-9 AC-2]"
+        )
 
 
 def _assert_head_hash(findings: FindingsDocument, ledger_path) -> None:
@@ -483,6 +547,7 @@ def render_markdown(
 ) -> str:
     """Render findings to markdown behind the pre-registration fence."""
     _validate_provenance(findings)
+    _validate_process_disclosure(findings)
     _assert_head_hash(findings, ledger_path)
 
     if mode == "official":
@@ -556,6 +621,8 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
     for cf in findings.comparisons:
         out += section(f"Primary metric — {cf.label}", _comparison_lines(cf, findings.mde))
     out += section("Secondary metrics (exploratory)", _secondary_lines(findings))
+    if findings.process is not None:
+        out += section("Process diagnostics (EXPLORATORY secondary)", _process_lines(findings))
     out += section("Confounds (disclosed, non-suppressing)",
                    [f"- {c['flag']}: {c}" for c in findings.confounds] or ["- none"])
     out += section("Blinding integrity", [f"- {_integrity_line(findings)}"])
@@ -572,6 +639,23 @@ def _secondary_lines(findings: FindingsDocument) -> list[str]:
             f"- cross-vendor: raw token fields {sm['vendor_incomparable_fields']} are "
             "vendor-incomparable and NOT compared across arms; cross-vendor "
             f"comparisons restricted to {sm['cross_vendor_allowed_fields']}"
+        )
+    return lines
+
+
+def _process_lines(findings: FindingsDocument) -> list[str]:
+    p = findings.process
+    disclosure = p["disclosure"]
+    lines = [
+        "⚠ UNBLINDED DIAGNOSTIC — NOT a primary metric.",
+        f"- disclosure: {disclosure['note']}",
+        f"- scorers: {disclosure['scorer_kinds']}; rubric(s): {p['rubric_versions']}",
+    ]
+    for dim, d in p["dimensions"].items():
+        lines.append(
+            f"- {dim}: mean={_fmt(d['mean_score'], 2)} "
+            f"(scored={d['n_scored']}, cant_score={d['n_cant_score']}, "
+            f"scorers={d['scorer_kinds']})"
         )
     return lines
 
