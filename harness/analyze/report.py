@@ -217,13 +217,13 @@ def _integrity(ledger_path) -> dict:
     """
     recognized, guessed_right, n = 0, 0, 0
     for ev in find_events(ledger_path, events.HUMAN_VERDICT):
-        v = ev["verdict"]
-        if "arm_recognized" not in v:
+        integrity = ev.get("integrity")
+        if integrity is None:
             continue
         n += 1
-        if v.get("arm_recognized"):
+        if integrity.get("arm_recognized"):
             recognized += 1
-            if v.get("arm_guess") and v.get("arm_guess") == v.get("actual_arm"):
+            if integrity.get("arm_guess") and integrity["arm_guess"] == integrity.get("actual_arm"):
                 guessed_right += 1
     rate = recognized / n if n else None
     guess_acc = guessed_right / recognized if recognized else None

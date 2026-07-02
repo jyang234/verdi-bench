@@ -266,12 +266,32 @@ def append_verdict(ledger_path, ctx: EventContext, *, verdict: dict) -> dict:
     return emit(ledger_path, ctx, JUDGE_VERDICT, {"verdict": verdict})
 
 
-def append_human_verdict(ledger_path, ctx: EventContext, *, verdict: dict) -> dict:
+def append_human_verdict(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    verdict: dict,
+    arm_recognized: Optional[bool] = None,
+    arm_guess: Optional[str] = None,
+    actual_arm: Optional[str] = None,
+) -> dict:
     """Human verdict — the only event that closes a comparison [D004, AC-7].
 
     Shares the Verdict schema family with judge verdicts so kappa is directly
-    computable. (EVAL-7 owns the review UI; the constructor lives here.)"""
-    return emit(ledger_path, ctx, HUMAN_VERDICT, {"verdict": verdict})
+    computable. When captured through the EVAL-7 review flow it additionally
+    carries the **blinding-integrity** answers ``{arm_recognized, arm_guess}``
+    plus the harness-known ``actual_arm`` (for guess-accuracy scoring); these
+    are captured strictly before any reveal [EVAL-7 §4.3, AC-4]. The bare form
+    (no integrity) remains valid so the low-level constructor stays reusable.
+    """
+    payload: dict = {"verdict": verdict}
+    if arm_recognized is not None:
+        payload["integrity"] = {
+            "arm_recognized": arm_recognized,
+            "arm_guess": arm_guess,
+            "actual_arm": actual_arm,
+        }
+    return emit(ledger_path, ctx, HUMAN_VERDICT, payload)
 
 
 # ---------------------------------------------------------------------------
