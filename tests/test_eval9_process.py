@@ -278,14 +278,23 @@ def test_ac7_correlation_reported():
     corr = score_telemetry_correlation(rows, r)
     assert corr["planning_quality"].correlations["tool_calls"] == pytest.approx(1.0)
     assert corr["planning_quality"].style_only is False
-    # error_recovery has zero score variance ⇒ correlations undefined ⇒ not style-flagged
-    # (a dimension WITH variance but no correlation is the style-only case):
+
+    # a dimension whose scores VARY but are uncorrelated with its stated
+    # correlates is measuring style, not process ⇒ flagged style_only [AC-7]
+    rows_style = {"planning_quality": [(1, {"tool_calls": 3, "wall_time": 2}),
+                                       (2, {"tool_calls": 1, "wall_time": 9}),
+                                       (3, {"tool_calls": 4, "wall_time": 1}),
+                                       (4, {"tool_calls": 2, "wall_time": 5})]}
+    style = score_telemetry_correlation(rows_style, r, threshold=0.5)
+    assert style["planning_quality"].style_only is True
+
+    # constant telemetry ⇒ correlation undefined ⇒ no measured signal (not flagged)
     rows2 = {"error_recovery": [(1, {"retries": 5, "timeouts": 5}),
                                 (5, {"retries": 5, "timeouts": 5}),
                                 (3, {"retries": 5, "timeouts": 5})]}
     corr2 = score_telemetry_correlation(rows2, r)
-    # retries/timeouts constant ⇒ undefined correlation ⇒ no measured signal
     assert corr2["error_recovery"].correlations["retries"] is None
+    assert corr2["error_recovery"].style_only is False
 
 
 def test_process_score_registered():
