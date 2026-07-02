@@ -258,8 +258,17 @@ def record_flake_baseline(
 # EVAL-2 events
 # ---------------------------------------------------------------------------
 JUDGE_VERDICT = register_event("judge_verdict")
+HUMAN_VERDICT = register_event("human_verdict")
 
 
 def append_verdict(ledger_path, ctx: EventContext, *, verdict: dict) -> dict:
     """Judge verdict — advisory; subsumes CANT_JUDGE via ``winner`` [AC-4]."""
     return emit(ledger_path, ctx, JUDGE_VERDICT, {"verdict": verdict})
+
+
+def append_human_verdict(ledger_path, ctx: EventContext, *, verdict: dict) -> dict:
+    """Human verdict — the only event that closes a comparison [D004, AC-7].
+
+    Shares the Verdict schema family with judge verdicts so kappa is directly
+    computable. (EVAL-7 owns the review UI; the constructor lives here.)"""
+    return emit(ledger_path, ctx, HUMAN_VERDICT, {"verdict": verdict})

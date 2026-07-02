@@ -76,6 +76,21 @@ def test_ac4_underpowered_requires_ack(tmp_path):
     assert find_events(ledger, events.EXPERIMENT_LOCKED) == []
 
 
+def test_ac4_incomputable_mde_is_underpowered(tmp_path):
+    # regression: when MDE can't be computed (no swept effect reaches power), the
+    # guard must NOT fail open — a design with a hypothesized effect is refused
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml", hypothesized_effect=0.2)
+    ledger = tmp_path / "ledger.ndjson"
+    # tiny N + tiny deltas ⇒ power never reaches target ⇒ mde None
+    with pytest.raises(UnderpoweredError):
+        lock_experiment(
+            spec, ledger, ctx=fixed_ctx(),
+            variance_source=AssumedVariance(p=0.5, rho=0.3, n_tasks=4),
+            n_sim=20, n_boot=60, deltas=[0.001, 0.002],
+        )
+    assert find_events(ledger, events.EXPERIMENT_LOCKED) == []
+
+
 def test_ac4_ack_ledgered(tmp_path):
     spec = write_experiment_yaml(tmp_path / "experiment.yaml", hypothesized_effect=0.001)
     ledger = tmp_path / "ledger.ndjson"

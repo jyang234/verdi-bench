@@ -64,20 +64,25 @@ def lock_experiment(
         variance_source = AssumedVariance()
     mde = mde_check(spec, variance_source, **mde_kwargs)
 
-    # Underpowered check [D001, AC-4]: refuse unless acknowledged.
-    if spec.hypothesized_effect is not None and mde["mde"] is not None:
-        if spec.hypothesized_effect < mde["mde"]:
+    # Underpowered check [D001, AC-4]: refuse unless acknowledged. A None MDE
+    # means the design could not detect *any* swept effect — the maximally
+    # underpowered case — so it must NOT fail open: treat it as underpowered.
+    if spec.hypothesized_effect is not None:
+        mde_val = mde["mde"]
+        underpowered = mde_val is None or spec.hypothesized_effect < mde_val
+        if underpowered:
+            mde_desc = "incomputable (no swept effect reached target power)" if mde_val is None else str(mde_val)
             if not acknowledge_underpowered:
                 raise UnderpoweredError(
-                    f"hypothesized_effect {spec.hypothesized_effect} < MDE "
-                    f"{mde['mde']}: design is underpowered. Re-run with "
+                    f"hypothesized_effect {spec.hypothesized_effect} vs MDE "
+                    f"{mde_desc}: design is underpowered. Re-run with "
                     "acknowledge_underpowered=True to lock with a ledgered "
                     "acknowledgment."
                 )
             events.record_acknowledged_underpowered(
                 ledger_path,
                 ctx,
-                mde=mde["mde"],
+                mde=mde_val,
                 hypothesized_effect=spec.hypothesized_effect,
             )
 

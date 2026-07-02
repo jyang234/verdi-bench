@@ -8,7 +8,9 @@ event. Later stories' verbs join this sweep automatically by registering.
 from __future__ import annotations
 
 # Import stage modules so they self-register their entrypoints.
+import harness.grade.deterministic  # noqa: F401
 import harness.plan.lock  # noqa: F401
+import harness.run.interleave  # noqa: F401
 from harness.entrypoints import all_entrypoints
 from harness.ledger.query import read_events
 from tests.fixtures.builders import write_experiment_yaml

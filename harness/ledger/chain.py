@@ -42,20 +42,36 @@ def hash_line(line: str) -> str:
 
 
 def _last_line(path: Path) -> Optional[str]:
-    """Return the last event line (without newline), or None for empty/absent."""
+    """Return the last event line (without newline), or None for empty/absent.
+
+    Reads only the tail of the file (a bounded seek-from-end), not the whole
+    ledger — so appending to an N-line ledger stays O(1) instead of O(N), and a
+    full run of many trials avoids O(N^2) total reads through this hot path.
+    """
     if not path.exists():
         return None
-    data = path.read_bytes()
-    if not data:
-        return None
-    # lines are \n-terminated; the split's trailing "" is the post-newline tail
-    parts = data.split(b"\n")
-    # drop a single trailing empty (from the final newline)
-    if parts and parts[-1] == b"":
-        parts = parts[:-1]
-    if not parts:
-        return None
-    return parts[-1].decode("utf-8")
+    chunk = 4096
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        if size == 0:
+            return None
+        data = b""
+        pos = size
+        while pos > 0:
+            step = min(chunk, pos)
+            pos -= step
+            fh.seek(pos)
+            data = fh.read(step) + data
+            # a well-formed ledger ends in \n; strip a single trailing newline
+            # then find the newline that precedes the final line
+            stripped = data[:-1] if data.endswith(b"\n") else data
+            idx = stripped.rfind(b"\n")
+            if idx != -1:
+                return stripped[idx + 1 :].decode("utf-8")
+            if pos == 0:
+                return stripped.decode("utf-8") if stripped else None
+    return None
 
 
 def head_hash(path: Path) -> str:

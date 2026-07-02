@@ -1,0 +1,80 @@
+"""Verdict schema [EVAL-2 AC-4, AC-5].
+
+Human verdicts (EVAL-7) share this schema family so kappa is directly computable.
+Evidence is structurally required for a substantive winner: an evidence-free
+A/B verdict is schema-rejected and re-recorded as ``CANT_JUDGE(malformed)`` —
+never an exception trace. Any missing provenance field also fails schema.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+from typing import Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, model_validator
+
+
+class Winner(str, Enum):
+    A = "A"
+    B = "B"
+    TIE = "TIE"
+    CANT_JUDGE = "CANT_JUDGE"
+
+
+class Evidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["diff", "holdout"]
+    response: Literal["A", "B"]
+    hunk: Optional[str] = None
+    ref: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _needs_locator(self) -> "Evidence":
+        if self.hunk is None and self.ref is None:
+            raise ValueError("evidence needs a locator: hunk (diff) or ref (holdout)")
+        return self
+
+
+class VerdictProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    judge_model: str
+    rubric_sha256: str
+    packet_sha256: str
+    call_ids: list[str]
+    orders: str  # "both" | "single"
+    temperature: float
+    ts: str
+
+
+class Verdict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    winner: Winner
+    reason: str
+    evidence: list[Evidence] = []
+    confidence: float = 0.0
+    order_inconsistent: bool = False
+    provenance: VerdictProvenance
+    # for human verdicts (EVAL-7): distinguishes the verdict source
+    source: Literal["judge", "human"] = "judge"
+    # comparison identity + task class, so kappa groups and the ledger state
+    # machine can tell whether a comparison is closed [AC-7]
+    comparison_id: Optional[str] = None
+    task_class: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _substantive_needs_evidence(self) -> "Verdict":
+        if self.winner in (Winner.A, Winner.B) and not self.evidence:
+            raise ValueError(
+                "a substantive verdict (winner A/B) must cite evidence; "
+                "evidence-free verdicts are recorded as CANT_JUDGE(malformed)"
+            )
+        # a completed both-orders comparison carries both call ids; a fail-closed
+        # CANT_JUDGE may carry fewer (a call never completed)
+        if (
+            self.winner != Winner.CANT_JUDGE
+            and self.provenance.orders == "both"
+            and len(self.provenance.call_ids) != 2
+        ):
+            raise ValueError("orders='both' requires exactly two call_ids")
+        return self

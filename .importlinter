@@ -37,6 +37,9 @@ forbidden_modules =
 [importlinter:contract:ledger-writes-only-via-events]
 name = Ledger appends flow only through typed constructors [EVAL-3]
 type = forbidden
+# Only DIRECT imports of chain are forbidden; reaching chain transitively
+# through the typed constructors in events.py is exactly the allowed path.
+allow_indirect_imports = True
 source_modules =
     harness.schema
     harness.plan

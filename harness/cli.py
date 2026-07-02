@@ -98,19 +98,20 @@ def anchor(
 
 
 def _register_stage_commands() -> None:
-    """Attach stage subcommands built in later stories, if importable."""
-    try:
-        from .run.cli import register as register_run
+    """Attach stage subcommands built in later stories, if present.
 
-        register_run(app)
-    except Exception:  # pragma: no cover - stage not present yet
-        pass
-    try:
-        from .grade.cli import register as register_grade
+    Only a genuinely-absent module is tolerated (ModuleNotFoundError); any other
+    error (a real bug inside a present stage CLI) propagates rather than
+    degrading to a silently-missing subcommand.
+    """
+    from importlib import import_module
 
-        register_grade(app)
-    except Exception:  # pragma: no cover
-        pass
+    for module_name, attr in [(".run.cli", "register"), (".grade.cli", "register")]:
+        try:
+            mod = import_module(module_name, __package__)
+        except ModuleNotFoundError:  # pragma: no cover - stage not present yet
+            continue
+        getattr(mod, attr)(app)
 
 
 _register_stage_commands()
