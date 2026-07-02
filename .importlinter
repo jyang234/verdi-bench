@@ -1,0 +1,52 @@
+# Structural contracts enforced in CI [master plan §3.3]. Stories add contracts
+# as they land. Run with: uv run lint-imports
+[importlinter]
+root_packages =
+    harness
+
+[importlinter:contract:harbor-confined-to-seam]
+name = Harbor is imported only by the run engine seam [EVAL-4 AC-1]
+type = forbidden
+source_modules =
+    harness.schema
+    harness.ledger
+    harness.plan
+    harness.adapters
+    harness.grade
+    harness.judge
+    harness.analyze
+    harness.review
+    harness.process
+    harness.corpus
+    harness.blind
+    harness.run.seam
+    harness.run.interleave
+    harness.run.budget
+forbidden_modules =
+    harness.run.engines.harbor
+
+[importlinter:contract:grade-has-no-llm-clients]
+name = Deterministic grading imports no LLM client [EVAL-5 constraint]
+type = forbidden
+source_modules =
+    harness.grade
+forbidden_modules =
+    harness.judge.providers
+    harness.judge.client
+
+[importlinter:contract:ledger-writes-only-via-events]
+name = Ledger appends flow only through typed constructors [EVAL-3]
+type = forbidden
+source_modules =
+    harness.schema
+    harness.plan
+    harness.run
+    harness.adapters
+    harness.grade
+    harness.judge
+    harness.analyze
+    harness.review
+    harness.process
+    harness.corpus
+forbidden_modules =
+    harness.ledger.chain

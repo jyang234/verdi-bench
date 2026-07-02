@@ -1,0 +1,21 @@
+name: ci
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # git sha provenance needs history
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync
+        run: uv sync --dev
+      - name: Import-linter contracts
+        run: uv run lint-imports
+      - name: Fast suite (no Docker)
+        run: uv run pytest -m "not docker" -q
