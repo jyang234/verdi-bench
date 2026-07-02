@@ -106,7 +106,14 @@ def _register_stage_commands() -> None:
     """
     from importlib import import_module
 
-    for module_name, attr in [(".run.cli", "register"), (".grade.cli", "register")]:
+    for module_name, attr in [
+        (".run.cli", "register"),
+        (".grade.cli", "register"),
+        (".corpus.cli", "register"),
+        (".analyze.cli", "register"),
+        (".review.cli", "register"),
+        (".process.cli", "register"),
+    ]:
         try:
             mod = import_module(module_name, __package__)
         except ModuleNotFoundError:  # pragma: no cover - stage not present yet

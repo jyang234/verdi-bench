@@ -91,6 +91,18 @@ def _simulate_correlated_pairs(
     return (a - b).astype(np.float64)
 
 
+def simulate_correlated_pair_deltas(
+    rng: np.random.Generator, n: int, p_a: float, p_b: float, rho: float
+) -> np.ndarray:
+    """Public alias of the shared correlated-pairs simulator.
+
+    EVAL-6's null-simulation harness reuses the *exact* variance model
+    ``mde_check`` uses [master plan §7.7], so coverage selection and the power
+    check draw from one definition and cannot silently desync.
+    """
+    return _simulate_correlated_pairs(rng, n, p_a, p_b, rho)
+
+
 def _power_at(
     rng: np.random.Generator,
     *,
