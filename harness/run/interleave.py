@@ -24,6 +24,7 @@ from typing import Optional
 from ..adapters.base import Outcome, TrialRecord
 from ..ledger import events
 from ..ledger.events import EventContext
+from ..ledger.query import find_events
 from ..plan.interleave import Trial
 from ..schema.experiment import Arm
 from .budget import CostGuard
@@ -43,6 +44,47 @@ class ScheduleResult:
     infra_failures: int = 0
 
 
+def _enforcement_cost(
+    telemetry_cost: Optional[float], proxy_metered_cost: Optional[float]
+) -> Optional[float]:
+    """Cost figure the guard enforces on: the self-reported telemetry cost, or —
+    when the arm can't self-report (null) — the proxy-metered figure [RN-2].
+
+    Enforcement only: this never fills ``telemetry.cost`` in the record (D004
+    keeps nulls null); it exists so a null-cost arm can't spend invisibly.
+    """
+    return telemetry_cost if telemetry_cost is not None else proxy_metered_cost
+
+
+def _record_enforcement_cost(record: TrialRecord) -> Optional[float]:
+    return _enforcement_cost(
+        record.telemetry.cost, getattr(record.flags, "proxy_metered_cost", None)
+    )
+
+
+def _prior_run_state(ledger_path) -> tuple[float, set[tuple]]:
+    """Accumulated enforcement spend and completed ``(task, arm, rep)`` cells from
+    prior ``trial`` events in this ledger [RN-1].
+
+    A re-run seeds the guard from real prior spend and skips cells that already
+    produced a trial, so an interrupted or ceiling-stopped run resumes instead of
+    duplicating trials with fresh ids and re-spending from $0. Fresh ledgers have
+    no trial events, so this is a no-op on a first run.
+    """
+    accumulated = 0.0
+    done: set[tuple] = set()
+    for ev in find_events(ledger_path, events.TRIAL):
+        rec = ev.get("trial_record", {})
+        done.add((rec.get("task_id"), rec.get("arm"), rec.get("repetition")))
+        cost = _enforcement_cost(
+            (rec.get("telemetry") or {}).get("cost"),
+            (rec.get("flags") or {}).get("proxy_metered_cost"),
+        )
+        if cost is not None:
+            accumulated += cost
+    return accumulated, done
+
+
 def schedule(
     derived_order: list[Trial],
     *,
@@ -58,10 +100,17 @@ def schedule(
 ) -> ScheduleResult:
     workspace_root = Path(workspace_root)
     quarantined = quarantined_tasks or set()
-    guard = CostGuard(ceiling=cost_ceiling)
+    # Resume from the ledger: seed the guard with prior spend and skip cells that
+    # already produced a trial, so a re-run doesn't duplicate or re-spend [RN-1].
+    accumulated, done_cells = _prior_run_state(ledger_path)
+    guard = CostGuard(ceiling=cost_ceiling, accumulated=accumulated)
     out = ScheduleResult()
 
     for planned in derived_order:
+        cell = (planned.task_id, planned.arm, planned.repetition)
+        if cell in done_cells:
+            continue  # already executed in a prior run — resume, don't duplicate
+
         if planned.task_id in quarantined:
             raise QuarantinedTaskError(
                 f"task {planned.task_id} is quarantined (no clean flake baseline) "
@@ -80,14 +129,17 @@ def schedule(
         arm = arms[planned.arm]
 
         record = _run_with_infra_reruns(
-            task, arm, planned, workspace_root, ledger_path, ctx, config, max_infra_retries, out
+            task, arm, planned, workspace_root, ledger_path, ctx, config,
+            max_infra_retries, out, guard,
         )
+        if out.stopped_cost_ceiling:
+            break  # budget exhausted inside the infra-rerun loop [RN-3]
         if record is None:
             continue  # exhausted infra retries; already ledgered as infra_failed
 
         # completed or timeout ⇒ a real trial event
         events.record_trial(ledger_path, ctx, trial_record=record.model_dump(mode="json"))
-        guard.add(record.telemetry.cost)
+        guard.add(_record_enforcement_cost(record))
         out.records.append(record)
         out.executed_order.append(
             {
@@ -104,11 +156,23 @@ def schedule(
 
 
 def _run_with_infra_reruns(
-    task, arm, planned, workspace_root, ledger_path, ctx, config, max_infra_retries, out
+    task, arm, planned, workspace_root, ledger_path, ctx, config, max_infra_retries, out, guard
 ) -> Optional[TrialRecord]:
-    """Run a planned trial, re-running infra failures as brand-new trials."""
+    """Run a planned trial, re-running infra failures as brand-new trials.
+
+    The cost guard is checked before each (re)attempt and each failed attempt's
+    spend is accumulated, so a storm of costly-but-failing attempts can't burn
+    the retry budget past the ceiling [RN-3]. When the guard stops mid-retry it
+    records the ceiling stop and signals the caller via ``out.stopped_cost_ceiling``.
+    """
     attempts = 0
     while True:
+        if guard.would_exceed():
+            events.record_run_stopped_cost_ceiling(
+                ledger_path, ctx, accumulated_cost=guard.accumulated, ceiling=guard.ceiling
+            )
+            out.stopped_cost_ceiling = True
+            return None
         trial_id = new_trial_id()
         ws = Path(workspace_root) / trial_id
         record = run_trial(
@@ -116,7 +180,8 @@ def _run_with_infra_reruns(
         )
         if record.outcome != Outcome.infra_failed:
             return record
-        # infra failure: ledger it and re-run as a NEW trial id
+        # infra failure: count its spend, ledger it, re-run as a NEW trial id
+        guard.add(_record_enforcement_cost(record))
         events.record_trial_infra_failed(
             ledger_path,
             ctx,

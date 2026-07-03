@@ -113,9 +113,14 @@ def run_trial(
     )
     if result.egress_attempts:
         flags.egress_attempts = result.egress_attempts
-    if result.proxy_metered_cost is not None and telemetry.cost is not None:
-        # surface the cross-check delta; do NOT reconcile [risks §10]
-        flags.proxy_cost_delta = round(result.proxy_metered_cost - telemetry.cost, 6)
+    if result.proxy_metered_cost is not None:
+        # Cross-check signal. Surfaced on the record so the cost guard can enforce
+        # on it when the arm can't self-report cost (telemetry null) [RN-2] — but
+        # it is NEVER written into telemetry.cost: nulls are flagged, not imputed
+        # [D004]. When both exist, also surface the delta; do NOT reconcile.
+        flags.proxy_metered_cost = result.proxy_metered_cost
+        if telemetry.cost is not None:
+            flags.proxy_cost_delta = round(result.proxy_metered_cost - telemetry.cost, 6)
 
     provenance = Provenance(
         image_digest=result.image_digest,
