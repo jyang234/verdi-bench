@@ -100,7 +100,9 @@ class HarborEngine:
         """Pure construction of the ``docker run`` argv — hermetic flags,
         quotas, proxy-only egress, env-injected keys. Unit-tested directly."""
         q: Quotas = request.quotas or Quotas()
-        cmd = ["docker", "run", "--rm"]
+        # --pull=never: a trial must run the pre-baked, digest-pinned image; never
+        # silently pull an unpinned tag at trial time [RN-12, D005].
+        cmd = ["docker", "run", "--rm", "--pull=never"]
         # pinned quotas [D003]
         if q.cpus is not None:
             cmd += ["--cpus", str(q.cpus)]
@@ -131,6 +133,21 @@ class HarborEngine:
         digest = self._runner.resolve_digest(image)
         artifacts = Path(request.workspace) / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
+
+        if digest is None:
+            # D005/RN-12: a trial must run a digest-pinned image. A tag-only or
+            # otherwise unresolvable image fails the trial closed (infra_failed,
+            # a real reason) rather than silently running an unpinned tag.
+            return EngineResult(
+                outcome=Outcome.infra_failed,
+                native_log={},
+                artifacts_dir=artifacts,
+                image_digest=None,
+                engine=self.name,
+                quotas=request.quotas or Quotas(),
+                executed_at=request.ts,
+                failure_reason="unpinned_image",
+            )
 
         cmd = self.build_run_command(request, image)
         result = self._runner.run_container(

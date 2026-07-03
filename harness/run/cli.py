@@ -83,9 +83,19 @@ def register(app: typer.Typer) -> None:
         order = derive_schedule(spec.seed, trials)
 
         from .engines import get_engine
+        from .settings import load_run_settings
 
         eng = get_engine(engine)
-        config = RunConfig(engine=eng, concurrency=concurrency)
+        # Operational config (proxy, quotas, provider keys) from run.config.yaml +
+        # env — NOT from the sha-locked spec or the ledger [RN-13, D-9, AC-8].
+        settings = load_run_settings(experiment_dir)
+        config = RunConfig(
+            engine=eng,
+            concurrency=concurrency,
+            proxy=settings.proxy,
+            quotas=settings.quotas,
+            provider_keys=settings.provider_keys,
+        )
         try:
             actor = getpass.getuser()
         except Exception:
