@@ -8,6 +8,7 @@ from harness.analyze.confounds import flag_confounds
 from harness.analyze.effect import cliffs_delta, effect_sizes
 from harness.analyze.report import (
     CalibrationIncompleteError,
+    CorpusMismatchError,
     ProvenanceError,
     UnregisteredOfficialError,
     compute_findings,
@@ -19,6 +20,7 @@ from harness.corpus.registry import CorpusManifest, TaskEntry
 from harness.judge.schema import Evidence, Verdict, VerdictProvenance, Winner
 from harness.ledger.events import (
     append_verdict,
+    record_calibration_run,
     record_executed_order,
     record_trial_infra_failed,
 )
@@ -33,12 +35,27 @@ _FAST = dict(coverage_n_sim=40, n_boot=500)
 
 
 def _full_corpus():
+    # AN-2: the fence binds the cited manifest to the pre-registered spec corpus
+    # (public-mini@1.0.0) and to the tasks the experiment ran (task0..task4), so
+    # the manifest must match both — the old terminal-bench@2.0.0 / one-task
+    # manifest was the mismatch the shipped tests baked in.
     m = CorpusManifest(
-        corpus_id="terminal-bench", semver="2.0.0", kind="public",
-        tasks=[TaskEntry(task_id="task0", sha="a" * 64, status="admitted")],
+        corpus_id="public-mini", semver="1.0.0", kind="public",
+        tasks=[TaskEntry(task_id=f"task{i}", sha="a" * 64, status="admitted") for i in range(5)],
     )
+    # status is kept for provenance, but the FENCE now reads the ledgered
+    # calibration_run events (CO-4), so official tests must _seed_full_calibration.
     m.calibration.status = "full-run-validated"
     return m
+
+
+def _seed_full_calibration(ledger, ctx, *, corpus_id="public-mini", semver="1.0.0"):
+    """Ledger a full-run-validated calibration_run for the corpus — the chain-
+    anchored status the AN-2 fence binds to (not the mutable manifest JSON)."""
+    record_calibration_run(
+        ledger, ctx, corpus_id=corpus_id, semver=semver, kind="full",
+        run={"p": 0.5, "rho": 0.3, "n_tasks": 5}, status="full-run-validated",
+    )
 
 
 def _populate(ledger, ctx, *, control_pass, treatment_pass, tasks=5, reps=2,
@@ -338,8 +355,9 @@ def test_ac5_unregistered_refused(tmp_path):
     with pytest.raises(UnregisteredOfficialError):
         render_markdown(f, ledger, "official", metric="cost_per_task",
                         corpus_manifest=_full_corpus())
-    # official render before full-run calibration is refused
-    with pytest.raises(CalibrationIncompleteError):
+    # official render against a corpus that is not the pre-registered one is
+    # refused (AN-2: corpus "c" ≠ the spec's public-mini)
+    with pytest.raises(CorpusMismatchError):
         render_markdown(f, ledger, "official", corpus_manifest=CorpusManifest(
             corpus_id="c", semver="1.0.0", kind="public", tasks=[]))
 
@@ -433,11 +451,58 @@ def test_ac5_official_happy_path(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    _seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     md = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
     assert "Official findings" in md
     assert "EXPLORATORY" not in md  # official carries no watermark
     assert spec.primary_metric.value in md
+
+
+# --- AN-2: official fence bound to corpus identity --------------------------
+def test_an2_official_fence_refuses_mismatched_corpus(tmp_path):
+    """AN-2: a corpus that is not the pre-registered one is refused for official —
+    even when it claims full-run-validated in its JSON. Reproduces the accepted
+    TOTALLY-DIFFERENT-CORPUS bypass."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # spec corpus public-mini@1.0.0
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    _seed_full_calibration(ledger, ctx)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    wrong = CorpusManifest(
+        corpus_id="totally-different", semver="9.9.9", kind="public",
+        tasks=[TaskEntry(task_id=f"task{i}", sha="a" * 64, status="admitted") for i in range(5)],
+    )
+    wrong.calibration.status = "full-run-validated"
+    with pytest.raises(CorpusMismatchError):
+        render_markdown(f, ledger, "official", corpus_manifest=wrong)
+
+
+def test_an2_official_fence_refuses_unledgered_status(tmp_path):
+    """AN-2/CO-4: the right corpus but only a hand-edited manifest status (no
+    ledgered calibration_run) is refused — the JSON status is not trusted."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    with pytest.raises(CalibrationIncompleteError):  # _full_corpus status set in memory only
+        render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+
+
+def test_an2_official_fence_refuses_uncovered_task(tmp_path):
+    """AN-2: a manifest that omits a task the experiment ran does not cover the
+    data and is refused, even with the right id/semver and a ledgered status."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)  # task0..4
+    _seed_full_calibration(ledger, ctx)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    short = CorpusManifest(
+        corpus_id="public-mini", semver="1.0.0", kind="public",
+        tasks=[TaskEntry(task_id=f"task{i}", sha="a" * 64, status="admitted") for i in range(3)],
+    )
+    with pytest.raises(CorpusMismatchError):  # task3, task4 not admitted in `short`
+        render_markdown(f, ledger, "official", corpus_manifest=short)
 
 
 def test_ac5_exploratory_watermark(tmp_path):
@@ -466,7 +531,7 @@ def test_ac6_finding_provenance(tmp_path):
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     p = f.provenance
     assert p.instrument_version and p.instrument_git_sha
-    assert p.corpus["corpus_id"] == "terminal-bench"
+    assert p.corpus["corpus_id"] == "public-mini"
     assert "task_shas" in p.corpus  # EVAL-8 semver + shas cited end-to-end [AC-6]
     # recorded head hash matches verify_chain output at compute time
     assert verify(ledger).ok
@@ -499,6 +564,7 @@ def test_ac7_asymmetric_nulls_excluded(tmp_path):
         seed_trial_and_grade(ledger, ctx, trial_id=f"t-{i}", task_id=f"task{i}", arm="treatment",
                              telemetry={"cost": 1.0, "wall_time_s": 9.0},
                              provenance={"image_digest": "d"})
+    _seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     cf = f.comparisons[0]
     assert cf.excluded_from_official is True

@@ -60,6 +60,11 @@ class CalibrationIncompleteError(AnalyzeError):
     """Official render requested before the corpus is full-run-validated."""
 
 
+class CorpusMismatchError(AnalyzeError):
+    """Official render requested against a corpus that is not the pre-registered
+    one — a different id/semver, or one missing tasks the experiment ran [AN-2]."""
+
+
 class ProvenanceError(AnalyzeError):
     """A finding is missing provenance, or the head hash no longer verifies."""
 
@@ -72,6 +77,7 @@ class CantAnalyzeReason(str, Enum):
     """Closed set of fail-closed analyze-refusal reasons [AN-3]."""
 
     calibration_incomplete = "calibration_incomplete"
+    corpus_mismatch = "corpus_mismatch"
     unregistered_metric = "unregistered_metric"
     disclosure_missing = "disclosure_missing"
     provenance_invalid = "provenance_invalid"
@@ -82,6 +88,7 @@ def cant_analyze_reason(exc: AnalyzeError) -> CantAnalyzeReason:
     """Map an ``AnalyzeError`` to its enumerated ``cant_analyze`` reason."""
     return {
         CalibrationIncompleteError: CantAnalyzeReason.calibration_incomplete,
+        CorpusMismatchError: CantAnalyzeReason.corpus_mismatch,
         UnregisteredOfficialError: CantAnalyzeReason.unregistered_metric,
         DisclosureError: CantAnalyzeReason.disclosure_missing,
         ProvenanceError: CantAnalyzeReason.provenance_invalid,
@@ -126,6 +133,9 @@ class FindingsDocument(BaseModel):
     seed: int
     primary_metric: str
     decision_rule: str
+    # the pre-registered corpus identity, so the official fence can bind a cited
+    # manifest to the spec's corpus without re-reading the spec at render [AN-2]
+    spec_corpus: dict
     comparisons: list[ComparisonFinding]
     mde: MDEBlock
     ci_selection: dict
@@ -553,6 +563,7 @@ def compute_findings(
         seed=seed,
         primary_metric=primary,
         decision_rule=parsed_rule.raw,
+        spec_corpus={"id": spec.corpus.id, "version": spec.corpus.version},
         comparisons=comparisons,
         mde=_mde_block(ledger_path),
         ci_selection=selection.as_dict(),
@@ -677,24 +688,75 @@ def render_markdown(
                 f"primary metric is {findings.primary_metric!r}; only the "
                 "primary metric + decision rule are official [AC-5]"
             )
-        _assert_official_calibration(findings, corpus_manifest)
+        _assert_official_calibration(findings, corpus_manifest, ledger_path)
         return _render_official_md(findings)
     return _render_exploratory_md(findings)
 
 
-def _assert_official_calibration(findings: FindingsDocument, corpus_manifest) -> None:
-    """Official render requires a full-run-validated corpus [EVAL-8 AC-2 hook]."""
-    corpus = findings.provenance.corpus
+def _task_ids_run(ledger_path) -> set[str]:
+    """The set of task ids the experiment actually ran (from trial records)."""
+    return {ev["trial_record"]["task_id"] for ev in find_events(ledger_path, events.TRIAL)}
+
+
+def _ledgered_calibration_status(ledger_path, corpus_id: str, semver: str) -> Optional[str]:
+    """The latest calibration status **on the chain** for a corpus, or None.
+
+    Reads ``calibration_run`` events (last-write-wins in ledger order) rather than
+    the hand-editable ``manifest.calibration.status`` [CO-4]."""
     status = None
-    if corpus_manifest is not None:
-        status = corpus_manifest.calibration.status
-    elif corpus is not None:
-        status = corpus.get("calibration_status")
+    for ev in find_events(ledger_path, events.CALIBRATION_RUN):
+        if ev.get("corpus_id") == corpus_id and ev.get("semver") == semver:
+            status = ev.get("status")
+    return status
+
+
+def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, ledger_path) -> None:
+    """Bind the official fence to corpus identity [AN-2, D-P5-2].
+
+    All three checks — a fence that trusts fewer is a hand-editable bypass:
+
+    1. the cited manifest is the **pre-registered** corpus (id + semver match
+       ``spec.corpus``); a different corpus cannot be laundered into an official
+       finding;
+    2. every task the experiment **ran** is an admitted task in that manifest, so
+       the manifest actually covers the data;
+    3. the corpus is full-run-validated per the **ledgered** ``calibration_run``
+       events, not the mutable ``manifest.calibration.status`` [CO-4].
+    """
+    spec_corpus = findings.spec_corpus
+    if corpus_manifest is None:
+        raise CalibrationIncompleteError(
+            "official findings require a full-run-validated corpus manifest; none "
+            f"provided for {spec_corpus['id']}@{spec_corpus['version']} [EVAL-8 AC-2]"
+        )
+    # 1. corpus identity: the cited manifest must be the pre-registered corpus.
+    if (
+        corpus_manifest.corpus_id != spec_corpus["id"]
+        or corpus_manifest.semver != spec_corpus["version"]
+    ):
+        raise CorpusMismatchError(
+            f"official render cites corpus {corpus_manifest.corpus_id}@"
+            f"{corpus_manifest.semver}, but the experiment pre-registered "
+            f"{spec_corpus['id']}@{spec_corpus['version']}; the primary metric is "
+            "official only against the corpus it was registered on [AN-2]"
+        )
+    # 2. every task the experiment ran must be admitted in that manifest.
+    missing = sorted(t for t in _task_ids_run(ledger_path) if not corpus_manifest.is_schedulable(t))
+    if missing:
+        raise CorpusMismatchError(
+            f"official render cites {corpus_manifest.corpus_id}@{corpus_manifest.semver}, "
+            f"but tasks {missing} were run and are not admitted in it; the manifest "
+            "does not cover the experiment's data [AN-2]"
+        )
+    # 3. full-run-validated per the LEDGERED calibration_run events, not manifest JSON.
+    status = _ledgered_calibration_status(ledger_path, spec_corpus["id"], spec_corpus["version"])
     if status != "full-run-validated":
         raise CalibrationIncompleteError(
-            "official findings require the corpus to be full-run-validated "
-            f"(status={status!r}); calibrate before the first official finding "
-            "[EVAL-8 AC-2]"
+            f"corpus {spec_corpus['id']}@{spec_corpus['version']} is not "
+            f"full-run-validated on the chain (ledgered status={status!r}); a "
+            "manifest JSON status alone does not satisfy the fence — calibrate "
+            "through a ledgered calibration_run before the first official finding "
+            "[EVAL-8 AC-2, CO-4]"
         )
 
 

@@ -361,10 +361,18 @@ def test_ac6_exploratory_rendering(tmp_path):
     assert "Process diagnostics (EXPLORATORY secondary)" in md
     assert "UNBLINDED DIAGNOSTIC" in md
     assert "planning_quality" in md
-    # official-path exclusion: process never appears in an official render
-    from harness.corpus.registry import CorpusManifest
-    manifest = CorpusManifest(corpus_id="c", semver="1.0.0", kind="public", tasks=[])
+    # official-path exclusion: process never appears in an official render.
+    # AN-2: the cited manifest must be the pre-registered corpus (public-mini@1.0.0),
+    # cover the tasks run (t0..t2), and be full-run-validated on the chain.
+    from harness.corpus.registry import CorpusManifest, TaskEntry
+    from harness.ledger.events import record_calibration_run
+    manifest = CorpusManifest(
+        corpus_id="public-mini", semver="1.0.0", kind="public",
+        tasks=[TaskEntry(task_id=f"t{i}", sha="a" * 64, status="admitted") for i in range(3)],
+    )
     manifest.calibration.status = "full-run-validated"
+    record_calibration_run(ledger, ctx, corpus_id="public-mini", semver="1.0.0", kind="full",
+                           run={"p": 0.5, "rho": 0.3, "n_tasks": 3}, status="full-run-validated")
     findings2 = compute_findings(ledger, spec, spec.seed, corpus_manifest=manifest,
                                  coverage_n_sim=20, n_boot=200)
     official = render_markdown(findings2, ledger, "official", corpus_manifest=manifest)
