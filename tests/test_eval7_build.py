@@ -73,6 +73,50 @@ def test_rv3_review_build_records_response_map(tmp_path):
     assert runner.invoke(app, ["verify-chain", str(ledger)]).exit_code == 0
 
 
+def test_rv2_rv6_reveal_and_guess_from_recorded_map(tmp_path):
+    """Reveal discloses the REAL arm identities from the recorded map (not a
+    hardcoded arm_a/arm_b), and actual_arm is supplied so guess accuracy is a
+    measured number, not a structural 0.0 (RV-2, RV-6)."""
+    expdir = tmp_path / "exp"
+    ledger = _setup_judged(expdir)
+    assert runner.invoke(app, ["review", "build", str(expdir)]).exit_code == 0
+    built = find_events(ledger, "review_packet_built")[0]
+    resp1_arm = built["response_map"]["1"]  # the true arm shown as Response 1
+
+    # reviewer recognizes the arm and correctly guesses Response 1's arm
+    r = runner.invoke(app, [
+        "review", "record", str(expdir), "--comparison-id", "cmp-t1-r0",
+        "--winner", "1", "--arm-recognized", "--arm-guess", resp1_arm,
+    ])
+    assert r.exit_code == 0, r.output
+    hv = find_events(ledger, "human_verdict")[0]
+    # actual_arm now comes from the recorded map (was never supplied before -> 0.0)
+    assert hv["integrity"]["actual_arm"] == resp1_arm
+    assert hv["integrity"]["arm_guess"] == resp1_arm  # measured: a correct guess
+    # the human's response pick was translated to the judge's A/B (arm) frame
+    assert hv["verdict"]["winner"] == ("A" if resp1_arm == "control" else "B")
+    assert hv["verdict"]["task_class"] == "refactor"
+
+    # reveal discloses the REAL identities (the recorded map)
+    r2 = runner.invoke(app, ["review", "reveal", str(expdir), "--comparison-id", "cmp-t1-r0"])
+    assert r2.exit_code == 0, r2.output
+    rev = find_events(ledger, "reveal")[0]
+    assert rev["revealed"]["arm_identities"] == built["response_map"]
+    assert set(rev["revealed"]["arm_identities"].values()) == {"control", "treatment"}
+
+
+def test_rv6_record_refused_without_build(tmp_path):
+    """A verdict for a comparison with no recorded packet map is refused — the
+    map is required to translate the response pick and supply actual_arm."""
+    expdir = tmp_path / "exp"
+    _setup_judged(expdir)  # judged, but review build NOT run
+    r = runner.invoke(app, [
+        "review", "record", str(expdir), "--comparison-id", "cmp-t1-r0", "--winner", "1",
+    ])
+    assert r.exit_code == 2
+    assert "review build" in r.output
+
+
 def test_rv3_response_order_randomized_per_comparison():
     """The per-comparison Response-1/2 order is deterministic in (seed,
     comparison_id) and varies across comparisons, so no arm sits consistently in

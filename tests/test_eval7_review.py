@@ -54,6 +54,17 @@ def _seed_judge(ledger, ctx, cid, winner="A"):
     append_verdict(ledger, ctx, verdict=jv.model_dump(mode="json"))
 
 
+def _seed_packet_built(ledger, ctx, cid, response_map=None):
+    """Seed the review_packet_built map a reveal reads to disclose real arm
+    identities [D-P4-1]. Default map orients Response 1→arm_a, 2→arm_b."""
+    from harness.ledger.events import record_review_packet_built
+
+    record_review_packet_built(
+        ledger, ctx, comparison_id=cid, task_id="t", task_class="cls",
+        response_map=response_map or {"1": "arm_a", "2": "arm_b"}, seed=1,
+    )
+
+
 # --- AC-1: scrub shares the blinding core -----------------------------------
 def test_ac1_scrub_canaries():
     item = ReviewPacketItem(
@@ -177,7 +188,7 @@ def test_ac4_integrity_pre_unblind(tmp_path):
     ctx = fixed_ctx()
     # reveal BEFORE any verdict is refused — the ordering is tool-enforced
     with pytest.raises(RevealError):
-        reveal_comparison(ledger, ctx, comparison_id="cmp-1", arm_identities={"1": "a"})
+        reveal_comparison(ledger, ctx, comparison_id="cmp-1")
 
 
 def test_ac4_reveal_after_verdict(tmp_path):
@@ -186,10 +197,11 @@ def test_ac4_reveal_after_verdict(tmp_path):
     _seed_judge(ledger, ctx, "cmp-1")
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"),
                          arm_recognized=False, arm_guess=None)
-    rec = reveal_comparison(ledger, ctx, comparison_id="cmp-1",
-                            arm_identities={"1": "arm_a", "2": "arm_b"})
+    _seed_packet_built(ledger, ctx, "cmp-1")
+    rec = reveal_comparison(ledger, ctx, comparison_id="cmp-1")
     assert rec["event"] == "reveal"
     assert rec["verdict_event_id"] == "cmp-1"
+    # reveal discloses the RECORDED map, not a hardcoded convention [RV-2]
     assert rec["revealed"]["arm_identities"] == {"1": "arm_a", "2": "arm_b"}
 
 
@@ -292,8 +304,8 @@ def test_rv1_refuses_post_reveal_verdict(tmp_path):
     _seed_judge(ledger, ctx, "cmp-1")
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
                          arm_guess=None)
-    reveal_comparison(ledger, ctx, comparison_id="cmp-1",
-                      arm_identities={"1": "arm_a", "2": "arm_b"})
+    _seed_packet_built(ledger, ctx, "cmp-1")
+    reveal_comparison(ledger, ctx, comparison_id="cmp-1")
     # a verdict after the unblinding is unblinded and must be refused (RV-1)
     with pytest.raises(ReviewError):
         record_human_verdict(ledger, ctx, verdict=_human("B", "cmp-1"), arm_recognized=False,
@@ -306,11 +318,10 @@ def test_rv8_refuses_duplicate_reveal(tmp_path):
     _seed_judge(ledger, ctx, "cmp-1")
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
                          arm_guess=None)
-    reveal_comparison(ledger, ctx, comparison_id="cmp-1",
-                      arm_identities={"1": "arm_a", "2": "arm_b"})
+    _seed_packet_built(ledger, ctx, "cmp-1")
+    reveal_comparison(ledger, ctx, comparison_id="cmp-1")
     with pytest.raises(RevealError):
-        reveal_comparison(ledger, ctx, comparison_id="cmp-1",
-                          arm_identities={"1": "arm_a", "2": "arm_b"})
+        reveal_comparison(ledger, ctx, comparison_id="cmp-1")
     from harness.ledger.query import find_events
     assert len(find_events(ledger, "reveal")) == 1
 
@@ -354,5 +365,4 @@ def test_reveal_refuses_tampered_chain(tmp_path):
     ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     with pytest.raises(ChainIntegrityError):
-        reveal_comparison(ledger, ctx, comparison_id="cmp-1",
-                          arm_identities={"1": "arm_a", "2": "arm_b"})
+        reveal_comparison(ledger, ctx, comparison_id="cmp-1")

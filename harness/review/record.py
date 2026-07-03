@@ -63,6 +63,16 @@ def _judge_verdict_exists(ledger_path, comparison_id: str) -> bool:
     )
 
 
+def review_packet_built_for(ledger_path, comparison_id: str) -> Optional[dict]:
+    """The ``review_packet_built`` event for ``comparison_id`` (its recorded
+    Response-1/2 ↔ arm map + task class), or None if the comparison was never
+    built into a packet [D-P4-1]."""
+    for ev in find_events(ledger_path, events.REVIEW_PACKET_BUILT):
+        if ev.get("comparison_id") == comparison_id:
+            return ev
+    return None
+
+
 def record_human_verdict(
     ledger_path,
     ctx: EventContext,
@@ -121,12 +131,15 @@ def reveal_comparison(
     ctx: EventContext,
     *,
     comparison_id: str,
-    arm_identities: dict,
 ) -> dict:
-    """Disclose judge verdict + arm identities — only after the human verdict [AC-4].
+    """Disclose judge verdict + **real** arm identities — only after the human
+    verdict [AC-4, RV-2].
 
-    Refuses if no verdict+integrity event exists for the comparison; the reveal
-    references that human verdict and names the judge verdict it unblinds.
+    The arm identities are read from the comparison's recorded
+    ``review_packet_built`` map, not fabricated by the caller — so the ledgered
+    unblinding is the truth the human was shown, not a hardcoded convention.
+    Refuses if no human verdict + integrity exists, or if the comparison was
+    never built into a packet (no map to disclose).
     """
     # The reveal gate reads the ledger to check a human verdict exists; verify
     # the chain first so a forged human_verdict cannot enable a premature
@@ -145,6 +158,16 @@ def reveal_comparison(
             f"cannot reveal comparison {comparison_id!r}: no human verdict + "
             "integrity recorded yet; capture the verdict before unblinding [AC-4]"
         )
+    # RV-2: the reveal discloses the *recorded* Response↔arm map, not a hardcoded
+    # {"1":"arm_a","2":"arm_b"}. A comparison with no packet has no truthful map.
+    built = review_packet_built_for(ledger_path, comparison_id)
+    if built is None:
+        raise RevealError(
+            f"comparison {comparison_id!r} has no review_packet_built event; its "
+            "Response↔arm map was never recorded, so it cannot be truthfully "
+            "unblinded — run `review build` first [RV-2]"
+        )
+    arm_identities = built["response_map"]
     # locate the advisory judge verdict for the same comparison (may be absent)
     judge_id = None
     for ev in find_events(ledger_path, events.JUDGE_VERDICT):
@@ -209,10 +232,19 @@ def _review_record_entrypoint(ctx_dir: str) -> None:
 
 
 def _prepare_reveal(ctx_dir: str) -> None:
-    # a reveal presupposes a judge verdict + a human verdict — the same two events
-    # the record entrypoint's prepare + fn produce.
+    # a reveal presupposes a judge verdict, a human verdict, and the recorded
+    # Response↔arm map — the events its gates read before disclosing.
+    from pathlib import Path
+
+    from ..ledger.events import EventContext
+
     _seed_judge_verdict(ctx_dir)
     _review_record_entrypoint(ctx_dir)
+    events.record_review_packet_built(
+        Path(ctx_dir) / "ledger.ndjson", EventContext(experiment_id="prop"),
+        comparison_id=_PROP_CID, task_id="t", task_class="cls",
+        response_map={"1": "arm_a", "2": "arm_b"}, seed=1,
+    )
 
 
 def _review_reveal_entrypoint(ctx_dir: str) -> None:
@@ -223,7 +255,7 @@ def _review_reveal_entrypoint(ctx_dir: str) -> None:
     d = Path(ctx_dir)
     reveal_comparison(
         d / "ledger.ndjson", EventContext(experiment_id="prop"),
-        comparison_id=_PROP_CID, arm_identities={"1": "arm_a", "2": "arm_b"},
+        comparison_id=_PROP_CID,
     )
 
 
