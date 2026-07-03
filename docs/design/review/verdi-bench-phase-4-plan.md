@@ -117,70 +117,83 @@ mirroring how Phase 2's D-8/D-9/D-10 were confirmed at phase start.
   calibration through the IPW seam but does **not** migrate the confidence schema
   or change the degenerate-kappa policy.
 
-### To confirm at the start of Phase 4 (recommendation + trade-offs stated)
+### Confirmed at planning start (resolved by jyang, 2026-07-03)
+
+All four were resolved at the start of Phase 4; each is recorded as a `resolved`
+event in the owning `evalN.decisions.ndjson`. Three took the recommendation;
+**D-P4-3 took the heavier cryptographic option** over the recommended
+identity-inequality bar.
 
 - **D-P4-1 (RV-2/RV-3/RV-6/RV-9, JD-9 carry-forward) — the Response-1/2 ↔ arm
-  mapping seam. Recommend a new additive `review_packet_built` event recording
-  the per-comparison response-order → arm mapping, keyed by `comparison_id`.**
-  Nothing today records which arm was "Response 1/2", so `--winner A` maps to the
-  judge's A/B only by unrecorded convention, reveal is fiction (RV-2), and guess
-  accuracy is structurally 0.0 (RV-6). This is the **load-bearing** Phase-4
-  decision — reveal, guess-accuracy, and the EVAL-9 process kappa join all key off
-  it. Recommend: `bench review build` samples comparisons, randomizes response
-  order **per comparison**, and emits one `review_packet_built`
+  mapping seam: RESOLVED `review_packet_built` **plus** pulling the judge-side
+  arm map forward.** Nothing today records which arm was "Response 1/2", so
+  `--winner A` maps to the judge's A/B only by unrecorded convention, reveal is
+  fiction (RV-2), and guess accuracy is structurally 0.0 (RV-6). Resolution:
+  `bench review build` samples comparisons, randomizes response order **per
+  comparison**, and emits one **`review_packet_built`**
   `{comparison_id, task_id, task_class, response_map: {"1": arm, "2": arm},
-  seed}` event; reveal, `record`, and process scoring read the mapping from that
-  event. It is a **versioned, hash-chained contract addition** (additive event
-  type: old ledgers lack it, no chain invalidated), recorded with a migration
-  note. This also makes the RV-9 gate reliable: the recorded mapping is keyed by
-  the same deterministic `comparison_id` the judge threads (D-P4 slice 4A).
-  *Alternative:* a field on an existing event (e.g. onto `judge_verdict`) — rejected:
-  the mapping is a review-build artifact produced after judging, on a different
-  sampled subset, and belongs to its own operation with its own entrypoint.
+  seed}` event (additive hash-chained event type); reveal, `record`, and process
+  scoring read the mapping from it. **And** — because the judge-vs-human kappa
+  join is only *frame-correct* when both winners resolve to the same physical arm
+  — slice **4A also records an `arm_map` on `judge_verdict`** (a small slice of
+  Phase-5 AN-1 pulled forward), so the Phase-4 calibration sign is honest, not
+  convention-dependent. Both are keyed by the same deterministic `comparison_id`
+  the judge threads. *(Owned by 4A + 4B.)*
 
-- **D-P4-2 (CO-2 / REVIEW-D-6 Phase-4 half) — holdouts in the corpus cache +
-  run task source. Recommend: store holdouts in the cache and add
-  `is_schedulable` gating at `bench run`, but keep the lightweight
-  `task_commitment` as the run/grade integrity fence (do *not* rip out the
-  Phase-1 commitment).** The Phase-1 deferral is a genuine prerequisite: the
-  cache does not yet store holdouts, so a manifest-as-task-source switch has a
-  migration story. Recommend the **minimal** shape that unblocks the exit:
-  `import_terminal_bench` writes each task's holdout blob into the cache under
-  its content sha; the manifest `TaskEntry` gains a `holdout_ref`; `bench run`
-  loads the manifest, and the scheduler consults `is_schedulable(task_id)` —
-  a non-`admitted` task is refused via the Phase-2 per-trial-failure wrap
-  (`trial_infra_failed(reason="not_schedulable")`, so `executed_order` still
-  lands) rather than silently running. `tasks.yaml` + `task_commitment` stay the
-  integrity fence; the manifest becomes the *schedulability* source. *Alternative:*
-  a full cache-as-sole-source switch (run/grade read tasks only from the manifest,
-  delete the `tasks.yaml` path) — rejected for Phase 4: larger blast radius,
-  re-plumbs grade's task load, and is not needed for the exit criterion.
+- **D-P4-2 (CO-2 / REVIEW-D-6 Phase-4 half) — holdouts in the corpus cache + run
+  task source: RESOLVED `minimal` (cache holdouts + `is_schedulable` gate; keep
+  `task_commitment` as the integrity fence).** The Phase-1 deferral is a genuine
+  prerequisite: the cache does not yet store holdouts. Resolution — the minimal
+  shape that unblocks the exit: `import_terminal_bench` writes each task's holdout
+  blob into the cache under its content sha; the manifest `TaskEntry` gains a
+  `holdout_ref`; `bench run` loads the manifest, and the scheduler consults
+  `is_schedulable(task_id)` — a non-`admitted` task is refused via the Phase-2
+  per-trial-failure wrap (`trial_infra_failed(reason="not_schedulable")`, so
+  `executed_order` still lands). `tasks.yaml` + `task_commitment` stay the
+  integrity fence; the manifest becomes the *schedulability* source. A
+  fail-closed **manifest-consistency check** (every scheduled `task_id` must
+  exist in the manifest) closes the two-sources-of-truth drift risk. The full
+  cache-as-sole-source switch was rejected — larger blast radius, not needed for
+  the exit. *(Owned by 4F.)*
 
-- **D-P4-3 (CO-7) — approver-≠-miner attestation. Recommend: `corpus approve`
-  records the approver identity into the `curation_approval` provenance and
-  **refuses when the approver equals the task's miner**, with a typed
-  `SelfApprovalError`.** Today the approver is `getpass.getuser()` with no
-  attestation and no self-approval bar, and `corpus review` prints holdout
-  **paths** only — the human gate cannot do the solution-leakage check it exists
-  for. Recommend: `corpus review` renders holdout **content/diff** (so the check
-  is performable); `corpus approve` requires an explicit `--attested-by` and
-  refuses `attested_by == miner` (the miner is recorded on the candidate/manifest
-  entry). *Alternative:* a cryptographic attestation (signed approval) — noted as
-  future hardening; the identity-inequality bar is the minimal spec-satisfying
-  gate for Phase 4.
+- **D-P4-3 (CO-7) — approver-≠-miner attestation: RESOLVED `cryptographic signed
+  approvals`** (over the recommended identity-inequality bar). Today the approver
+  is `getpass.getuser()` with no attestation and no self-approval bar, and
+  `corpus review` prints holdout **paths** only. Resolution: `corpus approve`
+  **signs** the canonical approval payload `{candidate_id, task_sha, approver}`
+  with an approver **Ed25519** private key and records `signature` +
+  `signer_public_key` as **additive fields on the existing `curation_approval`
+  event** (`events.py:469`); admission (`admit_task`) verifies the signature and
+  refuses `signer == miner`; `corpus review` renders holdout **content/diff** so
+  the leakage check is performable. Two prerequisites this makes explicit:
+  1. **The miner is recorded nowhere today** (`mine.py`/`registry.py` have no
+     `miner`/`mined_by` field) — `mine` must record the miner identity onto the
+     candidate, flowing into the `TaskEntry`, before any signer≠miner check is
+     possible (true under either D-P4-3 option).
+  2. **New dependency + determinism:** signing needs an asymmetric primitive —
+     add `cryptography` (pyca; 3.12-compatible) and use **Ed25519**, whose
+     signatures are deterministic (RFC 8032) so the signing path introduces no
+     unseeded randomness; test fixtures use fixed keypairs.
+  **One sub-decision remains (flagged, needs confirmation before 4E lands):** a
+  bare signature proves only "the holder of *this* key signed," not "an
+  *authorized curator* signed." To be genuinely tamper-resistant, admission
+  should verify the signer against a **trust root** — a small allowlist of
+  authorized curator public keys (committed to the instrument repo or pinned via
+  config). *Recommendation:* add the minimal authorized-curator keyring so a
+  self-generated key cannot launder an approval; without it the signature is an
+  integrity check but not an authorization one. *(Owned by 4E — see the slice for
+  the contract-field migration note.)*
 
-- **D-P4-4 (JD-9/PR-5/RV-3/CO-8) — verb surfaces + inputs. Recommend the verb
-  names `bench judge`, `bench review build`, `bench process score`, `bench corpus
-  admit`, each reading the *locked* spec for identity/config and taking
-  operational flags for I/O.** Concretely: `bench judge` reads arm names + model
-  ids from the locked `experiment.yaml` to derive canaries and reads
-  `judge.escalation` for the `EscalationConfig`; `bench review build` takes a
-  sampling seed + output dir (operational) and reads the locked spec's canary set;
-  `bench process score` mirrors `score_trial_process`'s inputs; `bench corpus
-  admit` takes a candidate id + manifest path. Confirm before wiring so the CLI
-  surface is stable. *Alternative:* fold `judge` under `run` or `review build`
-  under `review record` — rejected: the spec and the §6 CLI inventory name these
-  as first-class verbs.
+- **D-P4-4 (JD-9/PR-5/RV-3/CO-8) — verb surfaces + inputs: RESOLVED
+  `bench judge` / `bench review build` / `bench process score` /
+  `bench corpus admit`,** each reading the *locked* spec for
+  comparison-defining inputs and taking operational flags for I/O. `bench judge`
+  reads arm names + model ids + `judge.escalation` from the locked
+  `experiment.yaml`; `bench review build` reads the locked spec's canary set and
+  takes a sampling seed + output dir; `bench process score` mirrors
+  `score_trial_process`'s inputs; `bench corpus admit` takes a candidate id +
+  manifest path. The spec-vs-flag split mirrors Phase-2 D-9 (comparison-defining
+  inputs from the immutable contract; operational inputs as flags).
 
 ### Contract additions (recorded before the owning slice lands)
 
@@ -190,15 +203,22 @@ Per CLAUDE.md "public seams are contracts" and handoff §5:
 |---|---|---|---|---|
 | `review_packet_built` (response↔arm map) | additive event **type** | EVAL-7 | 4B | additive; old ledgers lack it, no chain invalidated; reveal/record/process read the map from it |
 | deterministic `comparison_id` populated on every `judge_verdict` | field **population** (schema already has the optional field) | EVAL-2 | 4A | no schema change (field exists, was `None`); makes the RV-9 gate reliable |
+| `arm_map` on `judge_verdict` (A/B → arm) | additive **field** on an existing hash-chained event | EVAL-2 | 4A | guarded case: old verdicts lack it → analyze reads it when present, falls back to the assumed frame for legacy verdicts (no chain invalidated); genesis/verdict tests checked; a slice of AN-1 pulled forward per D-P4-1 |
+| `signature` + `signer_public_key` on `curation_approval` | additive **fields** on an existing hash-chained event | EVAL-8 | 4E | guarded case: old approvals lack them → admission requires a valid signature (greenfield, no production approvals exist); migration note + admission-gate test |
 | `power_gate_skipped` flag in the lock event's `mde.flags` | additive **flag value** | EVAL-3 | 4G | additive; a new possible string in an existing list; old locks lack it |
 | `hypothesized_effect` bounds `(0, 1]` | schema **validation** (pre-lock) | EVAL-3 | 4G | rejects at plan before any event; no ledger contract touched |
 
 The judge `comparison_id` population is **not** a schema change — the field is
 already `Optional[str]` on both the schema and `judge_pair`; Phase 4 stops
-leaving it `None`. The `mde.flags` addition mirrors the existing
-`assumption_based_mde` flag (already inline on the lock event). No new event type
-is needed for `bench judge`/`process score`/`corpus admit`/the run-path
-calibration hook: those call already-ledgered operations
+leaving it `None`. The `arm_map` and `curation_approval` signature additions are
+the **guarded case** (a field on an existing hash-chained event, per CLAUDE.md
+"public seams are contracts"): each carries a migration note and a
+genesis/gate-test check, and since verdi-bench has no production ledgers yet
+the compatibility surface is a design note, not a live migration. The `mde.flags`
+addition mirrors the existing `assumption_based_mde` flag (already inline on the
+lock event). No new event type is needed for
+`bench judge`/`process score`/`corpus admit`/the run-path calibration hook: those
+call already-ledgered operations
 (`judge_verdict`/`process_score`/`task_admitted`/`calibration_run`) — Phase 4
 adds their **production callers**, and the existing entrypoints
 (`judge`, `process`, `corpus-admit`, `corpus-calibration-run`) already cover the
@@ -233,6 +253,11 @@ join reliably.
   `(task_id, repetition)`) onto every verdict so `comparison_id` is never `None`
   in production — this is what makes Phase 3's RV-9 gate reliable end-to-end and
   what `bench review build` keys its mapping on (4B).
+- **Record the judge's `arm_map` (D-P4-1, a slice of AN-1 pulled forward):**
+  record the judge's A/B → physical-arm mapping onto each `judge_verdict`
+  (additive field), so the judge-vs-human kappa join in 4C resolves both winners
+  to the same arm frame — the calibration sign is honest, not convention-based.
+  The genesis/verdict-schema tests are checked (guarded contract-field addition).
 - **`EscalationConfig` through calibration (JD-9):** feed the config's
   `kappa_threshold`/`min_human_verdicts` into `kappa_by_class` instead of the
   hardcoded `0.6/20` (`calibrate.py:58-59`), so the D006 seam is live.
@@ -328,31 +353,49 @@ Make AC-5/AC-7 reporting reachable and surface it in findings.
   score-vs-telemetry correlation table, and a `style_only` flag (today the render
   has none). Extends `tests/test_eval9_process.py`, `tests/test_eval6_analyze.py`.
 
-### 4E — Corpus admission pipeline + run-path calibration hook · CO-8, CO-7, CO-4(producer) · P1 (needs D-P4-3)
-Connect mine → manifest → admit end-to-end and put calibration on the chain from
-the run path.
-- **Mine → manifest insertion (CO-8):** `mine` writes a standalone candidate JSON
-  today; add the insertion that turns a mined candidate into a manifest
-  `TaskEntry` with its content sha, so `admit_task` (which requires a manifest
-  entry, `admit.py:63-66`) has something to admit.
+### 4E — Corpus admission pipeline + signed attestation + run-path calibration hook · CO-8, CO-7, CO-4(producer) · P1 (D-P4-3 resolved `cryptographic`; one sub-decision open)
+Connect mine → manifest → admit end-to-end, gate admission on a signed
+non-self approval, and put calibration on the chain from the run path.
+- **Mine → manifest insertion + record the miner (CO-8, D-P4-3 prereq):** `mine`
+  writes a standalone candidate JSON today and **records no miner anywhere**
+  (`mine.py`/`registry.py`). Add (a) the miner identity onto the candidate and
+  the manifest `TaskEntry`, and (b) the insertion that turns a mined candidate
+  into a `TaskEntry` with its content sha, so `admit_task` (which requires a
+  manifest entry, `admit.py:63-66`) has something to admit and the signer≠miner
+  check has a miner to compare against.
 - **`bench corpus admit` verb (CO-8):** register an `admit` subcommand that calls
   `admit_task` (emits the Phase-3 `task_admitted` event, `admit.py:86`) and saves
   the manifest — reuses the existing `corpus-admit` entrypoint (no new event type).
-- **Curation review shows content + attestation (CO-7, D-P4-3):** `corpus review`
-  renders holdout **content/diff** (today paths only, `cli.py:107-109`); `corpus
-  approve` requires `--attested-by` and refuses `attested_by == miner`
-  (`SelfApprovalError`); the manifest is saved after an in-memory admission.
+- **Cryptographic signed approval (CO-7, D-P4-3):** `corpus approve` **signs** the
+  canonical payload `{candidate_id, task_sha, approver}` with an approver
+  **Ed25519** private key (path via flag/env; Ed25519 is deterministic per RFC
+  8032, so no unseeded randomness) and records `signature` + `signer_public_key`
+  as additive fields on the `curation_approval` event (`events.py:469`); add the
+  `cryptography` dependency (pyca, 3.12-compatible). `admit_task` /
+  `has_curation_approval` **verify the signature** over the canonical payload and
+  **refuse `signer == miner`** (`SelfApprovalError`). `corpus review` renders
+  holdout **content/diff** (today paths only, `cli.py:107-109`) so the
+  solution-leakage check is performable. The manifest is saved after an in-memory
+  admission.
+  - **Sub-decision open (confirm before this slice lands):** whether admission
+    also verifies the signer against a **trust root** — an allowlist of
+    authorized curator public keys — so a self-generated key cannot launder an
+    approval. *Recommend adding the minimal keyring*; without it the signature is
+    an integrity check, not an authorization one. If deferred, note it explicitly
+    as residual risk in the slice.
 - **Run-path calibration hook (CO-4 Phase-4 half):** invoke
   `ledger_calibration_run` (`ledger_ops.py:22`, today only entrypoint/tests) from
   the run/baseline path so a calibration run actually ledgers a `calibration_run`
   event — reuses the `corpus-calibration-run` entrypoint. (Binding the official
   fence to the ledgered status is Phase 5, AN-2.)
 - **Reproduce-first:** a mined candidate cannot be admitted today (no manifest
-  insertion, no `admit` verb) → after, `mine → admit` emits one `task_admitted`;
-  `corpus review` shows holdout content; `corpus approve` refuses a self-approval
-  (miner == approver); a run-path calibration run emits one `calibration_run`
-  (today nothing invokes it). Extends `tests/test_eval8_corpus.py`,
-  `tests/test_eval8_commit.py`.
+  insertion, no miner recorded, no `admit` verb) → after, `mine → approve → admit`
+  emits one `task_admitted` only when the approval carries a valid signature;
+  an approval signed by the miner's key is refused (`SelfApprovalError`); a
+  tampered signature is refused at admission; `corpus review` shows holdout
+  content; a run-path calibration run emits one `calibration_run` (today nothing
+  invokes it). Extends `tests/test_eval8_corpus.py`, `tests/test_eval8_commit.py`,
+  a new `tests/test_eval8_attestation.py`.
 
 ### 4F — Corpus-as-schedulability-source + `is_schedulable` at run · CO-2, REVIEW-D-6(Phase-4 half) · P1/P2 (needs D-P4-2)
 Make `bench run` consult the manifest so pending/quarantined tasks don't run.
@@ -425,8 +468,10 @@ Restating the review's §5 Phase 4 exit against the slices:
    is bounded (4G).
 6. **Every new ledgered verb is registered in the one-event property sweep**
    (`review-build` added to `EXPECTED_ENTRYPOINTS`; the other verbs reuse existing
-   entrypoints); **`make verify` green**; no import-linter regressions; the four
-   contract additions each carry a decisions-ledger entry + migration note.
+   entrypoints); **`make verify` green**; no import-linter regressions; each
+   contract addition (the `review_packet_built` type; the `arm_map`,
+   `curation_approval`-signature, and `mde.flags` field/flag additions; the
+   `hypothesized_effect` bound) carries a decisions-ledger entry + migration note.
 7. **The RV-9 `comparison_id` gate is reliable end-to-end** (judge threads a
    populated id, review build records the mapping keyed by it), and **CANT_JUDGE
    is excluded from kappa** rather than pooled (4A/4B).
@@ -447,20 +492,26 @@ Restating the review's §5 Phase 4 exit against the slices:
   constructor is added there). Completing the `.importlinter` source lists (XC-5)
   stays Phase 6 — but keep the three live contracts green as Phase 4 adds many
   cross-module wires (CLI → judge/review/process/corpus).
-- **Contract discipline:** the one new event type (`review_packet_built`) and the
-  two additive lock changes (`power_gate_skipped` flag, `hypothesized_effect`
-  bounds) are additive/pre-lock — no existing chain invalidated; each gets a
-  decisions entry + migration note before its slice. The judge `comparison_id`
-  population is field-population, not a schema change.
+- **Contract discipline:** the new event type (`review_packet_built`), the two
+  guarded field additions to existing hash-chained events (`arm_map` on
+  `judge_verdict`, `signature`/`signer_public_key` on `curation_approval`), and
+  the two lock changes (`power_gate_skipped` flag, `hypothesized_effect` bounds)
+  each get a decisions entry + migration note before its slice; the guarded field
+  additions carry a genesis/gate-test check (a field on a hash-chained event is
+  the guarded case per CLAUDE.md). The judge `comparison_id` population is
+  field-population, not a schema change. Ed25519 signing keeps the determinism
+  contract (RFC-8032 deterministic signatures, fixed test keypairs).
 - **Determinism / fail loudly:** the response-order randomization and
   `comparison_id` derivation are seeded (`sub_seed`); no wall-clock or new network
   seams; refusals (`SelfApprovalError`, `not_schedulable`) say what was wrong and
   where.
-- **Judgment calls flagged for cheap veto:** D-P4-1's `review_packet_built` event
-  shape; D-P4-2's minimal cache-storage-plus-`is_schedulable` scope (vs a full
-  cache-as-sole-source switch); D-P4-3's identity-inequality attestation (vs
-  cryptographic); the `power_gate_skipped` flag placement (Decisions). Direction-
-  setting choices beyond D-P4-1..4 get a check-in.
+- **Judgment calls flagged for cheap veto:** the `review_packet_built` event
+  shape and the `arm_map` pulled forward from AN-1 (D-P4-1); the minimal
+  cache-storage-plus-`is_schedulable` scope (D-P4-2); the `power_gate_skipped`
+  flag placement. **One open sub-decision** (needs confirmation before 4E lands):
+  whether signed admission also verifies the signer against an authorized-curator
+  **trust root** (recommended) or accepts any valid signature. Direction-setting
+  choices beyond these get a check-in.
 
 ## Verification
 
@@ -479,12 +530,14 @@ Restating the review's §5 Phase 4 exit against the slices:
 ## Scope of this approval
 
 Approving authorizes executing **Phase 4 (4A–4H)** as atomic commits with
-`make verify` green, adding the one new event type (`review_packet_built`) and the
-two additive lock changes (`power_gate_skipped` flag, `hypothesized_effect`
-bounds) with decisions-ledger entries + migration notes, and recording the four
-confirmed decisions (D-P4-1..4) in the owning `evalN.decisions.ndjson`. 4A/4C are
-decision-light and can start once D-P4-4 (verb surfaces) is confirmed; 4B needs
-D-P4-1; 4E needs D-P4-3; 4F needs D-P4-2; 4D/4G need only the verb confirmation.
-Slices land in the order 4A → 4B → 4C, 4D, 4E → 4F, 4G, then 4H last. I'll report
-at natural breakpoints and check in before Phase 5 (statistical correctness). No
-PR unless you ask.
+`make verify` green, adding the one new event type (`review_packet_built`), the
+two guarded field additions (`arm_map` on `judge_verdict`, signature fields on
+`curation_approval`), and the two lock changes (`power_gate_skipped` flag,
+`hypothesized_effect` bounds) — each with a decisions-ledger entry + migration
+note — plus the `cryptography` (Ed25519) dependency for signed attestation. The
+four decisions (D-P4-1..4) are **resolved** and recorded in the owning
+`evalN.decisions.ndjson`; **one sub-decision under D-P4-3 (authorized-curator
+trust root) remains open** and I'll confirm it before 4E lands. Slices land in the
+order 4A → 4B → 4C, 4D, 4E → 4F, 4G, then 4H last. I'll report at natural
+breakpoints and check in before Phase 5 (statistical correctness). No PR unless
+you ask.
