@@ -27,6 +27,22 @@ class Provider(Protocol):
     def complete(self, model_id: str, messages: list[dict], temperature: float) -> str: ...
 
 
+def provider_failure_reason(exc: ProviderError) -> str:
+    """Map a provider exception to a closed fail-closed reason string.
+
+    Shared by the judge (``CantJudgeReason``) and process (``CantScoreReason``)
+    stages so the two cannot drift on how a timeout / refusal / generic error is
+    classified — the exact ``parse`` vs ``unparsed`` drift Phase 3 fixed. The
+    returned string is a member of both enums' closed value sets. ``ProviderTimeout``
+    and ``ProviderRefusal`` subclass ``ProviderError``, so order matters.
+    """
+    if isinstance(exc, ProviderTimeout):
+        return "timeout"
+    if isinstance(exc, ProviderRefusal):
+        return "refusal"
+    return "provider_error"
+
+
 def get_provider(model_id: str) -> Provider:
     """Resolve a provider by the ``<provider>/...`` prefix. No allow/deny list."""
     provider = model_id.split("/", 1)[0]

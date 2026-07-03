@@ -23,9 +23,8 @@ from .packet import IdentityLeakError, Packet, validate_identity_free
 from .providers.base import (
     Provider,
     ProviderError,
-    ProviderRefusal,
-    ProviderTimeout,
     get_provider,
+    provider_failure_reason,
 )
 from .schema import CantJudgeReason, Evidence, Verdict, VerdictProvenance, Winner
 
@@ -92,13 +91,17 @@ def judge_pair(
     canaries: Optional[list[str]] = None,
     comparison_id: Optional[str] = None,
     task_class: Optional[str] = None,
+    arm_map: Optional[dict[str, str]] = None,
 ) -> Verdict:
     """Judge one comparison. Always appends exactly one verdict event.
 
     ``comparison_id``/``task_class`` ride onto the verdict so calibration
-    (kappa) can join judge and human verdicts by comparison [AC-7].
+    (kappa) can join judge and human verdicts by comparison [AC-7]. ``arm_map``
+    records the A/B -> physical-arm assignment so the kappa join is frame-correct
+    [D-P4-1].
     """
     call_ids: list[str] = []
+    single_order = config.orders == "single"
 
     def _provenance() -> VerdictProvenance:
         return VerdictProvenance(
@@ -120,6 +123,8 @@ def judge_pair(
             provenance=_provenance(),
             comparison_id=comparison_id,
             task_class=task_class,
+            arm_map=arm_map,
+            single_order=single_order,
         )
         events.append_verdict(ledger_path, ctx, verdict=v.model_dump(mode="json"))
         return v
@@ -131,8 +136,8 @@ def judge_pair(
     if provider is None:
         try:
             provider = get_provider(config.model)
-        except ProviderError:
-            return _cant(CantJudgeReason.PROVIDER_ERROR)
+        except ProviderError as e:
+            return _cant(CantJudgeReason(provider_failure_reason(e)))
 
     # A leaking packet is never sent — but the leak is fail-closed *data*, so it
     # is recorded as CANT_JUDGE(identity_leak) rather than escaping with no event
@@ -147,12 +152,10 @@ def judge_pair(
     for order in orders_to_run:
         try:
             raw, call_id = _call(provider, config.model, packet, order, config.temperature)
-        except ProviderTimeout:
-            return _cant(CantJudgeReason.TIMEOUT)
-        except ProviderRefusal:
-            return _cant(CantJudgeReason.REFUSAL)
-        except ProviderError:
-            return _cant(CantJudgeReason.PROVIDER_ERROR)
+        except ProviderError as e:
+            # timeout / refusal / provider_error via one shared mapper so judge and
+            # process cannot drift on the classification [carry-forward].
+            return _cant(CantJudgeReason(provider_failure_reason(e)))
         except (KeyError, IndexError):
             # JD-3: an error-shaped/safety-blocked 200 can raise KeyError/IndexError
             # while a provider extracts content — a transport-shape failure, not a
@@ -190,6 +193,8 @@ def judge_pair(
             provenance=_provenance(),
             comparison_id=comparison_id,
             task_class=task_class,
+            arm_map=arm_map,
+            single_order=single_order,
         )
     except ValidationError:
         # e.g. a substantive winner with no evidence ⇒ malformed

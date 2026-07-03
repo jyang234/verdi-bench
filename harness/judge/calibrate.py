@@ -93,17 +93,32 @@ def comparison_closed(ledger_path, comparison_id: str) -> bool:
 
 
 def pairs_from_ledger(ledger_path) -> list[dict]:
-    """Build judge/human paired labels by comparison_id for kappa."""
-    judge = {
-        e["verdict"].get("comparison_id"): e["verdict"]
-        for e in find_events(ledger_path, events.JUDGE_VERDICT)
-    }
+    """Build judge/human paired labels by comparison_id for kappa [JD-5].
+
+    * A verdict with **no** ``comparison_id`` cannot be reliably joined — it is
+      skipped, never joined on the shared ``None`` key (which previously paired
+      unrelated verdicts with each other).
+    * Duplicate judge verdicts for one comparison **dedupe** to the last (ledger
+      order is deterministic), rather than one pair per duplicate.
+    * ``CANT_JUDGE`` is a fail-closed non-answer, not a kappa category — a pair
+      where either side is ``CANT_JUDGE`` is excluded from the kappa input.
+    """
+    judge: dict[str, dict] = {}
+    for e in find_events(ledger_path, events.JUDGE_VERDICT):
+        cid = e["verdict"].get("comparison_id")
+        if cid is None:
+            continue
+        judge[cid] = e["verdict"]  # last-write-wins per comparison
     pairs: list[dict] = []
     for e in find_events(ledger_path, events.HUMAN_VERDICT):
         hv = e["verdict"]
         cid = hv.get("comparison_id")
+        if cid is None:
+            continue
         jv = judge.get(cid)
         if jv is None:
+            continue
+        if jv["winner"] == "CANT_JUDGE" or hv["winner"] == "CANT_JUDGE":
             continue
         pairs.append(
             {

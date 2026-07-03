@@ -79,6 +79,13 @@ class Verdict(BaseModel):
     # machine can tell whether a comparison is closed [AC-7]
     comparison_id: Optional[str] = None
     task_class: Optional[str] = None
+    # D-P4-1 (a slice of AN-1): the A/B -> physical-arm map, so the judge-vs-human
+    # kappa join resolves both winners to the same arm frame instead of assuming
+    # convention. None on legacy verdicts (analyze falls back to the assumed frame).
+    arm_map: Optional[dict[str, str]] = None
+    # JD-11: True when orders='single' — D003 order-debiasing was skipped, so a
+    # full experiment cannot silently omit it. Rides visibly on the verdict.
+    single_order: bool = False
 
     @model_validator(mode="after")
     def _substantive_needs_evidence(self) -> "Verdict":
