@@ -4,11 +4,22 @@ from __future__ import annotations
 
 from harness.judge.client import judge_pair
 from harness.judge.providers.base import ProviderError, ProviderRefusal, ProviderTimeout
-from harness.judge.providers.fake import FakeProvider
+from harness.judge.providers.fake import FakeProvider, FakeProviderExhausted
 from harness.judge.schema import Confidence, Winner
 from harness.ledger.query import find_events
 from tests.fixtures.builders import fixed_ctx
 from tests.fixtures.judge_fakes import make_config, make_packet, verdict_json
+
+
+def test_fake_provider_raises_on_exhaustion():
+    """RN-18: a scripted FakeProvider raises when called past its script instead
+    of silently replaying the last response (which could hide a miscounted test)."""
+    import pytest
+
+    prov = FakeProvider([verdict_json("1")])
+    assert prov.complete("m", [{"content": "x"}], 0.0)  # first call: scripted
+    with pytest.raises(FakeProviderExhausted):
+        prov.complete("m", [{"content": "x"}], 0.0)      # second call: no script
 
 
 def _run(tmp_path, provider, config=None):

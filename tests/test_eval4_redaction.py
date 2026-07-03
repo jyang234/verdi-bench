@@ -25,6 +25,15 @@ def test_ac8_redaction_of_transcript(tmp_path):
     assert "[REDACTED]" in transcript
 
 
+def test_ac8_sk_ant_covered_by_sk_rule():
+    """RN-18: the generic ``sk-`` rule already scrubs an ``sk-ant-…`` key, so the
+    separate ``sk-ant-`` pattern was dead (shadowed). Guards against a future
+    narrowing of the ``sk-`` rule that would leave Anthropic keys behind."""
+    scrubbed, n = redact_text("token=sk-ant-" + "A" * 40)
+    assert n == 1
+    assert "sk-ant-" not in scrubbed and "AAAA" not in scrubbed
+
+
 def test_ac8_redact_various_key_shapes():
     text = "\n".join([
         "sk-" + "x" * 32,

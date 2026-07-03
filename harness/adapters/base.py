@@ -41,7 +41,6 @@ class Outcome(str, Enum):
     completed = "completed"
     timeout = "timeout"
     infra_failed = "infra_failed"
-    not_started_cost_ceiling = "not_started_cost_ceiling"
 
 
 class Telemetry(BaseModel):
