@@ -53,14 +53,18 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False, a
     spec = ExperimentSpec.from_yaml(spec_path)
     ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
 
-    manifest = None
-    if corpus is not None:
-        from ..corpus.registry import CorpusManifest
-
-        manifest = CorpusManifest.load(corpus)
-
     # AN-3: a refused render lands exactly one cant_analyze event, never escapes.
+    # The corpus-manifest load is inside the envelope too, so a malformed --corpus
+    # fails closed to cant_analyze rather than escaping with no event.
     try:
+        manifest = None
+        if corpus is not None:
+            from ..corpus.registry import CorpusManifest
+
+            try:
+                manifest = CorpusManifest.load(corpus)
+            except Exception as e:  # bad path / malformed manifest JSON
+                raise AnalyzeError(f"could not load corpus manifest {corpus}: {e}") from e
         findings = compute_findings(ledger_path, spec, spec.seed, corpus_manifest=manifest)
         renderer = render_html if html else render_markdown
         rendered = renderer(findings, ledger_path, mode, corpus_manifest=manifest)

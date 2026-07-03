@@ -67,12 +67,13 @@ def register(app: typer.Typer) -> None:
         subset = calibration_subset(
             manifest, seed, target_size=size, stratum_key=stratum_key
         )
-        manifest.save(manifest_path)
-        # CO-9: ledger the draw so the seeded selection is auditable and
-        # tamper-evident, not only in the mutable manifest JSON.
+        # CO-9: ledger the draw *before* persisting the mutable manifest, so an
+        # interrupted run cannot leave the manifest showing a draw the chain never
+        # recorded (the ledger is the auditable, tamper-evident source of truth).
         if ledger is not None:
             ctx = EventContext(experiment_id=manifest.corpus_id, actor=_actor())
             ledger_subset_draw(ledger, ctx, manifest, subset)
+        manifest.save(manifest_path)
         typer.echo(f"subset: {len(subset.task_ids)} task(s) over {len(subset.strata['sizes'])} strata")
 
     @corpus_app.command("mine")

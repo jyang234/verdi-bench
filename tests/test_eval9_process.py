@@ -269,6 +269,12 @@ def test_pr7_human_scores_reject_unknown_and_missing_dims():
     # a complete, well-formed mapping parses (CANT_SCORE allowed explicitly)
     ok = human_scores_from_mapping({**full, r.dimension_ids[0]: "CANT_SCORE"}, r)
     assert len(ok) == len(r.dimension_ids)
+    # a non-integer value fails loudly rather than truncating (3.7 -> 3) or raising
+    # an opaque int() error
+    with pytest.raises(ValueError):
+        human_scores_from_mapping({**full, r.dimension_ids[0]: 3.7}, r)
+    with pytest.raises(ValueError):
+        human_scores_from_mapping({**full, r.dimension_ids[0]: "3x"}, r)
 
 
 def test_pr8_human_score_validates_against_rubric(tmp_path):

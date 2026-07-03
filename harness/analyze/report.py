@@ -210,8 +210,12 @@ def _lock_event(ledger_path) -> dict:
 def _mde_block(ledger_path) -> MDEBlock:
     lock = _lock_event(ledger_path)
     mde = lock.get("mde", {})
-    # PL-14: the acknowledgment now rides inline on the lock event.
-    ack = bool(lock.get("acknowledged_underpowered"))
+    # PL-14: the acknowledgment now rides inline on the lock event. A ledger locked
+    # before the fold recorded it as a separate (now-retired) event; still surface
+    # it for those legacy ledgers so the acknowledgment is never silently dropped.
+    ack = bool(lock.get("acknowledged_underpowered")) or bool(
+        find_events(ledger_path, "acknowledged_underpowered")
+    )
     return MDEBlock(
         value=mde.get("mde"),
         assumption_based_mde="assumption_based_mde" in mde.get("flags", []),

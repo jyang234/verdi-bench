@@ -209,16 +209,10 @@ def _review_record_entrypoint(ctx_dir: str) -> None:
 
 
 def _prepare_reveal(ctx_dir: str) -> None:
-    from pathlib import Path
-
-    from ..ledger.events import EventContext
-
+    # a reveal presupposes a judge verdict + a human verdict — the same two events
+    # the record entrypoint's prepare + fn produce.
     _seed_judge_verdict(ctx_dir)
-    d = Path(ctx_dir)
-    record_human_verdict(
-        d / "ledger.ndjson", EventContext(experiment_id="prop"),
-        verdict=_human_verdict(_PROP_CID), arm_recognized=False, arm_guess=None,
-    )
+    _review_record_entrypoint(ctx_dir)
 
 
 def _review_reveal_entrypoint(ctx_dir: str) -> None:

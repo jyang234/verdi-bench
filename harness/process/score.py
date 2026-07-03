@@ -241,7 +241,10 @@ def score_trial_process(
         return _score(_all_cant(rubric, CantScoreReason.provider_error))
     try:
         scores = _parse_judge_scores(text, rubric)
-    except (ValueError, TypeError, AttributeError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError):
+        # _parse_judge_scores type-checks a non-dict ``scores`` up front (raising
+        # ValueError), so a stray AttributeError/TypeError here would signal a real
+        # bug — let it crash loudly rather than masquerade as a parse failure.
         return _score(_all_cant(rubric, CantScoreReason.parse))
     return _score(scores)
 
@@ -269,8 +272,14 @@ def human_scores_from_mapping(
         v = raw[d.id]
         if v == "CANT_SCORE":
             out.append(DimensionScore(dim_id=d.id, cant_score_reason=CantScoreReason.human_cant.value))
+        elif isinstance(v, bool) or not isinstance(v, int):
+            # reject a non-integer value loudly rather than truncating a float
+            # (3.7 -> 3) or emitting an opaque int() error [fail loudly]
+            raise ValueError(
+                f"dimension {d.id!r}: score must be an integer 1..5 or \"CANT_SCORE\", got {v!r}"
+            )
         else:
-            out.append(DimensionScore(dim_id=d.id, score=int(v)))
+            out.append(DimensionScore(dim_id=d.id, score=v))
     return out
 
 

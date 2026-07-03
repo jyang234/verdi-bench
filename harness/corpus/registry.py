@@ -170,13 +170,9 @@ class CorpusManifest(BaseModel):
                 "an internal corpus must declare a boundary_path outside the "
                 "instrument repo [AC-5]"
             )
-        resolved = Path(self.boundary_path).resolve()
-        if resolved == INSTRUMENT_ROOT or INSTRUMENT_ROOT in resolved.parents:
-            raise BoundaryViolationError(
-                f"boundary_path {resolved} is inside the instrument repo "
-                f"{INSTRUMENT_ROOT}; internal corpora never enter the instrument "
-                "repo [AC-5]"
-            )
+        # One containment rule, one implementation — the declared boundary must be
+        # outside the instrument repo, same check the write destination gets.
+        assert_outside_instrument(self.boundary_path)
 
     # --- versioning / mutation rule [AC-6] --------------------------------
     def assert_valid_successor(self, previous: "CorpusManifest") -> None:
