@@ -47,16 +47,29 @@ class AssumedVariance:
 
 @dataclass
 class CalibrationVariance:
-    """Reads real variance from a calibration run [EVAL-8 slice A].
-
-    Until slice A lands this is a thin holder; ``p``/``rho``/``n_tasks`` are
-    populated from the calibration ledger by the loader (TODO(EVAL-8)).
-    """
+    """Real variance from a corpus calibration run [EVAL-8, PL-5]."""
 
     p: float
     rho: float
     n_tasks: int
     assumption_based: bool = False
+
+
+def calibration_variance_from_runs(runs) -> Optional["CalibrationVariance"]:
+    """Build a :class:`CalibrationVariance` from a manifest's calibration runs
+    [PL-5]. Prefers the latest ``full`` run, else the latest run carrying the
+    variance params; ``None`` if no run has ``p``/``rho``/``n_tasks`` (the caller
+    then falls back to :class:`AssumedVariance`, flagged). This is the loader that
+    replaces the old ``TODO(EVAL-8)`` — a calibrated experiment stops being
+    ``assumption_based``."""
+    usable = [r for r in (runs or []) if all(k in r for k in ("p", "rho", "n_tasks"))]
+    if not usable:
+        return None
+    full = [r for r in usable if r.get("kind") == "full"]
+    chosen = (full or usable)[-1]
+    return CalibrationVariance(
+        p=float(chosen["p"]), rho=float(chosen["rho"]), n_tasks=int(chosen["n_tasks"])
+    )
 
 
 # TODO(EVAL-6): replace with the shared paired-bootstrap resampler.
@@ -133,16 +146,19 @@ def mde_check(
     deltas: Optional[list[float]] = None,
     n_sim: int = 120,
     n_boot: int = 300,
+    n: Optional[int] = None,
 ) -> dict:
     """Return ``{mde, method, flags, ...}`` for ``spec`` under ``variance_source``.
 
-    ``spec`` supplies the seed (deterministic sim). If no swept delta reaches the
-    power target, ``mde`` is ``None`` (design cannot detect within the swept
-    range at this N).
+    ``spec`` supplies the seed (deterministic sim). ``n`` is the design's real
+    number of paired observations (``repetitions × corpus size``); when omitted it
+    falls back to ``variance_source.n_tasks`` (the calibration N) [PL-1]. If no
+    swept delta reaches the power target, ``mde`` is ``None`` (design cannot detect
+    within the swept range at this N).
     """
     if deltas is None:
         deltas = [round(0.02 * k, 4) for k in range(1, 26)]  # 0.02 .. 0.50
-    n = variance_source.n_tasks
+    n = variance_source.n_tasks if n is None else n
     p = variance_source.p
     rho = variance_source.rho
 

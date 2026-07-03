@@ -27,6 +27,23 @@ from harness.ledger import events
 from harness.ledger.events import record_curation_approval, record_flake_baseline
 from tests.fixtures.builders import fixed_ctx
 
+# A fixed test curator keypair + keyring (Ed25519; deterministic signing).
+_CURATOR_PRIV = "57d8af6bd26b16f1f558e600e70fb2a40a5349804c864b3513b12015dc155556"
+_CURATOR_PUB = "54f22d27057d6c0a336de3f2d0df143546f31591c169072e90f18f651e49e148"
+_KEYRING = {_CURATOR_PUB}
+
+
+def _approve(ledger, ctx, candidate_id, task_sha, *, approver="curator", priv=_CURATOR_PRIV):
+    """Sign + record a curation_approval [D-P4-3]."""
+    from harness.corpus.attestation import sign_approval
+
+    sig, pk = sign_approval(priv, candidate_id=candidate_id, task_sha=task_sha, approver=approver)
+    record_curation_approval(
+        ledger, ctx, candidate_id=candidate_id, task_sha=task_sha, approver=approver,
+        signature=sig, signer_public_key=pk,
+    )
+    return pk
+
 
 def _write_dataset(root, n=6):
     """Fabricate a small harbor-format dataset dir with category metadata."""
@@ -164,14 +181,105 @@ def test_ac3_mine_candidate():
 
 
 # --- AC-4: admission gate ---------------------------------------------------
-def _pending_manifest(candidate_id="cand-1", sha="s" * 64):
+def _pending_manifest(candidate_id="cand-1", sha="s" * 64, miner="miner-bot"):
+    # miner defaults to a recorded id distinct from the "curator" approver, so
+    # admission's approver≠miner bar is satisfiable (a task with no recorded miner
+    # is refused — see test_dp4_3_admit_refuses_unrecorded_miner).
     return CorpusManifest(
         corpus_id="internal-koala",
         semver="1.0.0",
         kind="internal",
         boundary_path="/tmp/koala-boundary",
-        tasks=[TaskEntry(task_id=candidate_id, sha=sha, status="pending-curation")],
+        tasks=[TaskEntry(task_id=candidate_id, sha=sha, status="pending-curation", miner=miner)],
     )
+
+
+# a second keypair — a curator NOT in the authorized keyring / a miner's key
+_OTHER_PRIV = "2fee083a79762784ce9b829d84f2d277287350999faddea81d75dc862367c726"
+_OTHER_PUB = "86c17be71e223512eca950d661adb6004296452e26c13c9eb8718e4494e29db7"
+
+
+def _clean_baseline(ledger, ctx, sha="s" * 64):
+    record_flake_baseline(ledger, ctx, task_id="cand-1", task_sha=sha, k=5,
+                          results=[{"run": i, "passed": True} for i in range(5)],
+                          verdict="clean")
+
+
+def test_dp4_3_admit_requires_authorized_signature(tmp_path):
+    """A valid signature by an authorized, non-miner curator admits [D-P4-3]."""
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    manifest = _pending_manifest(miner="miner-bob")
+    _approve(ledger, ctx, "cand-1", "s" * 64, approver="curator-alice")
+    _clean_baseline(ledger, ctx)
+    task = admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+                      baseline_ref="b1", keyring=_KEYRING)
+    assert task.status == "admitted"
+
+
+def test_dp4_3_self_approval_refused(tmp_path):
+    """The miner cannot approve their own task [CO-7]."""
+    from harness.corpus.admit import SelfApprovalError
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    manifest = _pending_manifest(miner="curator-alice")  # miner == approver below
+    _approve(ledger, ctx, "cand-1", "s" * 64, approver="curator-alice")
+    _clean_baseline(ledger, ctx)
+    with pytest.raises(SelfApprovalError):
+        admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+                   baseline_ref="b1", keyring=_KEYRING)
+    assert manifest.is_schedulable("cand-1") is False
+
+
+def test_dp4_3_admit_refuses_unrecorded_miner(tmp_path):
+    """A candidate with no recorded miner cannot have the approver≠miner bar
+    verified, so admission is refused rather than silently skipping it [CO-7]."""
+    from harness.corpus.admit import SelfApprovalError
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    manifest = _pending_manifest(miner=None)  # miner never recorded
+    _approve(ledger, ctx, "cand-1", "s" * 64, approver="curator-alice")
+    _clean_baseline(ledger, ctx)
+    with pytest.raises(SelfApprovalError):
+        admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+                   baseline_ref="b1", keyring=_KEYRING)
+
+
+def test_dp4_3_off_keyring_signer_refused(tmp_path):
+    """A signature by a key not in the authorized keyring is refused — a
+    self-generated key cannot launder an approval [D-P4-3]."""
+    from harness.corpus.admit import UnauthorizedCuratorError
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    manifest = _pending_manifest(miner="miner-bob")
+    # signed by _OTHER_PRIV, whose public key is NOT in _KEYRING
+    _approve(ledger, ctx, "cand-1", "s" * 64, approver="curator-mallory", priv=_OTHER_PRIV)
+    _clean_baseline(ledger, ctx)
+    with pytest.raises(UnauthorizedCuratorError):
+        admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+                   baseline_ref="b1", keyring=_KEYRING)
+
+
+def test_dp4_3_tampered_signature_refused(tmp_path):
+    """An approval whose signed payload is altered fails verification [D-P4-3]."""
+    from harness.corpus.admit import AttestationError
+    from harness.corpus.attestation import sign_approval
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    manifest = _pending_manifest(miner="miner-bob")
+    # sign for a DIFFERENT sha, then record it against "s"*64 -> signature won't verify
+    sig, pk = sign_approval(_CURATOR_PRIV, candidate_id="cand-1", task_sha="x" * 64,
+                            approver="curator-alice")
+    record_curation_approval(ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+                             approver="curator-alice", signature=sig, signer_public_key=pk)
+    _clean_baseline(ledger, ctx)
+    with pytest.raises(AttestationError):
+        admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+                   baseline_ref="b1", keyring=_KEYRING)
 
 
 def test_ac4_curation_required(tmp_path):
@@ -181,7 +289,8 @@ def test_ac4_curation_required(tmp_path):
     # no curation_approval ⇒ refused
     with pytest.raises(CurationRequiredError):
         admit_task(
-            manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
+            manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+            baseline_ref="b1", keyring=_KEYRING,
         )
     assert manifest.is_schedulable("cand-1") is False
 
@@ -191,12 +300,11 @@ def test_ac4_baseline_prereq(tmp_path):
     ctx = fixed_ctx()
     manifest = _pending_manifest()
     # approved but no clean baseline ⇒ refused
-    record_curation_approval(
-        ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, approver="curator"
-    )
+    _approve(ledger, ctx, "cand-1", "s" * 64)
     with pytest.raises(BaselinePrerequisiteError):
         admit_task(
-            manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
+            manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+            baseline_ref="b1", keyring=_KEYRING,
         )
 
     # add a clean baseline for the sha ⇒ admitted + schedulable
@@ -205,7 +313,8 @@ def test_ac4_baseline_prereq(tmp_path):
         results=[{"run": i, "passed": True} for i in range(5)], verdict="clean",
     )
     task = admit_task(
-        manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
+        manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+        baseline_ref="b1", keyring=_KEYRING,
     )
     assert task.status == "admitted"
     assert manifest.is_schedulable("cand-1") is True
@@ -221,9 +330,7 @@ def test_admit_refuses_tampered_chain(tmp_path):
     ledger = tmp_path / "l.ndjson"
     ctx = fixed_ctx()
     manifest = _pending_manifest()
-    record_curation_approval(
-        ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, approver="curator"
-    )
+    _approve(ledger, ctx, "cand-1", "s" * 64)
     record_flake_baseline(
         ledger, ctx, task_id="cand-1", task_sha="s" * 64, k=5,
         results=[{"run": i, "passed": True} for i in range(5)], verdict="clean",
@@ -240,7 +347,8 @@ def test_admit_refuses_tampered_chain(tmp_path):
 
     with pytest.raises(ChainIntegrityError):
         admit_task(
-            manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
+            manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+            baseline_ref="b1", keyring=_KEYRING,
         )
     assert manifest.is_schedulable("cand-1") is False
 
@@ -249,9 +357,7 @@ def test_ac4_baseline_must_be_clean(tmp_path):
     ledger = tmp_path / "l.ndjson"
     ctx = fixed_ctx()
     manifest = _pending_manifest()
-    record_curation_approval(
-        ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, approver="curator"
-    )
+    _approve(ledger, ctx, "cand-1", "s" * 64)
     # a quarantined baseline is not a clean baseline
     record_flake_baseline(
         ledger, ctx, task_id="cand-1", task_sha="s" * 64, k=5,
@@ -259,7 +365,8 @@ def test_ac4_baseline_must_be_clean(tmp_path):
     )
     with pytest.raises(BaselinePrerequisiteError):
         admit_task(
-            manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
+            manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+            baseline_ref="b1", keyring=_KEYRING,
         )
 
 
@@ -321,14 +428,13 @@ def test_co4_admission_ledgers_task_admitted(tmp_path):
     ledger = tmp_path / "l.ndjson"
     ctx = fixed_ctx()
     manifest = _pending_manifest()
-    record_curation_approval(ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
-                             approver="curator")
+    _approve(ledger, ctx, "cand-1", "s" * 64)
     record_flake_baseline(ledger, ctx, task_id="cand-1", task_sha="s" * 64, k=5,
                           results=[{"run": i, "passed": True} for i in range(5)],
                           verdict="clean")
     from harness.ledger.query import find_events
     admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
-               baseline_ref="b1")
+               baseline_ref="b1", keyring=_KEYRING)
     admitted = find_events(ledger, "task_admitted")
     assert len(admitted) == 1
     assert admitted[0]["candidate_id"] == "cand-1" and admitted[0]["task_sha"] == "s" * 64

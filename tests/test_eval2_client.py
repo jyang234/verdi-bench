@@ -174,3 +174,112 @@ def test_ac1_no_vendor_denylist_in_code():
         assert "denylist" not in text
         assert "deny_list" not in text
         assert "banned" not in text
+
+
+# --- JD-5 / JD-11 / D-P4-1 (arm_map) additions ------------------------------
+def _judge_verdict(comparison_id, winner):
+    from harness.judge.schema import Verdict, VerdictProvenance, Winner
+
+    ev = [{"kind": "diff", "response": winner, "hunk": "h"}] if winner in ("A", "B") else []
+    return Verdict(
+        winner=Winner(winner), reason=winner, evidence=ev,
+        provenance=VerdictProvenance(judge_model="m", rubric_sha256="a",
+            packet_sha256="b", call_ids=["c1", "c2"], orders="both",
+            temperature=0.0, ts="t"),
+        comparison_id=comparison_id, task_class="refactor",
+    )
+
+
+def _human_verdict(comparison_id, winner):
+    from harness.judge.schema import Verdict, VerdictProvenance, Winner
+
+    ev = [{"kind": "diff", "response": winner, "hunk": "h"}] if winner in ("A", "B") else []
+    return Verdict(
+        winner=Winner(winner), reason=winner, evidence=ev,
+        provenance=VerdictProvenance(judge_model="human", rubric_sha256="human",
+            packet_sha256="human", call_ids=["human"], orders="single",
+            temperature=0.0, ts="t"),
+        source="human", comparison_id=comparison_id, task_class="refactor",
+    )
+
+
+def test_jd5_cant_judge_excluded_from_kappa(tmp_path):
+    """JD-5: a CANT_JUDGE verdict is a fail-closed non-answer, not a kappa
+    category. A judge CANT_JUDGE paired with a human verdict must NOT enter the
+    kappa pairs (today it pools in as an ordinary label)."""
+    from harness.judge.calibrate import pairs_from_ledger
+    from harness.ledger.events import append_human_verdict, append_verdict
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    append_verdict(ledger, ctx, verdict=_judge_verdict("c1", "CANT_JUDGE").model_dump(mode="json"))
+    append_human_verdict(ledger, ctx, verdict=_human_verdict("c1", "A").model_dump(mode="json"))
+    assert pairs_from_ledger(ledger) == []
+
+
+def test_jd5_null_comparison_id_not_joined(tmp_path):
+    """JD-5: verdicts with no comparison_id must not join on ``None`` — two
+    unrelated verdicts previously paired with each other via the shared None
+    key. With no reliable id, they are skipped, not falsely joined."""
+    from harness.judge.calibrate import pairs_from_ledger
+    from harness.ledger.events import append_human_verdict, append_verdict
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    append_verdict(ledger, ctx, verdict=_judge_verdict(None, "A").model_dump(mode="json"))
+    append_verdict(ledger, ctx, verdict=_judge_verdict(None, "B").model_dump(mode="json"))
+    append_human_verdict(ledger, ctx, verdict=_human_verdict(None, "A").model_dump(mode="json"))
+    append_human_verdict(ledger, ctx, verdict=_human_verdict(None, "B").model_dump(mode="json"))
+    assert pairs_from_ledger(ledger) == []
+
+
+def test_jd5_last_judge_verdict_wins_dedup(tmp_path):
+    """JD-5: duplicate judge verdicts for one comparison dedupe to a single pair
+    (the last verdict), not one pair per duplicate."""
+    from harness.judge.calibrate import pairs_from_ledger
+    from harness.ledger.events import append_human_verdict, append_verdict
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    append_verdict(ledger, ctx, verdict=_judge_verdict("c1", "A").model_dump(mode="json"))
+    append_verdict(ledger, ctx, verdict=_judge_verdict("c1", "B").model_dump(mode="json"))
+    append_human_verdict(ledger, ctx, verdict=_human_verdict("c1", "B").model_dump(mode="json"))
+    pairs = pairs_from_ledger(ledger)
+    assert len(pairs) == 1
+    assert pairs[0]["judge_winner"] == "B"  # the LAST judge verdict
+
+
+def test_jd11_single_order_flagged(tmp_path):
+    """JD-11: orders='single' skips D003 debiasing; the verdict must carry a
+    ``single_order`` flag so a full experiment cannot silently skip it."""
+    prov = FakeProvider([verdict_json("1")])
+    v, ledger = _run(tmp_path, prov, make_config(orders="single"))
+    assert v.single_order is True
+    ev = find_events(ledger, "judge_verdict")[0]
+    assert ev["verdict"]["single_order"] is True
+
+
+def test_both_orders_not_flagged_single(tmp_path):
+    v, _ = _run(tmp_path, FakeProvider([verdict_json("1"), verdict_json("2")]))
+    assert v.single_order is False
+
+
+def test_dp4_1_arm_map_recorded_on_verdict(tmp_path):
+    """D-P4-1: the judge records its A/B -> physical-arm map so the kappa join is
+    frame-correct (a slice of AN-1). The map rides onto the ledgered verdict."""
+    arm_map = {"A": "control", "B": "treatment"}
+    v = judge_pair(make_packet(), make_config(), tmp_path / "l.ndjson", fixed_ctx(),
+                   ts="t0", provider=FakeProvider([verdict_json("1"), verdict_json("2")]),
+                   arm_map=arm_map)
+    assert v.arm_map == arm_map
+    ev = find_events(tmp_path / "l.ndjson", "judge_verdict")[0]
+    assert ev["verdict"]["arm_map"] == arm_map
+
+
+def test_dp4_1_arm_map_recorded_on_cant_judge(tmp_path):
+    """Even a fail-closed CANT_JUDGE verdict carries the arm_map (the frame is
+    known before the judge call fails)."""
+    arm_map = {"A": "control", "B": "treatment"}
+    v = judge_pair(make_packet(), make_config(), tmp_path / "l.ndjson", fixed_ctx(),
+                   ts="t0", provider=FakeProvider([ProviderTimeout("x")]), arm_map=arm_map)
+    assert v.winner == Winner.CANT_JUDGE and v.arm_map == arm_map

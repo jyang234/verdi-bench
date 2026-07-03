@@ -188,6 +188,7 @@ def schedule(
     config: RunConfig,
     cost_ceiling: float,
     quarantined_tasks: Optional[set[tuple[str, str]]] = None,
+    schedulable_tasks: Optional[set[str]] = None,
     max_infra_retries: int = 3,
 ) -> ScheduleResult:
     workspace_root = Path(workspace_root)
@@ -226,6 +227,12 @@ def schedule(
                 continue
             if planned.arm not in arms:
                 _fail_cell(out, ledger_path, ctx, planned, reason="unknown_arm")
+                continue
+            # CO-2: a task that is not admitted in the corpus manifest (pending or
+            # quarantined) must not run, grade, or feed findings. Fail the cell
+            # closed so executed_order still lands [D-P4-2, RN-15 discipline].
+            if schedulable_tasks is not None and planned.task_id not in schedulable_tasks:
+                _fail_cell(out, ledger_path, ctx, planned, reason="not_schedulable")
                 continue
 
             task = tasks[planned.task_id]

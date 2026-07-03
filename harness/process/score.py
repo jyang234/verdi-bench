@@ -27,9 +27,8 @@ from ..analyze.confounds import judge_vendor_overlap
 from ..judge.providers.base import (
     Provider,
     ProviderError,
-    ProviderRefusal,
-    ProviderTimeout,
     get_provider,
+    provider_failure_reason,
 )
 from ..ledger import events
 from ..ledger.events import EventContext
@@ -228,17 +227,14 @@ def score_trial_process(
     if provider is None:
         try:
             provider = get_provider(provider_model)
-        except ProviderError:
-            return _score(_all_cant(rubric, CantScoreReason.provider_error))
-    # PR-4: split timeout/refusal from the generic provider error.
+        except ProviderError as e:
+            return _score(_all_cant(rubric, CantScoreReason(provider_failure_reason(e))))
+    # PR-4: timeout / refusal / provider_error via the one shared mapper the judge
+    # uses, so the two stages cannot drift on the classification [carry-forward].
     try:
         text = provider.complete(provider_model, messages, 0.0)
-    except ProviderTimeout:
-        return _score(_all_cant(rubric, CantScoreReason.timeout))
-    except ProviderRefusal:
-        return _score(_all_cant(rubric, CantScoreReason.refusal))
-    except ProviderError:
-        return _score(_all_cant(rubric, CantScoreReason.provider_error))
+    except ProviderError as e:
+        return _score(_all_cant(rubric, CantScoreReason(provider_failure_reason(e))))
     try:
         scores = _parse_judge_scores(text, rubric)
     except (ValueError, json.JSONDecodeError):

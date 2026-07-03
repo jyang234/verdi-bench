@@ -24,6 +24,7 @@ import harness.grade.deterministic  # noqa: F401
 import harness.judge.client  # noqa: F401
 import harness.plan.lock  # noqa: F401
 import harness.process.score  # noqa: F401
+import harness.review.build  # noqa: F401
 import harness.review.record  # noqa: F401
 import harness.run.interleave  # noqa: F401
 from harness.entrypoints import all_entrypoints
@@ -40,6 +41,7 @@ EXPECTED_ENTRYPOINTS = {
     "grade-trial",
     "judge",
     "process",
+    "review-build",
     "review-record",
     "review-reveal",
     "analyze",

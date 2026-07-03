@@ -16,7 +16,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-from ..review.kappa import KappaEstimator, ReviewedItem, estimate_kappa
+from ..review.kappa import (
+    FLOOR_INCLUSION_PROB,
+    KappaEstimator,
+    ReviewedItem,
+    estimate_kappa,
+)
 from .rubric import SCALE_MAX, SCALE_MIN, ProcessRubric
 
 _ORDINAL_CATEGORIES = list(range(SCALE_MIN, SCALE_MAX + 1))
@@ -39,8 +44,13 @@ def process_kappa_by_dimension(
     kappa_threshold: float = DEFAULT_KAPPA_THRESHOLD,
     min_pairs: int = 1,
     estimator: KappaEstimator | str = KappaEstimator.ipw,
+    floor_prob: float = FLOOR_INCLUSION_PROB,
 ) -> dict[str, DimensionCalibration]:
-    """Quadratic-weighted, IPW-corrected kappa per dimension; gates independently."""
+    """Quadratic-weighted, IPW-corrected kappa per dimension; gates independently.
+
+    ``floor_prob`` is the realized floor inclusion probability ``ceil(0.2n)/n`` —
+    the same correction outcome kappa uses [RV-5], passed by the caller.
+    """
     out: dict[str, DimensionCalibration] = {}
     for dim_id, items in items_by_dim.items():
         items = list(items)
@@ -49,12 +59,99 @@ def process_kappa_by_dimension(
             out[dim_id] = DimensionCalibration(dim_id, n, None, sufficient=False, escalate=False)
             continue
         k = estimate_kappa(
-            items, estimator, weight="quadratic", categories=_ORDINAL_CATEGORIES
+            items, estimator, weight="quadratic", categories=_ORDINAL_CATEGORIES,
+            floor_prob=floor_prob,
         )
         out[dim_id] = DimensionCalibration(
             dim_id, n, kappa=k, sufficient=True, escalate=k < kappa_threshold
         )
     return out
+
+
+def dimension_diagnostics(ledger_path, spec, seed: int, *, rubric: Optional[ProcessRubric] = None):
+    """Assemble per-dimension judge↔human kappa + score-vs-telemetry correlations
+    from the ledger [PR-5, AC-5/AC-7].
+
+    Judge and human ``process_score`` events are paired by trial; kappa runs over
+    the trials in the EVAL-7 reviewed set (so the IPW strata apply), while the
+    correlation runs over every judge-scored trial vs its telemetry. Returns the
+    diagnostics block ``analyze`` folds into its process section.
+    """
+    from collections import defaultdict
+
+    from ..ledger import events
+    from ..ledger.query import find_events
+    from ..review.sample import (
+        comparisons_from_ledger,
+        realized_floor_prob,
+        select_for_review,
+    )
+    from .rubric import default_rubric
+
+    rubric = rubric or default_rubric()
+
+    judge_by_trial: dict[str, dict] = {}
+    human_by_trial: dict[str, dict] = {}
+    cid_by_trial: dict[str, str] = {}
+    for ev in find_events(ledger_path, events.PROCESS_SCORE):
+        ps = ev["process_score"]
+        kind = ps["provenance"]["scorer"]["kind"]
+        smap = {ds["dim_id"]: ds.get("score") for ds in ps["scores"]}
+        (judge_by_trial if kind == "judge" else human_by_trial)[ps["trial_id"]] = smap
+        if ps.get("comparison_id"):
+            cid_by_trial[ps["trial_id"]] = ps["comparison_id"]
+
+    tel_by_trial = {
+        ev["trial_record"]["trial_id"]: ev["trial_record"].get("telemetry", {})
+        for ev in find_events(ledger_path, events.TRIAL)
+    }
+
+    records = comparisons_from_ledger(
+        ledger_path, arm_a=spec.arms[0].name, arm_b=spec.arms[1].name
+    )
+    selected = select_for_review(records, seed)
+    strata = {s.comparison_id: (s.stratum, s.task_class) for s in selected}
+    floor_prob = realized_floor_prob(records)
+
+    items_by_dim: dict[str, list] = defaultdict(list)
+    for trial_id, jmap in judge_by_trial.items():
+        hmap = human_by_trial.get(trial_id)
+        if hmap is None:
+            continue
+        st = strata.get(cid_by_trial.get(trial_id))
+        if st is None:
+            continue
+        stratum, task_class = st
+        for dim in rubric.dimension_ids:
+            js, hs = jmap.get(dim), hmap.get(dim)
+            if js is None or hs is None:  # CANT_SCORE excluded from kappa
+                continue
+            items_by_dim[dim].append(
+                ReviewedItem(a=js, b=hs, stratum=stratum, task_class=task_class)
+            )
+    kappa = process_kappa_by_dimension(items_by_dim, floor_prob=floor_prob)
+
+    rows_by_dim: dict[str, list] = defaultdict(list)
+    for trial_id, jmap in judge_by_trial.items():
+        tel = tel_by_trial.get(trial_id, {})
+        for dim in rubric.dimension_ids:
+            js = jmap.get(dim)
+            if js is not None:
+                rows_by_dim[dim].append((js, tel))
+    corr = score_telemetry_correlation(rows_by_dim, rubric)
+
+    return {
+        "floor_prob": floor_prob,
+        "kappa_by_dimension": {
+            d: {"kappa": c.kappa, "n": c.n, "sufficient": c.sufficient, "escalate": c.escalate}
+            for d, c in sorted(kappa.items())
+        },
+        "correlations": {
+            d: {"correlations": c.correlations, "style_only": c.style_only}
+            for d, c in sorted(corr.items())
+        },
+        "style_only": sorted(d for d, c in corr.items() if c.style_only),
+    }
 
 
 # --- Spearman correlation (scipy-free) -------------------------------------

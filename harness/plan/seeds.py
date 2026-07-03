@@ -25,3 +25,13 @@ def index_at(base: int, step: int, bound: int) -> int:
     Fisher–Yates shuffle uses."""
     h = hashlib.sha256(f"{base}:{step}".encode("utf-8")).digest()
     return int.from_bytes(h[:8], "big") % bound
+
+
+def seeded_shuffle(items: list, base: int) -> list:
+    """A deterministic in-place Fisher–Yates shuffle under ``base`` (one seeded
+    primitive so review/stratification/interleave can't diverge on how a seeded
+    shuffle draws). Returns ``items`` for chaining."""
+    for i in range(len(items) - 1, 0, -1):
+        j = index_at(base, i, i + 1)
+        items[i], items[j] = items[j], items[i]
+    return items

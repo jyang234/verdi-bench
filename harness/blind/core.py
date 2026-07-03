@@ -87,6 +87,21 @@ _IDENTITY_NAME_PATTERNS = [
 ]
 
 
+def arm_canaries(arms) -> list[str]:
+    """The per-experiment identity literals of the *contestants*: each arm's
+    name, platform, and model id. The one place judge and review packets derive
+    their spec-scoped canary set, so both firewalls scrub the same identities.
+    Duck-typed on ``.name``/``.platform``/``.model`` (no schema import)."""
+    out: list[str] = []
+    seen: set = set()
+    for arm in arms:
+        for lit in (arm.name, arm.platform, arm.model):
+            if lit and lit not in seen:
+                seen.add(lit)
+                out.append(lit)
+    return out
+
+
 def identity_pattern_list(extra_literals: list[str] | None = None) -> PatternList:
     """Identity canaries plus any per-experiment literals (arm names, model ids).
 

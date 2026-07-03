@@ -39,6 +39,9 @@ def register(app: typer.Typer) -> None:
         experiment_dir: Path = typer.Argument(..., help="Directory with experiment.yaml"),
         engine: str = typer.Option("fake", "--engine", help="fake | harbor"),
         concurrency: int = typer.Option(1, "--concurrency", help=">1 stamps contention caveat"),
+        corpus_manifest: Path = typer.Option(
+            None, "--corpus-manifest", help="Manifest gating schedulability (is_schedulable) [CO-2]"
+        ),
     ) -> None:
         """Execute the locked experiment's interleaved trials."""
         from ..corpus.commit import (
@@ -47,6 +50,7 @@ def register(app: typer.Typer) -> None:
             load_task_dicts,
             task_content_sha,
         )
+        from ..corpus.registry import CorpusManifest
         from ..grade.baseline import load_quarantine
         from ..ledger.events import EventContext
         from ..plan.lock import assert_lock
@@ -76,6 +80,24 @@ def register(app: typer.Typer) -> None:
         # RN-5: honor the flake quarantine — a quarantined task version (its clean
         # baseline never established) must not be scheduled [EVAL-5, D-2].
         quarantine = load_quarantine(ledger_path)
+
+        # CO-2 / D-P4-2: when a corpus manifest is supplied, gate scheduling on
+        # is_schedulable so pending/quarantined tasks don't run. tasks.yaml +
+        # task_commitment stay the integrity fence; the manifest is the
+        # schedulability source. Fail closed on drift: every scheduled task must
+        # exist in the manifest, else the two sources disagree.
+        schedulable = None
+        if corpus_manifest is not None:
+            manifest = CorpusManifest.load(corpus_manifest)
+            missing = [t.id for t in tasks if manifest.task(t.id) is None]
+            if missing:
+                typer.echo(
+                    f"tasks {sorted(missing)} are not in corpus manifest "
+                    f"{manifest.corpus_id!r}; tasks.yaml and the manifest disagree "
+                    "[fail-closed, D-P4-2]", err=True,
+                )
+                raise typer.Exit(code=2)
+            schedulable = {t.id for t in tasks if manifest.is_schedulable(t.id)}
 
         trials = enumerate_trials(
             [t.id for t in tasks], [a.name for a in spec.arms], spec.repetitions
@@ -113,6 +135,7 @@ def register(app: typer.Typer) -> None:
                 config=config,
                 cost_ceiling=spec.cost_ceiling.amount,
                 quarantined_tasks=quarantine,
+                schedulable_tasks=schedulable,
             )
         except QuarantinedTaskError as e:
             typer.echo(str(e), err=True)

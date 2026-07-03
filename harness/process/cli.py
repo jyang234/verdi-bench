@@ -21,9 +21,76 @@ def _actor() -> str:
         return "unknown"
 
 
+def _read_transcript(artifacts_path) -> str:
+    """The trial's post-redaction transcript (``artifacts/transcript.txt``), or an
+    empty string if absent — an empty transcript scores fail-closed, never a
+    fabricated one."""
+    if not artifacts_path:
+        return ""
+    p = Path(artifacts_path) / "transcript.txt"
+    if not p.is_file():
+        return ""
+    return p.read_text(encoding="utf-8", errors="replace")
+
+
 def register(app: typer.Typer) -> None:
     process_app = typer.Typer(help="Transcript process rubric scoring [EVAL-9].",
                               no_args_is_help=True)
+
+    @process_app.command("score")
+    def process_score(
+        experiment_dir: Path = typer.Argument(..., help="Dir with experiment.yaml"),
+        rubric_path: Path = typer.Option(None, "--rubric", help="Rubric YAML (default: v1)"),
+    ) -> None:
+        """Judge-score every unscored trial's process from its transcript [AC-4]."""
+        from ..corpus.commit import (
+            TaskCommitmentError,
+            assert_task_commitment,
+            load_task_dicts,
+        )
+        from ..judge.assemble import comparison_id_for
+        from ..ledger import events
+        from ..ledger.events import EventContext
+        from ..ledger.query import find_events
+        from ..plan.lock import assert_lock
+        from ..schema.experiment import ExperimentSpec
+        from .rubric import ProcessRubric, default_rubric
+        from .score import score_trial_process
+
+        experiment_dir = Path(experiment_dir)
+        spec_path = experiment_dir / "experiment.yaml"
+        ledger_path = experiment_dir / "ledger.ndjson"
+        lock_event = assert_lock(spec_path, ledger_path)
+        spec = ExperimentSpec.from_yaml(spec_path)
+        task_dicts = load_task_dicts(experiment_dir)
+        try:
+            assert_task_commitment(
+                lock_event, task_dicts,
+                corpus_id=spec.corpus.id, semver=spec.corpus.version,
+            )
+        except TaskCommitmentError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+
+        rubric = ProcessRubric.from_yaml(rubric_path) if rubric_path else default_rubric()
+        ctx = EventContext(experiment_id=experiment_dir.name)
+        already = {ev["process_score"]["trial_id"] for ev in find_events(ledger_path, events.PROCESS_SCORE)}
+
+        n = 0
+        for ev in find_events(ledger_path, events.TRIAL):
+            rec = ev["trial_record"]
+            trial_id = rec["trial_id"]
+            if trial_id in already:
+                continue
+            transcript = _read_transcript(rec.get("artifacts_path"))
+            score_trial_process(
+                trial_id, transcript, rubric, ledger_path=ledger_path, ctx=ctx,
+                ts=ctx.clock(), scorer_id=spec.judge.model, spec=spec,
+                provider_model=spec.judge.model,
+                comparison_id=comparison_id_for(rec["task_id"], rec["repetition"]),
+            )
+            n += 1
+        typer.echo(f"process-scored {n} trial(s)")
 
     @process_app.command("record")
     def process_record(

@@ -81,27 +81,44 @@ def register(app: typer.Typer) -> None:
         mr_json: Path = typer.Argument(..., help="MR json {parent_sha, files:[...]}"),
         ticket: Path = typer.Option(..., "--ticket", help="Ticket text file"),
         out: Path = typer.Option(..., "--out", help="Candidate json output"),
+        miner: str = typer.Option(None, "--miner", help="Miner identity [default: current user]"),
+        manifest_path: Path = typer.Option(
+            None, "--manifest", help="Manifest to stage the candidate into [CO-8]"
+        ),
+        task_id: str = typer.Option(None, "--task-id", help="Manifest task id [default: --out stem]"),
     ) -> None:
-        """Mine a merged MR into a pending candidate."""
+        """Mine a merged MR into a pending candidate; optionally stage it in a manifest."""
         from .mine import MergeRequest, MRFile, mine_mr
+        from .registry import CorpusError, CorpusManifest, assert_outside_instrument
 
+        who = miner or _actor()
         data = json.loads(mr_json.read_text(encoding="utf-8"))
         mr = MergeRequest(
             parent_sha=data["parent_sha"],
             files=[MRFile(**f) for f in data.get("files", [])],
         )
         candidate = mine_mr(mr, ticket.read_text(encoding="utf-8"))
+        candidate.miner = who
         # CO-1: a mined candidate carries ticket text + holdout contents — internal
         # corpus data that must never be written into the instrument repo.
-        from .registry import assert_outside_instrument
-
         assert_outside_instrument(out)
         out.write_text(
             json.dumps(candidate.__dict__, sort_keys=True, indent=2), encoding="utf-8"
         )
+        sha = candidate.content_sha()
+        # CO-8: the mine→manifest link — stage the candidate as a pending task so
+        # admission (which requires a manifest entry) is reachable.
+        if manifest_path is not None:
+            manifest = CorpusManifest.load(manifest_path)
+            try:
+                manifest.stage_candidate(task_id or out.stem, sha=sha, miner=who)
+            except CorpusError as e:
+                typer.echo(str(e), err=True)
+                raise typer.Exit(code=2)
+            manifest.save(manifest_path)
         typer.echo(
-            f"candidate: parent={candidate.workspace_ref[:12]}… "
-            f"holdouts={len(candidate.holdouts)} status={candidate.status}"
+            f"candidate: parent={candidate.workspace_ref[:12]}… sha={sha[:12]}… "
+            f"miner={who} holdouts={len(candidate.holdouts)} status={candidate.status}"
         )
 
     @corpus_app.command("review")
@@ -120,30 +137,114 @@ def register(app: typer.Typer) -> None:
         typer.echo(f"\n-- workspace_ref (parent sha): {c['workspace_ref']}")
         typer.echo("\n-- prompt (ticket text) --")
         typer.echo(c["prompt"])
+        typer.echo(f"\n-- miner: {c.get('miner')}")
         typer.echo("\n-- holdouts (shipped test additions) --")
+        # CO-7: show holdout CONTENT, not just paths — the curator's whole job is
+        # to check the shipped tests for solution leakage, impossible from a path.
         for h in c["holdouts"]:
-            typer.echo(f"  {h['path']}")
+            typer.echo(f"\n  === {h['path']} ===")
+            typer.echo(h.get("content", ""))
 
     @corpus_app.command("approve")
     def corpus_approve(
         experiment_dir: Path = typer.Argument(..., help="Dir with ledger.ndjson"),
         candidate_id: str = typer.Option(..., "--candidate-id"),
         task_sha: str = typer.Option(..., "--task-sha"),
+        signing_key: Path = typer.Option(..., "--signing-key", help="Approver Ed25519 private key (hex)"),
+        approver: str = typer.Option(None, "--approver", help="Approver identity [default: current user]"),
         notes: str = typer.Option("", "--notes"),
     ) -> None:
-        """Record a human curation_approval event for a candidate."""
+        """Sign + record a curation_approval — the approver attests with their key."""
         from ..ledger.events import EventContext, record_curation_approval
+        from .attestation import sign_approval
+
+        who = approver or _actor()
+        priv = signing_key.read_text(encoding="utf-8").strip()
+        sig, pk = sign_approval(priv, candidate_id=candidate_id, task_sha=task_sha, approver=who)
+        ledger_path = experiment_dir / "ledger.ndjson"
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=who)
+        record_curation_approval(
+            ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
+            approver=who, signature=sig, signer_public_key=pk, notes=notes,
+        )
+        typer.echo(f"approved {candidate_id} (sha={task_sha[:12]}…) signed by {who}")
+
+    @corpus_app.command("calibrate")
+    def corpus_calibrate(
+        experiment_dir: Path = typer.Argument(..., help="Dir with a completed run's ledger"),
+        manifest_path: Path = typer.Option(..., "--manifest", help="manifest.json to advance"),
+        kind: str = typer.Option("full", "--kind", help="subset | full"),
+        rho: float = typer.Option(0.3, "--rho", help="within-task correlation [recorded assumption]"),
+    ) -> None:
+        """Record a calibration run from a completed run's realized variance [CO-4].
+
+        Derives ``p`` (mean holdout pass rate) and ``n_tasks`` from the ledger's
+        grades — the run-path hook that finally invokes ``ledger_calibration_run``
+        so a calibration run is chain-anchored and feeds ``bench plan``'s power
+        gate [PL-5]. ``rho`` is a recorded assumption (full estimation is Phase 5).
+        """
+        from ..ledger import events
+        from ..ledger.events import EventContext
+        from ..ledger.query import find_events
+        from .ledger_ops import ledger_calibration_run
+        from .registry import CorpusManifest
+
+        if kind not in ("subset", "full"):
+            typer.echo("--kind must be 'subset' or 'full'", err=True)
+            raise typer.Exit(code=2)
+        ledger_path = experiment_dir / "ledger.ndjson"
+        manifest = CorpusManifest.load(manifest_path)
+
+        trial_task = {
+            ev["trial_record"]["trial_id"]: ev["trial_record"]["task_id"]
+            for ev in find_events(ledger_path, events.TRIAL)
+        }
+        by_task: dict[str, list[float]] = {}
+        for ev in find_events(ledger_path, events.GRADE):
+            task_id = trial_task.get(ev["trial_id"])
+            if task_id is None:
+                continue
+            by_task.setdefault(task_id, []).append(1.0 if ev["binary_score"] else 0.0)
+        if not by_task:
+            typer.echo("no graded trials to calibrate from", err=True)
+            raise typer.Exit(code=2)
+        all_scores = [s for xs in by_task.values() for s in xs]
+        p = sum(all_scores) / len(all_scores)
+        n_tasks = len(by_task)
+        run = {"p": round(p, 6), "rho": rho, "n_tasks": n_tasks, "kind": kind}
+
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())
+        ledger_calibration_run(ledger_path, ctx, manifest, run, kind=kind)
+        manifest.save(manifest_path)
+        typer.echo(f"calibration ({kind}): p={p:.3f} n_tasks={n_tasks} → {manifest.calibration.status}")
+
+    @corpus_app.command("admit")
+    def corpus_admit(
+        experiment_dir: Path = typer.Argument(..., help="Dir with ledger.ndjson"),
+        manifest_path: Path = typer.Option(..., "--manifest", help="manifest.json"),
+        candidate_id: str = typer.Option(..., "--candidate-id"),
+        task_sha: str = typer.Option(..., "--task-sha"),
+        baseline_ref: str = typer.Option(..., "--baseline-ref"),
+        keyring: Path = typer.Option(..., "--keyring", help="Authorized curator public keys (JSON list)"),
+    ) -> None:
+        """Admit a curated candidate — verifies the signed approval + clean baseline."""
+        from ..ledger.events import EventContext
+        from .admit import admit_task
+        from .attestation import load_keyring
+        from .registry import CorpusError, CorpusManifest
 
         ledger_path = experiment_dir / "ledger.ndjson"
         ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())
-        record_curation_approval(
-            ledger_path,
-            ctx,
-            candidate_id=candidate_id,
-            task_sha=task_sha,
-            approver=_actor(),
-            notes=notes,
-        )
-        typer.echo(f"approved {candidate_id} (sha={task_sha[:12]}…)")
+        manifest = CorpusManifest.load(manifest_path)
+        try:
+            admit_task(
+                manifest, ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
+                baseline_ref=baseline_ref, keyring=load_keyring(keyring),
+            )
+        except CorpusError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        manifest.save(manifest_path)
+        typer.echo(f"admitted {candidate_id} (sha={task_sha[:12]}…)")
 
     app.add_typer(corpus_app, name="corpus")

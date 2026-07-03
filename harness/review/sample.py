@@ -25,7 +25,7 @@ from typing import Optional
 
 from ..ledger import events
 from ..ledger.query import find_events
-from ..plan.seeds import index_at, sub_seed
+from ..plan.seeds import seeded_shuffle, sub_seed
 from .kappa import ReviewedItem
 
 FLOOR_FRACTION = 0.2
@@ -68,9 +68,10 @@ def _deterministic_winner(pass_rate_a: float, pass_rate_b: float) -> str:
 def comparisons_from_ledger(ledger_path, *, arm_a: str, arm_b: str) -> list[ComparisonRecord]:
     """Join judge verdicts with holdout-derived deterministic winners.
 
-    ``comparison_id`` groups a task's paired trials; the deterministic winner is
-    the arm with the higher holdout pass rate for that task. ``arm_a``/``arm_b``
-    fix the A/B orientation that the judge winner uses.
+    The deterministic winner is the arm with the higher holdout pass rate for the
+    verdict's **task** — resolved from the verdict's ``task_id`` (not by assuming
+    ``comparison_id == task_id``, which broke once a comparison_id names a
+    ``(task, repetition)`` pair). ``arm_a``/``arm_b`` fix the A/B orientation.
     """
     # per-(task, arm) holdout pass rate
     trials = {
@@ -86,8 +87,8 @@ def comparisons_from_ledger(ledger_path, *, arm_a: str, arm_b: str) -> list[Comp
             1.0 if ev["binary_score"] else 0.0
         )
 
-    def rate(task_id: str, arm: str) -> Optional[float]:
-        xs = passes.get(task_id, {}).get(arm)
+    def rate(task_id: Optional[str], arm: str) -> Optional[float]:
+        xs = passes.get(task_id, {}).get(arm) if task_id is not None else None
         return sum(xs) / len(xs) if xs else None
 
     records: list[ComparisonRecord] = []
@@ -96,8 +97,8 @@ def comparisons_from_ledger(ledger_path, *, arm_a: str, arm_b: str) -> list[Comp
         cid = v.get("comparison_id")
         if cid is None:
             continue
-        # comparison_id groups a task's trials; here it names the task
-        ra, rb = rate(cid, arm_a), rate(cid, arm_b)
+        task_id = v.get("task_id")
+        ra, rb = rate(task_id, arm_a), rate(task_id, arm_b)
         det = _deterministic_winner(ra, rb) if ra is not None and rb is not None else None
         records.append(
             ComparisonRecord(
@@ -125,18 +126,28 @@ def select_for_review(records: list[ComparisonRecord], seed: int) -> list[Select
     ordered = sorted(agreements, key=lambda r: r.comparison_id)
     k = math.ceil(FLOOR_FRACTION * len(ordered)) if ordered else 0
     if k > 0:
-        base = sub_seed(seed, "review_floor")
-        shuffled = list(ordered)
-        for i in range(len(shuffled) - 1, 0, -1):
-            j = index_at(base, i, i + 1)
-            shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+        shuffled = seeded_shuffle(list(ordered), sub_seed(seed, "review_floor"))
         for r in shuffled[:k]:
             selected.append(SelectedItem(r.comparison_id, r.task_class, "floor"))
 
-    # deterministic output order: mandatory first (disagreements-first), then floor,
-    # each block sorted by id
-    selected.sort(key=lambda s: (s.stratum != "mandatory", s.comparison_id))
-    return selected
+    # RV-7: order the whole reviewed set by a seeded shuffle so the mandatory/floor
+    # (disagreement) boundary is NOT recoverable from packet order — two
+    # independently id-sorted blocks would mark exactly which items are
+    # disagreements. The stratum stays recorded per item (for IPW reweighting),
+    # it is simply not reconstructable from the order the reviewer sees.
+    selected.sort(key=lambda s: s.comparison_id)
+    return seeded_shuffle(selected, sub_seed(seed, "review_order"))
+
+
+def realized_floor_prob(records: list[ComparisonRecord]) -> float:
+    """The realized floor inclusion probability ``ceil(0.2n)/n`` over the ``n``
+    agreements [RV-5]. The floor takes a *ceil* fraction, so the true probability
+    exceeds the nominal 0.2 for small n (e.g. n=6 → ceil(1.2)/6 = 2/6 ≈ 0.333, so
+    the IPW weight is 3, not 5). 1.0 when there are no agreements to sample."""
+    n = sum(1 for r in records if not _is_disagreement(r))
+    if n == 0:
+        return 1.0
+    return math.ceil(FLOOR_FRACTION * n) / n
 
 
 def reviewed_kappa_items(ledger_path, selected: list[SelectedItem]) -> list[ReviewedItem]:
@@ -144,9 +155,10 @@ def reviewed_kappa_items(ledger_path, selected: list[SelectedItem]) -> list[Revi
 
     Joins judge and human winners by comparison_id, keeping only comparisons that
     (a) were selected for review and (b) have a human verdict. Unreviewed or
-    still-open comparisons are excluded from kappa inputs.
+    still-open comparisons are excluded from kappa inputs. Each item carries its
+    stratum (for IPW reweighting) and task class (for per-class escalation).
     """
-    strata = {s.comparison_id: s.stratum for s in selected}
+    strata = {s.comparison_id: (s.stratum, s.task_class) for s in selected}
     judge = {
         ev["verdict"].get("comparison_id"): ev["verdict"]["winner"]
         for ev in find_events(ledger_path, events.JUDGE_VERDICT)
@@ -157,5 +169,14 @@ def reviewed_kappa_items(ledger_path, selected: list[SelectedItem]) -> list[Revi
         cid = v.get("comparison_id")
         if cid not in strata or cid not in judge:
             continue
-        items.append(ReviewedItem(a=judge[cid], b=v["winner"], stratum=strata[cid]))
+        # JD-5: CANT_JUDGE is a fail-closed non-answer, not a kappa category —
+        # excluded here exactly as pairs_from_ledger excludes it, so the IPW
+        # escalation path and the raw path agree instead of one counting an
+        # abstention as a disagreement and over-flagging escalation.
+        if judge[cid] == "CANT_JUDGE" or v["winner"] == "CANT_JUDGE":
+            continue
+        stratum, task_class = strata[cid]
+        items.append(
+            ReviewedItem(a=judge[cid], b=v["winner"], stratum=stratum, task_class=task_class)
+        )
     return items

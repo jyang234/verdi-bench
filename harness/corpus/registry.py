@@ -87,6 +87,9 @@ class TaskEntry(BaseModel):
     plugins: list[str] = []
     # dataset-provided metadata used for stratification (category/difficulty/…).
     metadata: dict = {}
+    # the miner who staged this candidate — the approver must NOT be the miner
+    # (self-approval bar, enforced at admission) [CO-7, D-P4-3].
+    miner: Optional[str] = None
     # ``format`` is a Literal ⇒ a non-harbor task fails schema by construction,
     # the strongest form of the D003 rule (master plan §7.4 / EVAL-1-D005).
 
@@ -210,6 +213,19 @@ class CorpusManifest(BaseModel):
                 t.baseline_ref = None
                 if t.status == "admitted":
                     t.status = "pending-curation"
+
+    def stage_candidate(self, task_id: str, *, sha: str, miner: Optional[str] = None) -> TaskEntry:
+        """Insert a mined candidate as a ``pending-curation`` task [CO-8].
+
+        This is the missing mine→manifest link: ``admit_task`` requires the
+        candidate to already be a manifest entry, so mining stages it here (with
+        its content sha + miner) before curation. A duplicate task_id is refused —
+        a silent overwrite would drop the prior candidate's provenance."""
+        if self.task(task_id) is not None:
+            raise CorpusError(f"task {task_id!r} already exists in manifest {self.corpus_id!r}")
+        entry = TaskEntry(task_id=task_id, sha=sha, status="pending-curation", miner=miner)
+        self.tasks.append(entry)
+        return entry
 
     def is_schedulable(self, task_id: str) -> bool:
         """A task is schedulable only once admitted (not pending/quarantined)."""

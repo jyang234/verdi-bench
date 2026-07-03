@@ -133,6 +133,7 @@ class FindingsDocument(BaseModel):
     secondary_metrics: dict
     integrity: dict
     process: Optional[dict] = None
+    judge_calibration: Optional[dict] = None
     provenance: Provenance
 
 
@@ -239,6 +240,33 @@ def _judge_summary(ledger_path) -> dict:
     return {"judge_models": models, "rubric_shas": rubrics, "n_verdicts": len(verdicts)}
 
 
+def _judge_calibration(ledger_path, spec, seed) -> Optional[dict]:
+    """Per-class judge↔human kappa + escalation flags [EVAL-2 AC-7, RV-4], through
+    the IPW seam at the locked EscalationConfig. None when the judge produced no
+    verdicts; the ``by_class`` table is empty until human review exists."""
+    verdicts = find_events(ledger_path, events.JUDGE_VERDICT)
+    if not verdicts:
+        return None
+    from ..review.calibrate import calibration_from_spec
+
+    esc = spec.judge.escalation
+    cal = calibration_from_spec(ledger_path, spec, seed)
+    # JD-11: surface single-order verdicts so a full experiment that skipped D003
+    # order-debiasing cannot do so silently — the flag becomes visible, not just
+    # recorded on each verdict.
+    single_order = sum(1 for v in verdicts if v["verdict"].get("single_order"))
+    return {
+        "kappa_threshold": esc.kappa_threshold,
+        "min_human_verdicts": esc.min_human_verdicts,
+        "single_order_verdicts": single_order,
+        "by_class": {
+            c: {"kappa": v.kappa, "n": v.n, "sufficient": v.sufficient, "escalate": v.escalate}
+            for c, v in sorted(cal.items())
+        },
+        "escalation_candidates": sorted(c for c, v in cal.items() if v.escalate),
+    }
+
+
 def _integrity(ledger_path) -> dict:
     """Blinding-integrity rate — rides every render [EVAL-7 AC-6].
 
@@ -253,7 +281,10 @@ def _integrity(ledger_path) -> dict:
         n += 1
         if integrity.get("arm_recognized"):
             recognized += 1
-            if integrity.get("arm_guess") and integrity["arm_guess"] == integrity.get("actual_arm"):
+            # `is not None` (not truthiness): a valid-but-falsy arm id (e.g. an arm
+            # literally named "0") must still count as a guess [RV-6].
+            guess = integrity.get("arm_guess")
+            if guess is not None and guess == integrity.get("actual_arm"):
                 guessed_right += 1
     rate = recognized / n if n else None
     guess_acc = guessed_right / recognized if recognized else None
@@ -292,12 +323,13 @@ def _secondary_metrics(ledger_path, spec) -> dict:
     }
 
 
-def _process_section(ledger_path) -> Optional[dict]:
-    """Openly-unblinded process diagnostics [EVAL-9 §M6].
+def _process_section(ledger_path, spec, seed) -> Optional[dict]:
+    """Openly-unblinded process diagnostics [EVAL-9 §M6, PR-5].
 
-    Reads ``process_score`` events (ledger data — no import of the process
-    subsystem) into an EXPLORATORY-only section carrying the mandatory unblinded
-    disclosure block. Returns None when no process scores exist.
+    Reads ``process_score`` events into an EXPLORATORY-only section carrying the
+    mandatory unblinded disclosure block, plus the per-dimension judge↔human
+    kappa and score-vs-telemetry correlations (with ``style_only`` flags) the
+    plan's M5 requires [AC-5/AC-7]. Returns None when no process scores exist.
     """
     evs = find_events(ledger_path, events.PROCESS_SCORE)
     if not evs:
@@ -326,6 +358,10 @@ def _process_section(ledger_path) -> Optional[dict]:
         }
         for dim, b in sorted(dims.items())
     }
+    # PR-5: fold in the AC-5 per-dimension kappa and AC-7 telemetry correlations.
+    from ..process.calibrate import dimension_diagnostics
+
+    diagnostics = dimension_diagnostics(ledger_path, spec, seed)
     return {
         "exploratory": True,
         "disclosure": {
@@ -336,6 +372,10 @@ def _process_section(ledger_path) -> Optional[dict]:
         },
         "rubric_versions": sorted(rubric_versions),
         "dimensions": dimensions,
+        "kappa_by_dimension": diagnostics["kappa_by_dimension"],
+        "correlations": diagnostics["correlations"],
+        "style_only": diagnostics["style_only"],
+        "floor_prob": diagnostics["floor_prob"],
     }
 
 
@@ -466,7 +506,8 @@ def compute_findings(
         confounds=flag_confounds(ledger_path, spec),
         secondary_metrics=_secondary_metrics(ledger_path, spec),
         integrity=_integrity(ledger_path),
-        process=_process_section(ledger_path),
+        process=_process_section(ledger_path, spec, seed),
+        judge_calibration=_judge_calibration(ledger_path, spec, seed),
         provenance=provenance,
     )
 
@@ -647,6 +688,8 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
     for cf in findings.comparisons:
         out += section(f"Primary metric — {cf.label}", _comparison_lines(cf, findings.mde))
     out += section("Secondary metrics (exploratory)", _secondary_lines(findings))
+    if findings.judge_calibration is not None:
+        out += section("Judge calibration (per class)", _judge_calibration_lines(findings))
     if findings.process is not None:
         out += section("Process diagnostics (EXPLORATORY secondary)", _process_lines(findings))
     out += section("Confounds (disclosed, non-suppressing)",
@@ -669,6 +712,31 @@ def _secondary_lines(findings: FindingsDocument) -> list[str]:
     return lines
 
 
+def _judge_calibration_lines(findings: FindingsDocument) -> list[str]:
+    jc = findings.judge_calibration
+    lines = [
+        f"- thresholds: kappa ≥ {jc['kappa_threshold']} at ≥ {jc['min_human_verdicts']} "
+        "human verdicts (below ⇒ flagged for panel escalation) [AC-7]"
+    ]
+    if jc.get("single_order_verdicts"):
+        lines.append(
+            f"- ⚠ {jc['single_order_verdicts']} verdict(s) used single-order judging "
+            "(D003 order-debiasing skipped — smoke-run only) [JD-11]"
+        )
+    if not jc["by_class"]:
+        lines.append("- no human-reviewed comparisons yet — kappa pending")
+        return lines
+    for cls, c in jc["by_class"].items():
+        if not c["sufficient"]:
+            lines.append(f"- {cls}: n={c['n']} (insufficient for kappa)")
+        else:
+            flag = " ESCALATE" if c["escalate"] else ""
+            lines.append(f"- {cls}: kappa={_fmt(c['kappa'], 3)} (n={c['n']}){flag}")
+    if jc["escalation_candidates"]:
+        lines.append(f"- escalation candidates: {jc['escalation_candidates']}")
+    return lines
+
+
 def _process_lines(findings: FindingsDocument) -> list[str]:
     p = findings.process
     disclosure = p["disclosure"]
@@ -683,6 +751,25 @@ def _process_lines(findings: FindingsDocument) -> list[str]:
             f"(scored={d['n_scored']}, cant_score={d['n_cant_score']}, "
             f"scorers={d['scorer_kinds']})"
         )
+    # PR-5: per-dimension judge↔human kappa [AC-5] and telemetry correlations [AC-7]
+    kappa = p.get("kappa_by_dimension") or {}
+    if kappa:
+        lines.append("- judge↔human agreement (quadratic-weighted IPW kappa):")
+        for dim, k in kappa.items():
+            if not k["sufficient"]:
+                lines.append(f"  - {dim}: n={k['n']} (insufficient)")
+            else:
+                flag = " ESCALATE" if k["escalate"] else ""
+                lines.append(f"  - {dim}: kappa={_fmt(k['kappa'], 3)} (n={k['n']}){flag}")
+    corr = p.get("correlations") or {}
+    if corr:
+        lines.append("- score-vs-telemetry correlation (Spearman):")
+        for dim, c in corr.items():
+            tag = " [STYLE-ONLY]" if c["style_only"] else ""
+            shown = {k: _fmt(v, 2) for k, v in c["correlations"].items()}
+            lines.append(f"  - {dim}: {shown}{tag}")
+        if p.get("style_only"):
+            lines.append(f"- style-only dimensions (uncorrelated with their correlates): {p['style_only']}")
     return lines
 
 

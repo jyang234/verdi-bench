@@ -87,7 +87,16 @@ def lock_experiment(
 
     if variance_source is None:
         variance_source = AssumedVariance()
-    mde = mde_check(spec, variance_source, **mde_kwargs)
+    # PL-1: compute power at the design's REAL N — ``repetitions × corpus size`` —
+    # when the task source is available, not the variance source's calibration
+    # n_tasks (default 50, which ignored the actual design). NOTE: this treats each
+    # (task, repetition) as an independent paired observation, matching the current
+    # analyze clustering (each verdict its own bootstrap cluster). When repetitions
+    # > 1 those reps are correlated within a task, so power is optimistic; the
+    # cluster-by-task fix for BOTH the power sim and the analysis is AN-1 (Phase 5,
+    # statistical correctness).
+    real_n = spec.repetitions * len(task_dicts) if task_dicts else None
+    mde = mde_check(spec, variance_source, n=real_n, **mde_kwargs)
 
     # Underpowered check [D001, AC-4]: refuse unless acknowledged. A None MDE
     # means the design could not detect *any* swept effect — the maximally
@@ -107,6 +116,11 @@ def lock_experiment(
                     "acknowledgment."
                 )
             ack_underpowered = True
+    else:
+        # PL-1: omitting hypothesized_effect skips the power gate entirely. Record
+        # that it was skipped so it is a ledgered decision, not a silent no-check.
+        if "power_gate_skipped" not in mde["flags"]:
+            mde["flags"].append("power_gate_skipped")
 
     # PL-7 / D-6: pin the task-content commitment so run/grade can refuse a
     # post-lock swap of prompts, canaries, holdout scripts, or scoring.
