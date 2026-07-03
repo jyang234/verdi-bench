@@ -31,6 +31,14 @@ from .types import ProxyConfig
 RUN_CONFIG_FILENAME = "run.config.yaml"
 
 
+class MissingProviderKeyError(RuntimeError):
+    """A provider key named in run.config.yaml is absent from the env [D-P3-1].
+
+    Fail closed: an arm that runs unauthenticated biases the A/B comparison. We
+    still never *invent* a value [AC-8]; we refuse to run when a named key cannot
+    be resolved."""
+
+
 @dataclass
 class RunSettings:
     """Resolved operational parameters for a run (never the pre-registered spec)."""
@@ -82,8 +90,15 @@ def load_run_settings(
     quotas = Quotas(cpus=2.0 if cpus is None else cpus, mem="4g" if mem is None else mem)
 
     # The file lists key NAMES; the VALUES are read from the environment and are
-    # never written to the file or the ledger [AC-8].
-    provider_keys = {
-        name: env[name] for name in (data.get("provider_key_names") or []) if name in env
-    }
+    # never written to the file or the ledger [AC-8]. A named-but-absent key fails
+    # the run loudly rather than silently dropping to an unauthenticated arm [D-P3-1].
+    provider_keys = {}
+    for name in data.get("provider_key_names") or []:
+        if name not in env:
+            raise MissingProviderKeyError(
+                f"provider key {name!r} is named in {RUN_CONFIG_FILENAME} but absent "
+                "from the environment; an unauthenticated arm biases the A/B. Set "
+                f"{name} in the env or remove it from provider_key_names."
+            )
+        provider_keys[name] = env[name]
     return RunSettings(proxy=proxy, quotas=quotas, provider_keys=provider_keys)

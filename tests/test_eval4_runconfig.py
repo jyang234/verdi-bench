@@ -98,10 +98,15 @@ def test_absent_config_yields_conservative_defaults(tmp_path):
 def test_ac8_provider_key_value_from_env_not_file(tmp_path):
     """RN-13/AC-8: the config file names the key; the VALUE comes from the env and
     is never invented, never written to the file."""
-    from harness.run.settings import load_run_settings
+    import pytest
+
+    from harness.run.settings import MissingProviderKeyError, load_run_settings
 
     _write_config(tmp_path, "provider_key_names: [ANTHROPIC_API_KEY]\n")
-    assert load_run_settings(tmp_path, env={}).provider_keys == {}  # absent ⇒ not injected
+    # D-P3-1: a key NAMED in run.config.yaml but absent from the env fails the run
+    # loudly (an unauthenticated arm biases the A/B); a value is still never invented.
+    with pytest.raises(MissingProviderKeyError):
+        load_run_settings(tmp_path, env={})
     s = load_run_settings(tmp_path, env={"ANTHROPIC_API_KEY": "sk-live"})
     # the VALUE comes from the env, and the config file named only the key (never
     # the value) — assert against the file content the test itself controls.
