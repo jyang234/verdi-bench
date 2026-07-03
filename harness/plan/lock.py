@@ -16,7 +16,7 @@ from typing import Optional
 
 from ..ledger import events
 from ..ledger.events import EventContext
-from ..ledger.query import find_events
+from ..ledger.query import assert_chain, find_events
 from ..schema.experiment import ExperimentSpec
 from .power import AssumedVariance, VarianceSource, mde_check
 
@@ -112,6 +112,10 @@ def assert_lock(spec_path, ledger_path) -> dict:
         raise LockMismatchError(
             f"no experiment_locked event in {ledger_path}; run `bench plan` first"
         )
+    # An empty/absent ledger is "not planned yet" (handled above); once a lock
+    # exists we verify the whole chain before trusting any recorded field, so a
+    # rewritten lock line cannot pass this gate on a forged sha [PL-6].
+    assert_chain(ledger_path)
     recorded = locks[0]["spec_sha256"]
     computed = spec_sha256(spec_path)
     if recorded != computed:

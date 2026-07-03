@@ -104,3 +104,41 @@ def test_ac4_ack_ledgered(tmp_path):
     )
     assert len(find_events(ledger, events.ACKNOWLEDGED_UNDERPOWERED)) == 1
     assert len(find_events(ledger, events.EXPERIMENT_LOCKED)) == 1
+
+
+def test_assert_lock_refuses_tampered_chain(tmp_path):
+    """PL-6: a rewritten lock line whose recorded sha is forged to match a
+    mutated spec must still be refused — ``assert_lock`` verifies the hash chain,
+    not just the recorded sha. This is the review's exact attack: mutate
+    experiment.yaml *and* rewrite the lock line's spec_sha256 so the naive
+    equality check passes.
+    """
+    import json
+
+    from harness.ledger.chain import canonical_line
+    from harness.ledger.query import ChainIntegrityError
+    from harness.plan.lock import spec_sha256
+    from tests.fixtures.builders import seed_trial_and_grade
+
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    ledger = tmp_path / "ledger.ndjson"
+    ctx = fixed_ctx()
+    lock_experiment(spec, ledger, ctx=ctx, **FAST)
+    # the lock is genesis; give it a successor so a rewrite of it breaks the chain
+    seed_trial_and_grade(ledger, ctx, trial_id="t1", task_id="task-1", arm="arm_a")
+
+    # attacker mutates the spec, then forges the recorded sha to match it
+    spec.write_text(spec.read_text() + "\n# tampered\n")
+    forged = spec_sha256(spec)
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    lock_obj = json.loads(lines[0])
+    assert lock_obj["event"] == "experiment_locked"
+    lock_obj["spec_sha256"] = forged
+    lines[0] = canonical_line(lock_obj)
+    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # the naive sha-equality check would now pass ...
+    assert json.loads(ledger.read_text().splitlines()[0])["spec_sha256"] == forged
+    # ... but the chain is broken at the successor, so assert_lock must refuse.
+    with pytest.raises(ChainIntegrityError):
+        assert_lock(spec, ledger)

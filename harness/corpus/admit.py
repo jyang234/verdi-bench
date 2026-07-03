@@ -14,7 +14,7 @@ refuses quarantined tasks; a pending candidate is excluded by
 from __future__ import annotations
 
 from ..ledger import events
-from ..ledger.query import find_events
+from ..ledger.query import assert_chain, find_events
 from .registry import CorpusError, CorpusManifest, TaskEntry
 
 
@@ -60,6 +60,9 @@ def admit_task(
     status to ``admitted`` and pins its ``baseline_ref``. The task must already
     exist in the manifest as a pending candidate (mining wrote it there).
     """
+    # Admission's two preconditions are read from the ledger; verify the chain
+    # first so a hand-forged ledger cannot manufacture them [CO-5/PL-6].
+    assert_chain(ledger_path)
     task = manifest.task(candidate_id)
     if task is None:
         raise CorpusError(

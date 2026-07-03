@@ -180,6 +180,40 @@ def test_ac4_baseline_prereq(tmp_path):
     assert manifest.is_schedulable("cand-1") is True
 
 
+def test_admit_refuses_tampered_chain(tmp_path):
+    """CO-5/PL-6: admission reads its two preconditions from the ledger; it must
+    verify the hash chain first, so a hand-forged ledger cannot admit a task.
+    """
+    from harness.ledger.chain import canonical_line
+    from harness.ledger.query import ChainIntegrityError
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    manifest = _pending_manifest()
+    record_curation_approval(
+        ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, approver="curator"
+    )
+    record_flake_baseline(
+        ledger, ctx, task_id="cand-1", task_sha="s" * 64, k=5,
+        results=[{"run": i, "passed": True} for i in range(5)], verdict="clean",
+    )
+    # tamper the approval line's *unchecked* approver field: the admission
+    # preconditions still match by (candidate_id, task_sha), but the byte change
+    # breaks the successor baseline line's prev_hash.
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    approval = json.loads(lines[0])
+    assert approval["event"] == "curation_approval"
+    approval["approver"] = "attacker"
+    lines[0] = canonical_line(approval)
+    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(ChainIntegrityError):
+        admit_task(
+            manifest, ledger, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
+        )
+    assert manifest.is_schedulable("cand-1") is False
+
+
 def test_ac4_baseline_must_be_clean(tmp_path):
     ledger = tmp_path / "l.ndjson"
     ctx = fixed_ctx()
