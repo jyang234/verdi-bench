@@ -16,7 +16,9 @@ from harness.analyze.report import (
 )
 from harness.analyze.stats import paired_bootstrap
 from harness.corpus.registry import CorpusManifest, TaskEntry
+from harness.judge.schema import Evidence, Verdict, VerdictProvenance, Winner
 from harness.ledger.events import (
+    append_verdict,
     record_executed_order,
     record_trial_infra_failed,
 )
@@ -201,6 +203,90 @@ def test_an4_binary_metric_uses_binary_null_at_realized_n(tmp_path):
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     assert f.ci_selection["null_model"] == "paired_binary"
     assert f.ci_selection["n_tasks"] == 5  # _populate seeds 5 paired tasks
+
+
+# --- AN-1 / AN-7: judge-preference filtered by arm pair, clustered, not imputed -
+_PREF_ARMS = [
+    {"name": "control", "platform": "claude_code",
+     "model": "anthropic/claude-3-5-sonnet-20241022", "payload": {}},
+    {"name": "treatment", "platform": "codex", "model": "openai/gpt-4o-2024-08-06", "payload": {}},
+    {"name": "challenger", "platform": "codex",
+     "model": "openai/gpt-4o-mini-2024-07-18", "payload": {}},
+]
+
+
+def _pref_ledger(tmp_path, ctx, *, arms):
+    spec, _, ledger = locked_experiment(
+        tmp_path / "e", ctx=ctx, arms=arms,
+        primary_metric="judge_preference", decision_rule="delta_judge_preference > 0",
+    )
+    return spec, ledger
+
+
+def _seed_pref_verdict(ledger, ctx, *, cid, task_id, winner, arm_map):
+    prov = VerdictProvenance(
+        judge_model="fake/judge-1", rubric_sha256="r" * 64, packet_sha256="p" * 64,
+        call_ids=["c1", "c2"], orders="both", temperature=0.0, ts="t",
+    )
+    ev = (
+        [] if winner in ("TIE", "CANT_JUDGE")
+        else [Evidence(kind="diff", response=winner, hunk="@@")]
+    )
+    v = Verdict(
+        winner=Winner(winner), reason="x", evidence=ev, provenance=prov,
+        comparison_id=cid, task_id=task_id, task_class="cls", arm_map=arm_map,
+    )
+    append_verdict(ledger, ctx, verdict=v.model_dump(mode="json"))
+
+
+def test_an1_judge_preference_filtered_by_arm_pair(tmp_path):
+    """AN-1: judge-preference deltas are filtered by arm pair via the recorded
+    arm_map and attributed to the physical arm — the same pooled verdicts no
+    longer feed every comparison. control beats treatment but loses to challenger,
+    so the two comparisons must report OPPOSITE signs, not one pooled 0.0."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS)
+    ct = {"A": "control", "B": "treatment"}
+    cc = {"A": "control", "B": "challenger"}
+    for i in range(4):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+        _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    by_label = {cf.label: cf for cf in f.comparisons}
+    assert by_label["control vs treatment"].effect["mean_paired_delta"] == 1.0
+    assert by_label["control vs challenger"].effect["mean_paired_delta"] == -1.0
+
+
+def test_an1_cant_judge_and_tie_excluded_not_imputed(tmp_path):
+    """AN-1: CANT_JUDGE and TIE are non-answers — excluded from the preference
+    series, never imputed as 0.0. n reflects real A/B verdicts only."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    for i in range(3):
+        _seed_pref_verdict(ledger, ctx, cid=f"w-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    _seed_pref_verdict(ledger, ctx, cid="tie", task_id="t3", winner="TIE", arm_map=ct)
+    _seed_pref_verdict(ledger, ctx, cid="cant", task_id="t4", winner="CANT_JUDGE", arm_map=ct)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    cf = f.comparisons[0]
+    assert cf.n_tasks == 3  # only the real A/B tasks, not 5
+    assert cf.effect["mean_paired_delta"] == 1.0  # not diluted to 0.6 by imputed 0s
+
+
+def test_an1_per_task_winrate_clusters_reps(tmp_path):
+    """AN-1: multiple verdicts for one task reduce to that task's win-rate (the
+    cluster), so the bootstrap resamples tasks, not individual verdicts."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    _seed_pref_verdict(ledger, ctx, cid="a0", task_id="t0", winner="A", arm_map=ct)
+    _seed_pref_verdict(ledger, ctx, cid="a1", task_id="t0", winner="A", arm_map=ct)  # t0 winrate 1.0
+    _seed_pref_verdict(ledger, ctx, cid="b0", task_id="t1", winner="A", arm_map=ct)
+    _seed_pref_verdict(ledger, ctx, cid="b1", task_id="t1", winner="B", arm_map=ct)  # t1 winrate 0.5
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    cf = f.comparisons[0]
+    assert cf.n_tasks == 2  # two task clusters, not four verdicts
+    assert cf.effect["mean_paired_delta"] == 0.5  # mean of per-task deltas (+1, 0)
 
 
 def test_ac4_flags_emitted_egress(tmp_path):

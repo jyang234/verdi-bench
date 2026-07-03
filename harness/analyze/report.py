@@ -170,17 +170,49 @@ def _telemetry_values(ledger_path, field: str) -> dict[str, dict[str, list[float
     return acc
 
 
-def _judge_preference_values(ledger_path) -> list[float]:
-    """Per-comparison preference in {+1 (A), -1 (B), 0 (tie/cant)}.
+def _judge_preference_by_task(
+    ledger_path, arm_a: str, arm_b: str
+) -> tuple[list[float], list[float]]:
+    """Per-task ``(arm_a win-rate, arm_b win-rate)`` for the ``(arm_a, arm_b)``
+    comparison [AN-1].
 
-    Judge preference is already an A-vs-B quantity, so each comparison is its own
-    cluster and the value is the delta directly.
+    Each ``judge_verdict`` is attributed to a physical arm through its recorded
+    ``arm_map`` (A/B → arm), so a verdict counts **only** for the arm pair it was
+    actually judged over — the same pooled verdicts no longer feed every pair, and
+    the A↔arm mapping is read, never assumed (a 3-arm design's unjudged pair gets
+    no data instead of another pair's verdicts). ``TIE`` and ``CANT_JUDGE`` are
+    non-answers: excluded, **never imputed** as 0. Verdicts are grouped by
+    ``task_id`` and reduced to a per-task win-rate, so the analysis unit is the
+    task cluster (the bootstrap resamples tasks, not individual verdicts). A task
+    with no real A/B verdict for this pair contributes nothing.
     """
-    out = []
+    pair = {arm_a, arm_b}
+    per_task: dict[str, dict[str, int]] = defaultdict(lambda: {"a": 0, "n": 0})
     for ev in find_events(ledger_path, events.JUDGE_VERDICT):
-        w = ev["verdict"]["winner"]
-        out.append(1.0 if w == "A" else -1.0 if w == "B" else 0.0)
-    return out
+        v = ev["verdict"]
+        arm_map = v.get("arm_map")
+        if not arm_map or {arm_map.get("A"), arm_map.get("B")} != pair:
+            continue  # unmapped, or a different arm pair — never assume the frame
+        w = v["winner"]
+        if w == "A":
+            winner_arm = arm_map["A"]
+        elif w == "B":
+            winner_arm = arm_map["B"]
+        else:
+            continue  # TIE / CANT_JUDGE — excluded, never imputed [AN-1]
+        task_id = v.get("task_id")
+        if task_id is None:
+            continue  # cannot cluster an unkeyed verdict
+        per_task[task_id]["n"] += 1
+        if winner_arm == arm_a:
+            per_task[task_id]["a"] += 1
+    a_vals, b_vals = [], []
+    for task_id in sorted(per_task):
+        c = per_task[task_id]
+        a_rate = c["a"] / c["n"]  # n > 0 by construction
+        a_vals.append(a_rate)
+        b_vals.append(1.0 - a_rate)
+    return a_vals, b_vals
 
 
 def _mean(xs: list[float]) -> float:
@@ -209,12 +241,10 @@ def _comparison_series(
     (over the primary pair) and each rendered comparison read the same definition.
     """
     if primary == PrimaryMetric.judge_preference.value:
-        deltas = _judge_preference_values(ledger_path)
-        a_vals = [max(d, 0.0) for d in deltas]
-        b_vals = [max(-d, 0.0) for d in deltas]
+        a_vals, b_vals = _judge_preference_by_task(ledger_path, arm_a, arm_b)
     else:
         a_vals, b_vals = _paired_arm_series(per_task, arm_a, arm_b)
-        deltas = [a - b for a, b in zip(a_vals, b_vals)]
+    deltas = [a - b for a, b in zip(a_vals, b_vals)]
     return a_vals, b_vals, deltas
 
 
