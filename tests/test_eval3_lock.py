@@ -39,6 +39,70 @@ def test_ac2_assert_lock_passes_when_unchanged(tmp_path):
     assert ev["event"] == "experiment_locked"
 
 
+def test_pl1_power_at_real_n(tmp_path):
+    """PL-1: with a task source, power is computed at repetitions × corpus size,
+    not the variance source's default n_tasks=50."""
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml", repetitions=3)
+    ledger = tmp_path / "ledger.ndjson"
+    task_dicts = [{"id": f"t{i}", "prompt": "p"} for i in range(4)]
+    outcome = lock_experiment(spec, ledger, ctx=fixed_ctx(), task_dicts=task_dicts, **FAST)
+    assert outcome.mde["n_tasks"] == 12  # 3 repetitions × 4 tasks, not 50
+
+
+def test_pl1_gate_skip_flagged(tmp_path):
+    """PL-1: omitting hypothesized_effect skips the power gate — the skip is
+    ledgered as a flag, not a silent no-check."""
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")  # no hypothesized_effect
+    ledger = tmp_path / "ledger.ndjson"
+    outcome = lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    assert "power_gate_skipped" in outcome.mde["flags"]
+    locked = find_events(ledger, events.EXPERIMENT_LOCKED)[0]
+    assert "power_gate_skipped" in locked["mde"]["flags"]
+
+
+def test_pl1_gate_not_skipped_when_effect_present(tmp_path):
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml", hypothesized_effect=0.3)
+    ledger = tmp_path / "ledger.ndjson"
+    outcome = lock_experiment(spec, ledger, ctx=fixed_ctx(),
+                              acknowledge_underpowered=True, **FAST)
+    assert "power_gate_skipped" not in outcome.mde["flags"]
+
+
+def test_pl5_bench_plan_uses_calibration_manifest(tmp_path):
+    """PL-5: bench plan --corpus-manifest feeds calibration variance into the
+    power gate, so a calibrated lock is NOT flagged assumption_based_mde."""
+    import json
+
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+    from harness.corpus.registry import Calibration, CorpusManifest
+
+    runner = CliRunner()
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    write_experiment_yaml(expdir / "experiment.yaml")
+    (expdir / "tasks.yaml").write_text(
+        json.dumps({"tasks": [{"id": "t1", "prompt": "p"}]}), encoding="utf-8"
+    )
+    ledger = expdir / "ledger.ndjson"
+    manifest = CorpusManifest(
+        corpus_id="public-mini", semver="1.0.0", kind="public",
+        calibration=Calibration(status="full-run-validated",
+                                runs=[{"p": 0.55, "rho": 0.28, "n_tasks": 60, "kind": "full"}]),
+    )
+    mpath = expdir / "manifest.json"
+    manifest.save(mpath)
+
+    r = runner.invoke(app, ["plan", str(expdir / "experiment.yaml"), "--ledger", str(ledger),
+                            "--corpus-manifest", str(mpath)])
+    assert r.exit_code == 0, r.output
+    locked = find_events(ledger, events.EXPERIMENT_LOCKED)[0]
+    # a real calibration variance was used -> not assumption-based
+    assert "assumption_based_mde" not in locked["mde"]["flags"]
+    assert locked["mde"]["p"] == 0.55 and locked["mde"]["rho"] == 0.28
+
+
 def test_ac2_mutation_refused(tmp_path):
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
@@ -54,11 +118,12 @@ def test_ac4_mde_computed(tmp_path):
     ledger = tmp_path / "ledger.ndjson"
     outcome = lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
     assert outcome.mde["method"] == "paired_binary_bootstrap_sim"
-    # assumed variance ⇒ flag rides into the lock event
+    # assumed variance ⇒ flag rides into the lock event (this fixture also omits
+    # hypothesized_effect, so the power gate is skipped-and-flagged too [PL-1])
     assert "assumption_based_mde" in outcome.mde["flags"]
-    assert find_events(ledger, events.EXPERIMENT_LOCKED)[0]["mde"]["flags"] == [
-        "assumption_based_mde"
-    ]
+    ledgered_flags = find_events(ledger, events.EXPERIMENT_LOCKED)[0]["mde"]["flags"]
+    assert "assumption_based_mde" in ledgered_flags
+    assert "power_gate_skipped" in ledgered_flags
 
 
 def test_ac4_underpowered_requires_ack(tmp_path):

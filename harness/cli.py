@@ -37,15 +37,28 @@ def plan(
         False, "--acknowledge-underpowered", help="Lock despite an underpowered design"
     ),
     attested_by: str = typer.Option("cli-user", "--attested-by", help="Lock attester [D008]"),
+    corpus_manifest: Optional[Path] = typer.Option(
+        None, "--corpus-manifest", help="Manifest whose calibration runs feed the power gate [PL-5]"
+    ),
 ) -> None:
     """Validate, power-check, and write the genesis lock event."""
     from .corpus.commit import TaskCommitmentError, load_task_dicts
     from .plan.lock import AlreadyLockedError, UnderpoweredError, lock_experiment
+    from .plan.power import calibration_variance_from_runs
 
     # PL-8: stamp the experiment *directory* name, exactly as run/grade do
     # (``experiment_dir.name``) — one ledger, one experiment_id. No stem fallback:
     # that diverged from run/grade for a bare path.
     ctx = _default_ctx(experiment_id=experiment.parent.name)
+    # PL-5: feed the power gate real calibration variance when a corpus manifest
+    # with calibration runs is supplied; otherwise the lock falls back to
+    # AssumedVariance (flagged assumption_based_mde).
+    variance_source = None
+    if corpus_manifest is not None:
+        from .corpus.registry import CorpusManifest
+
+        manifest = CorpusManifest.load(corpus_manifest)
+        variance_source = calibration_variance_from_runs(manifest.calibration.runs)
     try:
         # PL-7/D-6: commit the task content (tasks.yaml in the experiment dir) into
         # the lock so a post-lock swap is refused by run/grade.
@@ -57,6 +70,7 @@ def plan(
             acknowledge_underpowered=acknowledge_underpowered,
             attested_by=attested_by,
             task_dicts=task_dicts,
+            variance_source=variance_source,
         )
     except (UnderpoweredError, AlreadyLockedError, TaskCommitmentError) as e:
         typer.echo(str(e), err=True)
