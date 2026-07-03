@@ -4,11 +4,45 @@ from __future__ import annotations
 
 from harness.judge.client import judge_pair
 from harness.judge.providers.base import ProviderError, ProviderRefusal, ProviderTimeout
-from harness.judge.providers.fake import FakeProvider
+from harness.judge.providers.fake import FakeProvider, FakeProviderExhausted
 from harness.judge.schema import Confidence, Winner
 from harness.ledger.query import find_events
 from tests.fixtures.builders import fixed_ctx
 from tests.fixtures.judge_fakes import make_config, make_packet, verdict_json
+
+
+def test_jd13_response_labels_deterministic_both_orders(tmp_path):
+    """JD-13 / EVAL-2-D-P6-3: response labels follow the fixed both-orders scheme
+    (AB then BA), a pure function of order — not a random per-call assignment.
+    Both orders always run, so position bias cancels by construction; this pins
+    the mapping and the two-order behavior so a switch to a single order or to a
+    random labeling is caught."""
+    from harness.judge.client import _pos_to_arm
+
+    # the label->arm mapping is deterministic in the order, both directions.
+    assert _pos_to_arm("AB") == {1: "A", 2: "B"}
+    assert _pos_to_arm("BA") == {1: "B", 2: "A"}
+
+    prov = FakeProvider([verdict_json("1"), verdict_json("1")])
+    v, _ = _run(tmp_path, prov)
+    # both orders were judged (two provider calls)...
+    assert len(prov.calls) == 2
+    # ...in distinct rendered orders (AB vs BA), not the same order twice.
+    assert prov.calls[0]["messages"] != prov.calls[1]["messages"]
+    # and the verdict is reproducible: a re-run yields the same winner.
+    v2, _ = _run(tmp_path, FakeProvider([verdict_json("1"), verdict_json("1")]))
+    assert v.winner == v2.winner
+
+
+def test_fake_provider_raises_on_exhaustion():
+    """RN-18: a scripted FakeProvider raises when called past its script instead
+    of silently replaying the last response (which could hide a miscounted test)."""
+    import pytest
+
+    prov = FakeProvider([verdict_json("1")])
+    assert prov.complete("m", [{"content": "x"}], 0.0)  # first call: scripted
+    with pytest.raises(FakeProviderExhausted):
+        prov.complete("m", [{"content": "x"}], 0.0)      # second call: no script
 
 
 def _run(tmp_path, provider, config=None):

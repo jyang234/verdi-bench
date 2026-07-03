@@ -38,13 +38,29 @@ def test_ac9_holdout_canaries_absent(tmp_path_factory, canary, prompt):
                 fake_behavior={"native_log": {}})
     rec = run_trial(task, _arm(), ws, RunConfig(engine=FakeEngine()))
     blob = _artifact_blob(ws)
+    # AC-9: a canary seeded as a holdout must never surface in the trial fs.
+    # (The old `canary_token not in task.prompt` line was a tautology — the
+    # canary was never placed into the prompt, and the canary/prompt alphabets
+    # are disjoint by construction [XC-4]. The inject->refusal direction is
+    # owned by the *_leak_into_*_refused tests below.)
     assert canary_token not in blob
-    assert canary_token not in task.prompt  # prompt payload is canary-free
 
 
 def test_ac9_leak_into_prompt_refused(tmp_path):
     canary = "CANARY_LEAK_1"
     task = Task(id="t", prompt=f"here is a holdout {canary}", holdout_canaries=[canary])
+    with pytest.raises(HoldoutLeakError):
+        run_trial(task, _arm(), tmp_path / "ws", RunConfig(engine=FakeEngine()))
+
+
+def test_ac9_leak_into_non_prompt_channel_refused(tmp_path):
+    """The pre-flight canary check guards *every* request-bound channel (prompt,
+    arm payload, fake_behavior), not just the prompt [run/seam.py]. A canary that
+    reaches the fake_behavior channel must also fail closed — narrowing the check
+    to the prompt would reopen the insulation hole this asserts against."""
+    canary = "CANARY_CHANNEL_1"
+    task = Task(id="t", prompt="a clean prompt", holdout_canaries=[canary],
+                fake_behavior={"native_log": {}, "leaked_note": canary})
     with pytest.raises(HoldoutLeakError):
         run_trial(task, _arm(), tmp_path / "ws", RunConfig(engine=FakeEngine()))
 

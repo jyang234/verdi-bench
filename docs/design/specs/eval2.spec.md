@@ -180,7 +180,13 @@ identity are not inputs to the function. `validate_identity_free(packet)`
 then scans for a canary set (arm ids, agent names, model id patterns,
 transcript markers) seeded through test fixtures; a packet failing
 validation is never sent [AC-2]. Response labels ("Response 1/2") are
-assigned randomly per call. Residual risk, disclosed not hidden: code style
+assigned by a fixed both-orders scheme: every comparison is judged twice, once
+in each order (AB and BA), and position bias is cancelled by construction — an
+order-inconsistent verdict is downgraded to TIE [D003]. (This supersedes the
+earlier "assigned randomly per call": because both orders always run, per-call
+randomization removes no bias it does not already cancel and only adds a
+nondeterministic surface, against determinism-by-default [EVAL-2-D-P6-3].)
+Residual risk, disclosed not hidden: code style
 tells inside the diff can survive scrubbing, same as human-packet blinding —
 which is precisely why calibration (below) exists.
  

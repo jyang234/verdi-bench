@@ -120,7 +120,7 @@ def test_ac2_mutation_refused(tmp_path):
         assert_lock(spec, ledger)
 
 
-def test_ac4_mde_computed(tmp_path):
+def test_ac4_mde_in_lock_event(tmp_path):
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
     outcome = lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)

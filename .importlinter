@@ -7,7 +7,16 @@ root_packages =
 [importlinter:contract:harbor-confined-to-seam]
 name = Harbor is imported only by the run engine seam [EVAL-4 AC-1]
 type = forbidden
+# Only DIRECT imports of harbor are forbidden; reaching HarborEngine through the
+# engine factory (harness.run.engines) is exactly the allowed seam — callers ask
+# for an engine by name and never import harbor themselves. The AST seam test
+# (tests/test_eval4_seam.py) is the belt-and-suspenders guard that no module
+# outside harbor.py / engines/__init__.py NAMES harbor at all.
+allow_indirect_imports = True
 source_modules =
+    harness.cli
+    harness.entrypoints
+    harness.version
     harness.schema
     harness.ledger
     harness.plan
@@ -22,6 +31,12 @@ source_modules =
     harness.run.seam
     harness.run.interleave
     harness.run.budget
+    harness.run.cli
+    harness.run.egress
+    harness.run.redact
+    harness.run.types
+    harness.run.settings
+    harness.run.engines.fake
 forbidden_modules =
     harness.run.engines.harbor
 
@@ -41,6 +56,9 @@ type = forbidden
 # through the typed constructors in events.py is exactly the allowed path.
 allow_indirect_imports = True
 source_modules =
+    harness.cli
+    harness.entrypoints
+    harness.version
     harness.schema
     harness.plan
     harness.run
@@ -51,5 +69,6 @@ source_modules =
     harness.review
     harness.process
     harness.corpus
+    harness.blind
 forbidden_modules =
     harness.ledger.chain

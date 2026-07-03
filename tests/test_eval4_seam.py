@@ -79,10 +79,15 @@ def test_ac1_engine_isolated():
 
     # Only the engine module and the engine factory may name Harbor.
     allowed = {"harness/run/engines/harbor.py", "harness/run/engines/__init__.py"}
-    root = pathlib.Path("harness")
+    # Anchor on __file__, not the cwd: a relative Path("harness") globs nothing
+    # from any other working directory and the scan would pass vacuously [XC-5].
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    root = repo_root / "harness"
+    assert list(root.rglob("*.py")), "seam scan found no harness modules — bad anchor"
     offenders = []
     for py in root.rglob("*.py"):
-        if py.as_posix() in allowed:
+        rel = py.relative_to(repo_root).as_posix()
+        if rel in allowed:
             continue
         tree = ast.parse(py.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -94,5 +99,5 @@ def test_ac1_engine_isolated():
             for name in names:
                 last = name.rsplit(".", 1)[-1]
                 if last == "harbor" or name == "docker":
-                    offenders.append((py.as_posix(), name))
+                    offenders.append((rel, name))
     assert not offenders, f"Harbor/docker imported outside the seam: {offenders}"

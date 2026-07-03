@@ -120,8 +120,7 @@ def identity_pattern_list(extra_literals: list[str] | None = None) -> PatternLis
 # Secret redaction corpus — provider keys, NOT identity. [EVAL-4-D004]
 # ---------------------------------------------------------------------------
 _SECRET_PATTERNS = [
-    r"sk-[A-Za-z0-9_\-]{16,}",          # OpenAI / Anthropic style
-    r"sk-ant-[A-Za-z0-9_\-]{16,}",      # Anthropic explicit
+    r"sk-[A-Za-z0-9_\-]{16,}",          # OpenAI / Anthropic style (covers sk-ant-…)
     r"AKIA[0-9A-Z]{16}",                # AWS access key id
     r"AIza[0-9A-Za-z_\-]{35}",          # Google API key
     r"gh[oprsu]_[A-Za-z0-9]{36,}",      # GitHub PAT/OAuth/app/user/refresh tokens

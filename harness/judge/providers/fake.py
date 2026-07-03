@@ -94,6 +94,12 @@ class DeterministicFakeProvider(Provider):
         return deterministic_verdict(messages)
 
 
+class FakeProviderExhausted(RuntimeError):
+    """A scripted :class:`FakeProvider` was called more times than it has
+    responses. Raised instead of silently replaying the last item [RN-18] — a
+    silent replay can hide a miscounted or under-scripted test."""
+
+
 class FakeProvider(Provider):
     def __init__(self, responses: Union[list, Callable[[list[dict]], str]]):
         """``responses`` is either a list consumed per call (each item a str to
@@ -106,7 +112,12 @@ class FakeProvider(Provider):
         self.calls.append({"model_id": model_id, "messages": messages, "temperature": temperature})
         if callable(self._responses):
             return self._responses(messages)
-        item = self._responses[min(self._i, len(self._responses) - 1)]
+        if self._i >= len(self._responses):
+            raise FakeProviderExhausted(
+                f"FakeProvider exhausted: {len(self._responses)} scripted "
+                f"response(s), but call #{self._i + 1} was requested"
+            )
+        item = self._responses[self._i]
         self._i += 1
         if isinstance(item, Exception):
             raise item

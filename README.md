@@ -22,12 +22,15 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 | **EVAL-7** | Human review packet (offline, blinded), capture-then-reveal, kappa estimator seam | ✅ |
 | **EVAL-9** | Process rubric: isolated judge scoring, firewalls, weighted-kappa calibration | ✅ |
 
-All EVAL-1 child stories are built. 271 tests green in the fast suite, plus a
+All EVAL-1 child stories are built. The fast suite
+(`uv run pytest -m "not docker"`) is green — over 400 tests — plus a
 `docker`-marked suite of real-container tests (a real grade container and a real
 Harbor trial) run with `-m docker` in a dedicated CI job on Docker-capable
-runners; 3 import-linter contracts kept. AC-mapped tests are tracked
-mechanically via `--ac-report` as a program-wide union of AC numbers — not a
-verified per-story guarantee.
+runners; 3 import-linter contracts kept. AC-mapped tests are **enforced per
+story**: collection fails if any story's pre-registered acceptance criteria (from
+its `eval<N>.spec.md`) lack a `test_ac<N>_*` test, or if an AC test is duplicated
+or names an AC its story does not declare. `--ac-report` additionally prints the
+exercised AC numbers.
 
 ## Provisional decisions
 
@@ -93,4 +96,5 @@ uv run pytest --ac-report            # recompute AC coverage
 
 > **Python:** the spec binds 3.12+. This checkout's `requires-python` is relaxed
 > to `>=3.11` because the 3.12 standalone build is unreachable in the current
-> environment; the code stays 3.12-compatible.
+> environment; 3.12 compatibility is verified by a `compileall` gate under a real
+> 3.12 interpreter in the CI `py312-compat` job.
