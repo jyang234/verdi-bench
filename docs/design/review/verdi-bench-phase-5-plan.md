@@ -157,19 +157,23 @@ its slice lands, mirroring Phase 4's `D-P4-*` convention.
   change of an existing field on a hash-chained event (not additive), so it carries
   a migration/compatibility story (§ Contract additions). *(Owned by 5I.)*
 
-### Confirm at phase start (resolved-pending)
+### Confirmed at planning start (resolved by jyang, 2026-07-03)
 
-- **REVIEW-D-5 (JD-4) — recommended `undefined-insufficient`.** Return kappa
+- **REVIEW-D-5 (JD-4) — `undefined-insufficient` (confirmed).** Return kappa
   undefined / `sufficient=False` at zero chance-corrected information, in **both**
   `cohens_kappa` and `weighted_kappa` (judge **and** process share the fix).
   Trade-off: `1.0/sufficient` reads as "perfect agreement" when there is in fact
   *no* chance-corrected signal (all raters picked one category) — the instrument
   would over-credit the judge exactly when the data cannot support any kappa;
   `undefined-insufficient` refuses to certify agreement it cannot measure, at the
-  cost of a slightly more conservative escalation table. Recommend
-  `undefined-insufficient`; **confirm before slice 5H.**
+  cost of a slightly more conservative escalation table. **Confirmed
+  `undefined-insufficient` (jyang, 2026-07-03).** Recorded in `review.decisions.ndjson`.
 
 ### New Phase-5 decisions (recommendation + trade-offs)
+
+**Status:** D-P5-1, D-P5-2, D-P5-4 **confirmed by jyang (2026-07-03)** and recorded
+in the owning `evalN.decisions.ndjson`; D-P5-3 is taken as recommended, vetoable at
+slice 5E.
 
 - **D-P5-1 — the judge-preference effect measure (AN-1/AN-7).** What replaces the
   fabricated clipped-series Cliff's delta? **Recommend** a proper paired
@@ -181,7 +185,7 @@ its slice lands, mirroring Phase 4's `D-P4-*` convention.
   alternative (a rank-biserial / Cliff's-delta over the *un-clipped* signed series)
   is defensible but harder to interpret against the decision rule
   `delta_judge_preference <op> <thr>`, which is naturally a win-rate difference.
-  *(Owned by 5B.)*
+  **Confirmed: per-task win-rate difference (jyang, 2026-07-03).** *(Owned by 5B.)*
 - **D-P5-2 — the AN-2 fence binding shape.** Bind the official fence to which
   identity? **Recommend all three:** (a) manifest `corpus_id`/`semver` vs
   `spec.corpus.id`/`version`; (b) manifest `task_shas()` vs the shas actually run
@@ -190,7 +194,8 @@ its slice lands, mirroring Phase 4's `D-P4-*` convention.
   `manifest.calibration.status` (CO-4 compounds AN-2 — a JSON edit currently passes
   the fence). Trade-off: a fence that ignores any one of the three is a
   hand-editable bypass; binding all three is stricter but each check is cheap and
-  the failure message says exactly which identity mismatched. *(Owned by 5C.)*
+  the failure message says exactly which identity mismatched. **Confirmed: all
+  three checks (jyang, 2026-07-03).** *(Owned by 5C.)*
 - **D-P5-3 — the claim-tag mechanism (AN-6).** How do `[computed]`/`[judgment]`
   tags attach? **Recommend** a structured `claim_tag` field on each finding/claim
   in `findings.json`, with the renders deriving the visible marker — so the tag is
@@ -210,7 +215,8 @@ its slice lands, mirroring Phase 4's `D-P4-*` convention.
   correlated reps carry less information than independent obs), so a design that
   *locked* as adequate under the old independent-obs model may re-lock as
   underpowered. That is the correct behavior (it was optimistic before), but it is a
-  contract-visible change carrying a migration note. *(Owned by 5A; consumed by 5B.)*
+  contract-visible change carrying a migration note. **Confirmed: cluster by task
+  (jyang, 2026-07-03).** *(Owned by 5A; consumed by 5B.)*
 
 Two smaller **in-slice** forks (recommendation stated, settled within the owning
 slice, not gating the whole phase):
@@ -564,9 +570,10 @@ note before its owning slice. No new runtime dependency, no new ledger event typ
 no Docker. Slices land in the order 5A → 5B → 5C → 5D → 5E → 5F, then 5G, 5H, 5I
 (independent judge/kappa work, interleavable), then **5J last**.
 
-**Open decisions to confirm before their slices land** (recommendation + trade-offs
-above): REVIEW-D-5 (degenerate kappa → `undefined-insufficient`, 5H), D-P5-1
-(judge-preference effect measure, 5B), D-P5-2 (fence binding shape, 5C), D-P5-3
-(claim-tag mechanism, 5E), D-P5-4 (shared cluster-by-task model, 5A). REVIEW-D-3 and
-REVIEW-D-4 are already resolved. I'll report at natural breakpoints and check in
-before Phase 6 (enforcement infrastructure). No PR unless you ask.
+**Decisions — status.** Confirmed by jyang (2026-07-03) and recorded in the owning
+ledgers: REVIEW-D-5 (degenerate kappa → `undefined-insufficient`, 5H), D-P5-1
+(judge-preference per-task win-rate difference, 5B), D-P5-2 (three-way fence binding,
+5C), D-P5-4 (shared cluster-by-task model, 5A). Already resolved: REVIEW-D-3 (AN-12
+keep-labeled), REVIEW-D-4 (confidence enum). Recommended, vetoable at its slice:
+D-P5-3 (structured claim-tag field, 5E). I'll report at natural breakpoints and check
+in before Phase 6 (enforcement infrastructure). No PR unless you ask.
