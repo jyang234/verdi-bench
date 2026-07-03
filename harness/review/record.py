@@ -19,7 +19,7 @@ from typing import Optional
 from ..judge.schema import Verdict
 from ..ledger import events
 from ..ledger.events import EventContext
-from ..ledger.query import find_events
+from ..ledger.query import assert_chain, find_events
 
 
 class RevealError(RuntimeError):
@@ -72,6 +72,10 @@ def reveal_comparison(
     Refuses if no verdict+integrity event exists for the comparison; the reveal
     references that human verdict and names the judge verdict it unblinds.
     """
+    # The reveal gate reads the ledger to check a human verdict exists; verify
+    # the chain first so a forged human_verdict cannot enable a premature
+    # unblinding, defeating capture-then-reveal [PL-6/AC-4].
+    assert_chain(ledger_path)
     hv = human_verdict_exists(ledger_path, comparison_id)
     if hv is None:
         raise RevealError(

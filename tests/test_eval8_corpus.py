@@ -63,6 +63,36 @@ def test_ac1_public_import_manifest(tmp_path):
     assert m1.task_shas() == m2.task_shas()
 
 
+def test_reimport_preserves_calibration(tmp_path):
+    """CO-3: a byte-identical re-import must not wipe recorded calibration
+    (reproduced: full-run-validated -> none)."""
+    src = _write_dataset(tmp_path / "ds")
+    cache = tmp_path / "cache"
+    m1 = import_terminal_bench(DirectorySource(src), cache)
+    m1.record_calibration_run({"full": True}, kind="full")
+    m1.save(cache / "manifest.json")
+    assert m1.calibration.status == "full-run-validated"
+
+    m2 = import_terminal_bench(DirectorySource(src), cache)  # same semver, same content
+    assert m2.calibration.status == "full-run-validated"
+
+
+def test_reimport_same_semver_mutation_refused(tmp_path):
+    """CO-3: mutating task content without a semver bump is refused, not a silent
+    cache rewrite."""
+    src = _write_dataset(tmp_path / "ds")
+    cache = tmp_path / "cache"
+    import_terminal_bench(DirectorySource(src), cache)
+    cached = (cache / "tasks" / "task-0.json").read_text(encoding="utf-8")
+    (src / "task-0.json").write_text(
+        json.dumps({"id": "task-0", "prompt": "MUTATED", "harbor": True}), encoding="utf-8"
+    )
+    with pytest.raises(CorpusMutationError):
+        import_terminal_bench(DirectorySource(src), cache)
+    # the refusal happened before any cache write — the blob is unchanged
+    assert (cache / "tasks" / "task-0.json").read_text(encoding="utf-8") == cached
+
+
 # --- AC-2: stratified selection, calibration status, official gate ----------
 def test_ac2_stratified_selection(tmp_path):
     src = _write_dataset(tmp_path / "ds", n=6)
@@ -178,6 +208,40 @@ def test_ac4_baseline_prereq(tmp_path):
     )
     assert task.status == "admitted"
     assert manifest.is_schedulable("cand-1") is True
+
+
+def test_admit_refuses_tampered_chain(tmp_path):
+    """CO-5/PL-6: admission reads its two preconditions from the ledger; it must
+    verify the hash chain first, so a hand-forged ledger cannot admit a task.
+    """
+    from harness.ledger.chain import canonical_line
+    from harness.ledger.query import ChainIntegrityError
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    manifest = _pending_manifest()
+    record_curation_approval(
+        ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, approver="curator"
+    )
+    record_flake_baseline(
+        ledger, ctx, task_id="cand-1", task_sha="s" * 64, k=5,
+        results=[{"run": i, "passed": True} for i in range(5)], verdict="clean",
+    )
+    # tamper the approval line's *unchecked* approver field: the admission
+    # preconditions still match by (candidate_id, task_sha), but the byte change
+    # breaks the successor baseline line's prev_hash.
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    approval = json.loads(lines[0])
+    assert approval["event"] == "curation_approval"
+    approval["approver"] = "attacker"
+    lines[0] = canonical_line(approval)
+    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(ChainIntegrityError):
+        admit_task(
+            manifest, ledger, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
+        )
+    assert manifest.is_schedulable("cand-1") is False
 
 
 def test_ac4_baseline_must_be_clean(tmp_path):

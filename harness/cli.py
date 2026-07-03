@@ -39,18 +39,26 @@ def plan(
     attested_by: str = typer.Option("cli-user", "--attested-by", help="Lock attester [D008]"),
 ) -> None:
     """Validate, power-check, and write the genesis lock event."""
-    from .plan.lock import UnderpoweredError, lock_experiment
+    from .corpus.commit import TaskCommitmentError, load_task_dicts
+    from .plan.lock import AlreadyLockedError, UnderpoweredError, lock_experiment
 
-    ctx = _default_ctx(experiment_id=experiment.stem)
+    # PL-8: stamp the experiment *directory* name, exactly as run/grade do
+    # (``experiment_dir.name``) — one ledger, one experiment_id. No stem fallback:
+    # that diverged from run/grade for a bare path.
+    ctx = _default_ctx(experiment_id=experiment.parent.name)
     try:
+        # PL-7/D-6: commit the task content (tasks.yaml in the experiment dir) into
+        # the lock so a post-lock swap is refused by run/grade.
+        task_dicts = load_task_dicts(experiment.parent)
         outcome = lock_experiment(
             experiment,
             ledger,
             ctx=ctx,
             acknowledge_underpowered=acknowledge_underpowered,
             attested_by=attested_by,
+            task_dicts=task_dicts,
         )
-    except UnderpoweredError as e:
+    except (UnderpoweredError, AlreadyLockedError, TaskCommitmentError) as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(code=2)
     mde = outcome.mde["mde"]
@@ -88,12 +96,20 @@ def anchor(
     ledger: Path = typer.Argument(..., help="Ledger ndjson path"),
     out: Path = typer.Option(..., "--out", help="External anchor store path"),
 ) -> None:
-    """Record the current chain head to an external anchor store [D008]."""
-    from datetime import datetime, timezone
+    """Record the current chain head to an external anchor store [D008].
 
+    Also ledgers a ``chain_anchor`` event so the act of anchoring is itself an
+    auditable, chained record — not just an external-file side effect [PL-4].
+    """
     from .ledger.anchors import anchor_head
+    from .ledger.events import record_chain_anchor
 
-    rec = anchor_head(ledger, out, ts=datetime.now(timezone.utc).isoformat())
+    # Route the timestamp through the EventContext clock seam rather than a bare
+    # wall-clock read in the CLI [PL-4 / determinism]. Capture the pre-anchor
+    # head externally, then ledger that same head.
+    ctx = _default_ctx(experiment_id=ledger.parent.name)
+    rec = anchor_head(ledger, out, ts=ctx.clock())
+    record_chain_anchor(ledger, ctx, head_hash=rec["head_hash"], height=rec["height"])
     typer.echo(f"anchored head={rec['head_hash'][:12]}… height={rec['height']}")
 
 

@@ -113,26 +113,36 @@ def record_experiment_locked(
     mde: dict,
     attested_by: str,
     method: str,
+    task_commitment: Optional[dict] = None,
 ) -> dict:
-    """Genesis lock event [AC-2, D004, D008]."""
-    return emit(
-        ledger_path,
-        ctx,
-        EXPERIMENT_LOCKED,
-        {
-            "spec_sha256": spec_sha256,
-            "spec_path": spec_path,
-            "seed": seed,
-            "mde": mde,
-            "attestation": {"attested_by": attested_by, "method": method},
-        },
-    )
+    """Genesis lock event [AC-2, D004, D008].
+
+    ``task_commitment`` (additive field, EVAL-1-D-6) pins the corpus id/semver
+    and a hash over the per-task content shas, so run/grade can refuse tasks
+    that were swapped after lock [PL-7]. Optional for compatibility with
+    task-less plan flows; required by run/grade when real tasks are present.
+    """
+    payload = {
+        "spec_sha256": spec_sha256,
+        "spec_path": spec_path,
+        "seed": seed,
+        "mde": mde,
+        "attestation": {"attested_by": attested_by, "method": method},
+    }
+    if task_commitment is not None:
+        payload["task_commitment"] = task_commitment
+    return emit(ledger_path, ctx, EXPERIMENT_LOCKED, payload)
 
 
 def record_acknowledged_underpowered(
-    ledger_path, ctx: EventContext, *, mde: float, hypothesized_effect: float
+    ledger_path, ctx: EventContext, *, mde: Optional[float], hypothesized_effect: float
 ) -> dict:
-    """Ledgered acknowledgment that a design is underpowered [D001, AC-4]."""
+    """Ledgered acknowledgment that a design is underpowered [D001, AC-4].
+
+    ``mde`` is ``None`` (ledgered as ``null``) when the MDE was incomputable —
+    no swept effect reached target power, the maximally underpowered case; the
+    field is therefore genuinely optional, not a float that was set to null.
+    """
     return emit(
         ledger_path,
         ctx,
@@ -212,7 +222,12 @@ def record_grade(
     assertions: list,
     binary_score: bool,
     fractional_score: Optional[float] = None,
+    grader: Optional[str] = None,
 ) -> dict:
+    """``grader`` (additive field) records which grader produced the verdict —
+    e.g. ``"docker"`` (a trusted network-less container) vs ``"local"`` (the
+    no-daemon path that reads a pre-placed file, ADVISORY). It lets an audit
+    distinguish a trusted grade from an advisory/forgeable one."""
     payload = {
         "trial_id": trial_id,
         "task_sha": task_sha,
@@ -221,6 +236,8 @@ def record_grade(
     }
     if fractional_score is not None:
         payload["fractional_score"] = fractional_score
+    if grader is not None:
+        payload["grader"] = grader
     return emit(ledger_path, ctx, GRADE, payload)
 
 

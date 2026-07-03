@@ -257,3 +257,29 @@ def test_ac6_integrity_rate_reported(tmp_path):
     assert "blinding integrity rate" in md.lower()
     # the field is schema-required — a findings doc cannot omit it
     assert "integrity" in findings.model_dump()
+
+
+def test_reveal_refuses_tampered_chain(tmp_path):
+    """PL-6/AC-4: the reveal gate reads the ledger to check a human verdict
+    exists; a forged human_verdict must not enable a premature unblinding."""
+    import json
+
+    from harness.ledger.chain import canonical_line
+    from harness.ledger.query import ChainIntegrityError
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"),
+                         arm_recognized=False, arm_guess=None)
+    # a successor event so tampering the first line is detectable by the chain
+    record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-2"),
+                         arm_recognized=False, arm_guess=None)
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    obj = json.loads(lines[0])
+    obj["integrity"]["arm_recognized"] = True  # byte change breaks chain at line 2
+    lines[0] = canonical_line(obj)
+    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(ChainIntegrityError):
+        reveal_comparison(ledger, ctx, comparison_id="cmp-1",
+                          arm_identities={"1": "arm_a", "2": "arm_b"})

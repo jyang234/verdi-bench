@@ -127,3 +127,113 @@ def test_ac3_empty_holdout_not_vacuous_pass(tmp_path):
     # holdout_pass_rate for a trial that verified nothing)
     out, ledger = _grade(tmp_path, {"assertions": []})
     assert find_events(ledger, "grade")[0]["binary_score"] is False
+
+
+def test_grade_loader_ignores_fake_scripting(tmp_path):
+    """GR-5: the production task loader does not read fake_holdout_output /
+    fake_plugin_output from the task source — they cannot script a grade."""
+    from harness.grade.cli import _grade_tasks_from_dicts
+
+    tasks = _grade_tasks_from_dicts(
+        [{"id": "t1", "holdouts_dir": "h", "fake_holdout_output": {"assertions": []},
+          "fake_plugin_output": {"p": 1}}]
+    )
+    gt = tasks["t1"]
+    assert gt.fake_holdout_output is None
+    assert gt.fake_plugin_output == {}
+    # sha is recomputed from content, not any self-attested field
+    from harness.corpus.commit import task_content_sha
+
+    assert gt.task_sha == task_content_sha(
+        {"id": "t1", "holdouts_dir": "h", "fake_holdout_output": {"assertions": []},
+         "fake_plugin_output": {"p": 1}}
+    )
+
+
+def test_grade_hostile_workspace_dir_results_fails_closed(tmp_path):
+    """SEC5: an agent that makes holdout_results.json a DIRECTORY must not crash
+    grade_trial (old: unlink -> IsADirectoryError -> aborts the whole batch). The
+    fresh-copy prep removes the bad entry and grading proceeds; one event lands."""
+    ws = write_workspace(tmp_path)
+    (ws / "holdout_results.json").mkdir()  # hostile: a directory, not a file
+    runner = _FreshCopyRunner({"assertions": [{"id": "h1", "result": "pass"}]})
+    container = GradingContainer(runner=runner)
+    ledger = tmp_path / "l.ndjson"
+    outcome = grade_trial("trial-1", _task(), ws, ledger, fixed_ctx(), container=container)
+    # no crash, exactly one event, and the bad entry was removed in the copy
+    assert outcome.graded is True
+    assert runner.saw_stale is False
+    from harness.ledger.query import read_events
+
+    assert len(read_events(ledger)) == 1
+
+
+def test_completed_trials_allows_transient_regrade(tmp_path):
+    """GR-11: only a transient cant_grade (grader could not be RUN) is
+    regradeable. A grade, a terminal cant_grade, OR a grader that ran and FAILED
+    (container_failure) is not — a deterministically broken grader must not be
+    re-attempted on every `bench grade`."""
+    from harness.grade.cli import _completed_trials
+    from harness.ledger import events
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    events.record_grade(ledger, ctx, trial_id="graded", task_sha="s", assertions=[],
+                        binary_score=True)
+    events.record_cant_grade(ledger, ctx, trial_id="transient", reason="grader_unavailable")
+    events.record_cant_grade(ledger, ctx, trial_id="terminal", reason="unknown_task")
+    events.record_cant_grade(ledger, ctx, trial_id="ran_and_failed", reason="container_failure")
+
+    done = _completed_trials(ledger)
+    assert "graded" in done
+    assert "terminal" in done
+    assert "ran_and_failed" in done  # grader ran and exited nonzero: terminal
+    assert "transient" not in done  # only "could not run the grader" regrades
+
+
+class _FreshCopyRunner:
+    """A runner that (like DockerGradeRunner) grades a fresh workspace copy and
+    writes its *own* holdout output — records what it was handed. It does not set
+    ``grades_in_place``, so it gets the safe copy path by default."""
+
+    def __init__(self, output):
+        self.output = output
+        self.saw_stale = None
+        self.copy_path = None
+
+    def run_holdouts(self, cmd, workspace, holdouts_dir):
+        from pathlib import Path
+
+        from harness.grade.container import HoldoutRun
+
+        self.copy_path = Path(workspace)
+        self.saw_stale = (Path(workspace) / "holdout_results.json").exists()
+        return HoldoutRun(self.output)
+
+
+def test_grade_ignores_forged_results_and_protects_evidence(tmp_path):
+    """GR-1/GR-3: a runner that grades a fresh copy must not see an
+    agent-written holdout_results.json (deleted in the copy), must grade a copy
+    (not the original), and must not mutate the ledgered trial evidence.
+    """
+    import json
+
+    ws = write_workspace(tmp_path)
+    # the subject agent forges an all-pass results file in its own workspace
+    forged = {"assertions": [{"id": "h1", "result": "pass"}]}
+    (ws / "holdout_results.json").write_text(json.dumps(forged), encoding="utf-8")
+
+    # the real grader output disagrees (a failure)
+    runner = _FreshCopyRunner({"assertions": [{"id": "h1", "result": "fail"}]})
+    container = GradingContainer(runner=runner)
+    ledger = tmp_path / "l.ndjson"
+    grade_trial("trial-1", _task(), ws, ledger, fixed_ctx(), container=container)
+
+    # graded a *copy*, not the original workspace
+    assert runner.copy_path != ws
+    # the forged file was deleted before grading — the grader saw a clean copy
+    assert runner.saw_stale is False
+    # the recorded grade reflects the grader's output, not the forged all-pass
+    assert find_events(ledger, "grade")[0]["binary_score"] is False
+    # the original workspace (ledgered evidence) is untouched
+    assert json.loads((ws / "holdout_results.json").read_text()) == forged

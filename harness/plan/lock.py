@@ -16,7 +16,7 @@ from typing import Optional
 
 from ..ledger import events
 from ..ledger.events import EventContext
-from ..ledger.query import find_events
+from ..ledger.query import assert_chain, find_events
 from ..schema.experiment import ExperimentSpec
 from .power import AssumedVariance, VarianceSource, mde_check
 
@@ -33,9 +33,17 @@ class LockMismatchError(LockError):
     """The spec on disk no longer matches the locked sha [AC-2]."""
 
 
+class AlreadyLockedError(LockError):
+    """A lock already exists for this ledger; re-lock is refused [PL-3]."""
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def spec_sha256(spec_path) -> str:
     """sha256 over the yaml file's exact bytes."""
-    return hashlib.sha256(Path(spec_path).read_bytes()).hexdigest()
+    return _sha256_bytes(Path(spec_path).read_bytes())
 
 
 @dataclass
@@ -55,10 +63,27 @@ def lock_experiment(
     acknowledge_underpowered: bool = False,
     attested_by: str = "unknown",
     attestation_method: str = "anchor-plus-attestation-v1",
+    task_dicts: Optional[list] = None,
     **mde_kwargs,
 ) -> LockOutcome:
     """Validate, power-check, and write the genesis lock event."""
-    spec = ExperimentSpec.from_yaml(spec_path)
+    # PL-2: read the spec bytes once, then parse *and* hash the same buffer, so
+    # the recorded sha is provably the sha of the validated content — no window
+    # for the file to change between the parse read and a second hash read.
+    spec_bytes = Path(spec_path).read_bytes()
+    spec = ExperimentSpec.from_yaml_text(
+        spec_bytes.decode("utf-8"), source=str(spec_path)
+    )
+    sha = _sha256_bytes(spec_bytes)
+
+    # PL-3: refuse a second lock. A re-lock would append a second
+    # experiment_locked event while assert_lock keys the first, telling the
+    # operator a spec is locked when it isn't. One lock per ledger, period.
+    if find_events(ledger_path, events.EXPERIMENT_LOCKED):
+        raise AlreadyLockedError(
+            f"{ledger_path} already has an experiment_locked event; re-lock is "
+            "refused. Start a fresh ledger to re-plan."
+        )
 
     if variance_source is None:
         variance_source = AssumedVariance()
@@ -67,6 +92,8 @@ def lock_experiment(
     # Underpowered check [D001, AC-4]: refuse unless acknowledged. A None MDE
     # means the design could not detect *any* swept effect — the maximally
     # underpowered case — so it must NOT fail open: treat it as underpowered.
+    ack_underpowered = False
+    mde_val = None
     if spec.hypothesized_effect is not None:
         mde_val = mde["mde"]
         underpowered = mde_val is None or spec.hypothesized_effect < mde_val
@@ -79,14 +106,21 @@ def lock_experiment(
                     "acknowledge_underpowered=True to lock with a ledgered "
                     "acknowledgment."
                 )
-            events.record_acknowledged_underpowered(
-                ledger_path,
-                ctx,
-                mde=mde_val,
-                hypothesized_effect=spec.hypothesized_effect,
-            )
+            ack_underpowered = True
 
-    sha = spec_sha256(spec_path)
+    # PL-7 / D-6: pin the task-content commitment so run/grade can refuse a
+    # post-lock swap of prompts, canaries, holdout scripts, or scoring.
+    task_commitment = None
+    if task_dicts:
+        from ..corpus.commit import compute_commitment
+
+        task_commitment = compute_commitment(
+            task_dicts, corpus_id=spec.corpus.id, semver=spec.corpus.version
+        )
+
+    # PL-3: the lock is the genesis event. Write it *first*, before any rider,
+    # so its prev_hash is all-zeros and the chain anchors on the lock even when
+    # an underpowered acknowledgment is also recorded.
     event = events.record_experiment_locked(
         ledger_path,
         ctx,
@@ -96,7 +130,15 @@ def lock_experiment(
         mde=mde,
         attested_by=attested_by,
         method=attestation_method,
+        task_commitment=task_commitment,
     )
+    if ack_underpowered:
+        events.record_acknowledged_underpowered(
+            ledger_path,
+            ctx,
+            mde=mde_val,
+            hypothesized_effect=spec.hypothesized_effect,
+        )
     return LockOutcome(spec=spec, spec_sha256=sha, mde=mde, event=event)
 
 
@@ -112,6 +154,10 @@ def assert_lock(spec_path, ledger_path) -> dict:
         raise LockMismatchError(
             f"no experiment_locked event in {ledger_path}; run `bench plan` first"
         )
+    # An empty/absent ledger is "not planned yet" (handled above); once a lock
+    # exists we verify the whole chain before trusting any recorded field, so a
+    # rewritten lock line cannot pass this gate on a forged sha [PL-6].
+    assert_chain(ledger_path)
     recorded = locks[0]["spec_sha256"]
     computed = spec_sha256(spec_path)
     if recorded != computed:

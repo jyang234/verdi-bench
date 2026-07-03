@@ -29,6 +29,41 @@ def verify(path) -> ChainResult:
     return verify_chain(path)
 
 
+class ChainIntegrityError(RuntimeError):
+    """The ledger's hash chain failed verification — refuse to trust its content.
+
+    Raised by :func:`assert_chain`, which every stage that gates on ledger
+    content calls before reading, so a rewritten/deleted/reordered line refuses
+    the operation instead of being read as evidence [PL-6/CO-5]. This detects
+    tampering of any line that has a successor; the unanchored head line is
+    covered by the external chain anchor (``bench anchor``), not by this check —
+    see ``chain.py``'s opacity boundary.
+    """
+
+
+def assert_chain(path) -> None:
+    """Fail closed unless the ledger's hash chain verifies.
+
+    The chain is tamper-*evident* only if something actually consults it; the
+    stage entrypoints (``assert_lock``, corpus admission) call this first so a
+    hand-edited ledger cannot pass a downstream gate on unverified content.
+
+    An absent or empty ledger is "nothing recorded yet", not tampering — there is
+    no content to be fooled by, and the caller's own precondition check (no lock
+    event, no curation approval, …) fails the operation closed. Deleting the
+    ledger therefore cannot slip past a gate here; it fails at the precondition.
+    """
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return
+    result = verify(path)
+    if not result:
+        at = f" at line {result.line_number}" if result.line_number else ""
+        raise ChainIntegrityError(
+            f"ledger chain verification failed{at}: {result.detail}"
+        )
+
+
 def iter_events(path) -> Iterator[dict]:
     path = Path(path)
     if not path.exists():

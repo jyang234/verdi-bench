@@ -22,8 +22,11 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 | **EVAL-7** | Human review packet (offline, blinded), capture-then-reveal, kappa estimator seam | ✅ |
 | **EVAL-9** | Process rubric: isolated judge scoring, firewalls, weighted-kappa calibration | ✅ |
 
-All EVAL-1 child stories are built. 210 tests green (full AC-1..AC-9 coverage
-per story); 3 import-linter contracts kept.
+All EVAL-1 child stories are built. 234 tests green, plus a `docker`-marked
+real-container grade test run with `-m docker` where a daemon is available;
+3 import-linter contracts kept. AC-mapped tests are tracked mechanically via
+`--ac-report` as a program-wide union of AC numbers — not a verified per-story
+guarantee.
 
 ## Provisional decisions
 
@@ -65,9 +68,11 @@ uv run bench review reveal <experiment-dir> --comparison-id c1   # refuses pre-v
 uv run bench process record <experiment-dir> --trial-id t1 --comparison-id c1 --scores s.json
 ```
 
-`bench run`/`grade` default to the hermetic **fake** engine (fast, no Docker);
-`--engine harbor` selects the real container path (requires a Docker daemon;
-those tests are marked `docker`).
+`bench run` defaults to the hermetic **fake** engine (fast, no Docker);
+`--engine harbor` selects the real container path (Phase-2 work in progress).
+`bench grade` defaults to `--runner docker` (the real network-less grading
+container), with `--runner local` for the no-daemon fake/test path; the real
+container path is covered by a `docker`-marked test (`uv run pytest -m docker`).
 
 ## Development
 

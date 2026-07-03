@@ -1,9 +1,12 @@
 """Deterministic grading [EVAL-5 §M2, AC-3, AC-5].
 
-Every trial receives exactly one deterministic grade event containing the full
-assertion vector — or exactly one ``cant_grade(reason)``. An attempted grade
-without an event is unrepresentable: the two outcomes are the only exits, and
-each appends precisely one event.
+Every attempted grade appends exactly one event: a deterministic ``grade`` with
+the full assertion vector, or one ``cant_grade(reason)``. A grade attempt without
+an event is unrepresentable. Note a *transient* cant_grade (a grader that could
+not be run, e.g. a docker outage) leaves the trial regradeable [GR-11], so a
+later attempt may append another cant_grade and, on recovery, a final grade —
+the one-event guarantee is per *attempt*, and a trial's terminal outcome is its
+last grade or terminal cant_grade.
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ from typing import Optional
 
 from ..ledger import events
 from ..ledger.events import EventContext
-from .container import GradingContainer, GradingContainerError
+from .container import GradingContainer, GradingContainerError, GraderUnavailableError
 from .plugins import get_plugin
 from .types import Assertion, AssertionResult, GradeTask
 
@@ -24,10 +27,20 @@ class MalformedHoldoutOutput(ValueError):
 
 
 # machine-readable cant_grade reasons [AC-5]
-REASON_CONTAINER = "container_failure"
+REASON_CONTAINER = "container_failure"      # grader ran and failed (terminal)
+REASON_DAEMON = "grader_unavailable"        # grader could not be run (transient)
 REASON_MALFORMED = "malformed_holdout_output"
 REASON_WORKSPACE_MISSING = "workspace_missing"
 REASON_PLUGIN = "plugin_error"
+REASON_UNKNOWN_TASK = "unknown_task"
+REASON_ARTIFACTS_MISSING = "artifacts_missing"
+
+# Reasons a later grade attempt may resolve (only "the grader could not be run",
+# e.g. a docker daemon outage) — these do NOT permanently block regrading
+# [GR-11]. Everything else — including a grader that ran and exited nonzero or
+# produced no results — is deterministic given the trial + config and stays
+# terminal, so a broken grader is not re-attempted on every ``bench grade``.
+TRANSIENT_CANT_GRADE = frozenset({REASON_DAEMON})
 
 
 @dataclass
@@ -111,9 +124,15 @@ def grade_trial(
     if not workspace.exists():
         return _cant(REASON_WORKSPACE_MISSING)
 
-    # 1. Run holdouts in a fresh, network-less container.
+    # 1. Run holdouts in a fresh, network-less container. Distinguish a grader
+    # that could not be RUN (transient) from one that ran and FAILED (terminal),
+    # so a transient outage is retryable but a broken grader is not re-attempted
+    # forever [GR-11]. GraderUnavailableError is a GradingContainerError subclass,
+    # so it must be caught first.
     try:
         run = container.run(workspace, task.holdouts_dir)
+    except GraderUnavailableError:
+        return _cant(REASON_DAEMON)
     except GradingContainerError:
         return _cant(REASON_CONTAINER)
 
@@ -143,6 +162,7 @@ def grade_trial(
         assertions=[a.model_dump(mode="json") for a in assertions],
         binary_score=binary,
         fractional_score=frac,
+        grader=container.grader_name,
     )
     return GradeOutcome(event=ev, graded=True)
 
