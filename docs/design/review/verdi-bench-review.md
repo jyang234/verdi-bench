@@ -1,5 +1,7 @@
 # verdi-bench implementation review — vs. 00-EVAL-1 master plan
 
+> **Superseded (2026-07-03)** by `verdi-bench-review-consolidated.md`, which re-verified every finding here against the code (note: C3 was reclassified — see the consolidated doc §1). Retained as a historical record.
+
 **Date:** 2026-07-02 · **Scope:** M0 + EVAL-3, EVAL-4, EVAL-5, EVAL-2 (the four built stories) · **Method:** full test/contract verification, five independent deep-review passes (one per story + plan conformance), every critical/major finding re-verified by hand against the code.
 
 ## Verdict

@@ -1,5 +1,7 @@
 # verdi-bench audit update — EVAL-6/7/8/9 (now visible on main)
 
+> **Superseded (2026-07-03)** by `verdi-bench-review-consolidated.md`, which re-verified every finding here against the code. Retained as a historical record.
+
 **Date:** 2026-07-02 · **Scope:** the four stories that were previously on the wrong branch (commits `46c84d9`, `4df1b7a`, `ddf7901`, `d103435` + docs/test commits), ~5,000 new lines, plus reassessment of the original audit. **Method:** suite verification (210 passed, 3 contracts kept), four independent deep-review passes (one per story), all critical/high findings re-verified by hand.
 
 ## How this changes the original audit
