@@ -87,22 +87,19 @@ def import_terminal_bench(
     """
     cache_dir = Path(cache_dir)
     tasks_dir = cache_dir / "tasks"
-    tasks_dir.mkdir(parents=True, exist_ok=True)
 
+    # 1. Compute entries + intended cache writes first — no side effects yet, so
+    #    a refused mutation (below) never rewrites the cache [CO-3].
     entries: list[TaskEntry] = []
+    blobs: dict[str, str] = {}
     for raw in sorted(source.fetch(), key=lambda r: r.task_id):
-        sha = content_sha(raw.content)
-        cache_path = tasks_dir / f"{raw.task_id}.json"
-        blob = json.dumps(
+        blobs[raw.task_id] = json.dumps(
             raw.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         )
-        # Write only when absent or changed — no churn on a clean re-import.
-        if not cache_path.exists() or cache_path.read_text(encoding="utf-8") != blob:
-            cache_path.write_text(blob, encoding="utf-8")
         entries.append(
             TaskEntry(
                 task_id=raw.task_id,
-                sha=sha,
+                sha=content_sha(raw.content),
                 # Public dataset tasks are admitted as imported; internal tasks
                 # go through the curation gate instead.
                 status="admitted",
@@ -117,5 +114,25 @@ def import_terminal_bench(
         dataset=Dataset(name=TERMINAL_BENCH, version=dataset_version),
         tasks=entries,
     )
-    manifest.save(cache_dir / "manifest.json")
+
+    # 2. Enforce the successor rule and carry recorded state across a re-import
+    #    against any prior manifest, BEFORE touching the cache [CO-3]. Same
+    #    semver + changed content is refused; a clean re-import preserves
+    #    calibration (previously wiped: full-run-validated -> none).
+    prior_path = cache_dir / "manifest.json"
+    if prior_path.exists():
+        prior = CorpusManifest.load(prior_path)
+        manifest.assert_valid_successor(prior)
+        if manifest.semver == prior.semver:
+            manifest.calibration = prior.calibration
+        # A semver bump keeps calibration fresh: the new version must re-validate
+        # before it can be cited officially.
+
+    # 3. Now persist: write changed/absent blobs, then the manifest.
+    tasks_dir.mkdir(parents=True, exist_ok=True)
+    for task_id, blob in blobs.items():
+        cache_path = tasks_dir / f"{task_id}.json"
+        if not cache_path.exists() or cache_path.read_text(encoding="utf-8") != blob:
+            cache_path.write_text(blob, encoding="utf-8")
+    manifest.save(prior_path)
     return manifest

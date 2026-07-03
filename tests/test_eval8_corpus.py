@@ -63,6 +63,36 @@ def test_ac1_public_import_manifest(tmp_path):
     assert m1.task_shas() == m2.task_shas()
 
 
+def test_reimport_preserves_calibration(tmp_path):
+    """CO-3: a byte-identical re-import must not wipe recorded calibration
+    (reproduced: full-run-validated -> none)."""
+    src = _write_dataset(tmp_path / "ds")
+    cache = tmp_path / "cache"
+    m1 = import_terminal_bench(DirectorySource(src), cache)
+    m1.record_calibration_run({"full": True}, kind="full")
+    m1.save(cache / "manifest.json")
+    assert m1.calibration.status == "full-run-validated"
+
+    m2 = import_terminal_bench(DirectorySource(src), cache)  # same semver, same content
+    assert m2.calibration.status == "full-run-validated"
+
+
+def test_reimport_same_semver_mutation_refused(tmp_path):
+    """CO-3: mutating task content without a semver bump is refused, not a silent
+    cache rewrite."""
+    src = _write_dataset(tmp_path / "ds")
+    cache = tmp_path / "cache"
+    import_terminal_bench(DirectorySource(src), cache)
+    cached = (cache / "tasks" / "task-0.json").read_text(encoding="utf-8")
+    (src / "task-0.json").write_text(
+        json.dumps({"id": "task-0", "prompt": "MUTATED", "harbor": True}), encoding="utf-8"
+    )
+    with pytest.raises(CorpusMutationError):
+        import_terminal_bench(DirectorySource(src), cache)
+    # the refusal happened before any cache write — the blob is unchanged
+    assert (cache / "tasks" / "task-0.json").read_text(encoding="utf-8") == cached
+
+
 # --- AC-2: stratified selection, calibration status, official gate ----------
 def test_ac2_stratified_selection(tmp_path):
     src = _write_dataset(tmp_path / "ds", n=6)
