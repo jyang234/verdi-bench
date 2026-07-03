@@ -41,7 +41,9 @@ def plan(
     """Validate, power-check, and write the genesis lock event."""
     from .plan.lock import UnderpoweredError, lock_experiment
 
-    ctx = _default_ctx(experiment_id=experiment.stem)
+    # PL-8: stamp the experiment *directory* name, matching run/grade — one
+    # ledger, one experiment_id (the yaml stem is literally "experiment").
+    ctx = _default_ctx(experiment_id=experiment.parent.name or experiment.stem)
     try:
         outcome = lock_experiment(
             experiment,
@@ -88,12 +90,20 @@ def anchor(
     ledger: Path = typer.Argument(..., help="Ledger ndjson path"),
     out: Path = typer.Option(..., "--out", help="External anchor store path"),
 ) -> None:
-    """Record the current chain head to an external anchor store [D008]."""
-    from datetime import datetime, timezone
+    """Record the current chain head to an external anchor store [D008].
 
+    Also ledgers a ``chain_anchor`` event so the act of anchoring is itself an
+    auditable, chained record — not just an external-file side effect [PL-4].
+    """
     from .ledger.anchors import anchor_head
+    from .ledger.events import record_chain_anchor
 
-    rec = anchor_head(ledger, out, ts=datetime.now(timezone.utc).isoformat())
+    # Route the timestamp through the EventContext clock seam rather than a bare
+    # wall-clock read in the CLI [PL-4 / determinism]. Capture the pre-anchor
+    # head externally, then ledger that same head.
+    ctx = _default_ctx(experiment_id=ledger.parent.name or ledger.stem)
+    rec = anchor_head(ledger, out, ts=ctx.clock())
+    record_chain_anchor(ledger, ctx, head_hash=rec["head_hash"], height=rec["height"])
     typer.echo(f"anchored head={rec['head_hash'][:12]}… height={rec['height']}")
 
 

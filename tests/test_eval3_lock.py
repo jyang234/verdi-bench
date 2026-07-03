@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 
 from harness.ledger import events
-from harness.ledger.query import find_events
+from harness.ledger.query import find_events, read_events
 from harness.plan.lock import (
+    AlreadyLockedError,
     LockMismatchError,
     UnderpoweredError,
     assert_lock,
@@ -104,6 +105,68 @@ def test_ac4_ack_ledgered(tmp_path):
     )
     assert len(find_events(ledger, events.ACKNOWLEDGED_UNDERPOWERED)) == 1
     assert len(find_events(ledger, events.EXPERIMENT_LOCKED)) == 1
+
+
+def test_lock_reads_spec_once_no_toctou(tmp_path, monkeypatch):
+    """PL-2: lock hashes the exact bytes it parsed. The spec file is read once,
+    so the recorded sha cannot diverge from the validated content via a race
+    (old code read it twice: once to parse, once to hash).
+    """
+    import pathlib
+
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    ledger = tmp_path / "ledger.ndjson"
+
+    reads = {"n": 0}
+    real_read_bytes = pathlib.Path.read_bytes
+    real_read_text = pathlib.Path.read_text
+
+    def counting_read_bytes(self):
+        if str(self) == str(spec):
+            reads["n"] += 1
+        return real_read_bytes(self)
+
+    def counting_read_text(self, *a, **k):
+        if str(self) == str(spec):
+            reads["n"] += 1
+        return real_read_text(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", counting_read_bytes)
+    monkeypatch.setattr(pathlib.Path, "read_text", counting_read_text)
+
+    lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    assert reads["n"] == 1
+
+
+def test_relock_refused(tmp_path):
+    """PL-3: a second lock over the same ledger is refused, not silently appended
+    as a second experiment_locked event."""
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    ledger = tmp_path / "ledger.ndjson"
+    lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    with pytest.raises(AlreadyLockedError):
+        lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    assert len(find_events(ledger, events.EXPERIMENT_LOCKED)) == 1
+
+
+def test_lock_is_genesis_on_ack_path(tmp_path):
+    """PL-3: even on the acknowledged-underpowered path the lock is the genesis
+    event — it is written before the acknowledgment rider, so its prev_hash is
+    all-zeros and `assert_lock` keys the true genesis."""
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml", hypothesized_effect=0.001)
+    ledger = tmp_path / "ledger.ndjson"
+    lock_experiment(
+        spec,
+        ledger,
+        ctx=fixed_ctx(),
+        variance_source=AssumedVariance(p=0.5, rho=0.3, n_tasks=20),
+        acknowledge_underpowered=True,
+        **FAST,
+    )
+    all_events = read_events(ledger)
+    assert all_events[0]["event"] == "experiment_locked"
+    assert all_events[0]["prev_hash"] == "0" * 64  # genesis
+    assert all_events[1]["event"] == "acknowledged_underpowered"
 
 
 def test_assert_lock_refuses_tampered_chain(tmp_path):

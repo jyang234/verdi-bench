@@ -46,3 +46,41 @@ def test_anchor_cli_roundtrip(tmp_path):
     r2 = runner.invoke(app, ["verify-chain", str(ledger), "--against-anchor", str(anchors)])
     assert r2.exit_code == 0
     assert "anchor OK" in r2.output
+
+
+def test_anchor_cli_writes_ledger_event(tmp_path):
+    """PL-4: `bench anchor` ledgers a chain_anchor event (it was test-only), so
+    the act of anchoring is itself an auditable, chained record."""
+    from harness.ledger import events
+    from harness.ledger.query import find_events
+
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    ledger = tmp_path / "ledger.ndjson"
+    anchors = tmp_path / "anchors.ndjson"
+    runner.invoke(app, ["plan", str(spec), "--ledger", str(ledger)])
+    r = runner.invoke(app, ["anchor", str(ledger), "--out", str(anchors)])
+    assert r.exit_code == 0, r.output
+    recorded = find_events(ledger, events.CHAIN_ANCHOR)
+    assert len(recorded) == 1
+    # the ledgered anchor names the head that was externally checkpointed
+    import json
+
+    ext = json.loads(anchors.read_text().splitlines()[0])
+    assert recorded[0]["head_hash"] == ext["head_hash"]
+    assert recorded[0]["height"] == ext["height"]
+
+
+def test_plan_experiment_id_is_dir_name(tmp_path):
+    """PL-8: plan stamps experiment_id as the experiment *directory* name (as run
+    and grade do), not the yaml stem "experiment"."""
+    expdir = tmp_path / "my-experiment"
+    expdir.mkdir()
+    spec = write_experiment_yaml(expdir / "experiment.yaml")
+    ledger = expdir / "ledger.ndjson"
+    r = runner.invoke(app, ["plan", str(spec), "--ledger", str(ledger)])
+    assert r.exit_code == 0, r.output
+    from harness.ledger import events
+    from harness.ledger.query import find_events
+
+    lock = find_events(ledger, events.EXPERIMENT_LOCKED)[0]
+    assert lock["provenance"]["experiment_id"] == "my-experiment"

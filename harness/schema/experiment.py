@@ -182,9 +182,17 @@ class ExperimentSpec(BaseModel):
         return cls.model_validate(data)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "ExperimentSpec":
-        text = Path(path).read_text(encoding="utf-8")
+    def from_yaml_text(cls, text: str, *, source: str = "<text>") -> "ExperimentSpec":
+        """Parse an already-read yaml document. Separated from :meth:`from_yaml`
+        so a caller that must hash the exact bytes it validates (the plan lock)
+        can read the file once and parse *those* bytes — no re-read race [PL-2].
+        """
         data = yaml.safe_load(text)
         if not isinstance(data, dict):
-            raise SpecError(f"{path}: top-level YAML must be a mapping")
+            raise SpecError(f"{source}: top-level YAML must be a mapping")
         return cls.from_dict(data)
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "ExperimentSpec":
+        text = Path(path).read_text(encoding="utf-8")
+        return cls.from_yaml_text(text, source=str(path))

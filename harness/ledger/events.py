@@ -130,9 +130,14 @@ def record_experiment_locked(
 
 
 def record_acknowledged_underpowered(
-    ledger_path, ctx: EventContext, *, mde: float, hypothesized_effect: float
+    ledger_path, ctx: EventContext, *, mde: Optional[float], hypothesized_effect: float
 ) -> dict:
-    """Ledgered acknowledgment that a design is underpowered [D001, AC-4]."""
+    """Ledgered acknowledgment that a design is underpowered [D001, AC-4].
+
+    ``mde`` is ``None`` (ledgered as ``null``) when the MDE was incomputable —
+    no swept effect reached target power, the maximally underpowered case; the
+    field is therefore genuinely optional, not a float that was set to null.
+    """
     return emit(
         ledger_path,
         ctx,
