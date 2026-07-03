@@ -14,6 +14,8 @@ stages the candidate for the reviewer.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Literal, Optional
@@ -62,6 +64,22 @@ class Candidate:
     holdouts: list[dict] = field(default_factory=list)  # shipped test additions
     groundwork_rules: Optional[list[dict]] = None
     status: Literal["pending-curation"] = "pending-curation"
+    miner: Optional[str] = None  # who staged this candidate [CO-7, D-P4-3]
+
+    def content_sha(self) -> str:
+        """sha256 over the candidate's task-defining content — its version id, the
+        sha a curation approval and flake baseline bind to."""
+        payload = json.dumps(
+            {
+                "workspace_ref": self.workspace_ref,
+                "prompt": self.prompt,
+                "holdouts": self.holdouts,
+                "groundwork_rules": self.groundwork_rules,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def mine_mr(

@@ -507,12 +507,18 @@ def record_curation_approval(
     candidate_id: str,
     task_sha: str,
     approver: str,
+    signature: str,
+    signer_public_key: str,
     notes: str = "",
 ) -> dict:
-    """Human curation approval of a mined candidate [EVAL-8 §4.2, AC-4].
+    """Human curation approval of a mined candidate [EVAL-8 §4.2, AC-4, D-P4-3].
 
     Admission is this event AND a clean flake baseline — both mechanical
-    preconditions; no code path admits a task without this event.
+    preconditions; no code path admits a task without this event. ``signature`` /
+    ``signer_public_key`` are the approver's Ed25519 attestation over
+    ``{candidate_id, task_sha, approver}`` (additive fields): admission verifies
+    the signature, that the key is an authorized curator, and that the approver is
+    not the miner. Old ledgers simply lack the fields.
     """
     return emit(
         ledger_path,
@@ -522,6 +528,8 @@ def record_curation_approval(
             "candidate_id": candidate_id,
             "task_sha": task_sha,
             "approver": approver,
+            "signature": signature,
+            "signer_public_key": signer_public_key,
             "notes": notes,
         },
     )

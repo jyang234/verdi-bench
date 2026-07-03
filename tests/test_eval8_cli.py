@@ -1,0 +1,123 @@
+"""EVAL-8 CO-7/CO-8/D-P4-3 — the corpus admission pipeline through the CLI.
+
+Drives mine → (review) → approve (signed) → admit end to end: the mine→manifest
+link, curation review showing holdout CONTENT, an Ed25519-signed curation
+approval, and admission verifying the signature against the authorized keyring.
+"""
+
+from __future__ import annotations
+
+import json
+
+from typer.testing import CliRunner
+
+from harness.cli import app
+from harness.corpus.registry import CorpusManifest
+from harness.ledger.events import record_flake_baseline
+from harness.ledger.query import find_events
+from tests.fixtures.builders import fixed_ctx
+
+runner = CliRunner()
+
+_CURATOR_PRIV = "57d8af6bd26b16f1f558e600e70fb2a40a5349804c864b3513b12015dc155556"
+_CURATOR_PUB = "54f22d27057d6c0a336de3f2d0df143546f31591c169072e90f18f651e49e148"
+
+
+def test_co8_mine_approve_admit_cli_flow(tmp_path):
+    manifest = CorpusManifest(corpus_id="internal-x", semver="1.0.0", kind="internal",
+                              boundary_path=str(tmp_path / "boundary"))
+    mpath = tmp_path / "manifest.json"
+    manifest.save(mpath)
+
+    mr = tmp_path / "mr.json"
+    mr.write_text(json.dumps({
+        "parent_sha": "a" * 40,
+        "files": [{"path": "tests/test_x.py", "change": "added",
+                   "content": "def test_x():\n    assert feature() == 1"}],
+    }), encoding="utf-8")
+    ticket = tmp_path / "ticket.txt"
+    ticket.write_text("Implement feature X", encoding="utf-8")
+    out = tmp_path / "cand-x.json"
+
+    # mine -> stage into the manifest as a pending candidate mined by bob (CO-8)
+    r = runner.invoke(app, [
+        "corpus", "mine", str(mr), "--ticket", str(ticket), "--out", str(out),
+        "--miner", "bob", "--manifest", str(mpath), "--task-id", "cand-x",
+    ])
+    assert r.exit_code == 0, r.output
+    staged = CorpusManifest.load(mpath).task("cand-x")
+    assert staged is not None and staged.miner == "bob" and staged.status == "pending-curation"
+    sha = staged.sha
+
+    # review surfaces holdout CONTENT, not just the path (CO-7)
+    rv = runner.invoke(app, ["corpus", "review", str(out)])
+    assert rv.exit_code == 0
+    assert "assert feature() == 1" in rv.output
+
+    # approve: alice signs the approval with her key (D-P4-3)
+    keyfile = tmp_path / "alice.key"
+    keyfile.write_text(_CURATOR_PRIV, encoding="utf-8")
+    keyring = tmp_path / "keyring.json"
+    keyring.write_text(json.dumps([_CURATOR_PUB]), encoding="utf-8")
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    ledger = expdir / "ledger.ndjson"
+    ra = runner.invoke(app, [
+        "corpus", "approve", str(expdir), "--candidate-id", "cand-x", "--task-sha", sha,
+        "--signing-key", str(keyfile), "--approver", "alice",
+    ])
+    assert ra.exit_code == 0, ra.output
+
+    # a clean flake baseline for the sha, then admit through the CLI
+    record_flake_baseline(ledger, fixed_ctx(), task_id="cand-x", task_sha=sha, k=5,
+                          results=[{"run": i, "passed": True} for i in range(5)],
+                          verdict="clean")
+    rad = runner.invoke(app, [
+        "corpus", "admit", str(expdir), "--manifest", str(mpath),
+        "--candidate-id", "cand-x", "--task-sha", sha, "--baseline-ref", "b1",
+        "--keyring", str(keyring),
+    ])
+    assert rad.exit_code == 0, rad.output
+    assert CorpusManifest.load(mpath).is_schedulable("cand-x") is True
+    assert len(find_events(ledger, "task_admitted")) == 1
+
+
+def test_co7_admit_rejects_self_approval_cli(tmp_path):
+    """bob mines and bob approves -> admission refuses at the CLI (exit 2)."""
+    manifest = CorpusManifest(corpus_id="internal-y", semver="1.0.0", kind="internal",
+                              boundary_path=str(tmp_path / "boundary"))
+    mpath = tmp_path / "manifest.json"
+    manifest.save(mpath)
+    mr = tmp_path / "mr.json"
+    mr.write_text(json.dumps({"parent_sha": "a" * 40, "files": []}), encoding="utf-8")
+    ticket = tmp_path / "t.txt"
+    ticket.write_text("do it", encoding="utf-8")
+    out = tmp_path / "cand.json"
+    assert runner.invoke(app, [
+        "corpus", "mine", str(mr), "--ticket", str(ticket), "--out", str(out),
+        "--miner", "bob", "--manifest", str(mpath), "--task-id", "cand-y",
+    ]).exit_code == 0
+    sha = CorpusManifest.load(mpath).task("cand-y").sha
+
+    keyfile = tmp_path / "bob.key"
+    keyfile.write_text(_CURATOR_PRIV, encoding="utf-8")
+    keyring = tmp_path / "keyring.json"
+    keyring.write_text(json.dumps([_CURATOR_PUB]), encoding="utf-8")
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    ledger = expdir / "ledger.ndjson"
+    # bob (the miner) approves — signs as "bob"
+    assert runner.invoke(app, [
+        "corpus", "approve", str(expdir), "--candidate-id", "cand-y", "--task-sha", sha,
+        "--signing-key", str(keyfile), "--approver", "bob",
+    ]).exit_code == 0
+    record_flake_baseline(ledger, fixed_ctx(), task_id="cand-y", task_sha=sha, k=5,
+                          results=[{"run": i, "passed": True} for i in range(5)],
+                          verdict="clean")
+    rad = runner.invoke(app, [
+        "corpus", "admit", str(expdir), "--manifest", str(mpath),
+        "--candidate-id", "cand-y", "--task-sha", sha, "--baseline-ref", "b1",
+        "--keyring", str(keyring),
+    ])
+    assert rad.exit_code == 2
+    assert CorpusManifest.load(mpath).is_schedulable("cand-y") is False
