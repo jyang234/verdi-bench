@@ -41,9 +41,39 @@ def test_scan_proxy_log_parses_jsonl_by_trial(tmp_path):
         trial_id="trial-x",
         proxy=ProxyConfig(proxy_url="http://p:3128", log_path=str(log)),
     )
-    attempts, violation = HarborEngine._scan_proxy_log(req)
+    attempts, violation, _cost = HarborEngine._scan_proxy_log(req)
     assert set(attempts) == {"api.anthropic.com", "evil.example.com"}  # only this trial
     assert violation is True
+
+
+def test_scan_proxy_log_sums_metered_cost(tmp_path):
+    """Review #2: harbor sources proxy_metered_cost from per-line `cost` in the
+    JSONL (summed for this trial), so a null-telemetry-cost arm is enforceable on
+    the real path — not only the fake engine."""
+    log = tmp_path / "proxy.jsonl"
+    log.write_text("\n".join([
+        json.dumps({"trial": "trial-x", "host": "api.anthropic.com", "decision": "allow", "cost": 0.03}),
+        json.dumps({"trial": "trial-x", "host": "api.anthropic.com", "decision": "allow", "cost": 0.05}),
+        json.dumps({"trial": "other", "host": "h", "decision": "allow", "cost": 9.0}),
+    ]) + "\n", encoding="utf-8")
+    req = SimpleNamespace(trial_id="trial-x",
+                          proxy=ProxyConfig(proxy_url="http://p", log_path=str(log)))
+    _attempts, _violation, cost = HarborEngine._scan_proxy_log(req)
+    assert cost == 0.08  # only this trial's lines summed
+
+
+def test_scan_proxy_log_tolerates_non_object_lines(tmp_path):
+    """Review #4: a valid-JSON-but-non-object line (42, null, [1]) is skipped, not
+    an AttributeError crash that aborts the whole run."""
+    log = tmp_path / "proxy.jsonl"
+    log.write_text("\n".join([
+        "42", "null", '"x"', "[1, 2]", "not json at all",
+        json.dumps({"trial": "trial-x", "host": "evil", "decision": "deny"}),
+    ]) + "\n", encoding="utf-8")
+    req = SimpleNamespace(trial_id="trial-x",
+                          proxy=ProxyConfig(proxy_url="http://p", log_path=str(log)))
+    attempts, violation, _cost = HarborEngine._scan_proxy_log(req)  # must not raise
+    assert attempts == ["evil"] and violation is True
 
 
 def test_proxy_url_carries_per_trial_auth(tmp_path):

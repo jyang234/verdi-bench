@@ -289,7 +289,7 @@ class HarborEngine:
             outcome = Outcome.completed
 
         native_log = self._read_native_log(artifacts)
-        egress_attempts, egress_violation = self._scan_proxy_log(request)
+        egress_attempts, egress_violation, metered_cost = self._scan_proxy_log(request)
 
         return EngineResult(
             outcome=outcome,
@@ -305,6 +305,10 @@ class HarborEngine:
             egress_attempts=egress_attempts,
             executed_at=request.ts,
             failure_reason=failure_reason,
+            # cost the metering proxy attributed to this trial — feeds the cost
+            # guard when the arm can't self-report [RN-2]. None until the proxy
+            # emits per-request cost in its JSONL.
+            proxy_metered_cost=metered_cost,
         )
 
     @staticmethod
@@ -335,20 +339,27 @@ class HarborEngine:
         return (request.arm.payload or {}).get("agent_binary_version")
 
     @staticmethod
-    def _scan_proxy_log(request: TrialRequest) -> tuple[list[str], bool]:
+    def _scan_proxy_log(request: TrialRequest) -> tuple[list[str], bool, Optional[float]]:
         """Parse the metering proxy's structured JSONL, keyed on trial [RN-11].
 
-        Each line is ``{"trial","host","decision":"allow|deny"}``; only lines for
-        this trial count (per-trial attribution via the injected proxy credential),
-        and any ``deny`` is an egress violation. A malformed line is skipped, not
-        silently treated as clean traffic."""
+        Each line is ``{"trial","host","decision":"allow|deny"[,"cost"]}``; only
+        lines for this trial count (per-trial attribution via the injected proxy
+        credential). Any ``deny`` is an egress violation, and a per-line ``cost``
+        (when the proxy meters it) sums into the trial's metered cost so a
+        null-telemetry-cost arm is still enforceable on the real path [RN-2].
+
+        A line that is not a JSON object is skipped without crashing (a bare
+        ``42``/``null``/``[...]`` must not abort the whole run); unparseable lines
+        are skipped — the metering proxy is expected to emit valid JSONL, so a
+        malformed line is an operational fault of the proxy, not this trial's."""
         if request.proxy is None or not request.proxy.log_path:
-            return [], False
+            return [], False, None
         p = Path(request.proxy.log_path)
         if not p.exists():
-            return [], False
+            return [], False, None
         attempts: list[str] = []
         violation = False
+        metered: Optional[float] = None
         for line in p.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
@@ -357,11 +368,14 @@ class HarborEngine:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if rec.get("trial") != request.trial_id:
+            if not isinstance(rec, dict) or rec.get("trial") != request.trial_id:
                 continue
             host = rec.get("host")
             if host:
                 attempts.append(host)
             if rec.get("decision") == "deny":
                 violation = True
-        return attempts, violation
+            cost = rec.get("cost")
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                metered = (metered or 0.0) + float(cost)
+        return attempts, violation, metered

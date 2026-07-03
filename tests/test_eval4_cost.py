@@ -120,3 +120,41 @@ def test_ac7_infra_failed_attempts_count_against_ceiling(tmp_path):
     # with the guard checked inside, it stops after 3 attempts (0.40*3 = 1.20).
     assert len(find_events(ledger, "trial_infra_failed")) == 3
     assert res.stopped_cost_ceiling is True
+
+
+def test_ac7_resume_after_infra_ceiling_stop_recovers_spend(tmp_path):
+    """Review #1: infra-failed-attempt spend is captured in the ceiling-stop event,
+    so a resume recovers it (max-seed) and does not re-spend past the ceiling —
+    without the fix the guard restarts at $0 and re-runs the costly infra cell."""
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={
+        "native_log": {}, "outcome": "infra_failed", "proxy_metered_cost": 0.40})}
+    ledger = tmp_path / "l.ndjson"
+    order = [Trial(task_id="t", arm="A", repetition=0)]
+    kw = dict(tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+              ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+              max_infra_retries=10)
+    r1 = schedule(order, **kw)
+    assert r1.stopped_cost_ceiling is True
+    n1 = len(find_events(ledger, "trial_infra_failed"))  # 3
+    r2 = schedule(order, **kw)  # resume on the same ledger
+    assert len(find_events(ledger, "trial_infra_failed")) == n1  # no new attempts
+    assert r2.stopped_cost_ceiling is True  # already at/over the ceiling
+
+
+def test_ac4_resume_executed_order_is_complete(tmp_path):
+    """Review #4: the latest executed_order after a resume is the COMPLETE realized
+    order (prior + new), not a fragment that would hide an interleave confound."""
+    from harness.ledger.query import latest_event
+
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={"native_log": {"total_cost_usd": 0.40}})}
+    ledger = tmp_path / "l.ndjson"
+    order = [Trial(task_id="t", arm="A", repetition=r) for r in range(6)]
+    base = dict(tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+                ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()))
+    schedule(order, cost_ceiling=1.00, **base)          # stops after ~3
+    schedule(order, cost_ceiling=100.0, **base)         # resume the remainder
+    last = latest_event(ledger, "executed_order")
+    reps = {e["repetition"] for e in last["order"] if e["outcome"] == "completed"}
+    assert reps == {0, 1, 2, 3, 4, 5}  # all six cells present in the latest order

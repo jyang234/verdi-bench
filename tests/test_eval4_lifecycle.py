@@ -164,3 +164,41 @@ def test_ac5_unknown_platform_fails_cell_not_run(tmp_path):
     infra = find_events(ledger, "trial_infra_failed")
     assert len(infra) == 1 and infra[0]["reason"] == "unknown_platform"
     assert find_events(ledger, "executed_order")
+
+
+def test_ac5_unexpected_error_fails_cell_closed(tmp_path):
+    """RN-15 (review #3): ANY unexpected exception during a trial fails that cell
+    closed with a typed reason and does NOT escape schedule() to abort the run."""
+    class BoomEngine(FakeEngine):
+        def run(self, request):
+            raise RuntimeError("kaboom")
+
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p"), "u": Task(id="u", prompt="p")}
+    order = [Trial(task_id="t", arm="A", repetition=0), Trial(task_id="u", arm="A", repetition=0)]
+    ledger = tmp_path / "l.ndjson"
+    schedule(order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+             ctx=fixed_ctx(), config=RunConfig(engine=BoomEngine()), cost_ceiling=100.0)
+    infra = find_events(ledger, "trial_infra_failed")
+    assert len(infra) == 2  # both cells failed closed, run not aborted
+    assert all(e["reason"] == "trial_error:RuntimeError" for e in infra)
+    assert find_events(ledger, "executed_order")  # AC-4 event still lands
+
+
+def test_ac5_redaction_error_fails_cell_closed(tmp_path):
+    """RN-15 (review #3): a RedactionError maps to a specific reason and fails the
+    cell closed instead of escaping schedule()."""
+    from harness.run.redact import RedactionError
+
+    class LeakyEngine(FakeEngine):
+        def run(self, request):
+            raise RedactionError("cannot scrub a root-owned artifact")
+
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p")}
+    order = [Trial(task_id="t", arm="A", repetition=0)]
+    ledger = tmp_path / "l.ndjson"
+    schedule(order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+             ctx=fixed_ctx(), config=RunConfig(engine=LeakyEngine()), cost_ceiling=100.0)
+    infra = find_events(ledger, "trial_infra_failed")
+    assert len(infra) == 1 and infra[0]["reason"] == "redaction_error"

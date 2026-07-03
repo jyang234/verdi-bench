@@ -29,6 +29,7 @@ from ..ledger.query import find_events
 from ..plan.interleave import Trial
 from ..schema.experiment import Arm
 from .budget import CostGuard
+from .redact import RedactionError
 from .seam import HoldoutLeakError, new_trial_id, run_trial
 from .types import RunConfig, Task
 
@@ -37,14 +38,26 @@ class QuarantinedTaskError(RuntimeError):
     """A quarantined task version was scheduled [EVAL-5 M3 hook]."""
 
 
-# Per-trial failures that must fail *that cell* closed (a ledgered
-# ``trial_infra_failed``) rather than escape ``schedule`` and abort the whole run
-# with the executed-order event unwritten [RN-15]. Mapped to a machine-readable
-# reason on the event.
+# Known per-trial failures get a specific machine-readable reason; any OTHER
+# exception from running a trial still fails *that cell* closed (a ledgered
+# ``trial_infra_failed``) with a generic reason, so no per-trial fault escapes
+# ``schedule`` and aborts the whole run [RN-15]. Matched by ``isinstance`` so
+# subclasses map correctly.
 _PER_TRIAL_REASONS: dict[type, str] = {
     HoldoutLeakError: "holdout_leak",
     UnknownPlatformError: "unknown_platform",
+    RedactionError: "redaction_error",
 }
+
+
+def _reason_for(exc: BaseException) -> str:
+    """Machine-readable trial_infra_failed reason for a per-trial exception —
+    ``isinstance`` so a subclass maps to its base, with a typed fallback so an
+    unforeseen failure is still surfaced (never swallowed, never escapes)."""
+    for exc_type, reason in _PER_TRIAL_REASONS.items():
+        if isinstance(exc, exc_type):
+            return reason
+    return f"trial_error:{type(exc).__name__}"
 
 
 @dataclass
@@ -73,14 +86,22 @@ def _record_enforcement_cost(record: TrialRecord) -> Optional[float]:
     )
 
 
-def _prior_run_state(ledger_path) -> tuple[float, set[tuple]]:
-    """Accumulated enforcement spend and completed ``(task, arm, rep)`` cells from
-    prior ``trial`` events in this ledger [RN-1].
+def _prior_run_state(ledger_path) -> tuple[float, set[tuple], list[dict]]:
+    """Prior spend, completed ``(task, arm, rep)`` cells, and the last realized
+    order from this ledger, so a re-run resumes instead of duplicating [RN-1].
 
     A re-run seeds the guard from real prior spend and skips cells that already
-    produced a trial, so an interrupted or ceiling-stopped run resumes instead of
-    duplicating trials with fresh ids and re-spending from $0. Fresh ledgers have
-    no trial events, so this is a no-op on a first run.
+    produced a trial. Fresh ledgers have no such events, so this is a no-op on a
+    first run.
+
+    Spend is summed from completed ``trial`` events; additionally, a prior
+    ``run_stopped_cost_ceiling`` snapshots the FULL guard spend at the stop
+    (completed trials AND infra-failed attempts, RN-3), so its ``accumulated_cost``
+    is taken as a lower bound — otherwise infra-attempt spend, which
+    ``trial_infra_failed`` does not carry, would be forgotten and a resumed run
+    could re-spend past the pre-registered ceiling. (A crash *before* a ceiling
+    stop still loses in-flight infra spend; making that durable needs a cost field
+    on the infra event — see the review note.)
     """
     accumulated = 0.0
     done: set[tuple] = set()
@@ -93,7 +114,46 @@ def _prior_run_state(ledger_path) -> tuple[float, set[tuple]]:
         )
         if cost is not None:
             accumulated += cost
-    return accumulated, done
+    for ev in find_events(ledger_path, events.RUN_STOPPED_COST_CEILING):
+        accumulated = max(accumulated, ev.get("accumulated_cost", 0.0) or 0.0)
+    # Seed the realized order with the last one so the resume's executed_order
+    # event is the COMPLETE order, not a fragment that hides a confound [AC-4].
+    order_evs = find_events(ledger_path, events.EXECUTED_ORDER)
+    prior_order = list(order_evs[-1].get("order", [])) if order_evs else []
+    return accumulated, done, prior_order
+
+
+def _record_ceiling_stop(out: "ScheduleResult", ledger_path, ctx, guard: CostGuard) -> None:
+    """Record the cost-ceiling stop exactly once and flag it [AC-7]. Shared by the
+    main loop and the infra-rerun loop so the stop is recorded one way."""
+    events.record_run_stopped_cost_ceiling(
+        ledger_path, ctx, accumulated_cost=guard.accumulated, ceiling=guard.ceiling
+    )
+    out.stopped_cost_ceiling = True
+
+
+def _assert_not_quarantined(derived_order, tasks, quarantined: set) -> None:
+    """Pre-flight [D-2]: refuse a run whose plan schedules a quarantined task
+    *version*, before any trial executes — a policy halt, not a mid-loop abort
+    after partial execution. Fails loud if a scheduled task lacks the ``task_sha``
+    needed to check quarantine (a missing version id must not silently disable the
+    safety gate)."""
+    if not quarantined:
+        return
+    for planned in derived_order:
+        task = tasks.get(planned.task_id)
+        if task is None:
+            continue  # unknown task id: handled per-cell in the loop
+        if task.task_sha is None:
+            raise QuarantinedTaskError(
+                f"cannot enforce quarantine for task {planned.task_id!r}: it carries "
+                "no task_sha (version identity). Refusing [EVAL-5, fail-loudly]."
+            )
+        if (planned.task_id, task.task_sha) in quarantined:
+            raise QuarantinedTaskError(
+                f"task version ({planned.task_id}, {task.task_sha}) is quarantined "
+                "(no clean flake baseline) and must not be scheduled [EVAL-5]"
+            )
 
 
 def _fail_cell(out, ledger_path, ctx, planned, *, reason: str) -> None:
@@ -132,11 +192,18 @@ def schedule(
 ) -> ScheduleResult:
     workspace_root = Path(workspace_root)
     quarantined = quarantined_tasks or set()
-    # Resume from the ledger: seed the guard with prior spend and skip cells that
-    # already produced a trial, so a re-run doesn't duplicate or re-spend [RN-1].
-    accumulated, done_cells = _prior_run_state(ledger_path)
+
+    # Pre-flight policy gate: refuse a plan that schedules a quarantined task
+    # version before any trial runs (loud halt, no partial execution) [D-2].
+    _assert_not_quarantined(derived_order, tasks, quarantined)
+
+    # Resume from the ledger: seed the guard with prior spend, skip cells that
+    # already produced a trial, and seed the realized order so the resume's
+    # executed_order event is complete, not a fragment [RN-1, AC-4].
+    accumulated, done_cells, prior_order = _prior_run_state(ledger_path)
     guard = CostGuard(ceiling=cost_ceiling, accumulated=accumulated)
     out = ScheduleResult()
+    out.executed_order = list(prior_order)
 
     # The executed_order event (AC-4) must land even if a planned trial raises,
     # so the loop is wrapped: per-trial faults fail that cell closed [RN-15] and
@@ -149,10 +216,7 @@ def schedule(
 
             # Cost guard: refuse to start once at/over the ceiling [AC-7].
             if guard.would_exceed():
-                events.record_run_stopped_cost_ceiling(
-                    ledger_path, ctx, accumulated_cost=guard.accumulated, ceiling=cost_ceiling
-                )
-                out.stopped_cost_ceiling = True
+                _record_ceiling_stop(out, ledger_path, ctx, guard)
                 break
 
             # An unknown task/arm id in the schedule fails that cell closed rather
@@ -167,24 +231,15 @@ def schedule(
             task = tasks[planned.task_id]
             arm = arms[planned.arm]
 
-            # Quarantine is version-scoped: refuse this exact task version if its
-            # flake baseline quarantined it [D-2]. A policy violation (a locked
-            # experiment scheduling a quarantined version) halts loudly rather
-            # than failing one cell — executed_order still lands via the finally.
-            if (planned.task_id, task.task_sha) in quarantined:
-                raise QuarantinedTaskError(
-                    f"task version ({planned.task_id}, {task.task_sha}) is quarantined "
-                    "(no clean flake baseline) and must not be scheduled [EVAL-5]"
-                )
-
             try:
                 record = _run_with_infra_reruns(
                     task, arm, planned, workspace_root, ledger_path, ctx, config,
                     max_infra_retries, out, guard,
                 )
-            except tuple(_PER_TRIAL_REASONS) as exc:
-                # a canary leak / unknown-platform trial fails closed [RN-15]
-                _fail_cell(out, ledger_path, ctx, planned, reason=_PER_TRIAL_REASONS[type(exc)])
+            except Exception as exc:  # noqa: BLE001 — ANY per-trial fault fails THIS
+                # cell closed (ledgered, reason-tagged), never escapes to abort the
+                # whole run [RN-15]. Not swallowed: surfaced as trial_infra_failed.
+                _fail_cell(out, ledger_path, ctx, planned, reason=_reason_for(exc))
                 continue
             if out.stopped_cost_ceiling:
                 break  # budget exhausted inside the infra-rerun loop [RN-3]
@@ -222,10 +277,7 @@ def _run_with_infra_reruns(
     attempts = 0
     while True:
         if guard.would_exceed():
-            events.record_run_stopped_cost_ceiling(
-                ledger_path, ctx, accumulated_cost=guard.accumulated, ceiling=guard.ceiling
-            )
-            out.stopped_cost_ceiling = True
+            _record_ceiling_stop(out, ledger_path, ctx, guard)
             return None
         trial_id = new_trial_id()
         ws = Path(workspace_root) / trial_id

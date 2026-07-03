@@ -62,6 +62,28 @@ def test_ac3_run_settings_from_config_file(tmp_path):
     assert s.provider_keys == {"ANTHROPIC_API_KEY": "sk-secret"}
 
 
+def test_null_quota_falls_back_to_default(tmp_path):
+    """Review #7: an explicit `cpus: null` falls back to the pinned default, not an
+    un-pinned None that would silently break cross-arm comparability [D003]."""
+    from harness.run.settings import load_run_settings
+
+    _write_config(tmp_path, "quotas:\n  cpus: null\n  mem: 8g\n")
+    s = load_run_settings(tmp_path, env={})
+    assert s.quotas.cpus == 2.0 and s.quotas.mem == "8g"
+
+
+def test_non_dict_quotas_is_a_clear_error(tmp_path):
+    """Review #7: a scalar `quotas:` raises a clear ValueError, not an opaque
+    AttributeError from `.get` on a str."""
+    import pytest
+
+    from harness.run.settings import load_run_settings
+
+    _write_config(tmp_path, "quotas: 4g\n")
+    with pytest.raises(ValueError):
+        load_run_settings(tmp_path, env={})
+
+
 def test_absent_config_yields_conservative_defaults(tmp_path):
     """No run.config.yaml ⇒ no proxy (→ --network none), default quotas, no keys —
     the fake path and un-configured runs behave exactly as before."""
@@ -81,8 +103,10 @@ def test_ac8_provider_key_value_from_env_not_file(tmp_path):
     _write_config(tmp_path, "provider_key_names: [ANTHROPIC_API_KEY]\n")
     assert load_run_settings(tmp_path, env={}).provider_keys == {}  # absent ⇒ not injected
     s = load_run_settings(tmp_path, env={"ANTHROPIC_API_KEY": "sk-live"})
+    # the VALUE comes from the env, and the config file named only the key (never
+    # the value) — assert against the file content the test itself controls.
     assert s.provider_keys == {"ANTHROPIC_API_KEY": "sk-live"}
-    assert "sk-live" not in (tmp_path / "run.config.yaml").read_text()
+    assert "ANTHROPIC_API_KEY" in (tmp_path / "run.config.yaml").read_text()
 
 
 def test_ac3_harbor_command_carries_proxy_and_key_names(tmp_path):

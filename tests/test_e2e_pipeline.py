@@ -96,18 +96,7 @@ def test_run_refuses_quarantined_task_version(tmp_path):
 
 
 # --- docker-marked: the real grading container -----------------------------
-def _docker_available() -> bool:
-    if not shutil.which("docker"):
-        return False
-    try:
-        return subprocess.run(
-            ["docker", "info"], capture_output=True, timeout=15
-        ).returncode == 0
-    except Exception:
-        return False
-
-
-DOCKER_AVAILABLE = _docker_available()
+from tests.fixtures.docker import DOCKER_AVAILABLE  # noqa: E402
 
 
 @pytest.mark.docker

@@ -119,6 +119,15 @@ def test_ac8_full_pem_body_redacted():
     assert "leaked:" in scrubbed and "tail" in scrubbed
 
 
+def test_ac8_truncated_pem_header_still_scrubbed():
+    """Review #8: a TRUNCATED private key (BEGIN with no matching END) still has
+    its marker scrubbed — the full-block pattern alone would leave it verbatim."""
+    text = "-----BEGIN OPENSSH PRIVATE KEY-----\nMIIEowIBAAKtruncated-no-end-marker"
+    scrubbed, n = redact_text(text)
+    assert n >= 1
+    assert "PRIVATE KEY-----" not in scrubbed  # header marker gone (fallback)
+
+
 def test_ac8_redacts_whole_workspace_not_just_artifacts(tmp_path):
     """RN-7: the agent writes a secret into a workspace file OUTSIDE artifacts/;
     redaction must cover the whole workspace (harbor mounts it rw, grade reads it)."""

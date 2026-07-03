@@ -28,16 +28,7 @@ from harness.run.types import RunConfig, Task
 from harness.schema.experiment import Arm
 
 
-def _docker_available() -> bool:
-    if not shutil.which("docker"):
-        return False
-    try:
-        return subprocess.run(["docker", "info"], capture_output=True, timeout=15).returncode == 0
-    except Exception:
-        return False
-
-
-DOCKER_AVAILABLE = _docker_available()
+from tests.fixtures.docker import DOCKER_AVAILABLE  # noqa: E402
 
 
 @pytest.mark.docker

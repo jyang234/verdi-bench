@@ -117,6 +117,10 @@ _SECRET_PATTERNS = [
     # scrubbed too, not just the BEGIN marker [RN-8]. Non-greedy; ``[\s\S]``
     # spans newlines without needing a global DOTALL flag.
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+    # Fallback for a TRUNCATED key (BEGIN with no matching END): still scrub the
+    # header marker, as the pre-RN-8 pattern did — never leave it behind. Applied
+    # after the full-block pattern, so a complete key is already fully redacted.
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
 ]
 
 

@@ -56,15 +56,30 @@ def load_run_settings(
 
     proxy = None
     pcfg = data.get("proxy")
-    if pcfg:
+    if pcfg is not None:
+        if not isinstance(pcfg, dict):
+            raise ValueError(
+                f"run.config.yaml 'proxy' must be a mapping, got {type(pcfg).__name__}"
+            )
         proxy = proxy_config(
             pcfg.get("allowlist"),
             proxy_url=pcfg.get("url"),
             log_path=pcfg.get("log_path"),
         )
 
-    qcfg = data.get("quotas") or {}
-    quotas = Quotas(cpus=qcfg.get("cpus", 2.0), mem=qcfg.get("mem", "4g"))
+    qcfg = data.get("quotas")
+    if qcfg is None:
+        qcfg = {}
+    elif not isinstance(qcfg, dict):
+        raise ValueError(
+            f"run.config.yaml 'quotas' must be a mapping, got {type(qcfg).__name__}"
+        )
+    # An explicit ``null`` must NOT silently un-pin a quota (which would break
+    # cross-arm comparability, D003/AC-6); a missing or null value falls back to
+    # the pinned default.
+    cpus = qcfg.get("cpus")
+    mem = qcfg.get("mem")
+    quotas = Quotas(cpus=2.0 if cpus is None else cpus, mem="4g" if mem is None else mem)
 
     # The file lists key NAMES; the VALUES are read from the environment and are
     # never written to the file or the ledger [AC-8].

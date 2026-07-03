@@ -150,3 +150,37 @@ def test_ac2_same_version_clean_rebaseline_clears(tmp_path):
     flake_baseline(GradeTask(id="t1", task_sha="v1"), ledger, fixed_ctx(),
                    workspace=ws, container=GradingContainer(runner=SeqGradeRunner([PASS] * 5)))
     assert load_quarantine(ledger) == set()  # same version, now clean
+
+
+def test_ac2_quarantine_refused_preflight_no_partial_run(tmp_path):
+    """Review #6: a quarantined version is refused PRE-FLIGHT, before any trial
+    runs — even when a clean task is scheduled ahead of it (no partial execution)."""
+    from harness.run.engines.fake import FakeEngine
+
+    arms = {"A": Arm(name="A", platform="claude_code", model="anthropic/claude-3-5-sonnet-20241022")}
+    tasks = {
+        "clean": Task(id="clean", prompt="p", task_sha="ok", fake_behavior={"native_log": {}}),
+        "bad": Task(id="bad", prompt="p", task_sha="flaky"),
+    }
+    order = [Trial(task_id="clean", arm="A", repetition=0), Trial(task_id="bad", arm="A", repetition=0)]
+    ledger = tmp_path / "run.ndjson"
+    with pytest.raises(QuarantinedTaskError):
+        schedule(order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+                 ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
+                 quarantined_tasks={("bad", "flaky")})
+    assert find_events(ledger, "trial") == []  # nothing ran — pre-flight halt
+
+
+def test_ac2_quarantine_without_task_sha_fails_loud(tmp_path):
+    """Review #6/fail-loudly: quarantine cannot be enforced on a Task with no
+    task_sha (version id), so it raises rather than silently matching open."""
+    from harness.run.engines.fake import FakeEngine
+
+    arms = {"A": Arm(name="A", platform="claude_code", model="anthropic/claude-3-5-sonnet-20241022")}
+    tasks = {"t1": Task(id="t1", prompt="p")}  # no task_sha
+    order = [Trial(task_id="t1", arm="A", repetition=0)]
+    with pytest.raises(QuarantinedTaskError):
+        schedule(order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
+                 ledger_path=tmp_path / "run.ndjson", ctx=fixed_ctx(),
+                 config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
+                 quarantined_tasks={("t1", "some-sha")})
