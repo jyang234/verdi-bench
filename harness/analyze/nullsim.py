@@ -65,15 +65,17 @@ class CoverageSelection:
         }
 
 
-def _insufficient(null_model: str, n_tasks: int) -> CoverageSelection:
+def _insufficient(n_tasks: int, ci_level: float) -> CoverageSelection:
     """Too few realized clusters to measure coverage.
 
     Fall back to the documented ``percentile`` method [D004 fallback] and
-    **disclose** that no coverage selection ran — no fabricated coverage, and no
-    assumed-N binary null in place of realized data [AN-4]."""
+    **disclose** that no coverage selection ran (``null_model`` is always
+    ``insufficient_data`` here) — no fabricated coverage, and no assumed-N binary
+    null in place of realized data [AN-4]. ``nominal`` echoes the requested
+    ``ci_level`` so it agrees with the level the fallback interval deploys."""
     return CoverageSelection(
         selected_method="percentile",
-        nominal=0.95,
+        nominal=ci_level,
         coverage={},
         n_sim=0,
         n_boot=0,
@@ -106,7 +108,7 @@ def coverage_from_deltas(
     deltas = np.asarray(list(realized_deltas), dtype=np.float64)
     n = deltas.shape[0]
     if n < 2:
-        return _insufficient(null_model, n)
+        return _insufficient(n, ci_level)
     centered = deltas - deltas.mean()  # impose H0: true effect 0
     methods = methods or available_methods()
     hits = {m: 0 for m in methods}

@@ -24,7 +24,7 @@ from .errors import (
     MissingCostCeilingError,
     SpecError,
 )
-from .judge_config import JudgeConfig
+from .judge_config import JudgeConfig, model_vendor
 from .metrics import PrimaryMetric
 
 
@@ -39,9 +39,9 @@ class Arm(BaseModel):
     @classmethod
     def _require_vendor_prefix(cls, v: str) -> str:
         # JD-7: a bare model id has no vendor to compare, so judge/arm vendor
-        # overlap is silently wrong. Require '<provider>/<id>' at the schema.
-        provider, sep, ident = v.partition("/")
-        if not sep or not provider.strip() or not ident.strip():
+        # overlap is silently wrong. Require '<provider>/<id>' at the schema, via
+        # the one shared vendor-prefix definition.
+        if model_vendor(v) is None:
             raise ArmModelError(
                 f"arm.model {v!r} must be '<provider>/<id>' (e.g. "
                 "'anthropic/claude-3-5-sonnet-20241022') so the judge/arm vendor "
@@ -198,8 +198,7 @@ class ExperimentSpec(BaseModel):
         if isinstance(arms, list):
             for arm in arms:
                 if isinstance(arm, dict) and "model" in arm:
-                    provider, sep, ident = str(arm["model"]).partition("/")
-                    if not sep or not provider.strip() or not ident.strip():
+                    if model_vendor(str(arm["model"])) is None:
                         raise ArmModelError(
                             f"arm.model {arm['model']!r} must be '<provider>/<id>' so "
                             "the judge/arm vendor overlap is well-defined [JD-7]"

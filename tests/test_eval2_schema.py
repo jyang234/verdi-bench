@@ -58,6 +58,20 @@ def test_jd12_confidence_enum_and_float_migration():
     assert d.confidence is Confidence.low
 
 
+def test_confidence_bucket_non_finite_is_low():
+    """A NaN/inf confidence is not certainty — it maps to the LEAST-confident band,
+    never silently to high (`NaN < 0.4` is False), which would let a model emit
+    bare NaN and have it durably recorded as the most-confident band."""
+    from harness.judge.schema import confidence_bucket
+
+    assert confidence_bucket(float("nan")) is Confidence.low
+    assert confidence_bucket(float("inf")) is Confidence.low
+    assert confidence_bucket(-float("inf")) is Confidence.low
+    assert confidence_bucket(0.9) is Confidence.high
+    assert confidence_bucket(0.5) is Confidence.medium
+    assert confidence_bucket(0.1) is Confidence.low
+
+
 def test_ac5_verdict_provenance_complete():
     for missing in ["judge_model", "rubric_sha256", "packet_sha256", "orders", "temperature", "ts"]:
         kw = dict(

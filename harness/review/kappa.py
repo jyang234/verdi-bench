@@ -77,7 +77,11 @@ def weighted_kappa(
 
     num = sum(disagreement(i, j) * obs[i][j] for i in range(k) for j in range(k))
     den = sum(disagreement(i, j) * row[i] * col[j] for i in range(k) for j in range(k))
-    if den < 1e-12:
+    # Same tolerance as ``cohens_kappa`` (1e-9), so the two kappa families agree on
+    # the degenerate case exactly (for unweighted kappa ``den == 1 - pe``); a
+    # smaller tolerance would let a ~1e-10 denominator produce a wild finite kappa
+    # in the review/process path while the judge path returned None [D-5].
+    if den < 1e-9:
         return None  # undefined: no chance-corrected information [D-5]
     return 1.0 - num / den
 

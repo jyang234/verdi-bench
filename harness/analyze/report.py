@@ -206,7 +206,10 @@ def _tier_summary(ledger_path) -> dict:
 
     tiers = sorted(
         {
-            ev["trial_record"].get("provenance", {}).get("tier", ADVISORY)
+            # `... or {}` / `... or ADVISORY` (not `.get(default)`): a record whose
+            # provenance or tier serialized as JSON null must still read as the
+            # lowest-trust ADVISORY band, never crash sorted() on a None member.
+            (ev["trial_record"].get("provenance") or {}).get("tier") or ADVISORY
             for ev in find_events(ledger_path, events.TRIAL)
         }
     )
@@ -523,23 +526,28 @@ def compute_findings(
     parsed_rule = spec.parsed_rule
 
     arm_a = spec.arms[0].name
-    # AN-4 + AN-10: select the CI method by coverage under a metric-appropriate
-    # null at the REALIZED N — the primary comparison's realized per-task deltas
-    # recentered to H0 — at the SAME n_boot the deployed interval uses. No assumed
-    # 0.5/0.3/50 parameters, and never a binary null under a continuous metric.
-    primary_b = spec.arms[1].name if len(spec.arms) > 1 else arm_a
-    _, _, primary_deltas = _comparison_series(primary, per_task, ledger_path, arm_a, primary_b)
-    selection = coverage_from_deltas(
-        primary_deltas, seed, null_model=_null_model_for_metric(primary),
-        n_sim=coverage_n_sim, n_boot=n_boot,
-    )
-    ci_method = selection.selected_method
     claim_tag = _claim_tag_for_metric(primary)
+    null_model = _null_model_for_metric(primary)
 
     comparisons: list[ComparisonFinding] = []
+    selection = None  # the primary (first) comparison's coverage selection → ci_selection
     for other in spec.arms[1:]:
         arm_b = other.name
         a_vals, b_vals, deltas = _comparison_series(primary, per_task, ledger_path, arm_a, arm_b)
+        # AN-4 + AN-10: select the CI method by coverage under a metric-appropriate
+        # null at the REALIZED N — THIS comparison's own per-task deltas recentered
+        # to H0 — at the SAME n_boot the deployed interval uses. Selecting
+        # per-comparison means a degenerate or differently-distributed pair cannot
+        # miscalibrate another pair's interval (a 3-arm design's empty first pair no
+        # longer forces `percentile` on a well-powered second pair); the primary
+        # (first) pair drives the headline ci_selection. No assumed 0.5/0.3/50
+        # parameters, never a binary null under a continuous metric.
+        sel = coverage_from_deltas(
+            deltas, seed, null_model=null_model, n_sim=coverage_n_sim, n_boot=n_boot,
+        )
+        if selection is None:
+            selection = sel
+        ci_method = sel.selected_method
 
         excluded = metric_field is not None and metric_field in excluded_fields
         if excluded:
@@ -785,6 +793,16 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
        the manifest actually covers the data;
     3. the corpus is full-run-validated per the **ledgered** ``calibration_run``
        events, not the mutable ``manifest.calibration.status`` [CO-4].
+
+    Note on check (2): D-P5-2 framed this as reconciling ``manifest.task_shas()``
+    with the lock's ``task_commitment``, but those are different hash domains —
+    the commitment hashes each task's *tasks.yaml entry* (corpus/commit.py) while
+    ``task_shas()`` are *corpus-cache blob* shas — so a direct sha comparison is
+    not well-defined. Membership is the achievable analyze-time binding; the task
+    *content* the experiment ran is separately fenced at run/grade/judge time by
+    ``assert_task_commitment`` against that same ``task_commitment``. The
+    manifest's cited task shas are provenance, not an independently anchored
+    integrity claim.
     """
     spec_corpus = findings.spec_corpus
     if corpus_manifest is None:

@@ -8,6 +8,7 @@ never an exception trace. Any missing provenance field also fails schema.
 
 from __future__ import annotations
 
+import math
 from enum import Enum
 from typing import Literal, Optional
 
@@ -37,8 +38,11 @@ def confidence_bucket(x: float) -> Confidence:
     """Bucket a model's parsed 0..1 confidence into the pre-registered band [D-4].
 
     Thresholds are fixed so the mapping is reproducible; the bands, not the raw
-    float, are what a downstream reader sees."""
-    if x < 0.4:
+    float, are what a downstream reader sees. A non-finite value (NaN/inf — a
+    model can emit bare ``NaN`` in JSON and pydantic keeps it) is not a valid
+    confidence and must not read as certainty: it maps to the LEAST-confident
+    band, never silently to ``high`` (``NaN < 0.4`` is False) [fail loudly]."""
+    if not math.isfinite(x) or x < 0.4:
         return Confidence.low
     if x < 0.75:
         return Confidence.medium

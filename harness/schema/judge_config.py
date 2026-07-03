@@ -34,16 +34,28 @@ _VERSIONED = re.compile(
 )
 
 
+def model_vendor(model: str) -> Optional[str]:
+    """The ``<provider>/`` vendor prefix of a model id, or ``None`` if it has no
+    valid prefix.
+
+    The single definition of what a vendor-prefixed id is [JD-7], shared by the
+    ``Arm`` schema validator, the plan prevalidation, and EVAL-6's ``_vendor`` — so
+    "what counts as a valid prefix" lives in one place, not three copies.
+    """
+    provider, sep, ident = model.partition("/")
+    if not sep or not provider.strip() or not ident.strip():
+        return None
+    return provider
+
+
 def is_alias_model_id(model: str) -> bool:
     """True if ``model`` is an un-versioned alias that must be rejected at plan.
 
     Requires the ``<provider>/<id>`` shape and an explicitly versioned id.
     """
-    if "/" not in model:
+    if model_vendor(model) is None:
         return True
-    provider, _, ident = model.partition("/")
-    if not provider.strip() or not ident.strip():
-        return True
+    _, _, ident = model.partition("/")
     return _VERSIONED.search(ident) is None
 
 

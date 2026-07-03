@@ -397,6 +397,18 @@ def test_an5_render_html_escapes_arm_name(tmp_path):
     assert "&lt;script&gt;" in html_out                  # escaped
 
 
+def test_coverage_insufficient_echoes_ci_level():
+    """With <2 realized clusters, coverage selection is 'insufficient' and reports
+    the REQUESTED ci_level as nominal (not a hardcoded 0.95), so the disclosed
+    nominal agrees with the level the percentile fallback deploys."""
+    from harness.analyze.nullsim import NULL_CONTINUOUS, coverage_from_deltas
+
+    sel = coverage_from_deltas([0.3], seed=1, null_model=NULL_CONTINUOUS, ci_level=0.90)
+    assert sel.null_model == "insufficient_data"
+    assert sel.selected_method == "percentile"
+    assert sel.nominal == 0.90
+
+
 def test_an11_advisory_tier_surfaced(tmp_path):
     """AN-11: local/fake results are ADVISORY-tier; the render surfaces the tier so
     'Local = ADVISORY' is honestly reflected, not silently stamped."""
