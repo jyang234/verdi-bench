@@ -53,6 +53,16 @@ def _reveal_exists(ledger_path, comparison_id: str) -> bool:
     )
 
 
+def _judge_verdict_exists(ledger_path, comparison_id: str) -> bool:
+    """True if the judge produced a verdict for ``comparison_id`` — the review
+    packet is built from judge verdicts, so a comparison a human can review must
+    have one (a CANT_JUDGE verdict still counts)."""
+    return any(
+        ev["verdict"].get("comparison_id") == comparison_id
+        for ev in find_events(ledger_path, events.JUDGE_VERDICT)
+    )
+
+
 def record_human_verdict(
     ledger_path,
     ctx: EventContext,
@@ -74,6 +84,14 @@ def record_human_verdict(
     # cannot fool these gates [PL-6].
     assert_chain(ledger_path)
     cid = verdict.comparison_id
+    # RV-9: refuse a verdict for a comparison the judge never produced — a mistyped
+    # comparison_id would otherwise record cleanly and silently drop from kappa
+    # (which joins on judge↔human comparison_id).
+    if not _judge_verdict_exists(ledger_path, cid):
+        raise ReviewError(
+            f"comparison {cid!r} has no judge verdict; a human verdict for a "
+            "comparison that was never judged is a mistyped comparison_id [RV-9]"
+        )
     # RV-1: a verdict recorded after the comparison is unblinded is no longer
     # blinded — refuse it rather than let an unblinded verdict poison kappa.
     if _reveal_exists(ledger_path, cid):
