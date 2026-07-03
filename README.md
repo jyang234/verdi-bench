@@ -22,11 +22,12 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 | **EVAL-7** | Human review packet (offline, blinded), capture-then-reveal, kappa estimator seam | ✅ |
 | **EVAL-9** | Process rubric: isolated judge scoring, firewalls, weighted-kappa calibration | ✅ |
 
-All EVAL-1 child stories are built. 234 tests green, plus a `docker`-marked
-real-container grade test run with `-m docker` where a daemon is available;
-3 import-linter contracts kept. AC-mapped tests are tracked mechanically via
-`--ac-report` as a program-wide union of AC numbers — not a verified per-story
-guarantee.
+All EVAL-1 child stories are built. 271 tests green in the fast suite, plus a
+`docker`-marked suite of real-container tests (a real grade container and a real
+Harbor trial) run with `-m docker` in a dedicated CI job on Docker-capable
+runners; 3 import-linter contracts kept. AC-mapped tests are tracked
+mechanically via `--ac-report` as a program-wide union of AC numbers — not a
+verified per-story guarantee.
 
 ## Provisional decisions
 
@@ -68,11 +69,19 @@ uv run bench review reveal <experiment-dir> --comparison-id c1   # refuses pre-v
 uv run bench process record <experiment-dir> --trial-id t1 --comparison-id c1 --scores s.json
 ```
 
-`bench run` defaults to the hermetic **fake** engine (fast, no Docker);
-`--engine harbor` selects the real container path (Phase-2 work in progress).
+`bench run` defaults to the hermetic **fake** engine (fast, no Docker).
+`--engine harbor` runs the real container path: digest-pinned images
+(`--pull=never`), the task prompt + arm delivered read-only at
+`/verdi/request.json` (outside the graded workspace), provider keys env-injected
+and redacted at capture, egress confined to the metering proxy on an internal
+docker network with per-trial JSONL attribution, and containers killed on
+timeout. Operational wiring (proxy, quotas, provider-key names) comes from an
+optional `run.config.yaml` + the environment — never the sha-locked
+`experiment.yaml` or the ledger. Its container behavior is covered by
+`docker`-marked tests in CI (`uv run pytest -m docker`).
+
 `bench grade` defaults to `--runner docker` (the real network-less grading
-container), with `--runner local` for the no-daemon fake/test path; the real
-container path is covered by a `docker`-marked test (`uv run pytest -m docker`).
+container), with `--runner local` for the no-daemon fake/test path.
 
 ## Development
 

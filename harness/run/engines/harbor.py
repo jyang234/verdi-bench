@@ -125,18 +125,27 @@ class DockerCliRunner:
     def resolve_digest(self, image: str) -> Optional[str]:
         if "@sha256:" in image:
             return image.split("@", 1)[1]
+        # a registry image carries a RepoDigest (the manifest digest)
+        repo = self._inspect_format(image, "{{index .RepoDigests 0}}")
+        if repo and "@" in repo:
+            return repo.split("@", 1)[1]
+        # a local/CI image (built, never pushed) has no RepoDigest — pin instead to
+        # its content-addressed image Id, which still identifies the exact image in
+        # provenance and satisfies D005 [RN-12]. An absent image resolves to None
+        # and is refused.
+        idv = self._inspect_format(image, "{{.Id}}")
+        return idv if idv and idv.startswith("sha256:") else None
+
+    @staticmethod
+    def _inspect_format(image: str, fmt: str) -> Optional[str]:
         try:
             out = subprocess.run(
-                ["docker", "inspect", "--format", "{{index .RepoDigests 0}}", image],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
+                ["docker", "inspect", "--format", fmt, image],
+                capture_output=True, text=True, timeout=30, check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return None
-        digest = out.stdout.strip()
-        return digest.split("@", 1)[1] if "@" in digest else None
+        return out.stdout.strip() if out.returncode == 0 else None
 
     def run_container(
         self, cmd: list[str], timeout_s: int, env: Optional[dict] = None

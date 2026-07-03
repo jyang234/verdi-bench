@@ -105,19 +105,16 @@ def test_docker_trial_reads_its_request(tmp_path):
     )
     image = "verdi-bench/trial-req-e2e:latest"
     subprocess.run(["docker", "build", "-t", image, str(ctx)], check=True, capture_output=True)
-    # pin to the just-built image's digest so --pull=never + digest pinning hold
-    digest = subprocess.run(
-        ["docker", "inspect", "--format", "{{index .Id}}", image],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
 
     ws = tmp_path / "ws"
     ws.mkdir()
     arm = _arm(payload={"temperature": 0})
-    run_trial(
-        Task(id="t", prompt="solve X", image=f"{image}@{digest}" if "@" not in digest else image),
-        arm, ws, RunConfig(engine=HarborEngine()),
+    # reference by tag: --pull=never runs the local image, and resolve_digest
+    # pins provenance to its image Id (the local-image fallback).
+    rec = run_trial(
+        Task(id="t", prompt="solve X", image=image), arm, ws, RunConfig(engine=HarborEngine()),
     )
     seen = json.loads((ws / "artifacts" / "seen_request.json").read_text(encoding="utf-8"))
     assert seen["prompt"] == "solve X"
     assert seen["arm"] == "control"
+    assert rec.provenance.image_digest and rec.provenance.image_digest.startswith("sha256:")
