@@ -150,9 +150,29 @@ def test_grade_loader_ignores_fake_scripting(tmp_path):
     )
 
 
+def test_grade_hostile_workspace_dir_results_fails_closed(tmp_path):
+    """SEC5: an agent that makes holdout_results.json a DIRECTORY must not crash
+    grade_trial (old: unlink -> IsADirectoryError -> aborts the whole batch). The
+    fresh-copy prep removes the bad entry and grading proceeds; one event lands."""
+    ws = write_workspace(tmp_path)
+    (ws / "holdout_results.json").mkdir()  # hostile: a directory, not a file
+    runner = _FreshCopyRunner({"assertions": [{"id": "h1", "result": "pass"}]})
+    container = GradingContainer(runner=runner)
+    ledger = tmp_path / "l.ndjson"
+    outcome = grade_trial("trial-1", _task(), ws, ledger, fixed_ctx(), container=container)
+    # no crash, exactly one event, and the bad entry was removed in the copy
+    assert outcome.graded is True
+    assert runner.saw_stale is False
+    from harness.ledger.query import read_events
+
+    assert len(read_events(ledger)) == 1
+
+
 def test_completed_trials_allows_transient_regrade(tmp_path):
-    """GR-11: a transient cant_grade (container_failure) is regradeable; a grade
-    or a terminal cant_grade is not."""
+    """GR-11: only a transient cant_grade (grader could not be RUN) is
+    regradeable. A grade, a terminal cant_grade, OR a grader that ran and FAILED
+    (container_failure) is not — a deterministically broken grader must not be
+    re-attempted on every `bench grade`."""
     from harness.grade.cli import _completed_trials
     from harness.ledger import events
 
@@ -160,20 +180,21 @@ def test_completed_trials_allows_transient_regrade(tmp_path):
     ctx = fixed_ctx()
     events.record_grade(ledger, ctx, trial_id="graded", task_sha="s", assertions=[],
                         binary_score=True)
-    events.record_cant_grade(ledger, ctx, trial_id="transient", reason="container_failure")
+    events.record_cant_grade(ledger, ctx, trial_id="transient", reason="grader_unavailable")
     events.record_cant_grade(ledger, ctx, trial_id="terminal", reason="unknown_task")
+    events.record_cant_grade(ledger, ctx, trial_id="ran_and_failed", reason="container_failure")
 
     done = _completed_trials(ledger)
     assert "graded" in done
     assert "terminal" in done
-    assert "transient" not in done  # a docker outage does not block regrading
+    assert "ran_and_failed" in done  # grader ran and exited nonzero: terminal
+    assert "transient" not in done  # only "could not run the grader" regrades
 
 
 class _FreshCopyRunner:
     """A runner that (like DockerGradeRunner) grades a fresh workspace copy and
-    writes its *own* holdout output — records what it was handed."""
-
-    fresh_workspace_copy = True
+    writes its *own* holdout output — records what it was handed. It does not set
+    ``grades_in_place``, so it gets the safe copy path by default."""
 
     def __init__(self, output):
         self.output = output

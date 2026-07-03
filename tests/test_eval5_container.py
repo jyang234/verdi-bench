@@ -59,7 +59,30 @@ def test_docker_runner_gates_nonzero_exit(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(a[0] if a else k.get("args"), 137, "", "OOM")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    with pytest.raises(GradingContainerError):
+    from harness.grade.container import GraderUnavailableError
+
+    with pytest.raises(GradingContainerError) as exc:
+        DockerGradeRunner().run_holdouts(["docker", "run"], ws, "")
+    # exit 137 = the grader RAN and failed -> terminal, not the transient subtype
+    assert not isinstance(exc.value, GraderUnavailableError)
+
+
+def test_docker_runner_exit_125_is_transient(tmp_path, monkeypatch):
+    """A1/GR-11: exit 125 (daemon/config error, grader never ran) is a transient
+    GraderUnavailableError, leaving the trial regradeable — not a terminal
+    container_failure re-attempted forever."""
+    import subprocess
+
+    from harness.grade.container import DockerGradeRunner, GraderUnavailableError
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    def fake_run(*a, **k):
+        return subprocess.CompletedProcess(a[0] if a else k.get("args"), 125, "", "daemon down")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(GraderUnavailableError):
         DockerGradeRunner().run_holdouts(["docker", "run"], ws, "")
 
 

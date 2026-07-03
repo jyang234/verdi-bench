@@ -222,7 +222,12 @@ def record_grade(
     assertions: list,
     binary_score: bool,
     fractional_score: Optional[float] = None,
+    grader: Optional[str] = None,
 ) -> dict:
+    """``grader`` (additive field) records which grader produced the verdict —
+    e.g. ``"docker"`` (a trusted network-less container) vs ``"local"`` (the
+    no-daemon path that reads a pre-placed file, ADVISORY). It lets an audit
+    distinguish a trusted grade from an advisory/forgeable one."""
     payload = {
         "trial_id": trial_id,
         "task_sha": task_sha,
@@ -231,6 +236,8 @@ def record_grade(
     }
     if fractional_score is not None:
         payload["fractional_score"] = fractional_score
+    if grader is not None:
+        payload["grader"] = grader
     return emit(ledger_path, ctx, GRADE, payload)
 
 

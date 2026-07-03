@@ -45,16 +45,17 @@ def _grade_tasks_from_dicts(task_dicts: list) -> dict:
 def _completed_trials(ledger_path) -> set:
     """Trials that must not be (re)graded: any with a grade, or a cant_grade
     whose reason is terminal. A transient cant_grade (e.g. a docker outage) is
-    left regradeable [GR-11]."""
-    from ..ledger.query import find_events
+    left regradeable [GR-11]. One ledger pass rather than two scans."""
+    from ..ledger.query import iter_events
     from .deterministic import TRANSIENT_CANT_GRADE
 
-    done = {e["trial_id"] for e in find_events(ledger_path, "grade")}
-    done |= {
-        e["trial_id"]
-        for e in find_events(ledger_path, "cant_grade")
-        if e["reason"] not in TRANSIENT_CANT_GRADE
-    }
+    done: set = set()
+    for e in iter_events(ledger_path):
+        kind = e.get("event")
+        if kind == "grade":
+            done.add(e["trial_id"])
+        elif kind == "cant_grade" and e["reason"] not in TRANSIENT_CANT_GRADE:
+            done.add(e["trial_id"])
     return done
 
 

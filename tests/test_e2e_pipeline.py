@@ -63,6 +63,9 @@ def test_fake_pipeline_plan_run_grade(tmp_path):
     grades = find_events(ledger, "grade")
     assert len(grades) == len(trials)
     assert all(g["binary_score"] is True for g in grades)
+    # local grades are stamped ADVISORY so they cannot masquerade as trusted
+    # container grades in an audit [SEC].
+    assert all(g.get("grader") == "local" for g in grades)
     # the whole ledger still verifies after the full pipeline
     assert runner.invoke(app, ["verify-chain", str(ledger)]).exit_code == 0
 
