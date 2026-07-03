@@ -27,7 +27,7 @@ from ..analyze.confounds import judge_vendor_overlap
 from ..judge.providers.base import Provider, ProviderError, get_provider
 from ..ledger import events
 from ..ledger.events import EventContext
-from ..ledger.query import find_events
+from ..ledger.query import assert_chain, find_events
 from .packet import ProcessPacket, build_process_packet
 from .rubric import ProcessRubric, SCALE_MAX, SCALE_MIN
 
@@ -215,6 +215,10 @@ def record_human_process_score(
     verdicts, so process comes strictly after verdict + reveal. Refused if no
     reveal event references ``comparison_id``.
     """
+    # The firewall reads the ledger to check the reveal happened; verify the
+    # chain first so a forged reveal cannot let trajectory scoring run before the
+    # genuine outcome verdict [PL-6/AC-3].
+    assert_chain(ledger_path)
     if not _reveal_exists(ledger_path, comparison_id):
         raise ProcessSequencingError(
             f"human process scoring for comparison {comparison_id!r} requires its "

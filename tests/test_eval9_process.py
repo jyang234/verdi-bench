@@ -300,3 +300,32 @@ def test_ac7_correlation_reported():
 def test_process_score_registered():
     from harness.ledger import events
     assert "process_score" in events.REGISTERED_EVENTS
+
+
+def test_process_score_refuses_tampered_chain(tmp_path):
+    """PL-6/AC-3: the reveal firewall reads the ledger; a forged reveal must not
+    let trajectory scoring run before the genuine outcome verdict."""
+    import json
+
+    from harness.ledger.chain import canonical_line
+    from harness.ledger.events import record_reveal
+    from harness.ledger.query import ChainIntegrityError
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    r = _rubric()
+    scores = [DimensionScore(dim_id=d.id, score=4) for d in r.dimensions]
+    record_reveal(ledger, ctx, verdict_event_id="cmp-1",
+                  revealed={"judge_verdict_id": "j", "arm_identities": {}})
+    # a successor event so tampering the first reveal line is detectable
+    record_reveal(ledger, ctx, verdict_event_id="cmp-2",
+                  revealed={"judge_verdict_id": "j2", "arm_identities": {}})
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    obj = json.loads(lines[0])
+    obj["revealed"]["arm_identities"] = {"1": "arm_a"}  # byte change breaks chain
+    lines[0] = canonical_line(obj)
+    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(ChainIntegrityError):
+        record_human_process_score("t1", r, scores, ledger_path=ledger, ctx=ctx,
+                                   ts="t", scorer_id="human", comparison_id="cmp-1")
