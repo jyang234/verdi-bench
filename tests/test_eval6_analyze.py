@@ -170,6 +170,39 @@ def test_ac4_flags_emitted_telemetry_null(tmp_path):
     assert flags[0]["fields"] == ["tokens_in"]
 
 
+# --- AN-4: coverage at the realized N with a metric-appropriate null ---------
+def test_an4_continuous_metric_uses_continuous_null(tmp_path):
+    """AN-4: a continuous primary (cost) selects its CI method under a *continuous*
+    null at the realized paired-task count — not the old paired-binary null at the
+    assumed n_tasks=50. The null model used is recorded for disclosure."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(
+        tmp_path / "e", ctx=ctx, primary_metric="cost_per_task",
+        decision_rule="delta_cost_per_task < 0",
+    )
+    for i in range(6):  # BOTH arms report cost ⇒ not excluded, 6 paired tasks
+        seed_trial_and_grade(ledger, ctx, trial_id=f"c-{i}", task_id=f"task{i}", arm="control",
+                             telemetry={"cost": 1.0 + 0.1 * i, "wall_time_s": 10.0},
+                             provenance={"image_digest": "d"})
+        seed_trial_and_grade(ledger, ctx, trial_id=f"t-{i}", task_id=f"task{i}", arm="treatment",
+                             telemetry={"cost": 1.1 + 0.1 * i, "wall_time_s": 9.0},
+                             provenance={"image_digest": "d"})
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    assert f.ci_selection["null_model"] == "paired_continuous"
+    assert f.ci_selection["n_tasks"] == 6  # realized paired-task count, not 50
+
+
+def test_an4_binary_metric_uses_binary_null_at_realized_n(tmp_path):
+    """AN-4: a binary primary (holdout) uses a paired-binary null, again at the
+    realized paired-task count."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # holdout_pass_rate
+    _populate(ledger, ctx, control_pass=lambda i: i % 2 == 0, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    assert f.ci_selection["null_model"] == "paired_binary"
+    assert f.ci_selection["n_tasks"] == 5  # _populate seeds 5 paired tasks
+
+
 def test_ac4_flags_emitted_egress(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "eg", ctx=ctx)

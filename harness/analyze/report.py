@@ -34,7 +34,7 @@ from ..schema.metrics import PrimaryMetric
 from ..version import instrument_identity
 from .confounds import asymmetric_null_fields, flag_confounds
 from .effect import effect_sizes
-from .nullsim import VarianceParams, select_ci_method
+from .nullsim import NULL_BINARY, NULL_CONTINUOUS, coverage_from_deltas
 from .stats import BootstrapResult, paired_bootstrap
 
 # Telemetry-derived primary metrics and the field each reads.
@@ -200,6 +200,24 @@ def _paired_arm_series(
     return a_vals, b_vals
 
 
+def _comparison_series(
+    primary: str, per_task, ledger_path, arm_a: str, arm_b: str
+) -> tuple[list[float], list[float], list[float]]:
+    """One arm pair's ``(a_vals, b_vals, per-task deltas)`` for the primary metric.
+
+    The single place the per-comparison series is derived, so coverage selection
+    (over the primary pair) and each rendered comparison read the same definition.
+    """
+    if primary == PrimaryMetric.judge_preference.value:
+        deltas = _judge_preference_values(ledger_path)
+        a_vals = [max(d, 0.0) for d in deltas]
+        b_vals = [max(-d, 0.0) for d in deltas]
+    else:
+        a_vals, b_vals = _paired_arm_series(per_task, arm_a, arm_b)
+        deltas = [a - b for a, b in zip(a_vals, b_vals)]
+    return a_vals, b_vals, deltas
+
+
 # --- findings computation --------------------------------------------------
 def _lock_event(ledger_path) -> dict:
     locks = find_events(ledger_path, events.EXPERIMENT_LOCKED)
@@ -224,14 +242,16 @@ def _mde_block(ledger_path) -> MDEBlock:
     )
 
 
-def _variance_params(ledger_path) -> VarianceParams:
-    mde = _lock_event(ledger_path).get("mde", {})
-    return VarianceParams(
-        p=float(mde.get("p", 0.5)),
-        rho=float(mde.get("rho", 0.3)),
-        n_tasks=int(mde.get("n_tasks", 50)),
-        repetitions=int(mde.get("repetitions", 1)),
-    )
+def _null_model_for_metric(primary: str) -> str:
+    """The coverage null appropriate to the primary metric [AN-4].
+
+    Cost / wall-time are continuous; holdout-pass-rate and judge-preference are
+    bounded (0/1 or ±1) — a continuous primary must not be scored under a binary
+    null. The coverage sim resamples the realized deltas either way, so this is a
+    disclosure label, but it makes the metric/null match auditable."""
+    if primary in _METRIC_TELEMETRY_FIELD:  # cost_per_task, wall_time
+        return NULL_CONTINUOUS
+    return NULL_BINARY  # holdout_pass_rate, judge_preference
 
 
 def _judge_summary(ledger_path) -> dict:
@@ -391,13 +411,6 @@ def compute_findings(
 ) -> FindingsDocument:
     """Compute the findings document — pure and reproducible in ``seed``."""
     primary = spec.primary_metric.value
-    params = _variance_params(ledger_path)
-    # AN-10: coverage selection runs at the SAME resample count the deployed
-    # interval uses — the CI method is chosen at the ``n_boot`` it is applied at,
-    # never a smaller stand-in (BCa in particular behaves differently at 500 vs
-    # 10_000 resamples).
-    selection = select_ci_method(params, seed, n_sim=coverage_n_sim, n_boot=n_boot)
-    ci_method = selection.selected_method
 
     # metric → per-task per-arm value series
     if primary == PrimaryMetric.holdout_pass_rate.value:
@@ -415,17 +428,23 @@ def compute_findings(
     excluded_fields = set(asymmetric_null_fields(ledger_path))
     parsed_rule = spec.parsed_rule
 
-    comparisons: list[ComparisonFinding] = []
     arm_a = spec.arms[0].name
+    # AN-4 + AN-10: select the CI method by coverage under a metric-appropriate
+    # null at the REALIZED N — the primary comparison's realized per-task deltas
+    # recentered to H0 — at the SAME n_boot the deployed interval uses. No assumed
+    # 0.5/0.3/50 parameters, and never a binary null under a continuous metric.
+    primary_b = spec.arms[1].name if len(spec.arms) > 1 else arm_a
+    _, _, primary_deltas = _comparison_series(primary, per_task, ledger_path, arm_a, primary_b)
+    selection = coverage_from_deltas(
+        primary_deltas, seed, null_model=_null_model_for_metric(primary),
+        n_sim=coverage_n_sim, n_boot=n_boot,
+    )
+    ci_method = selection.selected_method
+
+    comparisons: list[ComparisonFinding] = []
     for other in spec.arms[1:]:
         arm_b = other.name
-        if primary == PrimaryMetric.judge_preference.value:
-            deltas = _judge_preference_values(ledger_path)
-            a_vals = [max(d, 0.0) for d in deltas]
-            b_vals = [max(-d, 0.0) for d in deltas]
-        else:
-            a_vals, b_vals = _paired_arm_series(per_task, arm_a, arm_b)
-            deltas = [a - b for a, b in zip(a_vals, b_vals)]
+        a_vals, b_vals, deltas = _comparison_series(primary, per_task, ledger_path, arm_a, arm_b)
 
         excluded = metric_field is not None and metric_field in excluded_fields
         if excluded:
