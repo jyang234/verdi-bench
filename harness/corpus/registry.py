@@ -90,8 +90,6 @@ class TaskEntry(BaseModel):
     # the miner who staged this candidate — the approver must NOT be the miner
     # (self-approval bar, enforced at admission) [CO-7, D-P4-3].
     miner: Optional[str] = None
-    # holdout content stored in the cache under this sha [CO-2, D-P4-2 slice 4F].
-    holdout_ref: Optional[str] = None
     # ``format`` is a Literal ⇒ a non-harbor task fails schema by construction,
     # the strongest form of the D003 rule (master plan §7.4 / EVAL-1-D005).
 
@@ -224,7 +222,6 @@ class CorpusManifest(BaseModel):
         miner: Optional[str] = None,
         plugins: Optional[list[str]] = None,
         metadata: Optional[dict] = None,
-        holdout_ref: Optional[str] = None,
     ) -> TaskEntry:
         """Insert a mined candidate as a ``pending-curation`` task [CO-8].
 
@@ -236,7 +233,7 @@ class CorpusManifest(BaseModel):
             raise CorpusError(f"task {task_id!r} already exists in manifest {self.corpus_id!r}")
         entry = TaskEntry(
             task_id=task_id, sha=sha, status="pending-curation", miner=miner,
-            plugins=plugins or [], metadata=metadata or {}, holdout_ref=holdout_ref,
+            plugins=plugins or [], metadata=metadata or {},
         )
         self.tasks.append(entry)
         return entry
