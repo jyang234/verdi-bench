@@ -93,13 +93,16 @@ def import_terminal_bench(
     entries: list[TaskEntry] = []
     blobs: dict[str, str] = {}
     for raw in sorted(source.fetch(), key=lambda r: r.task_id):
-        blobs[raw.task_id] = json.dumps(
+        # One canonical serialization, reused for both the cache blob and its
+        # sha — content_sha would re-serialize the same bytes.
+        blob = json.dumps(
             raw.content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         )
+        blobs[raw.task_id] = blob
         entries.append(
             TaskEntry(
                 task_id=raw.task_id,
-                sha=content_sha(raw.content),
+                sha=hashlib.sha256(blob.encode("utf-8")).hexdigest(),
                 # Public dataset tasks are admitted as imported; internal tasks
                 # go through the curation gate instead.
                 status="admitted",

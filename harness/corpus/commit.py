@@ -2,12 +2,18 @@
 
 The set of tasks an experiment runs is pinned at lock time as a
 ``task_commitment`` inside the ``experiment_locked`` event; ``bench run`` and
-``bench grade`` recompute it and refuse when the task content changed after the
-lock. This is the Phase-1 slice of the corpus-manifest path: it binds *which
-task content* an experiment executed to the immutable lock, closing the
-"swap ``tasks.yaml`` (prompts, canaries, holdout scripts, scripted grades) after
-lock" hole. Full manifest+cache-as-source (holdout import into the cache,
-``is_schedulable`` at run) is the deferred remainder.
+``bench grade`` recompute it and refuse when the *task definitions* changed after
+the lock. This is the Phase-1 slice of the corpus-manifest path: it binds the
+``tasks.yaml`` task definitions (prompt, canaries, plugin ids, and the
+``holdouts_dir`` **path**) to the immutable lock, closing the "swap tasks.yaml
+after lock" hole.
+
+**Coverage boundary (honest):** the commitment hashes each task's ``tasks.yaml``
+entry, not the holdout *script files* that ``holdouts_dir`` points to. Swapping
+the bytes of the holdout scripts on disk is therefore NOT detected here — that is
+deferred to Phase 4, where holdouts live inside the versioned, content-hashed
+corpus cache (``is_schedulable`` at run belongs to the same slice). Do not read
+this module as protecting holdout-script contents.
 
 Pure by construction: no ledger, network, or clock — only a canonical hash over
 the task definitions, so plan/run/grade compute an identical commitment.
@@ -15,51 +21,70 @@ the task definitions, so plan/run/grade compute an identical commitment.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 
 import yaml
 
+from .public import content_sha
+
 
 class TaskCommitmentError(ValueError):
-    """The tasks no longer match the commitment pinned at lock [PL-7]."""
-
-
-def _canon(obj) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """The tasks no longer match the commitment pinned at lock, or the task
+    source is malformed [PL-7]."""
 
 
 def task_content_sha(task: dict) -> str:
-    """sha256 over a task's full canonical definition — its committed identity.
+    """sha256 over a task's full canonical ``tasks.yaml`` definition — its
+    committed identity.
 
-    Covers every field of the ``tasks.yaml`` entry (prompt, holdouts_dir,
-    canaries, plugins, …), so any post-lock content change moves the sha. Not
-    self-attested: a ``task_sha`` field in the source is ignored, it is recomputed.
+    Covers every field of the entry (prompt, holdouts_dir path, canaries,
+    plugins, …), so any post-lock change to the *definition* moves the sha. Not
+    self-attested: a ``task_sha`` field in the source is ignored, it is
+    recomputed. Does **not** cover the holdout script files under ``holdouts_dir``
+    (see the module coverage boundary). Reuses the corpus canonical-hash
+    primitive so the lock commitment and the manifest sha cannot drift.
     """
-    return hashlib.sha256(_canon(task).encode("utf-8")).hexdigest()
+    return content_sha(task)
 
 
 def load_task_dicts(experiment_dir) -> list[dict]:
     """Raw task dicts from ``<experiment_dir>/tasks.yaml`` (empty if absent).
 
-    Sorted by id so the commitment is order-independent. This is the single
-    reader of the task source that plan, run, and grade all share.
+    Validates the task source and sorts by id so the commitment is
+    order-independent and this is the single reader plan/run/grade share. A task
+    with no ``id`` or a duplicate ``id`` is refused loudly — a silently-collapsed
+    duplicate would drop a task from the commitment and from ``which tasks ran``.
     """
     path = Path(experiment_dir) / "tasks.yaml"
     if not path.exists():
         return []
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return sorted(data.get("tasks", []), key=lambda t: t["id"])
+    tasks = data.get("tasks", [])
+    seen: set = set()
+    for t in tasks:
+        if not isinstance(t, dict) or "id" not in t:
+            raise TaskCommitmentError(f"tasks.yaml has a task with no 'id': {t!r}")
+        tid = t["id"]
+        if tid in seen:
+            raise TaskCommitmentError(
+                f"tasks.yaml has duplicate task id {tid!r}; task ids must be unique"
+            )
+        seen.add(tid)
+    return sorted(tasks, key=lambda t: t["id"])
 
 
 def compute_commitment(task_dicts, *, corpus_id: str, semver: str) -> dict:
-    """The pinned commitment: corpus id/semver + one hash over the per-task shas."""
+    """The pinned commitment: corpus id/semver + one hash over the per-task shas.
+
+    ``corpus_id``/``semver`` are recorded for a self-describing, auditable event
+    (which corpus the experiment committed to); the ``task_shas_sha256`` is the
+    hash that actually binds the task *content*.
+    """
     shas = {t["id"]: task_content_sha(t) for t in task_dicts}
     return {
         "corpus_id": corpus_id,
         "semver": semver,
-        "task_shas_sha256": hashlib.sha256(_canon(shas).encode("utf-8")).hexdigest(),
+        "task_shas_sha256": content_sha(shas),
     }
 
 
@@ -78,7 +103,8 @@ def assert_task_commitment(lock_event: dict, task_dicts, *, corpus_id: str, semv
     recomputed = compute_commitment(task_dicts, corpus_id=corpus_id, semver=semver)
     if recomputed != committed:
         raise TaskCommitmentError(
-            "tasks.yaml no longer matches the commitment pinned at lock — task "
-            "content (prompts / canaries / holdout scripts / scoring) changed "
-            "after lock. Refusing."
+            "tasks.yaml no longer matches the commitment pinned at lock — a task "
+            "definition (prompt / canaries / plugins / holdouts_dir) changed after "
+            "lock. Refusing. (Holdout script file contents are not covered by this "
+            "commitment; see corpus.commit's coverage boundary.)"
         )

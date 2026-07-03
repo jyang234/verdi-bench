@@ -12,6 +12,7 @@ from harness.corpus.commit import (
     TaskCommitmentError,
     assert_task_commitment,
     compute_commitment,
+    load_task_dicts,
 )
 from harness.ledger import events
 from harness.ledger.query import find_events
@@ -49,6 +50,23 @@ def test_assert_task_commitment_refuses_swap_and_missing():
     # a lock with no commitment is itself a refusal
     with pytest.raises(TaskCommitmentError):
         assert_task_commitment({}, TASKS, corpus_id="c", semver="1.0.0")
+
+
+def test_load_task_dicts_rejects_bad_ids(tmp_path):
+    """D3: duplicate or missing task ids are refused loudly, not silently
+    collapsed (which would drop a task from the commitment) or crashed with an
+    opaque KeyError."""
+    (tmp_path / "tasks.yaml").write_text(
+        yaml.safe_dump({"tasks": [{"id": "t1"}, {"id": "t1"}]}), encoding="utf-8"
+    )
+    with pytest.raises(TaskCommitmentError):
+        load_task_dicts(tmp_path)
+
+    (tmp_path / "tasks.yaml").write_text(
+        yaml.safe_dump({"tasks": [{"prompt": "no id here"}]}), encoding="utf-8"
+    )
+    with pytest.raises(TaskCommitmentError):
+        load_task_dicts(tmp_path)
 
 
 def test_self_attested_task_sha_ignored():
