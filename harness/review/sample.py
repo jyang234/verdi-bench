@@ -68,9 +68,10 @@ def _deterministic_winner(pass_rate_a: float, pass_rate_b: float) -> str:
 def comparisons_from_ledger(ledger_path, *, arm_a: str, arm_b: str) -> list[ComparisonRecord]:
     """Join judge verdicts with holdout-derived deterministic winners.
 
-    ``comparison_id`` groups a task's paired trials; the deterministic winner is
-    the arm with the higher holdout pass rate for that task. ``arm_a``/``arm_b``
-    fix the A/B orientation that the judge winner uses.
+    The deterministic winner is the arm with the higher holdout pass rate for the
+    verdict's **task** — resolved from the verdict's ``task_id`` (not by assuming
+    ``comparison_id == task_id``, which broke once a comparison_id names a
+    ``(task, repetition)`` pair). ``arm_a``/``arm_b`` fix the A/B orientation.
     """
     # per-(task, arm) holdout pass rate
     trials = {
@@ -86,8 +87,8 @@ def comparisons_from_ledger(ledger_path, *, arm_a: str, arm_b: str) -> list[Comp
             1.0 if ev["binary_score"] else 0.0
         )
 
-    def rate(task_id: str, arm: str) -> Optional[float]:
-        xs = passes.get(task_id, {}).get(arm)
+    def rate(task_id: Optional[str], arm: str) -> Optional[float]:
+        xs = passes.get(task_id, {}).get(arm) if task_id is not None else None
         return sum(xs) / len(xs) if xs else None
 
     records: list[ComparisonRecord] = []
@@ -96,8 +97,8 @@ def comparisons_from_ledger(ledger_path, *, arm_a: str, arm_b: str) -> list[Comp
         cid = v.get("comparison_id")
         if cid is None:
             continue
-        # comparison_id groups a task's trials; here it names the task
-        ra, rb = rate(cid, arm_a), rate(cid, arm_b)
+        task_id = v.get("task_id")
+        ra, rb = rate(task_id, arm_a), rate(task_id, arm_b)
         det = _deterministic_winner(ra, rb) if ra is not None and rb is not None else None
         records.append(
             ComparisonRecord(
@@ -133,9 +134,16 @@ def select_for_review(records: list[ComparisonRecord], seed: int) -> list[Select
         for r in shuffled[:k]:
             selected.append(SelectedItem(r.comparison_id, r.task_class, "floor"))
 
-    # deterministic output order: mandatory first (disagreements-first), then floor,
-    # each block sorted by id
-    selected.sort(key=lambda s: (s.stratum != "mandatory", s.comparison_id))
+    # RV-7: order the whole reviewed set by a seeded shuffle so the mandatory/floor
+    # (disagreement) boundary is NOT recoverable from packet order — two
+    # independently id-sorted blocks would mark exactly which items are
+    # disagreements. The stratum stays recorded per item (for IPW reweighting),
+    # it is simply not reconstructable from the order the reviewer sees.
+    selected.sort(key=lambda s: s.comparison_id)
+    order_base = sub_seed(seed, "review_order")
+    for i in range(len(selected) - 1, 0, -1):
+        j = index_at(order_base, i, i + 1)
+        selected[i], selected[j] = selected[j], selected[i]
     return selected
 
 

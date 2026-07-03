@@ -19,29 +19,13 @@ from pathlib import Path
 import typer
 
 
-def _canaries_from_spec(spec) -> list[str]:
-    """Arm identities the judge packet must never contain [AC-2]: names,
-    platforms, and model ids of the *contestants*. The judge's own model is not
-    a contestant identity and is intentionally absent."""
-    out: list[str] = []
-    for arm in spec.arms:
-        out.extend([arm.name, arm.platform, arm.model])
-    # de-dupe, drop empties, keep deterministic order
-    seen: set = set()
-    canaries: list[str] = []
-    for c in out:
-        if c and c not in seen:
-            seen.add(c)
-            canaries.append(c)
-    return canaries
-
-
 def register(app: typer.Typer) -> None:
     @app.command()
     def judge(
         experiment_dir: Path = typer.Argument(..., help="Directory with experiment.yaml"),
     ) -> None:
         """Judge every graded comparison; append one verdict each."""
+        from ..blind.core import arm_canaries
         from ..corpus.commit import (
             TaskCommitmentError,
             assert_task_commitment,
@@ -81,7 +65,7 @@ def register(app: typer.Typer) -> None:
         rubric = rubric_path.read_text(encoding="utf-8")
 
         task_classes = {t["id"]: t.get("task_class", "default") for t in task_dicts}
-        canaries = _canaries_from_spec(spec)
+        canaries = arm_canaries(spec.arms)
         ctx = EventContext(experiment_id=experiment_dir.name)
 
         comparisons = comparisons_from_ledger(ledger_path, spec, task_classes=task_classes)
@@ -97,7 +81,7 @@ def register(app: typer.Typer) -> None:
                 packet, spec.judge, ledger_path, ctx,
                 ts=ctx.clock(), canaries=canaries,
                 comparison_id=cmp.comparison_id, task_class=cmp.task_class,
-                arm_map=cmp.arm_map,
+                arm_map=cmp.arm_map, task_id=cmp.task_id,
             )
         typer.echo(f"judged {len(comparisons)} comparison(s)")
 

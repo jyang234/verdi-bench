@@ -79,6 +79,10 @@ class Verdict(BaseModel):
     # machine can tell whether a comparison is closed [AC-7]
     comparison_id: Optional[str] = None
     task_class: Optional[str] = None
+    # the task a comparison belongs to — lets the review sampler resolve a
+    # comparison's per-arm holdout rates (its deterministic winner) without
+    # assuming comparison_id == task_id [RV-3/RV-4].
+    task_id: Optional[str] = None
     # D-P4-1 (a slice of AN-1): the A/B -> physical-arm map, so the judge-vs-human
     # kappa join resolves both winners to the same arm frame instead of assuming
     # convention. None on legacy verdicts (analyze falls back to the assumed frame).

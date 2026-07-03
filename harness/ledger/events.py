@@ -359,6 +359,40 @@ def record_findings_rendered(
 # EVAL-7 events
 # ---------------------------------------------------------------------------
 REVEAL = register_event("reveal")
+REVIEW_PACKET_BUILT = register_event("review_packet_built")
+
+
+def record_review_packet_built(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    comparison_id: str,
+    task_id: str,
+    task_class: str,
+    response_map: dict,
+    seed: int,
+) -> dict:
+    """The Response-1/2 ↔ arm map for one blinded review comparison [D-P4-1].
+
+    Emitted by ``bench review build`` when it renders a comparison into the
+    packet. ``response_map`` is ``{"1": arm, "2": arm}`` — the authoritative,
+    hash-chained record of which arm the human saw as Response 1 vs 2. Reveal,
+    ``review record`` (actual_arm / guess accuracy), and EVAL-9 process scoring
+    all key off it, so the shape is a versioned contract — additive event type,
+    old ledgers simply lack it.
+    """
+    return emit(
+        ledger_path,
+        ctx,
+        REVIEW_PACKET_BUILT,
+        {
+            "comparison_id": comparison_id,
+            "task_id": task_id,
+            "task_class": task_class,
+            "response_map": response_map,
+            "seed": seed,
+        },
+    )
 
 
 def record_reveal(

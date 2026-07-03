@@ -25,6 +25,43 @@ def register(app: typer.Typer) -> None:
     review_app = typer.Typer(help="Human review packet + verdict capture [EVAL-7].",
                              no_args_is_help=True)
 
+    @review_app.command("build")
+    def review_build(
+        experiment_dir: Path = typer.Argument(..., help="Dir with experiment.yaml"),
+        out: Path = typer.Option(None, "--out", help="Packet HTML path [default: <dir>/review_packet.html]"),
+    ) -> None:
+        """Sample + render the blinded review packet; record the Response↔arm map."""
+        from ..corpus.commit import (
+            TaskCommitmentError,
+            assert_task_commitment,
+            load_task_dicts,
+        )
+        from ..ledger.events import EventContext
+        from ..plan.lock import assert_lock
+        from ..schema.experiment import ExperimentSpec
+        from .build import build_review
+
+        experiment_dir = Path(experiment_dir)
+        spec_path = experiment_dir / "experiment.yaml"
+        ledger_path = experiment_dir / "ledger.ndjson"
+        lock_event = assert_lock(spec_path, ledger_path)
+        spec = ExperimentSpec.from_yaml(spec_path)
+        task_dicts = load_task_dicts(experiment_dir)
+        try:
+            assert_task_commitment(
+                lock_event, task_dicts,
+                corpus_id=spec.corpus.id, semver=spec.corpus.version,
+            )
+        except TaskCommitmentError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())
+        html, n = build_review(ledger_path, spec, task_dicts, ctx, seed=spec.seed)
+        out = out or (experiment_dir / "review_packet.html")
+        out.write_text(html, encoding="utf-8")
+        typer.echo(f"built review packet: {n} comparison(s) -> {out}")
+
     @review_app.command("record")
     def review_record(
         experiment_dir: Path = typer.Argument(..., help="Dir with ledger.ndjson"),

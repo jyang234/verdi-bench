@@ -92,6 +92,7 @@ def judge_pair(
     comparison_id: Optional[str] = None,
     task_class: Optional[str] = None,
     arm_map: Optional[dict[str, str]] = None,
+    task_id: Optional[str] = None,
 ) -> Verdict:
     """Judge one comparison. Always appends exactly one verdict event.
 
@@ -125,6 +126,7 @@ def judge_pair(
             task_class=task_class,
             arm_map=arm_map,
             single_order=single_order,
+            task_id=task_id,
         )
         events.append_verdict(ledger_path, ctx, verdict=v.model_dump(mode="json"))
         return v
@@ -195,6 +197,7 @@ def judge_pair(
             task_class=task_class,
             arm_map=arm_map,
             single_order=single_order,
+            task_id=task_id,
         )
     except ValidationError:
         # e.g. a substantive winner with no evidence ⇒ malformed
