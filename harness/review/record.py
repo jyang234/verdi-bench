@@ -22,7 +22,11 @@ from ..ledger.events import EventContext
 from ..ledger.query import assert_chain, find_events
 
 
-class RevealError(RuntimeError):
+class ReviewError(RuntimeError):
+    """A review operation was refused (duplicate/post-reveal/out-of-order) [RV-1/8]."""
+
+
+class RevealError(ReviewError):
     """A reveal was attempted before its verdict+integrity was captured [AC-4]."""
 
 
@@ -32,6 +36,21 @@ def human_verdict_exists(ledger_path, comparison_id: str) -> Optional[dict]:
         if ev["verdict"].get("comparison_id") == comparison_id and "integrity" in ev:
             return ev
     return None
+
+
+def _any_human_verdict(ledger_path, comparison_id: str) -> bool:
+    """True if any human verdict (integrity or not) exists for ``comparison_id``."""
+    return any(
+        ev["verdict"].get("comparison_id") == comparison_id
+        for ev in find_events(ledger_path, events.HUMAN_VERDICT)
+    )
+
+
+def _reveal_exists(ledger_path, comparison_id: str) -> bool:
+    return any(
+        ev.get("verdict_event_id") == comparison_id
+        for ev in find_events(ledger_path, events.REVEAL)
+    )
 
 
 def record_human_verdict(
@@ -50,6 +69,25 @@ def record_human_verdict(
     """
     if verdict.source != "human":
         raise ValueError("record_human_verdict requires a human-sourced verdict")
+    # RV-1: the capture side reads the ledger to enforce single-verdict,
+    # pre-reveal ordering; verify the chain first so a forged reveal/verdict line
+    # cannot fool these gates [PL-6].
+    assert_chain(ledger_path)
+    cid = verdict.comparison_id
+    # RV-1: a verdict recorded after the comparison is unblinded is no longer
+    # blinded — refuse it rather than let an unblinded verdict poison kappa.
+    if _reveal_exists(ledger_path, cid):
+        raise ReviewError(
+            f"comparison {cid!r} is already revealed; a post-reveal verdict is "
+            "unblinded and cannot be recorded [RV-1]"
+        )
+    # RV-1: exactly one human verdict per comparison; a duplicate double-counts in
+    # kappa and the integrity rate.
+    if _any_human_verdict(ledger_path, cid):
+        raise ReviewError(
+            f"comparison {cid!r} already has a human verdict; a second verdict is "
+            "refused (it would double-count in kappa/integrity) [RV-1]"
+        )
     return events.append_human_verdict(
         ledger_path,
         ctx,
@@ -76,6 +114,13 @@ def reveal_comparison(
     # the chain first so a forged human_verdict cannot enable a premature
     # unblinding, defeating capture-then-reveal [PL-6/AC-4].
     assert_chain(ledger_path)
+    # RV-8: a comparison is unblinded once; a duplicate reveal would append a
+    # second (potentially divergent) disclosure. Refuse it.
+    if _reveal_exists(ledger_path, comparison_id):
+        raise RevealError(
+            f"comparison {comparison_id!r} is already revealed; a duplicate reveal "
+            "is refused [RV-8]"
+        )
     hv = human_verdict_exists(ledger_path, comparison_id)
     if hv is None:
         raise RevealError(

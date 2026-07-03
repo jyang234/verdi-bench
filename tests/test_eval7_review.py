@@ -16,6 +16,7 @@ from harness.review.kappa import (
 )
 from harness.review.packet import ReviewPacketItem, ReviewResponse, build_review_packet
 from harness.review.record import (
+    ReviewError,
     RevealError,
     record_human_verdict,
     reveal_comparison,
@@ -43,6 +44,14 @@ def _human(winner, cid, source="human", task_class="cls"):
     ev = [Evidence(kind="diff", response=winner, hunk="h")] if winner in ("A", "B") else []
     return Verdict(winner=Winner(winner), reason="r", evidence=ev, provenance=_prov("human"),
                    source=source, comparison_id=cid, task_class=task_class)
+
+
+def _seed_judge(ledger, ctx, cid, winner="A"):
+    """Append the judge verdict a comparison must have before a human reviews it."""
+    ev = [Evidence(kind="diff", response=winner, hunk="h")] if winner in ("A", "B") else []
+    jv = Verdict(winner=Winner(winner), reason="x", evidence=ev, provenance=_prov(),
+                 comparison_id=cid, task_class="cls")
+    append_verdict(ledger, ctx, verdict=jv.model_dump(mode="json"))
 
 
 # --- AC-1: scrub shares the blinding core -----------------------------------
@@ -257,6 +266,49 @@ def test_ac6_integrity_rate_reported(tmp_path):
     assert "blinding integrity rate" in md.lower()
     # the field is schema-required — a findings doc cannot omit it
     assert "integrity" in findings.model_dump()
+
+
+def test_rv1_refuses_duplicate_verdict(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    _seed_judge(ledger, ctx, "cmp-1")
+    record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
+                         arm_guess=None)
+    # a second verdict for the same comparison poisons kappa/integrity — refuse it
+    with pytest.raises(ReviewError):
+        record_human_verdict(ledger, ctx, verdict=_human("B", "cmp-1"), arm_recognized=False,
+                             arm_guess=None)
+    from harness.ledger.query import find_events
+    assert len(find_events(ledger, "human_verdict")) == 1
+
+
+def test_rv1_refuses_post_reveal_verdict(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    _seed_judge(ledger, ctx, "cmp-1")
+    record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
+                         arm_guess=None)
+    reveal_comparison(ledger, ctx, comparison_id="cmp-1",
+                      arm_identities={"1": "arm_a", "2": "arm_b"})
+    # a verdict after the unblinding is unblinded and must be refused (RV-1)
+    with pytest.raises(ReviewError):
+        record_human_verdict(ledger, ctx, verdict=_human("B", "cmp-1"), arm_recognized=False,
+                             arm_guess=None)
+
+
+def test_rv8_refuses_duplicate_reveal(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    _seed_judge(ledger, ctx, "cmp-1")
+    record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
+                         arm_guess=None)
+    reveal_comparison(ledger, ctx, comparison_id="cmp-1",
+                      arm_identities={"1": "arm_a", "2": "arm_b"})
+    with pytest.raises(RevealError):
+        reveal_comparison(ledger, ctx, comparison_id="cmp-1",
+                          arm_identities={"1": "arm_a", "2": "arm_b"})
+    from harness.ledger.query import find_events
+    assert len(find_events(ledger, "reveal")) == 1
 
 
 def test_reveal_refuses_tampered_chain(tmp_path):
