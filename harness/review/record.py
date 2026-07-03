@@ -19,7 +19,7 @@ from typing import Optional
 from ..judge.schema import Verdict
 from ..ledger import events
 from ..ledger.events import EventContext
-from ..ledger.query import assert_chain, find_events
+from ..ledger.query import assert_chain, read_events
 
 
 class ReviewError(RuntimeError):
@@ -30,44 +30,54 @@ class RevealError(ReviewError):
     """A reveal was attempted before its verdict+integrity was captured [AC-4]."""
 
 
-def human_verdict_exists(ledger_path, comparison_id: str) -> Optional[dict]:
+# The review guards each need several predicates over the ledger. Rather than
+# re-read/parse the whole file once per predicate (O(N²) on a batch), the public
+# functions ``read_events`` **once** and pass the parsed list to these helpers,
+# which filter it in memory [carry-forward: ledger-read consolidation]. Each
+# helper still accepts ``evs=None`` so external callers can use it standalone.
+def _of_type(ledger_path, event_type: str, evs) -> list[dict]:
+    source = evs if evs is not None else read_events(ledger_path)
+    return [e for e in source if e.get("event") == event_type]
+
+
+def human_verdict_exists(ledger_path, comparison_id: str, *, evs=None) -> Optional[dict]:
     """Return the human_verdict event for ``comparison_id`` (with integrity), or None."""
-    for ev in find_events(ledger_path, events.HUMAN_VERDICT):
+    for ev in _of_type(ledger_path, events.HUMAN_VERDICT, evs):
         if ev["verdict"].get("comparison_id") == comparison_id and "integrity" in ev:
             return ev
     return None
 
 
-def _any_human_verdict(ledger_path, comparison_id: str) -> bool:
+def _any_human_verdict(ledger_path, comparison_id: str, *, evs=None) -> bool:
     """True if any human verdict (integrity or not) exists for ``comparison_id``."""
     return any(
         ev["verdict"].get("comparison_id") == comparison_id
-        for ev in find_events(ledger_path, events.HUMAN_VERDICT)
+        for ev in _of_type(ledger_path, events.HUMAN_VERDICT, evs)
     )
 
 
-def _reveal_exists(ledger_path, comparison_id: str) -> bool:
+def _reveal_exists(ledger_path, comparison_id: str, *, evs=None) -> bool:
     return any(
         ev.get("verdict_event_id") == comparison_id
-        for ev in find_events(ledger_path, events.REVEAL)
+        for ev in _of_type(ledger_path, events.REVEAL, evs)
     )
 
 
-def _judge_verdict_exists(ledger_path, comparison_id: str) -> bool:
+def _judge_verdict_exists(ledger_path, comparison_id: str, *, evs=None) -> bool:
     """True if the judge produced a verdict for ``comparison_id`` — the review
     packet is built from judge verdicts, so a comparison a human can review must
     have one (a CANT_JUDGE verdict still counts)."""
     return any(
         ev["verdict"].get("comparison_id") == comparison_id
-        for ev in find_events(ledger_path, events.JUDGE_VERDICT)
+        for ev in _of_type(ledger_path, events.JUDGE_VERDICT, evs)
     )
 
 
-def review_packet_built_for(ledger_path, comparison_id: str) -> Optional[dict]:
+def review_packet_built_for(ledger_path, comparison_id: str, *, evs=None) -> Optional[dict]:
     """The ``review_packet_built`` event for ``comparison_id`` (its recorded
     Response-1/2 ↔ arm map + task class), or None if the comparison was never
     built into a packet [D-P4-1]."""
-    for ev in find_events(ledger_path, events.REVIEW_PACKET_BUILT):
+    for ev in _of_type(ledger_path, events.REVIEW_PACKET_BUILT, evs):
         if ev.get("comparison_id") == comparison_id:
             return ev
     return None
@@ -91,27 +101,29 @@ def record_human_verdict(
         raise ValueError("record_human_verdict requires a human-sourced verdict")
     # RV-1: the capture side reads the ledger to enforce single-verdict,
     # pre-reveal ordering; verify the chain first so a forged reveal/verdict line
-    # cannot fool these gates [PL-6].
+    # cannot fool these gates [PL-6]. Read the parsed events ONCE and filter for
+    # every predicate [carry-forward: ledger-read consolidation].
     assert_chain(ledger_path)
+    evs = read_events(ledger_path)
     cid = verdict.comparison_id
     # RV-9: refuse a verdict for a comparison the judge never produced — a mistyped
     # comparison_id would otherwise record cleanly and silently drop from kappa
     # (which joins on judge↔human comparison_id).
-    if not _judge_verdict_exists(ledger_path, cid):
+    if not _judge_verdict_exists(ledger_path, cid, evs=evs):
         raise ReviewError(
             f"comparison {cid!r} has no judge verdict; a human verdict for a "
             "comparison that was never judged is a mistyped comparison_id [RV-9]"
         )
     # RV-1: a verdict recorded after the comparison is unblinded is no longer
     # blinded — refuse it rather than let an unblinded verdict poison kappa.
-    if _reveal_exists(ledger_path, cid):
+    if _reveal_exists(ledger_path, cid, evs=evs):
         raise ReviewError(
             f"comparison {cid!r} is already revealed; a post-reveal verdict is "
             "unblinded and cannot be recorded [RV-1]"
         )
     # RV-1: exactly one human verdict per comparison; a duplicate double-counts in
     # kappa and the integrity rate.
-    if _any_human_verdict(ledger_path, cid):
+    if _any_human_verdict(ledger_path, cid, evs=evs):
         raise ReviewError(
             f"comparison {cid!r} already has a human verdict; a second verdict is "
             "refused (it would double-count in kappa/integrity) [RV-1]"
@@ -143,16 +155,18 @@ def reveal_comparison(
     """
     # The reveal gate reads the ledger to check a human verdict exists; verify
     # the chain first so a forged human_verdict cannot enable a premature
-    # unblinding, defeating capture-then-reveal [PL-6/AC-4].
+    # unblinding, defeating capture-then-reveal [PL-6/AC-4]. Read once, filter for
+    # every predicate [carry-forward: ledger-read consolidation].
     assert_chain(ledger_path)
+    evs = read_events(ledger_path)
     # RV-8: a comparison is unblinded once; a duplicate reveal would append a
     # second (potentially divergent) disclosure. Refuse it.
-    if _reveal_exists(ledger_path, comparison_id):
+    if _reveal_exists(ledger_path, comparison_id, evs=evs):
         raise RevealError(
             f"comparison {comparison_id!r} is already revealed; a duplicate reveal "
             "is refused [RV-8]"
         )
-    hv = human_verdict_exists(ledger_path, comparison_id)
+    hv = human_verdict_exists(ledger_path, comparison_id, evs=evs)
     if hv is None:
         raise RevealError(
             f"cannot reveal comparison {comparison_id!r}: no human verdict + "
@@ -160,7 +174,7 @@ def reveal_comparison(
         )
     # RV-2: the reveal discloses the *recorded* Response↔arm map, not a hardcoded
     # {"1":"arm_a","2":"arm_b"}. A comparison with no packet has no truthful map.
-    built = review_packet_built_for(ledger_path, comparison_id)
+    built = review_packet_built_for(ledger_path, comparison_id, evs=evs)
     if built is None:
         raise RevealError(
             f"comparison {comparison_id!r} has no review_packet_built event; its "
@@ -170,7 +184,7 @@ def reveal_comparison(
     arm_identities = built["response_map"]
     # locate the advisory judge verdict for the same comparison (may be absent)
     judge_id = None
-    for ev in find_events(ledger_path, events.JUDGE_VERDICT):
+    for ev in _of_type(ledger_path, events.JUDGE_VERDICT, evs):
         if ev["verdict"].get("comparison_id") == comparison_id:
             judge_id = ev["verdict"]["provenance"].get("call_ids") or ["judge"]
             judge_id = judge_id[0]

@@ -147,14 +147,26 @@ def select_for_review(records: list[ComparisonRecord], seed: int) -> list[Select
     return selected
 
 
+def realized_floor_prob(records: list[ComparisonRecord]) -> float:
+    """The realized floor inclusion probability ``ceil(0.2n)/n`` over the ``n``
+    agreements [RV-5]. The floor takes a *ceil* fraction, so the true probability
+    exceeds the nominal 0.2 for small n (e.g. n=6 → ceil(1.2)/6 = 2/6 ≈ 0.333, so
+    the IPW weight is 3, not 5). 1.0 when there are no agreements to sample."""
+    n = sum(1 for r in records if not _is_disagreement(r))
+    if n == 0:
+        return 1.0
+    return math.ceil(FLOOR_FRACTION * n) / n
+
+
 def reviewed_kappa_items(ledger_path, selected: list[SelectedItem]) -> list[ReviewedItem]:
     """Kappa inputs over the **reviewed set only** [AC-2].
 
     Joins judge and human winners by comparison_id, keeping only comparisons that
     (a) were selected for review and (b) have a human verdict. Unreviewed or
-    still-open comparisons are excluded from kappa inputs.
+    still-open comparisons are excluded from kappa inputs. Each item carries its
+    stratum (for IPW reweighting) and task class (for per-class escalation).
     """
-    strata = {s.comparison_id: s.stratum for s in selected}
+    strata = {s.comparison_id: (s.stratum, s.task_class) for s in selected}
     judge = {
         ev["verdict"].get("comparison_id"): ev["verdict"]["winner"]
         for ev in find_events(ledger_path, events.JUDGE_VERDICT)
@@ -165,5 +177,8 @@ def reviewed_kappa_items(ledger_path, selected: list[SelectedItem]) -> list[Revi
         cid = v.get("comparison_id")
         if cid not in strata or cid not in judge:
             continue
-        items.append(ReviewedItem(a=judge[cid], b=v["winner"], stratum=strata[cid]))
+        stratum, task_class = strata[cid]
+        items.append(
+            ReviewedItem(a=judge[cid], b=v["winner"], stratum=stratum, task_class=task_class)
+        )
     return items

@@ -93,6 +93,7 @@ class ReviewedItem:
     a: object          # judge label / score
     b: object          # human label / score
     stratum: str       # "mandatory" | "floor"
+    task_class: Optional[str] = None  # for per-class escalation [RV-4]
 
 
 def estimate_kappa(
@@ -130,6 +131,7 @@ class KappaReport:
     headline: float
     sensitivity_method: str
     sensitivity: Optional[float]
+    floor_prob: float = FLOOR_INCLUSION_PROB  # the inclusion prob used for IPW [RV-5]
 
     def as_dict(self) -> dict:
         return {
@@ -137,14 +139,27 @@ class KappaReport:
             "headline": self.headline,
             "sensitivity_method": self.sensitivity_method,
             "sensitivity": self.sensitivity,
+            "floor_prob": self.floor_prob,
         }
 
 
 def kappa_report(
-    items: Sequence[ReviewedItem], *, weight: str = "unweighted", categories=None
+    items: Sequence[ReviewedItem],
+    *,
+    weight: str = "unweighted",
+    categories=None,
+    floor_prob: float = FLOOR_INCLUSION_PROB,
 ) -> KappaReport:
-    """Headline IPW kappa + floor-only sensitivity [D003 rec]."""
-    headline = estimate_kappa(items, KappaEstimator.ipw, weight=weight, categories=categories)
+    """Headline IPW kappa + floor-only sensitivity [D003 rec].
+
+    ``floor_prob`` is the inclusion probability the floor was actually drawn at —
+    pass the **realized** ``ceil(0.2n)/n`` (RV-5), not the nominal 0.2. It is
+    surfaced on the report so a consumer can see the weighting that produced the
+    headline.
+    """
+    headline = estimate_kappa(
+        items, KappaEstimator.ipw, weight=weight, categories=categories, floor_prob=floor_prob
+    )
     try:
         sensitivity = estimate_kappa(
             items, KappaEstimator.floor_only, weight=weight, categories=categories
@@ -156,4 +171,5 @@ def kappa_report(
         headline=headline,
         sensitivity_method="floor_only",
         sensitivity=sensitivity,
+        floor_prob=floor_prob,
     )

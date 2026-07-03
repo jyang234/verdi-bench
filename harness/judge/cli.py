@@ -34,8 +34,8 @@ def register(app: typer.Typer) -> None:
         from ..ledger.events import EventContext
         from ..plan.lock import assert_lock
         from ..schema.experiment import ExperimentSpec
+        from ..review.calibrate import kappa_by_class_ipw
         from .assemble import comparisons_from_ledger
-        from .calibrate import kappa_by_class, pairs_from_ledger
         from .client import judge_pair
         from .packet import build_packet
 
@@ -86,11 +86,14 @@ def register(app: typer.Typer) -> None:
         typer.echo(f"judged {len(comparisons)} comparison(s)")
 
         # Thread the locked EscalationConfig through calibration [JD-9, D006]:
-        # per-class kappa against any human verdicts, flagging below-threshold
-        # classes for panel escalation (v1 = flag only) [AC-7].
+        # per-class kappa against any human verdicts, through the D003 IPW seam
+        # (not raw pooled kappa over the disagreement-heavy reviewed set) [RV-4].
+        # Empty until human review exists — the real escalation table rides the
+        # analyze render post-review.
         esc = spec.judge.escalation
-        cal = kappa_by_class(
-            pairs_from_ledger(ledger_path),
+        cal = kappa_by_class_ipw(
+            ledger_path,
+            arm_a=spec.arms[0].name, arm_b=spec.arms[1].name, seed=spec.seed,
             kappa_threshold=esc.kappa_threshold,
             min_human_verdicts=esc.min_human_verdicts,
         )
