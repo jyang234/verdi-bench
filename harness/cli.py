@@ -39,11 +39,15 @@ def plan(
     attested_by: str = typer.Option("cli-user", "--attested-by", help="Lock attester [D008]"),
 ) -> None:
     """Validate, power-check, and write the genesis lock event."""
+    from .corpus.commit import load_task_dicts
     from .plan.lock import UnderpoweredError, lock_experiment
 
     # PL-8: stamp the experiment *directory* name, matching run/grade — one
     # ledger, one experiment_id (the yaml stem is literally "experiment").
     ctx = _default_ctx(experiment_id=experiment.parent.name or experiment.stem)
+    # PL-7/D-6: commit the task content (from tasks.yaml in the experiment dir)
+    # into the lock so a post-lock swap is refused by run/grade.
+    task_dicts = load_task_dicts(experiment.parent)
     try:
         outcome = lock_experiment(
             experiment,
@@ -51,6 +55,7 @@ def plan(
             ctx=ctx,
             acknowledge_underpowered=acknowledge_underpowered,
             attested_by=attested_by,
+            task_dicts=task_dicts,
         )
     except UnderpoweredError as e:
         typer.echo(str(e), err=True)

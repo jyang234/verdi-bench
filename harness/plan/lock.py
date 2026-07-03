@@ -63,6 +63,7 @@ def lock_experiment(
     acknowledge_underpowered: bool = False,
     attested_by: str = "unknown",
     attestation_method: str = "anchor-plus-attestation-v1",
+    task_dicts: Optional[list] = None,
     **mde_kwargs,
 ) -> LockOutcome:
     """Validate, power-check, and write the genesis lock event."""
@@ -107,6 +108,16 @@ def lock_experiment(
                 )
             ack_underpowered = True
 
+    # PL-7 / D-6: pin the task-content commitment so run/grade can refuse a
+    # post-lock swap of prompts, canaries, holdout scripts, or scoring.
+    task_commitment = None
+    if task_dicts:
+        from ..corpus.commit import compute_commitment
+
+        task_commitment = compute_commitment(
+            task_dicts, corpus_id=spec.corpus.id, semver=spec.corpus.version
+        )
+
     # PL-3: the lock is the genesis event. Write it *first*, before any rider,
     # so its prev_hash is all-zeros and the chain anchors on the lock even when
     # an underpowered acknowledgment is also recorded.
@@ -119,6 +130,7 @@ def lock_experiment(
         mde=mde,
         attested_by=attested_by,
         method=attestation_method,
+        task_commitment=task_commitment,
     )
     if ack_underpowered:
         events.record_acknowledged_underpowered(

@@ -15,31 +15,21 @@ import getpass
 from pathlib import Path
 
 import typer
-import yaml
 
 from ..plan.interleave import derive_schedule, enumerate_trials
 from ..schema.experiment import ExperimentSpec
 from .types import RunConfig, Task
 
 
-def _load_tasks(experiment_dir: Path) -> list[Task]:
-    tasks_file = experiment_dir / "tasks.yaml"
-    if not tasks_file.exists():
-        raise typer.BadParameter(f"no tasks.yaml in {experiment_dir}")
-    data = yaml.safe_load(tasks_file.read_text(encoding="utf-8")) or {}
-    tasks = []
-    for t in data.get("tasks", []):
-        tasks.append(
-            Task(
-                id=t["id"],
-                prompt=t.get("prompt", ""),
-                image=t.get("image", Task.__dataclass_fields__["image"].default),
-                timeout_s=t.get("timeout_s"),
-                holdout_canaries=t.get("holdout_canaries", []),
-                fake_behavior=t.get("fake_behavior", {}),
-            )
-        )
-    return tasks
+def _task_from_dict(t: dict) -> Task:
+    return Task(
+        id=t["id"],
+        prompt=t.get("prompt", ""),
+        image=t.get("image", Task.__dataclass_fields__["image"].default),
+        timeout_s=t.get("timeout_s"),
+        holdout_canaries=t.get("holdout_canaries", []),
+        fake_behavior=t.get("fake_behavior", {}),
+    )
 
 
 def register(app: typer.Typer) -> None:
@@ -50,6 +40,11 @@ def register(app: typer.Typer) -> None:
         concurrency: int = typer.Option(1, "--concurrency", help=">1 stamps contention caveat"),
     ) -> None:
         """Execute the locked experiment's interleaved trials."""
+        from ..corpus.commit import (
+            TaskCommitmentError,
+            assert_task_commitment,
+            load_task_dicts,
+        )
         from ..ledger.events import EventContext
         from ..plan.lock import assert_lock
         from .interleave import schedule
@@ -57,10 +52,22 @@ def register(app: typer.Typer) -> None:
         experiment_dir = Path(experiment_dir)
         spec_path = experiment_dir / "experiment.yaml"
         ledger_path = experiment_dir / "ledger.ndjson"
-        assert_lock(spec_path, ledger_path)
+        lock_event = assert_lock(spec_path, ledger_path)
         spec = ExperimentSpec.from_yaml(spec_path)
 
-        tasks = _load_tasks(experiment_dir)
+        task_dicts = load_task_dicts(experiment_dir)
+        if not task_dicts:
+            raise typer.BadParameter(f"no tasks.yaml in {experiment_dir}")
+        # PL-7/D-6: refuse tasks that were swapped after the lock.
+        try:
+            assert_task_commitment(
+                lock_event, task_dicts,
+                corpus_id=spec.corpus.id, semver=spec.corpus.version,
+            )
+        except TaskCommitmentError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        tasks = [_task_from_dict(t) for t in task_dicts]
         task_map = {t.id: t for t in tasks}
         arm_map = {a.name: a for a in spec.arms}
 

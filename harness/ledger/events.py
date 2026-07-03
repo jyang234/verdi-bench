@@ -113,20 +113,25 @@ def record_experiment_locked(
     mde: dict,
     attested_by: str,
     method: str,
+    task_commitment: Optional[dict] = None,
 ) -> dict:
-    """Genesis lock event [AC-2, D004, D008]."""
-    return emit(
-        ledger_path,
-        ctx,
-        EXPERIMENT_LOCKED,
-        {
-            "spec_sha256": spec_sha256,
-            "spec_path": spec_path,
-            "seed": seed,
-            "mde": mde,
-            "attestation": {"attested_by": attested_by, "method": method},
-        },
-    )
+    """Genesis lock event [AC-2, D004, D008].
+
+    ``task_commitment`` (additive field, EVAL-1-D-6) pins the corpus id/semver
+    and a hash over the per-task content shas, so run/grade can refuse tasks
+    that were swapped after lock [PL-7]. Optional for compatibility with
+    task-less plan flows; required by run/grade when real tasks are present.
+    """
+    payload = {
+        "spec_sha256": spec_sha256,
+        "spec_path": spec_path,
+        "seed": seed,
+        "mde": mde,
+        "attestation": {"attested_by": attested_by, "method": method},
+    }
+    if task_commitment is not None:
+        payload["task_commitment"] = task_commitment
+    return emit(ledger_path, ctx, EXPERIMENT_LOCKED, payload)
 
 
 def record_acknowledged_underpowered(
