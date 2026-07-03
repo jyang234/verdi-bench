@@ -850,6 +850,17 @@ def _render_official_md(findings: FindingsDocument) -> str:
     consistency = _ledger_consistency_lines(findings)
     if consistency:
         out += ["", "## Ledger consistency", *consistency]
+    # AN-12 / REVIEW-D-3: the process section is retained in the official render
+    # under an explicit EXPLORATORY/advisory label with the unblinded disclosure —
+    # never a primary metric, never stripped (findings.json already hashes it into
+    # findings_sha256, so stripping the markdown would desync from the artifact)
+    # [EVAL-9 AC-6].
+    if findings.process is not None:
+        out += [
+            "",
+            f"## Process diagnostics — {_WATERMARK} (advisory secondary, NEVER a primary metric)",
+            *_process_lines(findings),
+        ]
     out += ["", "## Provenance", *_provenance_lines(findings)]
     out += ["", f"CI method selected by coverage: {findings.ci_selection['selected_method']}"]
     return "\n".join(out) + "\n"

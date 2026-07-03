@@ -376,8 +376,17 @@ def test_ac6_exploratory_rendering(tmp_path):
     findings2 = compute_findings(ledger, spec, spec.seed, corpus_manifest=manifest,
                                  coverage_n_sim=20, n_boot=200)
     official = render_markdown(findings2, ledger, "official", corpus_manifest=manifest)
-    assert "UNBLINDED DIAGNOSTIC" not in official
-    assert "planning_quality" not in official
+    # D-3 (AN-12): the process section IS shown in the official render, but under an
+    # explicit EXPLORATORY/advisory label with the unblinded disclosure — retained,
+    # not stripped, since findings.json already hashes it into findings_sha256 and
+    # stripping the markdown would desync from the artifact [EVAL-9 AC-6].
+    assert "Pre-registered primary metric" in official  # the pre-registered content
+    assert "EXPLORATORY" in official  # the process section carries the exploratory label
+    assert "UNBLINDED DIAGNOSTIC" in official  # with the unblinded disclosure
+    assert "planning_quality" in official
+    # kept in findings.json so findings_sha256 still covers it (not stripped)
+    assert findings2.process is not None
+    assert "planning_quality" in findings2.model_dump_json()
 
 
 # --- AC-7: telemetry juxtaposed + correlation reported ----------------------
