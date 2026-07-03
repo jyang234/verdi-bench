@@ -185,21 +185,19 @@ encodes the current behavior as intent.
     statistics correctness, not fail-closed, and folding them here would grow the
     slice past its concern.
 
-### To confirm at the start of the owning slice (recommendation + trade-offs)
+### Confirmed at planning (recorded in the decisions ledger)
 
-- **D-P3-1 (carry-forward #10) — provider-key fail-loud: recommend raising.**
-  A named-but-absent provider key should **fail the run loudly**, not silently drop
-  (an unauthenticated arm is a biased comparison, a fail-closed defect). AC-8's
-  "a value is never invented" is preserved — we still never fabricate a value; we
-  refuse to run when a *named* key cannot be resolved. *Blast radius:*
-  `load_run_settings` raises (e.g. `MissingProviderKeyError(name)`) instead of
-  returning `{}`; `test_ac8_provider_key_value_from_env_not_file:104` is rewritten
-  — `absent ⇒ raises` replaces `absent ⇒ {}`. Per CLAUDE.md "changing a genuinely
-  wrong test requires saying so explicitly and getting human agreement first," this
-  is that ask. *Alternative:* keep the silent drop and log a warning — not
-  recommended; a warning on a batch run is invisible and the biased trial still
-  runs. Owned by slice **3B** (it is a run-side fail-closed defect); if vetoed, the
-  slice ships without it and the test stands.
+- **D-P3-1 (carry-forward #10) — provider-key fail-loud: RESOLVED `raise-missing-
+  provider-key`** (jyang, recorded in `docs/design/specs/eval4.decisions.ndjson`
+  as `EVAL-4-D-P3-1`). A named-but-absent provider key **fails the run loudly**,
+  not silently drop (an unauthenticated arm is a biased comparison, a fail-closed
+  defect). AC-8's "a value is never invented" is preserved — no value is fabricated;
+  the run refuses when a *named* key cannot be resolved. *Blast radius:*
+  `load_run_settings` raises `MissingProviderKeyError(name)` instead of returning
+  `{}`; `test_ac8_provider_key_value_from_env_not_file:104` is rewritten —
+  `absent ⇒ raises` replaces `absent ⇒ {}`, the one existing test that changes,
+  per CLAUDE.md "changing a genuinely wrong test requires saying so explicitly and
+  getting human agreement first." Owned by slice **3B**.
 
 ### Contract additions (additive, hash-chain-safe — recorded before the slice lands)
 
@@ -288,10 +286,10 @@ and validate human-recorded scores against the rubric.
   duplicate, or missing dims loudly (a crash beats a silently degraded score);
   `process record` (`cli.py:47-51`) errors on a typoed/unknown key instead of
   mapping it to `human_cant`, and errors on keys that match no rubric dim.
-- **Provider-key fail-loud (D-P3-1, with sign-off):** `load_run_settings`
+- **Provider-key fail-loud (D-P3-1, confirmed):** `load_run_settings`
   (`settings.py:86-88`) raises `MissingProviderKeyError(name)` when a named key is
   absent from `env`; rewrite `test_ac8_...:104` (`absent ⇒ raises`). *This is the
-  one existing test that changes and only with explicit D-P3-1 sign-off.*
+  one existing test that changes; D-P3-1 is resolved `raise-missing-provider-key`.*
 - **Reproduce-first:** `{"scores":[3,4,5]}` today escapes with zero events → after,
   one `process_score` with all dims `CANT_SCORE(parse)`; a redaction leak → one
   event `CANT_SCORE(redaction_leak)` (today zero); an unknown provider prefix →
@@ -439,7 +437,7 @@ Restating the review's §5 Phase 3 exit against the slices:
   event / loud refusal). No fixes by inspection.
 - **`make verify` green** before each commit; never weaken/skip a test to get
   green. The only existing test that changes is `test_ac8_provider_key_value_from_
-  env_not_file` (3B), and only with explicit **D-P3-1** sign-off.
+  env_not_file` (3B), under the resolved **D-P3-1** sign-off.
 - **Single responsibility / boundaries:** each fix lands in the subsystem that owns
   the concern; the `harbor-confined-to-seam`, `grade-has-no-llm-clients`, and
   `ledger-writes-only-via-events` contracts stay green. New events flow only
@@ -475,8 +473,8 @@ Restating the review's §5 Phase 3 exit against the slices:
 
 Approving authorizes executing **Phase 3 (3A–3F)** as atomic commits with `make
 verify` green, adding the four additive event types and the PL-14 lock-event
-reshape with decisions-ledger entries + migration notes, and — **only on D-P3-1
-sign-off** — the provider-key fail-loud change (rewriting the one pinning test).
-3A/3C/3D/3E need no new decision and can start on approval; 3B needs D-P3-1 for its
-last item (the rest of 3B is decision-free); 3F lands last. I'll report at natural
-breakpoints and check in before Phase 4 (connective tissue). No PR unless you ask.
+reshape with decisions-ledger entries + migration notes, and the provider-key
+fail-loud change (rewriting the one pinning test) under the now-resolved **D-P3-1**.
+All slices 3A–3E are decision-free and can start on approval; 3F lands last. I'll
+report at natural breakpoints and check in before Phase 4 (connective tissue). No
+PR unless you ask.
