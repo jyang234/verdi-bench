@@ -22,6 +22,7 @@ from harness.ledger.events import (
     append_verdict,
     record_calibration_run,
     record_executed_order,
+    record_grade,
     record_trial_infra_failed,
 )
 from harness.ledger.query import ledger_head_hash, verify
@@ -304,6 +305,50 @@ def test_an1_per_task_winrate_clusters_reps(tmp_path):
     cf = f.comparisons[0]
     assert cf.n_tasks == 2  # two task clusters, not four verdicts
     assert cf.effect["mean_paired_delta"] == 0.5  # mean of per-task deltas (+1, 0)
+
+
+# --- AN-8 / AN-9: artifact-honest decisions + orphan flagging ---------------
+def test_an8_decides_positive_gated_on_detection(tmp_path):
+    """AN-8: findings.json's decides_positive is False for a null result (CI
+    includes 0), matching the render — not the raw rule fired on an undetected,
+    noisy positive delta."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # rule delta_holdout_pass_rate > 0
+    # control slightly ahead on one noisy task ⇒ observed delta > 0 but CI includes 0
+    _populate(ledger, ctx, control_pass=lambda i: i in {0, 1, 2, 4},
+              treatment_pass=lambda i: i in {0, 2, 4})
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    cf = f.comparisons[0]
+    detected = cf.stats["ci_low"] > 0 or cf.stats["ci_high"] < 0
+    assert detected is False
+    assert cf.decision["observed_delta"] > 0  # raw rule delta_>_0 WOULD fire
+    assert cf.decision["decides_positive"] is False  # but it is gated on detection
+    assert cf.decision["detected"] is False
+
+
+def test_an8_decides_positive_true_when_detected(tmp_path):
+    """AN-8: a clean detected effect that meets the rule still decides positive."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    cf = f.comparisons[0]
+    assert cf.decision["detected"] is True
+    assert cf.decision["decides_positive"] is True
+
+
+def test_an9_orphan_grades_flagged(tmp_path):
+    """AN-9: a grade with no matching trial record is a ledger inconsistency —
+    flagged loudly, not silently dropped (which would shrink n in silence)."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    record_grade(ledger, ctx, trial_id="ghost", task_sha="s", assertions=[], binary_score=True)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.ledger_consistency["n_orphan_grades"] == 1
+    assert "ghost" in f.ledger_consistency["orphan_grades"]
+    md = render_markdown(f, ledger, "exploratory")
+    assert "orphan" in md.lower()
 
 
 def test_ac4_flags_emitted_egress(tmp_path):

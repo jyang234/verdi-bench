@@ -142,6 +142,8 @@ class FindingsDocument(BaseModel):
     confounds: list[dict]
     secondary_metrics: dict
     integrity: dict
+    # AN-9: orphan grades (no matching trial) counted, never silently dropped
+    ledger_consistency: dict
     process: Optional[dict] = None
     judge_calibration: Optional[dict] = None
     provenance: Provenance
@@ -167,6 +169,25 @@ def _holdout_values(ledger_path) -> dict[str, dict[str, list[float]]]:
             continue
         acc[rec["task_id"]][rec["arm"]].append(1.0 if ev["binary_score"] else 0.0)
     return acc
+
+
+def _orphan_grades(ledger_path) -> list[str]:
+    """Grade events whose ``trial_id`` has no matching trial record [AN-9].
+
+    A grade with no trial is a ledger inconsistency that silently shrinks n; it is
+    surfaced on the findings and rendered loudly, never dropped in silence."""
+    trials = _trial_index(ledger_path)
+    return sorted(
+        ev["trial_id"]
+        for ev in find_events(ledger_path, events.GRADE)
+        if ev["trial_id"] not in trials
+    )
+
+
+def _ledger_consistency(ledger_path) -> dict:
+    """Ledger-consistency diagnostics that ride every render [AN-9]."""
+    orphans = _orphan_grades(ledger_path)
+    return {"orphan_grades": orphans, "n_orphan_grades": len(orphans)}
 
 
 def _telemetry_values(ledger_path, field: str) -> dict[str, dict[str, list[float]]]:
@@ -495,7 +516,7 @@ def compute_findings(
                     label=f"{arm_a} vs {arm_b}", arm_a=arm_a, arm_b=arm_b,
                     n_tasks=len(deltas), stats={}, effect={},
                     decision={"rule": parsed_rule.raw, "observed_delta": None,
-                              "decides_positive": None},
+                              "detected": None, "decides_positive": None},
                     excluded_from_official=True,
                     exclusion_reason=(
                         f"telemetry field {metric_field!r} has asymmetric nulls; "
@@ -511,7 +532,7 @@ def compute_findings(
                     label=f"{arm_a} vs {arm_b}", arm_a=arm_a, arm_b=arm_b, n_tasks=0,
                     stats={}, effect={},
                     decision={"rule": parsed_rule.raw, "observed_delta": None,
-                              "decides_positive": None},
+                              "detected": None, "decides_positive": None},
                     excluded_from_official=True,
                     exclusion_reason="no paired task data",
                 )
@@ -521,6 +542,10 @@ def compute_findings(
         boot: BootstrapResult = paired_bootstrap(deltas, seed, ci_method, n_boot=n_boot)
         eff = effect_sizes(a_vals, b_vals)
         observed = eff.mean_paired_delta
+        # AN-8: a decision is positive only when the effect is DETECTED (the CI
+        # excludes 0) and the rule fires — never the raw rule on a null delta. The
+        # artifact now matches the render, which already gates on detection.
+        detected = boot.excludes_zero()
         comparisons.append(
             ComparisonFinding(
                 label=f"{arm_a} vs {arm_b}",
@@ -532,7 +557,8 @@ def compute_findings(
                 decision={
                     "rule": parsed_rule.raw,
                     "observed_delta": observed,
-                    "decides_positive": parsed_rule.decides_positive(observed),
+                    "detected": detected,
+                    "decides_positive": detected and parsed_rule.decides_positive(observed),
                 },
                 excluded_from_official=excluded,
                 exclusion_reason=(
@@ -570,6 +596,7 @@ def compute_findings(
         confounds=flag_confounds(ledger_path, spec),
         secondary_metrics=_secondary_metrics(ledger_path, spec),
         integrity=_integrity(ledger_path),
+        ledger_consistency=_ledger_consistency(ledger_path),
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
         provenance=provenance,
@@ -781,6 +808,9 @@ def _render_official_md(findings: FindingsDocument) -> str:
     out += ["", "## Confounds (disclosed, non-suppressing)"]
     out += [f"- {c['flag']}" for c in findings.confounds] or ["- none"]
     out += ["", f"## Blinding integrity", f"- {_integrity_line(findings)}"]
+    consistency = _ledger_consistency_lines(findings)
+    if consistency:
+        out += ["", "## Ledger consistency", *consistency]
     out += ["", "## Provenance", *_provenance_lines(findings)]
     out += ["", f"CI method selected by coverage: {findings.ci_selection['selected_method']}"]
     return "\n".join(out) + "\n"
@@ -810,6 +840,9 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
     out += section("Confounds (disclosed, non-suppressing)",
                    [f"- {c['flag']}: {c}" for c in findings.confounds] or ["- none"])
     out += section("Blinding integrity", [f"- {_integrity_line(findings)}"])
+    consistency = _ledger_consistency_lines(findings)
+    if consistency:
+        out += section("Ledger consistency", consistency)
     out += section("CI method selection (coverage)", [f"- {findings.ci_selection}"])
     out += section("Provenance", _provenance_lines(findings))
     return "\n".join(out) + "\n"
@@ -886,6 +919,17 @@ def _process_lines(findings: FindingsDocument) -> list[str]:
         if p.get("style_only"):
             lines.append(f"- style-only dimensions (uncorrelated with their correlates): {p['style_only']}")
     return lines
+
+
+def _ledger_consistency_lines(findings: FindingsDocument) -> list[str]:
+    """A loud warning line when orphan grades were excluded [AN-9]; empty if clean."""
+    lc = findings.ledger_consistency
+    if lc["n_orphan_grades"] == 0:
+        return []
+    return [
+        f"- ⚠ LEDGER INCONSISTENCY: {lc['n_orphan_grades']} orphan grade(s) with no "
+        f"matching trial record were excluded from analysis: {lc['orphan_grades']}"
+    ]
 
 
 def _integrity_line(findings: FindingsDocument) -> str:
