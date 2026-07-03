@@ -87,16 +87,16 @@ def lock_experiment(
 
     if variance_source is None:
         variance_source = AssumedVariance()
-    # PL-1: compute power at the design's REAL N — ``repetitions × corpus size`` —
-    # when the task source is available, not the variance source's calibration
-    # n_tasks (default 50, which ignored the actual design). NOTE: this treats each
-    # (task, repetition) as an independent paired observation, matching the current
-    # analyze clustering (each verdict its own bootstrap cluster). When repetitions
-    # > 1 those reps are correlated within a task, so power is optimistic; the
-    # cluster-by-task fix for BOTH the power sim and the analysis is AN-1 (Phase 5,
-    # statistical correctness).
-    real_n = spec.repetitions * len(task_dicts) if task_dicts else None
-    mde = mde_check(spec, variance_source, n=real_n, **mde_kwargs)
+    # PL-1 + D-P5-4: compute power at the design's real size — the corpus's
+    # task-*cluster* count, with ``repetitions`` correlated reps per task — when the
+    # task source is available, not the variance source's calibration n_tasks
+    # (default 50, which ignored the actual design). The power sim clusters by task
+    # and resamples clusters, the same variance model EVAL-6's analysis uses, so the
+    # pre-registration power model and the realized-data analysis cannot disagree.
+    # When repetitions > 1 the correlated reps carry less information than
+    # independent observations, so the MDE is honestly larger (no longer optimistic).
+    n_task_clusters = len(task_dicts) if task_dicts else None
+    mde = mde_check(spec, variance_source, n_tasks=n_task_clusters, **mde_kwargs)
 
     # Underpowered check [D001, AC-4]: refuse unless acknowledged. A None MDE
     # means the design could not detect *any* swept effect — the maximally

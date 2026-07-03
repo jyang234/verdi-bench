@@ -230,6 +230,7 @@ def _variance_params(ledger_path) -> VarianceParams:
         p=float(mde.get("p", 0.5)),
         rho=float(mde.get("rho", 0.3)),
         n_tasks=int(mde.get("n_tasks", 50)),
+        repetitions=int(mde.get("repetitions", 1)),
     )
 
 
@@ -386,13 +387,16 @@ def compute_findings(
     *,
     corpus_manifest=None,
     coverage_n_sim: int = 200,
-    coverage_n_boot: int = 500,
     n_boot: int = 10_000,
 ) -> FindingsDocument:
     """Compute the findings document — pure and reproducible in ``seed``."""
     primary = spec.primary_metric.value
     params = _variance_params(ledger_path)
-    selection = select_ci_method(params, seed, n_sim=coverage_n_sim, n_boot=coverage_n_boot)
+    # AN-10: coverage selection runs at the SAME resample count the deployed
+    # interval uses — the CI method is chosen at the ``n_boot`` it is applied at,
+    # never a smaller stand-in (BCa in particular behaves differently at 500 vs
+    # 10_000 resamples).
+    selection = select_ci_method(params, seed, n_sim=coverage_n_sim, n_boot=n_boot)
     ci_method = selection.selected_method
 
     # metric → per-task per-arm value series

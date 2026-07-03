@@ -20,21 +20,25 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.random import PCG64, Generator
 
-from ..plan.power import simulate_correlated_pair_deltas
+from ..plan.power import simulate_clustered_pair_deltas
 from ..plan.seeds import sub_seed
 from .ci import available_methods, resolve_ci_method
 
 DEFAULT_N_SIM = 200
-DEFAULT_N_BOOT = 500
+DEFAULT_N_BOOT = 10_000
 
 
 @dataclass
 class VarianceParams:
-    """The null variance model — mirrors ``power.VarianceSource`` fields."""
+    """The null variance model — mirrors ``power.VarianceSource`` fields.
+
+    ``repetitions`` is the design's within-task rep count, so the null clusters
+    by task exactly as the power sim does [D-P5-4]."""
 
     p: float
     rho: float
     n_tasks: int
+    repetitions: int = 1
 
 
 @dataclass(frozen=True)
@@ -58,9 +62,9 @@ class CoverageSelection:
 
 
 def _null_deltas(rng: Generator, params: VarianceParams) -> np.ndarray:
-    """Per-task deltas under H0 (equal marginals ⇒ true effect 0)."""
-    return simulate_correlated_pair_deltas(
-        rng, params.n_tasks, params.p, params.p, params.rho
+    """Per-task-cluster deltas under H0 (equal marginals ⇒ true effect 0)."""
+    return simulate_clustered_pair_deltas(
+        rng, params.n_tasks, params.repetitions, params.p, params.p, params.rho
     )
 
 

@@ -103,8 +103,7 @@ def test_ac2_disclosure_required(tmp_path):
     fp = FakeProvider([json.dumps({"scores": {d: 4 for d in r.dimension_ids}})] * 6)
     score_trial_process("c0", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
                         scorer_id="judge", provider=fp)
-    findings = compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, coverage_n_boot=60,
-                                n_boot=200)
+    findings = compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, n_boot=200)
     assert findings.process is not None
     assert findings.process["disclosure"]["unblinded"] is True
     # strip the disclosure ⇒ render must refuse
@@ -356,7 +355,7 @@ def test_ac6_exploratory_rendering(tmp_path):
     score_trial_process("c0", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
                         scorer_id="judge", provider=fp)
     findings = compute_findings(ledger, spec, spec.seed, corpus_manifest=None,
-                                coverage_n_sim=20, coverage_n_boot=60, n_boot=200)
+                                coverage_n_sim=20, n_boot=200)
     # exploratory render shows process as a labeled, disclosed secondary
     md = render_markdown(findings, ledger, "exploratory")
     assert "Process diagnostics (EXPLORATORY secondary)" in md
@@ -367,7 +366,7 @@ def test_ac6_exploratory_rendering(tmp_path):
     manifest = CorpusManifest(corpus_id="c", semver="1.0.0", kind="public", tasks=[])
     manifest.calibration.status = "full-run-validated"
     findings2 = compute_findings(ledger, spec, spec.seed, corpus_manifest=manifest,
-                                 coverage_n_sim=20, coverage_n_boot=60, n_boot=200)
+                                 coverage_n_sim=20, n_boot=200)
     official = render_markdown(findings2, ledger, "official", corpus_manifest=manifest)
     assert "UNBLINDED DIAGNOSTIC" not in official
     assert "planning_quality" not in official

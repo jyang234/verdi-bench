@@ -27,7 +27,7 @@ from tests.fixtures.builders import (
     seed_trial_and_grade,
 )
 
-_FAST = dict(coverage_n_sim=40, coverage_n_boot=100, n_boot=500)
+_FAST = dict(coverage_n_sim=40, n_boot=500)
 
 
 def _full_corpus():

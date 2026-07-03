@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -10,6 +11,7 @@ from harness.plan.power import (
     CalibrationVariance,
     calibration_variance_from_runs,
     mde_check,
+    simulate_clustered_pair_deltas,
 )
 from harness.schema.experiment import ExperimentSpec
 from tests.fixtures.builders import valid_experiment_dict
@@ -33,10 +35,61 @@ def test_pl12_hypothesized_effect_bounded():
 
 
 def test_pl1_mde_check_uses_real_n_override():
-    """PL-1: an explicit ``n`` (the design's real N) drives the sim, not the
-    variance source's calibration n_tasks."""
-    res = mde_check(_spec(), AssumedVariance(p=0.5, rho=0.3, n_tasks=999), n=8, **FAST)
-    assert res["n_tasks"] == 8  # the real N, not 999
+    """PL-1: an explicit ``n_tasks`` (the design's real cluster count) drives the
+    sim, not the variance source's calibration n_tasks.
+
+    Signature changed in Phase 5 5A: the power model now clusters by task, so the
+    design's real size is the corpus's task-*cluster* count plus ``repetitions``,
+    not a flat ``n`` observation count (D-P5-4)."""
+    res = mde_check(_spec(), AssumedVariance(p=0.5, rho=0.3, n_tasks=999), n_tasks=8, **FAST)
+    assert res["n_tasks"] == 8  # the real cluster count, not 999
+
+
+# --- D-P5-4 / power-N: cluster by task, reps correlated within a task --------
+def test_dp5_4_shared_regime_reps_add_no_information():
+    """At rho=1 every task is in the shared-difficulty regime, so all reps read
+    one task draw — adding reps changes nothing (correlated reps carry no extra
+    information). The per-task deltas are identical for 1 vs 5 reps."""
+    d1 = simulate_clustered_pair_deltas(np.random.default_rng(0), 200, 1, 0.6, 0.4, 1.0)
+    d5 = simulate_clustered_pair_deltas(np.random.default_rng(0), 200, 5, 0.6, 0.4, 1.0)
+    assert np.array_equal(d1, d5)
+
+
+def test_dp5_4_independent_regime_reps_reduce_variance():
+    """At rho=0 reps are independent, so averaging more reps shrinks a task's
+    within-task noise — the model does capture rep information when it exists."""
+    d1 = simulate_clustered_pair_deltas(np.random.default_rng(1), 400, 1, 0.5, 0.5, 0.0)
+    d5 = simulate_clustered_pair_deltas(np.random.default_rng(1), 400, 5, 0.5, 0.5, 0.0)
+    assert d5.var() < d1.var()
+
+
+def test_dp5_4_reps_length_is_cluster_count():
+    """The sim returns one delta per task *cluster* (the analysis unit), not one
+    per (task, rep) — so the bootstrap resamples tasks, not correlated reps."""
+    d = simulate_clustered_pair_deltas(np.random.default_rng(2), 17, 4, 0.5, 0.5, 0.3)
+    assert d.shape == (17,)
+
+
+def test_dp5_4_correlated_reps_do_not_beat_independent_tasks():
+    """power-N reproduce: 10 task clusters × 3 correlated reps carry no more
+    information than 30 correlated reps would — and *less* than 30 independent
+    single-rep tasks. Under the old flat-N model both were N=30 and gave the same
+    (optimistic) MDE; under clustering the correlated design needs a larger-or-
+    equal MDE. Also records ``repetitions`` and the cluster count."""
+    clustered = mde_check(
+        _spec(), AssumedVariance(p=0.5, rho=0.6, n_tasks=999), n_tasks=10, repetitions=3, **FAST
+    )
+    flat = mde_check(
+        _spec(repetitions=1), AssumedVariance(p=0.5, rho=0.6, n_tasks=999),
+        n_tasks=30, repetitions=1, **FAST,
+    )
+    assert clustered["repetitions"] == 3 and clustered["n_tasks"] == 10
+    # 10 correlated clusters detect a larger-or-equal minimum effect than 30
+    # independent tasks (a None MDE = "cannot detect in range" is the largest).
+    if clustered["mde"] is None:
+        assert True
+    else:
+        assert flat["mde"] is not None and clustered["mde"] >= flat["mde"]
 
 
 def test_pl5_calibration_variance_from_runs():
