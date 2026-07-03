@@ -23,6 +23,7 @@ the fence is mechanical:
 from __future__ import annotations
 
 from collections import defaultdict
+from enum import Enum
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -65,6 +66,26 @@ class ProvenanceError(AnalyzeError):
 
 class DisclosureError(AnalyzeError):
     """Process scores rendered without the unblinded disclosure block [EVAL-9 AC-2]."""
+
+
+class CantAnalyzeReason(str, Enum):
+    """Closed set of fail-closed analyze-refusal reasons [AN-3]."""
+
+    calibration_incomplete = "calibration_incomplete"
+    unregistered_metric = "unregistered_metric"
+    disclosure_missing = "disclosure_missing"
+    provenance_invalid = "provenance_invalid"
+    analyze_error = "analyze_error"
+
+
+def cant_analyze_reason(exc: AnalyzeError) -> CantAnalyzeReason:
+    """Map an ``AnalyzeError`` to its enumerated ``cant_analyze`` reason."""
+    return {
+        CalibrationIncompleteError: CantAnalyzeReason.calibration_incomplete,
+        UnregisteredOfficialError: CantAnalyzeReason.unregistered_metric,
+        DisclosureError: CantAnalyzeReason.disclosure_missing,
+        ProvenanceError: CantAnalyzeReason.provenance_invalid,
+    }.get(type(exc), CantAnalyzeReason.analyze_error)
 
 
 # --- schema ----------------------------------------------------------------

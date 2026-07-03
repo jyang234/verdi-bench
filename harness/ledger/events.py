@@ -315,6 +315,25 @@ def append_human_verdict(
 # EVAL-6 events
 # ---------------------------------------------------------------------------
 FINDINGS_RENDERED = register_event("findings_rendered")
+CANT_ANALYZE = register_event("cant_analyze")
+
+
+def record_cant_analyze(
+    ledger_path, ctx: EventContext, *, mode: str, reason: str, detail: str = ""
+) -> dict:
+    """Fail-closed refusal of an analyze render [EVAL-6 §7.2, AN-3].
+
+    A refused official/exploratory render (calibration incomplete, provenance
+    invalid, disclosure missing, unregistered metric) lands exactly one event
+    instead of escaping the CLI with none. **Additive event type** — old ledgers
+    simply lack it, so no existing hash chain is invalidated (EVAL-6 decisions
+    ledger + migration note)."""
+    return emit(
+        ledger_path,
+        ctx,
+        CANT_ANALYZE,
+        {"mode": mode, "reason": reason, "detail": detail},
+    )
 
 
 def record_findings_rendered(
