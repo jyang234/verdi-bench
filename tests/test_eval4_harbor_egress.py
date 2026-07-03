@@ -82,6 +82,19 @@ def test_container_is_named_for_kill(tmp_path):
     assert "--name" in cmd and cmd[cmd.index("--name") + 1] == "verdi-trial-fixed"
 
 
+def test_container_runs_as_invoking_user(tmp_path):
+    """RN-7: the trial runs as the invoking user, so files it writes into the
+    bind-mounted workspace are harness-owned and can be redacted at capture (a
+    root container would leave root-owned files the harness can't scrub)."""
+    import os
+
+    runner = FakeDockerRunner(native_log={})
+    run_trial(_pinned_task(), _arm(), tmp_path / "ws",
+              RunConfig(engine=HarborEngine(runner=runner)))
+    cmd = runner.last_cmd
+    assert "--user" in cmd and cmd[cmd.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
+
+
 def test_docker_runner_kills_named_container_on_timeout(monkeypatch):
     """RN-10: on timeout the named container is killed (not just the CLI), so it
     stops writing into the mounted workspace before redaction runs."""

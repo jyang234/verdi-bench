@@ -194,6 +194,12 @@ class HarborEngine:
         cmd = ["docker", "run", "--rm", "--pull=never"]
         # a deterministic name so a timed-out container is killable by name [RN-10]
         cmd += ["--name", _container_name(request.trial_id)]
+        # Run as the invoking user so files the trial writes into the bind-mounted
+        # workspace are owned by the harness — which MUST rewrite them to redact
+        # secrets at capture [RN-7]. A root container would leave root-owned files
+        # the non-root harness cannot scrub.
+        if hasattr(os, "getuid"):
+            cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
         # pinned quotas [D003]
         if q.cpus is not None:
             cmd += ["--cpus", str(q.cpus)]

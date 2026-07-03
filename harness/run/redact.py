@@ -71,6 +71,14 @@ def redact_artifacts(artifacts_dir, extra_patterns: list[str] | None = None) -> 
         text = raw.decode("latin-1")  # bijective for bytes 0-255; never raises
         scrubbed, n = patterns.scrub(text)
         if n:
-            path.write_bytes(scrubbed.encode("latin-1"))
+            try:
+                path.write_bytes(scrubbed.encode("latin-1"))
+            except OSError as e:
+                # A secret was found but could not be scrubbed in place (e.g. a
+                # file the trial wrote as a different owner). Fail loud — a
+                # detected-but-unredacted secret must never persist silently.
+                raise RedactionError(
+                    f"found a secret in {path} but could not rewrite it: {e}"
+                ) from e
             total += n
     return total
