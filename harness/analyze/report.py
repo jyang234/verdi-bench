@@ -22,6 +22,7 @@ the fence is mechanical:
 
 from __future__ import annotations
 
+import html as _html
 from collections import defaultdict
 from enum import Enum
 from typing import Literal, Optional
@@ -116,6 +117,9 @@ class ComparisonFinding(BaseModel):
     stats: dict
     effect: dict
     decision: dict
+    # AN-6: machine-checkable provenance of the claim — "computed" (a deterministic
+    # function of the ledger) vs "judgment" (rests on the advisory judge)
+    claim_tag: Literal["computed", "judgment"]
     excluded_from_official: bool = False
     exclusion_reason: Optional[str] = None
 
@@ -144,6 +148,8 @@ class FindingsDocument(BaseModel):
     integrity: dict
     # AN-9: orphan grades (no matching trial) counted, never silently dropped
     ledger_consistency: dict
+    # AN-11: grade-trust tiers — local/fake results are ADVISORY, surfaced not stamped
+    tier: dict
     process: Optional[dict] = None
     judge_calibration: Optional[dict] = None
     provenance: Provenance
@@ -188,6 +194,23 @@ def _ledger_consistency(ledger_path) -> dict:
     """Ledger-consistency diagnostics that ride every render [AN-9]."""
     orphans = _orphan_grades(ledger_path)
     return {"orphan_grades": orphans, "n_orphan_grades": len(orphans)}
+
+
+def _tier_summary(ledger_path) -> dict:
+    """Grade-trust tiers across the experiment's trials [AN-11, AC-9].
+
+    Local / fake-engine results are ADVISORY, not trusted-container grades; the
+    tier is surfaced in the render so "Local = ADVISORY" is reflected, not just
+    silently stamped on each record."""
+    from ..adapters.base import ADVISORY
+
+    tiers = sorted(
+        {
+            ev["trial_record"].get("provenance", {}).get("tier", ADVISORY)
+            for ev in find_events(ledger_path, events.TRIAL)
+        }
+    )
+    return {"tiers": tiers, "advisory": ADVISORY in tiers}
 
 
 def _telemetry_values(ledger_path, field: str) -> dict[str, dict[str, list[float]]]:
@@ -301,6 +324,16 @@ def _mde_block(ledger_path) -> MDEBlock:
         assumption_based_mde="assumption_based_mde" in mde.get("flags", []),
         acknowledged_underpowered=ack,
     )
+
+
+def _claim_tag_for_metric(primary: str) -> str:
+    """The claim provenance of the primary metric [AN-6, master plan §6].
+
+    ``computed`` — a deterministic function of the ledger (holdout grading,
+    telemetry). ``judgment`` — the advisory judge's preference; the aggregation is
+    computed but the underlying signal is a model judgment, and a reader must be
+    told which."""
+    return "judgment" if primary == PrimaryMetric.judge_preference.value else "computed"
 
 
 def _null_model_for_metric(primary: str) -> str:
@@ -501,6 +534,7 @@ def compute_findings(
         n_sim=coverage_n_sim, n_boot=n_boot,
     )
     ci_method = selection.selected_method
+    claim_tag = _claim_tag_for_metric(primary)
 
     comparisons: list[ComparisonFinding] = []
     for other in spec.arms[1:]:
@@ -514,7 +548,7 @@ def compute_findings(
             comparisons.append(
                 ComparisonFinding(
                     label=f"{arm_a} vs {arm_b}", arm_a=arm_a, arm_b=arm_b,
-                    n_tasks=len(deltas), stats={}, effect={},
+                    n_tasks=len(deltas), stats={}, effect={}, claim_tag=claim_tag,
                     decision={"rule": parsed_rule.raw, "observed_delta": None,
                               "detected": None, "decides_positive": None},
                     excluded_from_official=True,
@@ -530,7 +564,7 @@ def compute_findings(
             comparisons.append(
                 ComparisonFinding(
                     label=f"{arm_a} vs {arm_b}", arm_a=arm_a, arm_b=arm_b, n_tasks=0,
-                    stats={}, effect={},
+                    stats={}, effect={}, claim_tag=claim_tag,
                     decision={"rule": parsed_rule.raw, "observed_delta": None,
                               "detected": None, "decides_positive": None},
                     excluded_from_official=True,
@@ -554,6 +588,7 @@ def compute_findings(
                 n_tasks=boot.n_tasks,
                 stats=boot.as_dict(),
                 effect=eff.as_dict(),
+                claim_tag=claim_tag,
                 decision={
                     "rule": parsed_rule.raw,
                     "observed_delta": observed,
@@ -597,6 +632,7 @@ def compute_findings(
         secondary_metrics=_secondary_metrics(ledger_path, spec),
         integrity=_integrity(ledger_path),
         ledger_consistency=_ledger_consistency(ledger_path),
+        tier=_tier_summary(ledger_path),
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
         provenance=provenance,
@@ -642,7 +678,7 @@ def _assert_head_hash(findings: FindingsDocument, ledger_path) -> None:
 
 
 def _comparison_lines(cf: ComparisonFinding, mde: MDEBlock) -> list[str]:
-    lines = [f"**Comparison: {cf.label}**  (n_tasks={cf.n_tasks})"]
+    lines = [f"**Comparison: {cf.label}**  (n_tasks={cf.n_tasks}) [{cf.claim_tag}]"]
     if not cf.stats:
         lines.append(f"- No paired task data ({cf.exclusion_reason}).")
         return lines
@@ -808,6 +844,9 @@ def _render_official_md(findings: FindingsDocument) -> str:
     out += ["", "## Confounds (disclosed, non-suppressing)"]
     out += [f"- {c['flag']}" for c in findings.confounds] or ["- none"]
     out += ["", f"## Blinding integrity", f"- {_integrity_line(findings)}"]
+    tier = _tier_lines(findings)
+    if tier:
+        out += ["", "## Grade tier", *tier]
     consistency = _ledger_consistency_lines(findings)
     if consistency:
         out += ["", "## Ledger consistency", *consistency]
@@ -840,6 +879,9 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
     out += section("Confounds (disclosed, non-suppressing)",
                    [f"- {c['flag']}: {c}" for c in findings.confounds] or ["- none"])
     out += section("Blinding integrity", [f"- {_integrity_line(findings)}"])
+    tier = _tier_lines(findings)
+    if tier:
+        out += section("Grade tier", tier)
     consistency = _ledger_consistency_lines(findings)
     if consistency:
         out += section("Ledger consistency", consistency)
@@ -921,6 +963,17 @@ def _process_lines(findings: FindingsDocument) -> list[str]:
     return lines
 
 
+def _tier_lines(findings: FindingsDocument) -> list[str]:
+    """A loud line when any result is ADVISORY-tier [AN-11]; empty if all trusted."""
+    t = findings.tier
+    if not t.get("advisory"):
+        return []
+    return [
+        f"- ⚠ ADVISORY: results include ADVISORY-tier grades (local / no trusted "
+        f"container) — advisory, not authoritative; tiers present: {t['tiers']} [AC-9]"
+    ]
+
+
 def _ledger_consistency_lines(findings: FindingsDocument) -> list[str]:
     """A loud warning line when orphan grades were excluded [AN-9]; empty if clean."""
     lc = findings.ledger_consistency
@@ -965,7 +1018,10 @@ def render_html(
     for line in md.splitlines():
         if mode != "official" and (line.startswith("## ") or line.startswith("### ")):
             body_lines.append(banner)
-        body_lines.append(f"<p>{line}</p>")
+        # AN-5: escape the rendered content — an arm name / reason carrying markup
+        # (e.g. a <script>) must land inert, not verbatim. The banner above is our
+        # own trusted markup and is emitted unescaped.
+        body_lines.append(f"<p>{_html.escape(line)}</p>")
     style = (
         "<style>.watermark{background:#fee;color:#900;padding:4px;"
         "font-weight:bold;border:1px solid #900;margin:6px 0}</style>"

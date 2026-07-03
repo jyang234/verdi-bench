@@ -351,6 +351,63 @@ def test_an9_orphan_grades_flagged(tmp_path):
     assert "orphan" in md.lower()
 
 
+# --- AN-6 / AN-5 / AN-11: claim tags, HTML escaping, ADVISORY surfacing ------
+def test_an6_computed_metric_tagged_computed(tmp_path):
+    """AN-6: every comparison carries a machine-checkable claim_tag and the render
+    shows the marker; a deterministic outcome metric is [computed]."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # holdout_pass_rate
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.comparisons and all(cf.claim_tag == "computed" for cf in f.comparisons)
+    assert "[computed]" in render_markdown(f, ledger, "exploratory")
+
+
+def test_an6_judge_preference_tagged_judgment(tmp_path):
+    """AN-6: a judge-preference primary rests on the advisory judge — [judgment]."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    for i in range(3):
+        _seed_pref_verdict(ledger, ctx, cid=f"w-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.comparisons and all(cf.claim_tag == "judgment" for cf in f.comparisons)
+    assert "[judgment]" in render_markdown(f, ledger, "exploratory")
+
+
+def test_an5_render_html_escapes_arm_name(tmp_path):
+    """AN-5: a <script> in an arm name is escaped in the HTML render, not emitted
+    verbatim (the review packet already escapes; render_html did not)."""
+    ctx = fixed_ctx()
+    evil = "ctl<script>alert(1)</script>"
+    arms = [
+        {"name": evil, "platform": "claude_code",
+         "model": "anthropic/claude-3-5-sonnet-20241022", "payload": {}},
+        {"name": "treatment", "platform": "codex", "model": "openai/gpt-4o-2024-08-06", "payload": {}},
+    ]
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx, arms=arms)
+    for i in range(3):
+        seed_trial_and_grade(ledger, ctx, trial_id=f"c{i}", task_id=f"t{i}", arm=evil,
+                             passed=True, provenance={"image_digest": "d"})
+        seed_trial_and_grade(ledger, ctx, trial_id=f"x{i}", task_id=f"t{i}", arm="treatment",
+                             passed=False, provenance={"image_digest": "d"})
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    html_out = render_html(f, ledger, "exploratory")
+    assert "<script>alert(1)</script>" not in html_out  # not emitted verbatim
+    assert "&lt;script&gt;" in html_out                  # escaped
+
+
+def test_an11_advisory_tier_surfaced(tmp_path):
+    """AN-11: local/fake results are ADVISORY-tier; the render surfaces the tier so
+    'Local = ADVISORY' is honestly reflected, not silently stamped."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.tier["advisory"] is True
+    assert "ADVISORY" in render_markdown(f, ledger, "exploratory")
+
+
 def test_ac4_flags_emitted_egress(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "eg", ctx=ctx)
@@ -578,6 +635,12 @@ def test_ac6_finding_provenance(tmp_path):
     assert p.instrument_version and p.instrument_git_sha
     assert p.corpus["corpus_id"] == "public-mini"
     assert "task_shas" in p.corpus  # EVAL-8 semver + shas cited end-to-end [AC-6]
+    # AN-6: every comparison claim carries a machine-checkable [computed]/[judgment]
+    # tag, and the render surfaces it — provenance is not just fields, claims are typed
+    assert f.comparisons and all(
+        cf.claim_tag in ("computed", "judgment") for cf in f.comparisons
+    )
+    assert f"[{f.comparisons[0].claim_tag}]" in render_markdown(f, ledger, "exploratory")
     # recorded head hash matches verify_chain output at compute time
     assert verify(ledger).ok
     assert p.ledger_head_hash == ledger_head_hash(ledger)
