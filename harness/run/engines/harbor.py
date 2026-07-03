@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Protocol
@@ -30,6 +32,12 @@ from ...adapters.base import Outcome, Quotas
 from ..types import EngineResult, TrialRequest
 
 HARBOR_VERSION = "harbor-pinned-0.1.0"  # version-pinned in images [D005]
+
+# The trial-image contract [RN-4, EVAL-4-D-8]: the harness writes the task prompt
+# and arm configuration to a host file and bind-mounts it READ-ONLY at this path,
+# OUTSIDE /workspace (so it never pollutes the graded workspace copy). A pre-baked
+# trial image's entrypoint reads it to learn its task and which arm it is.
+TRIAL_REQUEST_MOUNT = "/verdi/request.json"
 
 
 @dataclass
@@ -96,9 +104,12 @@ class HarborEngine:
         self._runner = runner or DockerCliRunner()
         self.harbor_version = harbor_version
 
-    def build_run_command(self, request: TrialRequest, image: str) -> list[str]:
+    def build_run_command(
+        self, request: TrialRequest, image: str, request_file: Optional[Path] = None
+    ) -> list[str]:
         """Pure construction of the ``docker run`` argv — hermetic flags,
-        quotas, proxy-only egress, env-injected keys. Unit-tested directly."""
+        quotas, proxy-only egress, env-injected keys, and the read-only trial
+        request mount [RN-4]. Unit-tested directly."""
         q: Quotas = request.quotas or Quotas()
         # --pull=never: a trial must run the pre-baked, digest-pinned image; never
         # silently pull an unpinned tag at trial time [RN-12, D005].
@@ -124,6 +135,11 @@ class HarborEngine:
             cmd += ["--env", k]
         # workspace mount
         cmd += ["--volume", f"{Path(request.workspace).resolve()}:/workspace"]
+        # trial request (prompt + arm config) delivered READ-ONLY, outside the
+        # workspace so it never enters the graded copy [RN-4, D-8]. Added after the
+        # workspace volume so a workspace-first parser still finds /workspace.
+        if request_file is not None:
+            cmd += ["--volume", f"{Path(request_file).resolve()}:{TRIAL_REQUEST_MOUNT}:ro"]
         cmd += ["--workdir", "/workspace"]
         cmd += [image]
         return cmd
@@ -149,10 +165,20 @@ class HarborEngine:
                 failure_reason="unpinned_image",
             )
 
-        cmd = self.build_run_command(request, image)
-        result = self._runner.run_container(
-            cmd, request.timeout_s, env=request.provider_keys or {}
-        )
+        # Write the trial request to a host temp file (outside the workspace) and
+        # bind-mount it read-only; clean it up once the container has exited [RN-4].
+        req_dir = Path(tempfile.mkdtemp(prefix="verdi-req-"))
+        try:
+            request_file = req_dir / "request.json"
+            request_file.write_text(
+                json.dumps(self._trial_request_payload(request)), encoding="utf-8"
+            )
+            cmd = self.build_run_command(request, image, request_file)
+            result = self._runner.run_container(
+                cmd, request.timeout_s, env=request.provider_keys or {}
+            )
+        finally:
+            shutil.rmtree(req_dir, ignore_errors=True)
 
         failure_reason: Optional[str] = None
         if result.daemon_error:
@@ -196,6 +222,19 @@ class HarborEngine:
             except json.JSONDecodeError:
                 return {}
         return {}
+
+    @staticmethod
+    def _trial_request_payload(request: TrialRequest) -> dict:
+        """The trial-image contract payload [RN-4, D-8] — what a pre-baked image's
+        entrypoint reads from ``/verdi/request.json``: its prompt and which arm it
+        is (name, model, config). The prompt is holdout-free by construction (the
+        seam refuses a canary in any request channel before the engine runs)."""
+        return {
+            "prompt": request.prompt,
+            "arm": request.arm.name,
+            "model": request.arm.model,
+            "payload": request.arm.payload or {},
+        }
 
     @staticmethod
     def _agent_version(request: TrialRequest) -> Optional[str]:
