@@ -5,7 +5,7 @@ from __future__ import annotations
 from harness.judge.client import judge_pair
 from harness.judge.providers.base import ProviderError, ProviderRefusal, ProviderTimeout
 from harness.judge.providers.fake import FakeProvider
-from harness.judge.schema import Winner
+from harness.judge.schema import Confidence, Winner
 from harness.ledger.query import find_events
 from tests.fixtures.builders import fixed_ctx
 from tests.fixtures.judge_fakes import make_config, make_packet, verdict_json
@@ -16,6 +16,31 @@ def _run(tmp_path, provider, config=None):
     v = judge_pair(make_packet(), config or make_config(), ledger, fixed_ctx(),
                    ts="t0", provider=provider)
     return v, ledger
+
+
+# --- JD-12 / D-4: confidence is the low|medium|high enum, from the parsed value --
+def test_jd12_confidence_enum_from_parsed_value(tmp_path):
+    """JD-12/D-4: an order-consistent verdict's confidence is the enum band bucketed
+    from the judge's PARSED confidence (0.9 → high), not the discarded 0.8 hardcode."""
+    v, _ = _run(tmp_path, FakeProvider([verdict_json("1", confidence=0.9),
+                                        verdict_json("2", confidence=0.9)]))
+    assert v.winner is Winner.A
+    assert v.confidence is Confidence.high
+
+
+def test_jd12_confidence_low_when_order_inconsistent(tmp_path):
+    """An order-inconsistent (position-biased ⇒ TIE) verdict is low confidence —
+    we trust a call the two orders disagreed on less."""
+    v, _ = _run(tmp_path, FakeProvider([verdict_json("1"), verdict_json("1")]))
+    assert v.winner is Winner.TIE
+    assert v.confidence is Confidence.low
+
+
+def test_jd12_confidence_medium_bucket(tmp_path):
+    """A mid parsed confidence buckets to medium."""
+    v, _ = _run(tmp_path, FakeProvider([verdict_json("1", confidence=0.5),
+                                        verdict_json("2", confidence=0.6)]))
+    assert v.confidence is Confidence.medium  # min(0.5, 0.6)=0.5 → medium
 
 
 def test_ac3_both_orders_invoked(tmp_path):

@@ -26,7 +26,15 @@ from .providers.base import (
     get_provider,
     provider_failure_reason,
 )
-from .schema import CantJudgeReason, Evidence, Verdict, VerdictProvenance, Winner
+from .schema import (
+    CantJudgeReason,
+    Confidence,
+    Evidence,
+    Verdict,
+    VerdictProvenance,
+    Winner,
+    confidence_bucket,
+)
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -120,7 +128,7 @@ def judge_pair(
             winner=Winner.CANT_JUDGE,
             reason=reason.value,
             evidence=[],
-            confidence=0.0,
+            confidence=Confidence.low,
             provenance=_provenance(),
             comparison_id=comparison_id,
             task_class=task_class,
@@ -151,6 +159,7 @@ def judge_pair(
 
     orders_to_run = ["AB", "BA"] if config.orders == "both" else ["AB"]
     mapped: list[tuple[str, list[Evidence], str]] = []
+    raw_confidences: list[float] = []
     for order in orders_to_run:
         try:
             raw, call_id = _call(provider, config.model, packet, order, config.temperature)
@@ -167,6 +176,7 @@ def judge_pair(
             call_ids.append("unparsed")
             return _cant(CantJudgeReason.PARSE)
         call_ids.append(call_id)
+        raw_confidences.append(raw.confidence)
         mapped.append(_map_call(raw, order))
 
     # Combine.
@@ -185,12 +195,21 @@ def judge_pair(
         winner_str = "TIE"
         order_inconsistent = True
 
+    # JD-12/D-4: the confidence band is the judge's PARSED confidence (bucketed),
+    # not a discarded hardcode — the conservative minimum across the two orders, or
+    # low when the orders disagreed (position bias ⇒ we trust the call less).
+    confidence = (
+        Confidence.low
+        if order_inconsistent or not raw_confidences
+        else confidence_bucket(min(raw_confidences))
+    )
+
     try:
         verdict = Verdict(
             winner=Winner(winner_str),
             reason=" | ".join(reasons) if reasons else winner_str,
             evidence=all_evidence,
-            confidence=0.5 if order_inconsistent else 0.8,
+            confidence=confidence,
             order_inconsistent=order_inconsistent,
             provenance=_provenance(),
             comparison_id=comparison_id,

@@ -11,7 +11,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 
 class Winner(str, Enum):
@@ -19,6 +19,30 @@ class Winner(str, Enum):
     B = "B"
     TIE = "TIE"
     CANT_JUDGE = "CANT_JUDGE"
+
+
+class Confidence(str, Enum):
+    """Verdict confidence, per the pre-registered event schema [EVAL-2, JD-12/D-4].
+
+    Replaces the earlier bare ``float`` that the client hardcoded (0.5/0.8) while
+    discarding the model's parsed value. A ``low|medium|high`` band is what the
+    spec's event schema declares (``eval2.spec.md``)."""
+
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+def confidence_bucket(x: float) -> Confidence:
+    """Bucket a model's parsed 0..1 confidence into the pre-registered band [D-4].
+
+    Thresholds are fixed so the mapping is reproducible; the bands, not the raw
+    float, are what a downstream reader sees."""
+    if x < 0.4:
+        return Confidence.low
+    if x < 0.75:
+        return Confidence.medium
+    return Confidence.high
 
 
 class CantJudgeReason(str, Enum):
@@ -70,7 +94,7 @@ class Verdict(BaseModel):
     winner: Winner
     reason: str
     evidence: list[Evidence] = []
-    confidence: float = 0.0
+    confidence: Confidence = Confidence.low
     order_inconsistent: bool = False
     provenance: VerdictProvenance
     # for human verdicts (EVAL-7): distinguishes the verdict source
@@ -93,6 +117,20 @@ class Verdict(BaseModel):
     # JD-11: True when orders='single' — D003 order-debiasing was skipped, so a
     # full experiment cannot silently omit it. Rides visibly on the verdict.
     single_order: bool = False
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _coerce_confidence(cls, v):
+        # Migration [D-4]: a legacy verdict recorded confidence as a float; the
+        # versioned reader maps it to the enum band so old-shape verdicts still
+        # read. A low|medium|high value passes through unchanged. verdi-bench has
+        # no production ledgers, so this is a documented compatibility note, not a
+        # live migration.
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return confidence_bucket(float(v)).value
+        return v
 
     @model_validator(mode="after")
     def _substantive_needs_evidence(self) -> "Verdict":

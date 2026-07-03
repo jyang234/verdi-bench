@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from harness.judge.schema import Evidence, Verdict, VerdictProvenance, Winner
+from harness.judge.schema import Confidence, Evidence, Verdict, VerdictProvenance, Winner
 
 
 def _prov(**kw):
@@ -41,6 +41,21 @@ def test_ac4_valid_verdict():
         provenance=_prov(),
     )
     assert v.winner == Winner.A
+
+
+def test_jd12_confidence_enum_and_float_migration():
+    """JD-12/D-4: confidence is the low|medium|high enum; a legacy float is coerced
+    to its band by the versioned reader, so old-shape verdicts still read."""
+    ev = [Evidence(kind="diff", response="A", hunk="@@ -1")]
+    # the enum band passes through
+    v = Verdict(winner=Winner.A, reason="x", confidence="medium", evidence=ev, provenance=_prov())
+    assert v.confidence is Confidence.medium
+    # a legacy float is migrated to its band
+    old = Verdict(winner=Winner.A, reason="x", confidence=0.85, evidence=ev, provenance=_prov())
+    assert old.confidence is Confidence.high
+    # the default is low (was 0.0)
+    d = Verdict(winner=Winner.A, reason="x", evidence=ev, provenance=_prov())
+    assert d.confidence is Confidence.low
 
 
 def test_ac5_verdict_provenance_complete():
