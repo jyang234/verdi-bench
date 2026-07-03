@@ -19,7 +19,16 @@ from ..ledger.query import find_events
 
 
 def _vendor(model_id: str) -> str:
-    return model_id.split("/", 1)[0]
+    # JD-7: the vendor is the '<provider>/' prefix. A prefix-less id has no vendor
+    # to compare — returning the whole string made overlap silently wrong, so fail
+    # loudly instead. Arm/judge model ids are prefix-validated at the schema, so
+    # this only fires on a malformed id that slipped the schema.
+    provider, sep, ident = model_id.partition("/")
+    if not sep or not provider.strip() or not ident.strip():
+        raise ValueError(
+            f"model id {model_id!r} has no '<provider>/' prefix; vendor is undefined [JD-7]"
+        )
+    return provider
 
 
 @dataclass

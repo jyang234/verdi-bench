@@ -16,15 +16,18 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from .errors import AliasJudgeIdError
 
-# An id segment counts as "explicitly versioned" if it carries a date, a dotted
-# numeric version, or a long numeric build tag. Bare single-number suffixes
-# (``gpt-5``) and word-only ids (``gemini-pro``, ``claude-sonnet``) are aliases.
+# An id segment counts as "explicitly versioned" only if it carries a date or a
+# long numeric build stamp. JD-6: a bare dotted version (``1.5``, ``4.1``) names a
+# mutable *family*, not a pinned build — ``google/gemini-1.5-pro`` and
+# ``openai/gpt-4.1`` are aliases and must be rejected; the same family with a
+# date/build suffix (``gpt-4.1-2025-04-14``, ``gemini-1.5-pro-002``) is pinned.
+# Bare single-number suffixes (``gpt-5``) and word-only ids (``gemini-pro``) are
+# also aliases.
 _VERSIONED = re.compile(
     r"""
     \d{4}-\d{2}-\d{2}      # 2024-08-06
     | \d{8}               # 20241022
     | \d{6}\b             # 202410 / build stamp
-    | \d+\.\d+            # 1.5, 4.1
     | -\d{3,}\b           # -002, -1106
     """,
     re.VERBOSE,

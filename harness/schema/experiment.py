@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .errors import (
     AliasJudgeIdError,
+    ArmModelError,
     CompositePrimaryMetricError,
     DecisionRuleError,
     MissingCostCeilingError,
@@ -33,6 +34,20 @@ class Arm(BaseModel):
     platform: str  # agent stack, e.g. "claude_code" / "codex"
     model: str
     payload: dict = Field(default_factory=dict)
+
+    @field_validator("model")
+    @classmethod
+    def _require_vendor_prefix(cls, v: str) -> str:
+        # JD-7: a bare model id has no vendor to compare, so judge/arm vendor
+        # overlap is silently wrong. Require '<provider>/<id>' at the schema.
+        provider, sep, ident = v.partition("/")
+        if not sep or not provider.strip() or not ident.strip():
+            raise ArmModelError(
+                f"arm.model {v!r} must be '<provider>/<id>' (e.g. "
+                "'anthropic/claude-3-5-sonnet-20241022') so the judge/arm vendor "
+                "overlap is well-defined [JD-7]"
+            )
+        return v
 
 
 class CorpusRef(BaseModel):
@@ -177,6 +192,18 @@ class ExperimentSpec(BaseModel):
                     f"judge.model {judge['model']!r} is not a fully-versioned id; "
                     "alias ids are rejected at plan time [EVAL-2 AC-5]"
                 )
+        # JD-7: surface the named ArmModelError before pydantic wraps it, so a bare
+        # arm model id (no vendor prefix) is a distinct, assertable rejection.
+        arms = data.get("arms")
+        if isinstance(arms, list):
+            for arm in arms:
+                if isinstance(arm, dict) and "model" in arm:
+                    provider, sep, ident = str(arm["model"]).partition("/")
+                    if not sep or not provider.strip() or not ident.strip():
+                        raise ArmModelError(
+                            f"arm.model {arm['model']!r} must be '<provider>/<id>' so "
+                            "the judge/arm vendor overlap is well-defined [JD-7]"
+                        )
         rule = data.get("decision_rule")
         if pm in PrimaryMetric.values() and isinstance(rule, str):
             DecisionRule.parse(rule, PrimaryMetric(pm))

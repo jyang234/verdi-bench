@@ -23,5 +23,10 @@ class AliasJudgeIdError(SpecError):
     """judge.model was an un-versioned alias id [EVAL-2 AC-5]."""
 
 
+class ArmModelError(SpecError):
+    """arm.model was not a '<provider>/<id>' vendor-prefixed id, so judge/arm
+    vendor overlap could not be defined [JD-7]."""
+
+
 class DecisionRuleError(SpecError):
     """decision_rule string did not parse under DSL v1 [AC-1]."""
