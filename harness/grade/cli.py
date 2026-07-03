@@ -1,8 +1,10 @@
 """``bench grade`` [EVAL-5 §M5].
 
-Asserts the experiment lock first, then grades every ungraded trial in the
-ledger, appending exactly one grade/cant_grade event each. Defaults to the local
-(no-daemon) grade runner; the true container path is docker-marked.
+Asserts the experiment lock and the task-content commitment first, then grades
+every ungraded trial in the ledger, appending exactly one grade/cant_grade event
+each. ``--runner docker`` (default) runs the real network-less grading container;
+``--runner local`` is the no-daemon fake/test path that reads a pre-placed
+``holdout_results.json`` from the workspace.
 
 Fractional scoring is taken from the **lock** (pre-registration), not runtime
 config [AC-3].
@@ -11,69 +13,99 @@ config [AC-3].
 from __future__ import annotations
 
 import getpass
-import hashlib
-import json
 from pathlib import Path
 
 import typer
-import yaml
 
 # import so the groundwork plugin self-registers
 from .plugins import groundwork  # noqa: F401
 
 
-def _task_sha(task: dict) -> str:
-    return hashlib.sha256(
-        json.dumps(task, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+def _grade_tasks_from_dicts(task_dicts: list) -> dict:
+    """Map the committed task dicts to grader tasks.
 
-
-def _load_grade_tasks(experiment_dir: Path) -> dict:
+    The task sha is recomputed from content (not self-attested) and matches the
+    lock commitment; the fake scripting fields are **not** read from the task
+    source — they exist only for fixtures/the fake engine [GR-5].
+    """
+    from ..corpus.commit import task_content_sha
     from .types import GradeTask
 
-    data = yaml.safe_load((experiment_dir / "tasks.yaml").read_text(encoding="utf-8")) or {}
     tasks = {}
-    for t in data.get("tasks", []):
+    for t in task_dicts:
         tasks[t["id"]] = GradeTask(
             id=t["id"],
-            task_sha=t.get("task_sha") or _task_sha(t),
+            task_sha=task_content_sha(t),
             holdouts_dir=t.get("holdouts_dir", ""),
             plugin_ids=t.get("plugin_ids", []),
-            fake_holdout_output=t.get("fake_holdout_output"),
-            fake_plugin_output=t.get("fake_plugin_output", {}),
         )
     return tasks
+
+
+def _completed_trials(ledger_path) -> set:
+    """Trials that must not be (re)graded: any with a grade, or a cant_grade
+    whose reason is terminal. A transient cant_grade (e.g. a docker outage) is
+    left regradeable [GR-11]."""
+    from ..ledger.query import find_events
+    from .deterministic import TRANSIENT_CANT_GRADE
+
+    done = {e["trial_id"] for e in find_events(ledger_path, "grade")}
+    done |= {
+        e["trial_id"]
+        for e in find_events(ledger_path, "cant_grade")
+        if e["reason"] not in TRANSIENT_CANT_GRADE
+    }
+    return done
 
 
 def register(app: typer.Typer) -> None:
     @app.command()
     def grade(
         experiment_dir: Path = typer.Argument(..., help="Directory with experiment.yaml"),
+        runner: str = typer.Option(
+            "docker", "--runner", help="docker (real container) | local (no-daemon fake/test)"
+        ),
     ) -> None:
         """Grade every ungraded trial deterministically."""
+        from ..corpus.commit import (
+            TaskCommitmentError,
+            assert_task_commitment,
+            load_task_dicts,
+        )
+        from ..ledger import events
         from ..ledger.events import EventContext
         from ..ledger.query import find_events
         from ..plan.lock import assert_lock
         from ..schema.experiment import ExperimentSpec
-        from .container import GradingContainer, LocalGradeRunner
-        from .deterministic import grade_trial
+        from .container import DockerGradeRunner, GradingContainer, LocalGradeRunner
+        from .deterministic import REASON_ARTIFACTS_MISSING, REASON_UNKNOWN_TASK, grade_trial
 
         experiment_dir = Path(experiment_dir)
         spec_path = experiment_dir / "experiment.yaml"
         ledger_path = experiment_dir / "ledger.ndjson"
-        assert_lock(spec_path, ledger_path)
+        lock_event = assert_lock(spec_path, ledger_path)
         spec = ExperimentSpec.from_yaml(spec_path)
 
-        grade_tasks = _load_grade_tasks(experiment_dir)
-        already = {e["trial_id"] for e in find_events(ledger_path, "grade")}
-        already |= {e["trial_id"] for e in find_events(ledger_path, "cant_grade")}
+        task_dicts = load_task_dicts(experiment_dir)
+        # PL-7/D-6: refuse tasks swapped after the lock before grading anything.
+        try:
+            assert_task_commitment(
+                lock_event, task_dicts,
+                corpus_id=spec.corpus.id, semver=spec.corpus.version,
+            )
+        except TaskCommitmentError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        grade_tasks = _grade_tasks_from_dicts(task_dicts)
+        already = _completed_trials(ledger_path)
 
         try:
             actor = getpass.getuser()
         except Exception:
             actor = "unknown"
         ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
-        container = GradingContainer(runner=LocalGradeRunner())
+        runner_impl = LocalGradeRunner() if runner == "local" else DockerGradeRunner()
+        container = GradingContainer(runner=runner_impl)
 
         graded = 0
         for ev in find_events(ledger_path, "trial"):
@@ -83,17 +115,16 @@ def register(app: typer.Typer) -> None:
                 continue
             task = grade_tasks.get(rec["task_id"])
             if task is None:
+                # GR-7: an unknown task is a fail-closed cant_grade, not a silent
+                # skip that leaves the trial ungraded and unrecorded forever.
+                events.record_cant_grade(ledger_path, ctx, trial_id=tid, reason=REASON_UNKNOWN_TASK)
                 continue
             if not rec.get("artifacts_path"):
-                # a record with no artifacts path cannot be graded here; skip
-                # this one rather than aborting the whole run
+                events.record_cant_grade(
+                    ledger_path, ctx, trial_id=tid, reason=REASON_ARTIFACTS_MISSING
+                )
                 continue
             workspace = Path(rec["artifacts_path"]).parent
-            # fake path: place the scripted holdout output in the workspace
-            if task.fake_holdout_output is not None:
-                (workspace / "holdout_results.json").write_text(
-                    json.dumps(task.fake_holdout_output), encoding="utf-8"
-                )
             grade_trial(
                 tid, task, workspace, ledger_path, ctx,
                 container=container, fractional=spec.fractional_scoring,

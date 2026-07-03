@@ -129,6 +129,46 @@ def test_ac3_empty_holdout_not_vacuous_pass(tmp_path):
     assert find_events(ledger, "grade")[0]["binary_score"] is False
 
 
+def test_grade_loader_ignores_fake_scripting(tmp_path):
+    """GR-5: the production task loader does not read fake_holdout_output /
+    fake_plugin_output from the task source — they cannot script a grade."""
+    from harness.grade.cli import _grade_tasks_from_dicts
+
+    tasks = _grade_tasks_from_dicts(
+        [{"id": "t1", "holdouts_dir": "h", "fake_holdout_output": {"assertions": []},
+          "fake_plugin_output": {"p": 1}}]
+    )
+    gt = tasks["t1"]
+    assert gt.fake_holdout_output is None
+    assert gt.fake_plugin_output == {}
+    # sha is recomputed from content, not any self-attested field
+    from harness.corpus.commit import task_content_sha
+
+    assert gt.task_sha == task_content_sha(
+        {"id": "t1", "holdouts_dir": "h", "fake_holdout_output": {"assertions": []},
+         "fake_plugin_output": {"p": 1}}
+    )
+
+
+def test_completed_trials_allows_transient_regrade(tmp_path):
+    """GR-11: a transient cant_grade (container_failure) is regradeable; a grade
+    or a terminal cant_grade is not."""
+    from harness.grade.cli import _completed_trials
+    from harness.ledger import events
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    events.record_grade(ledger, ctx, trial_id="graded", task_sha="s", assertions=[],
+                        binary_score=True)
+    events.record_cant_grade(ledger, ctx, trial_id="transient", reason="container_failure")
+    events.record_cant_grade(ledger, ctx, trial_id="terminal", reason="unknown_task")
+
+    done = _completed_trials(ledger)
+    assert "graded" in done
+    assert "terminal" in done
+    assert "transient" not in done  # a docker outage does not block regrading
+
+
 class _FreshCopyRunner:
     """A runner that (like DockerGradeRunner) grades a fresh workspace copy and
     writes its *own* holdout output — records what it was handed."""

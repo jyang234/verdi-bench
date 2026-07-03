@@ -28,6 +28,13 @@ REASON_CONTAINER = "container_failure"
 REASON_MALFORMED = "malformed_holdout_output"
 REASON_WORKSPACE_MISSING = "workspace_missing"
 REASON_PLUGIN = "plugin_error"
+REASON_UNKNOWN_TASK = "unknown_task"
+REASON_ARTIFACTS_MISSING = "artifacts_missing"
+
+# Reasons a later grade attempt may resolve (e.g. a transient docker daemon
+# outage) — these do NOT permanently block regrading [GR-11]. Everything else is
+# deterministic given the trial + config and stays terminal.
+TRANSIENT_CANT_GRADE = frozenset({REASON_CONTAINER})
 
 
 @dataclass

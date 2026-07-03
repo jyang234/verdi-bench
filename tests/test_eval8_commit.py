@@ -98,3 +98,42 @@ def test_run_cli_refuses_swapped_tasks(tmp_path):
     assert "commitment" in r.output.lower()
     # no trial was executed
     assert find_events(ledger, "trial") == []
+
+
+def _plan_with_tasks(expdir, tasks):
+    expdir.mkdir()
+    write_experiment_yaml(expdir / "experiment.yaml")
+    _write_tasks(expdir / "tasks.yaml", tasks)
+    ledger = expdir / "ledger.ndjson"
+    assert runner.invoke(
+        app, ["plan", str(expdir / "experiment.yaml"), "--ledger", str(ledger)]
+    ).exit_code == 0
+    return ledger
+
+
+def test_grade_cli_refuses_swapped_tasks(tmp_path):
+    expdir = tmp_path / "exp"
+    ledger = _plan_with_tasks(expdir, [{"id": "t1", "prompt": "orig"}])
+    _write_tasks(expdir / "tasks.yaml", [{"id": "t1", "prompt": "SWAPPED"}])
+    r = runner.invoke(app, ["grade", str(expdir), "--runner", "local"])
+    assert r.exit_code != 0
+    assert "commitment" in r.output.lower()
+
+
+def test_grade_cli_fail_closed_unknown_task_and_missing_artifacts(tmp_path):
+    """GR-7: an unknown task_id or a record with no artifacts_path ledgers a
+    cant_grade rather than silently skipping the trial forever."""
+    from harness.ledger.events import EventContext, record_trial
+
+    expdir = tmp_path / "exp"
+    ledger = _plan_with_tasks(expdir, [{"id": "t1", "prompt": "p"}])
+    ctx = EventContext(experiment_id="exp", clock=lambda: "t")
+    record_trial(ledger, ctx, trial_record={
+        "trial_id": "u1", "task_id": "not-a-task", "artifacts_path": "/tmp/u1/artifacts"})
+    record_trial(ledger, ctx, trial_record={
+        "trial_id": "m1", "task_id": "t1", "artifacts_path": ""})
+    r = runner.invoke(app, ["grade", str(expdir), "--runner", "local"])
+    assert r.exit_code == 0, r.output
+    reasons = {e["trial_id"]: e["reason"] for e in find_events(ledger, "cant_grade")}
+    assert reasons["u1"] == "unknown_task"
+    assert reasons["m1"] == "artifacts_missing"
