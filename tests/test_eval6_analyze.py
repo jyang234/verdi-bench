@@ -225,6 +225,91 @@ def test_ac5_unregistered_refused(tmp_path):
             corpus_id="c", semver="1.0.0", kind="public", tasks=[]))
 
 
+def test_an3_refused_official_render_ledgers_cant_analyze(tmp_path):
+    # AN-3: an official render before full-run calibration used to escape the CLI
+    # with zero events; it must now land exactly one cant_analyze event, write no
+    # findings files, and exit non-zero.
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+    from harness.ledger.query import find_events
+
+    ctx = fixed_ctx()
+    _, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    exp_dir = tmp_path / "e"
+    before = len(find_events(ledger, "cant_analyze"))
+    result = CliRunner().invoke(app, ["analyze", str(exp_dir), "--official"])  # no --corpus
+    assert result.exit_code == 2
+    cant = find_events(ledger, "cant_analyze")
+    assert len(cant) - before == 1
+    assert cant[-1]["reason"] == "calibration_incomplete"
+    assert cant[-1]["mode"] == "official"
+    # no findings artifacts written on the refusal path
+    assert not (exp_dir / "findings.json").exists()
+    assert not list(exp_dir.glob("findings.official.*"))
+    # and no success event either
+    assert find_events(ledger, "findings_rendered") == []
+
+
+def test_pl14_legacy_ack_event_still_surfaced(tmp_path):
+    # PL-14 backward-compat: a ledger locked before the ack was folded inline
+    # recorded a separate (now-retired) acknowledged_underpowered event; analyze
+    # must still surface the acknowledgment for such legacy ledgers.
+    from harness.analyze.report import _mde_block
+    from harness.ledger.chain import append_event
+
+    ctx = fixed_ctx()
+    _, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # powered ⇒ no inline ack
+    assert _mde_block(ledger).acknowledged_underpowered is False
+    append_event(ledger, {
+        "event": "acknowledged_underpowered",
+        "provenance": {"ts": "t", "actor": "a", "experiment_id": "e",
+                       "instrument": {"version": "0", "git_sha": "0"}},
+        "mde": None, "hypothesized_effect": 0.001,
+    })
+    assert _mde_block(ledger).acknowledged_underpowered is True
+
+
+def test_an3_bad_corpus_manifest_fails_closed(tmp_path):
+    # AN-3: a malformed --corpus must fail closed to one cant_analyze event, not
+    # escape the CLI with zero events (the load was moved inside the envelope).
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+    from harness.ledger.query import find_events
+
+    ctx = fixed_ctx()
+    _, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    exp_dir = tmp_path / "e"
+    bad = exp_dir / "bad_corpus.json"
+    bad.write_text("{ this is not valid json", encoding="utf-8")
+    result = CliRunner().invoke(app, ["analyze", str(exp_dir), "--official", "--corpus", str(bad)])
+    assert result.exit_code == 2
+    cant = find_events(ledger, "cant_analyze")
+    assert len(cant) == 1
+    assert not (exp_dir / "findings.json").exists()
+
+
+def test_an3_successful_render_event_before_files(tmp_path):
+    # AN-3: the success path emits findings_rendered and writes both files.
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+    from harness.ledger.query import find_events
+
+    ctx = fixed_ctx()
+    _, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    exp_dir = tmp_path / "e"
+    result = CliRunner().invoke(app, ["analyze", str(exp_dir), "--exploratory"])
+    assert result.exit_code == 0, result.output
+    assert len(find_events(ledger, "findings_rendered")) == 1
+    assert (exp_dir / "findings.json").exists()
+    assert (exp_dir / "findings.exploratory.md").exists()
+
+
 def test_ac5_official_happy_path(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)

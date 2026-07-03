@@ -21,6 +21,24 @@ class Winner(str, Enum):
     CANT_JUDGE = "CANT_JUDGE"
 
 
+class CantJudgeReason(str, Enum):
+    """Enumerated fail-closed reasons [EVAL-2 §7.2].
+
+    Mirrors grade's ``cant_grade`` reason taxonomy so a CANT_JUDGE verdict's
+    ``reason`` field is a closed set, not an ad-hoc string. Stored on the
+    verdict's free-form ``reason`` (str), so this is additive — no event-schema
+    change.
+    """
+
+    IDENTITY_LEAK = "identity_leak"
+    TIMEOUT = "timeout"
+    REFUSAL = "refusal"
+    PROVIDER_ERROR = "provider_error"
+    PARSE = "parse"
+    JUDGE_CANT_JUDGE = "judge_cant_judge"
+    MALFORMED = "malformed"
+
+
 class Evidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["diff", "holdout"]

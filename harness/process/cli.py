@@ -37,20 +37,20 @@ def register(app: typer.Typer) -> None:
         from ..ledger.events import EventContext
         from .rubric import ProcessRubric, default_rubric
         from .score import (
-            DimensionScore,
             ProcessSequencingError,
+            human_scores_from_mapping,
             record_human_process_score,
         )
 
         rubric = ProcessRubric.from_yaml(rubric_path) if rubric_path else default_rubric()
         raw = json.loads(scores_json.read_text(encoding="utf-8"))
-        dimension_scores = []
-        for d in rubric.dimensions:
-            v = raw.get(d.id)
-            if v == "CANT_SCORE" or v is None:
-                dimension_scores.append(DimensionScore(dim_id=d.id, cant_score_reason="human_cant"))
-            else:
-                dimension_scores.append(DimensionScore(dim_id=d.id, score=int(v)))
+        # PR-7: a typoed/unknown or missing dimension is a loud error, not a silent
+        # CANT_SCORE("human_cant") that degrades a real score.
+        try:
+            dimension_scores = human_scores_from_mapping(raw, rubric)
+        except ValueError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
 
         ledger_path = experiment_dir / "ledger.ndjson"
         ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())

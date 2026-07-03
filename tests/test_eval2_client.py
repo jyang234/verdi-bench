@@ -141,6 +141,30 @@ def test_judge_reason_preserves_rationale(tmp_path):
     assert "fixed the holdout" in v.reason
 
 
+def test_ac8_unknown_provider_records_cant_judge(tmp_path):
+    # JD-2: provider resolution runs inside the fail-closed envelope, so an
+    # unknown prefix (legal per D001) records exactly one CANT_JUDGE(provider_error)
+    # rather than escaping judge_pair with no event.
+    ledger = tmp_path / "l.ndjson"
+    # a versioned id (passes plan-time alias check) with an unknown provider prefix
+    v = judge_pair(make_packet(), make_config(model="mystery/model-2024-01-01"),
+                   ledger, fixed_ctx(), ts="t0")  # provider=None -> real get_provider
+    assert v.winner == Winner.CANT_JUDGE and v.reason == "provider_error"
+    assert len(find_events(ledger, "judge_verdict")) == 1
+
+
+def test_ac8_provider_shape_error_is_provider_error(tmp_path):
+    # JD-3: an error-shaped/safety-blocked 200 makes a provider raise KeyError/
+    # IndexError while extracting content; the client must fail closed to
+    # CANT_JUDGE(provider_error), not let the exception escape with no event.
+    for i, exc in enumerate((KeyError("choices"), IndexError("candidates"))):
+        ledger = tmp_path / f"l{i}.ndjson"
+        v = judge_pair(make_packet(), make_config(), ledger, fixed_ctx(), ts="t0",
+                       provider=FakeProvider([exc]))
+        assert v.winner == Winner.CANT_JUDGE and v.reason == "provider_error"
+        assert len(find_events(ledger, "judge_verdict")) == 1
+
+
 def test_ac1_no_vendor_denylist_in_code():
     """The client and provider dispatch carry no vendor allow/deny list [AC-1]."""
     import pathlib

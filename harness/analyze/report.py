@@ -23,6 +23,7 @@ the fence is mechanical:
 from __future__ import annotations
 
 from collections import defaultdict
+from enum import Enum
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -65,6 +66,26 @@ class ProvenanceError(AnalyzeError):
 
 class DisclosureError(AnalyzeError):
     """Process scores rendered without the unblinded disclosure block [EVAL-9 AC-2]."""
+
+
+class CantAnalyzeReason(str, Enum):
+    """Closed set of fail-closed analyze-refusal reasons [AN-3]."""
+
+    calibration_incomplete = "calibration_incomplete"
+    unregistered_metric = "unregistered_metric"
+    disclosure_missing = "disclosure_missing"
+    provenance_invalid = "provenance_invalid"
+    analyze_error = "analyze_error"
+
+
+def cant_analyze_reason(exc: AnalyzeError) -> CantAnalyzeReason:
+    """Map an ``AnalyzeError`` to its enumerated ``cant_analyze`` reason."""
+    return {
+        CalibrationIncompleteError: CantAnalyzeReason.calibration_incomplete,
+        UnregisteredOfficialError: CantAnalyzeReason.unregistered_metric,
+        DisclosureError: CantAnalyzeReason.disclosure_missing,
+        ProvenanceError: CantAnalyzeReason.provenance_invalid,
+    }.get(type(exc), CantAnalyzeReason.analyze_error)
 
 
 # --- schema ----------------------------------------------------------------
@@ -189,7 +210,12 @@ def _lock_event(ledger_path) -> dict:
 def _mde_block(ledger_path) -> MDEBlock:
     lock = _lock_event(ledger_path)
     mde = lock.get("mde", {})
-    ack = bool(find_events(ledger_path, events.ACKNOWLEDGED_UNDERPOWERED))
+    # PL-14: the acknowledgment now rides inline on the lock event. A ledger locked
+    # before the fold recorded it as a separate (now-retired) event; still surface
+    # it for those legacy ledgers so the acknowledgment is never silently dropped.
+    ack = bool(lock.get("acknowledged_underpowered")) or bool(
+        find_events(ledger_path, "acknowledged_underpowered")
+    )
     return MDEBlock(
         value=mde.get("mde"),
         assumption_based_mde="assumption_based_mde" in mde.get("flags", []),

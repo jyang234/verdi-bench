@@ -137,5 +137,12 @@ def import_terminal_bench(
         cache_path = tasks_dir / f"{task_id}.json"
         if not cache_path.exists() or cache_path.read_text(encoding="utf-8") != blob:
             cache_path.write_text(blob, encoding="utf-8")
+    # CO-9: prune cache blobs for tasks that are no longer in the import, so the
+    # cache does not drift from the manifest (a removed task's stale blob would
+    # otherwise linger and could be re-read).
+    current = {f"{task_id}.json" for task_id in blobs}
+    for existing in tasks_dir.glob("*.json"):
+        if existing.name not in current:
+            existing.unlink()
     manifest.save(prior_path)
     return manifest

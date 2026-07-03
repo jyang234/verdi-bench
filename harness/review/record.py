@@ -22,7 +22,11 @@ from ..ledger.events import EventContext
 from ..ledger.query import assert_chain, find_events
 
 
-class RevealError(RuntimeError):
+class ReviewError(RuntimeError):
+    """A review operation was refused (duplicate/post-reveal/out-of-order) [RV-1/8]."""
+
+
+class RevealError(ReviewError):
     """A reveal was attempted before its verdict+integrity was captured [AC-4]."""
 
 
@@ -32,6 +36,31 @@ def human_verdict_exists(ledger_path, comparison_id: str) -> Optional[dict]:
         if ev["verdict"].get("comparison_id") == comparison_id and "integrity" in ev:
             return ev
     return None
+
+
+def _any_human_verdict(ledger_path, comparison_id: str) -> bool:
+    """True if any human verdict (integrity or not) exists for ``comparison_id``."""
+    return any(
+        ev["verdict"].get("comparison_id") == comparison_id
+        for ev in find_events(ledger_path, events.HUMAN_VERDICT)
+    )
+
+
+def _reveal_exists(ledger_path, comparison_id: str) -> bool:
+    return any(
+        ev.get("verdict_event_id") == comparison_id
+        for ev in find_events(ledger_path, events.REVEAL)
+    )
+
+
+def _judge_verdict_exists(ledger_path, comparison_id: str) -> bool:
+    """True if the judge produced a verdict for ``comparison_id`` — the review
+    packet is built from judge verdicts, so a comparison a human can review must
+    have one (a CANT_JUDGE verdict still counts)."""
+    return any(
+        ev["verdict"].get("comparison_id") == comparison_id
+        for ev in find_events(ledger_path, events.JUDGE_VERDICT)
+    )
 
 
 def record_human_verdict(
@@ -50,6 +79,33 @@ def record_human_verdict(
     """
     if verdict.source != "human":
         raise ValueError("record_human_verdict requires a human-sourced verdict")
+    # RV-1: the capture side reads the ledger to enforce single-verdict,
+    # pre-reveal ordering; verify the chain first so a forged reveal/verdict line
+    # cannot fool these gates [PL-6].
+    assert_chain(ledger_path)
+    cid = verdict.comparison_id
+    # RV-9: refuse a verdict for a comparison the judge never produced — a mistyped
+    # comparison_id would otherwise record cleanly and silently drop from kappa
+    # (which joins on judge↔human comparison_id).
+    if not _judge_verdict_exists(ledger_path, cid):
+        raise ReviewError(
+            f"comparison {cid!r} has no judge verdict; a human verdict for a "
+            "comparison that was never judged is a mistyped comparison_id [RV-9]"
+        )
+    # RV-1: a verdict recorded after the comparison is unblinded is no longer
+    # blinded — refuse it rather than let an unblinded verdict poison kappa.
+    if _reveal_exists(ledger_path, cid):
+        raise ReviewError(
+            f"comparison {cid!r} is already revealed; a post-reveal verdict is "
+            "unblinded and cannot be recorded [RV-1]"
+        )
+    # RV-1: exactly one human verdict per comparison; a duplicate double-counts in
+    # kappa and the integrity rate.
+    if _any_human_verdict(ledger_path, cid):
+        raise ReviewError(
+            f"comparison {cid!r} already has a human verdict; a second verdict is "
+            "refused (it would double-count in kappa/integrity) [RV-1]"
+        )
     return events.append_human_verdict(
         ledger_path,
         ctx,
@@ -76,6 +132,13 @@ def reveal_comparison(
     # the chain first so a forged human_verdict cannot enable a premature
     # unblinding, defeating capture-then-reveal [PL-6/AC-4].
     assert_chain(ledger_path)
+    # RV-8: a comparison is unblinded once; a duplicate reveal would append a
+    # second (potentially divergent) disclosure. Refuse it.
+    if _reveal_exists(ledger_path, comparison_id):
+        raise RevealError(
+            f"comparison {comparison_id!r} is already revealed; a duplicate reveal "
+            "is refused [RV-8]"
+        )
     hv = human_verdict_exists(ledger_path, comparison_id)
     if hv is None:
         raise RevealError(
@@ -95,3 +158,80 @@ def reveal_comparison(
         verdict_event_id=comparison_id,
         revealed={"judge_verdict_id": judge_id, "arm_identities": arm_identities},
     )
+
+
+# --- one-event property registration [EVAL-3 §M7, XC-3] --------------------
+_PROP_CID = "cmp-prop"
+
+
+def _seed_judge_verdict(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    from ..judge.schema import Evidence, Verdict, VerdictProvenance, Winner
+    from ..ledger.events import EventContext
+
+    d = Path(ctx_dir)
+    jv = Verdict(
+        winner=Winner.A, reason="x",
+        evidence=[Evidence(kind="diff", response="A", hunk="h")],
+        provenance=VerdictProvenance(
+            judge_model="m", rubric_sha256="a", packet_sha256="b",
+            call_ids=["c1", "c2"], orders="both", temperature=0.0, ts="t"),
+        comparison_id=_PROP_CID, task_class="cls",
+    )
+    events.append_verdict(d / "ledger.ndjson", EventContext(experiment_id="prop"),
+                          verdict=jv.model_dump(mode="json"))
+
+
+def _human_verdict(cid: str) -> Verdict:
+    from ..judge.schema import Evidence, Verdict, VerdictProvenance, Winner
+
+    return Verdict(
+        winner=Winner.A, reason="r",
+        evidence=[Evidence(kind="diff", response="A", hunk="h")],
+        provenance=VerdictProvenance(
+            judge_model="human", rubric_sha256="human", packet_sha256="human",
+            call_ids=["human"], orders="single", temperature=0.0, ts="t"),
+        source="human", comparison_id=cid, task_class="cls",
+    )
+
+
+def _review_record_entrypoint(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    from ..ledger.events import EventContext
+
+    d = Path(ctx_dir)
+    record_human_verdict(
+        d / "ledger.ndjson", EventContext(experiment_id="prop"),
+        verdict=_human_verdict(_PROP_CID), arm_recognized=False, arm_guess=None,
+    )
+
+
+def _prepare_reveal(ctx_dir: str) -> None:
+    # a reveal presupposes a judge verdict + a human verdict — the same two events
+    # the record entrypoint's prepare + fn produce.
+    _seed_judge_verdict(ctx_dir)
+    _review_record_entrypoint(ctx_dir)
+
+
+def _review_reveal_entrypoint(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    from ..ledger.events import EventContext
+
+    d = Path(ctx_dir)
+    reveal_comparison(
+        d / "ledger.ndjson", EventContext(experiment_id="prop"),
+        comparison_id=_PROP_CID, arm_identities={"1": "arm_a", "2": "arm_b"},
+    )
+
+
+def _register() -> None:
+    from ..entrypoints import register_entrypoint
+
+    register_entrypoint("review-record", _review_record_entrypoint, prepare=_seed_judge_verdict)
+    register_entrypoint("review-reveal", _review_reveal_entrypoint, prepare=_prepare_reveal)
+
+
+_register()

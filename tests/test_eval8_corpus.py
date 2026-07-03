@@ -176,11 +176,12 @@ def _pending_manifest(candidate_id="cand-1", sha="s" * 64):
 
 def test_ac4_curation_required(tmp_path):
     ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
     manifest = _pending_manifest()
     # no curation_approval ⇒ refused
     with pytest.raises(CurationRequiredError):
         admit_task(
-            manifest, ledger, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
+            manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
         )
     assert manifest.is_schedulable("cand-1") is False
 
@@ -195,7 +196,7 @@ def test_ac4_baseline_prereq(tmp_path):
     )
     with pytest.raises(BaselinePrerequisiteError):
         admit_task(
-            manifest, ledger, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
+            manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
         )
 
     # add a clean baseline for the sha ⇒ admitted + schedulable
@@ -204,7 +205,7 @@ def test_ac4_baseline_prereq(tmp_path):
         results=[{"run": i, "passed": True} for i in range(5)], verdict="clean",
     )
     task = admit_task(
-        manifest, ledger, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
+        manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
     )
     assert task.status == "admitted"
     assert manifest.is_schedulable("cand-1") is True
@@ -239,7 +240,7 @@ def test_admit_refuses_tampered_chain(tmp_path):
 
     with pytest.raises(ChainIntegrityError):
         admit_task(
-            manifest, ledger, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
+            manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
         )
     assert manifest.is_schedulable("cand-1") is False
 
@@ -258,7 +259,7 @@ def test_ac4_baseline_must_be_clean(tmp_path):
     )
     with pytest.raises(BaselinePrerequisiteError):
         admit_task(
-            manifest, ledger, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
+            manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64, baseline_ref="b1"
         )
 
 
@@ -288,6 +289,93 @@ def test_ac5_boundary_enforced(tmp_path):
         boundary_path=str(tmp_path / "koala"), tasks=[],
     )
     ok.assert_boundary()  # does not raise
+
+
+# --- §7.2 fail-closed sweep (CO-1/4/6/9) ------------------------------------
+def test_co6_task_id_traversal_refused():
+    # a registry-supplied task_id that would escape the cache dir is unrepresentable
+    for bad in ("../../escaped", "a/b", "..", "/abs", "x\x00y"):
+        with pytest.raises(ValidationError):
+            TaskEntry(task_id=bad, sha="a" * 64)
+    # a normal id is fine
+    assert TaskEntry(task_id="task-1", sha="a" * 64).task_id == "task-1"
+
+
+def test_co1_internal_save_into_instrument_repo_refused(tmp_path):
+    from harness.corpus.registry import INSTRUMENT_ROOT, assert_outside_instrument
+
+    m = CorpusManifest(corpus_id="internal-koala", semver="1.0.0", kind="internal",
+                       boundary_path=str(tmp_path / "koala"), tasks=[])
+    # saving an internal manifest inside the instrument repo is refused (write dest)
+    with pytest.raises(BoundaryViolationError):
+        m.save(INSTRUMENT_ROOT / "leaked_manifest.json")
+    assert not (INSTRUMENT_ROOT / "leaked_manifest.json").exists()
+    # outside the repo is fine
+    m.save(tmp_path / "m.json")
+    # the mine --out destination check refuses the repo too
+    with pytest.raises(BoundaryViolationError):
+        assert_outside_instrument(INSTRUMENT_ROOT / "candidate.json")
+
+
+def test_co4_admission_ledgers_task_admitted(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    manifest = _pending_manifest()
+    record_curation_approval(ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+                             approver="curator")
+    record_flake_baseline(ledger, ctx, task_id="cand-1", task_sha="s" * 64, k=5,
+                          results=[{"run": i, "passed": True} for i in range(5)],
+                          verdict="clean")
+    from harness.ledger.query import find_events
+    admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+               baseline_ref="b1")
+    admitted = find_events(ledger, "task_admitted")
+    assert len(admitted) == 1
+    assert admitted[0]["candidate_id"] == "cand-1" and admitted[0]["task_sha"] == "s" * 64
+
+
+def test_co4_calibration_run_ledgered(tmp_path):
+    from harness.corpus.ledger_ops import ledger_calibration_run
+    from harness.ledger.query import find_events
+
+    src = _write_dataset(tmp_path / "ds")
+    manifest = import_terminal_bench(DirectorySource(src), tmp_path / "cache")
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    ledger_calibration_run(ledger, ctx, manifest, {"anchor_delta": 0.01}, kind="subset")
+    ev = find_events(ledger, "calibration_run")
+    assert len(ev) == 1 and ev[0]["status"] == "subset-validated"
+    ledger_calibration_run(ledger, ctx, manifest, {"full": True}, kind="full")
+    ev = find_events(ledger, "calibration_run")
+    assert len(ev) == 2 and ev[-1]["status"] == "full-run-validated"
+
+
+def test_co9_subset_draw_ledgered(tmp_path):
+    from harness.corpus.ledger_ops import ledger_subset_draw
+    from harness.ledger.query import find_events
+
+    src = _write_dataset(tmp_path / "ds")
+    manifest = import_terminal_bench(DirectorySource(src), tmp_path / "cache")
+    subset = calibration_subset(manifest, seed=7, target_size=3, stratum_key="category")
+    ledger = tmp_path / "l.ndjson"
+    ledger_subset_draw(ledger, fixed_ctx(), manifest, subset)
+    ev = find_events(ledger, "subset_draw")
+    assert len(ev) == 1
+    assert ev[0]["seed"] == 7 and ev[0]["task_ids"] == subset.task_ids
+
+
+def test_co9_reimport_prunes_removed_task_blob(tmp_path):
+    src = _write_dataset(tmp_path / "ds", n=6)
+    cache = tmp_path / "cache"
+    import_terminal_bench(DirectorySource(src), cache)
+    assert (cache / "tasks" / "task-5.json").exists()
+    # drop a task from the source and bump the semver (content set changed)
+    (src / "task-5.json").unlink()
+    (src / "task-5.meta.json").unlink()
+    import_terminal_bench(DirectorySource(src), cache, semver="2.0.0")
+    # the removed task's stale cache blob is pruned (no manifest/cache drift)
+    assert not (cache / "tasks" / "task-5.json").exists()
+    assert (cache / "tasks" / "task-0.json").exists()
 
 
 # --- AC-6: versioning + provenance ------------------------------------------

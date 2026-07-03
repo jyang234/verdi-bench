@@ -99,7 +99,6 @@ def emit(ledger_path, ctx: EventContext, event_type: str, payload: dict) -> dict
 # EVAL-3 events
 # ---------------------------------------------------------------------------
 EXPERIMENT_LOCKED = register_event("experiment_locked")
-ACKNOWLEDGED_UNDERPOWERED = register_event("acknowledged_underpowered")
 CHAIN_ANCHOR = register_event("chain_anchor")
 
 
@@ -114,6 +113,7 @@ def record_experiment_locked(
     attested_by: str,
     method: str,
     task_commitment: Optional[dict] = None,
+    acknowledged_underpowered: Optional[dict] = None,
 ) -> dict:
     """Genesis lock event [AC-2, D004, D008].
 
@@ -121,6 +121,13 @@ def record_experiment_locked(
     and a hash over the per-task content shas, so run/grade can refuse tasks
     that were swapped after lock [PL-7]. Optional for compatibility with
     task-less plan flows; required by run/grade when real tasks are present.
+
+    ``acknowledged_underpowered`` (additive field, PL-14) carries the
+    ``{mde, hypothesized_effect}`` acknowledgment inline **on the lock event**
+    when an underpowered design is locked with acknowledgment — one attempted
+    operation, one event. It replaces the former separate
+    ``acknowledged_underpowered`` event so the one-event-per-operation property
+    holds for the documented underpowered path.
     """
     payload = {
         "spec_sha256": spec_sha256,
@@ -131,24 +138,9 @@ def record_experiment_locked(
     }
     if task_commitment is not None:
         payload["task_commitment"] = task_commitment
+    if acknowledged_underpowered is not None:
+        payload["acknowledged_underpowered"] = acknowledged_underpowered
     return emit(ledger_path, ctx, EXPERIMENT_LOCKED, payload)
-
-
-def record_acknowledged_underpowered(
-    ledger_path, ctx: EventContext, *, mde: Optional[float], hypothesized_effect: float
-) -> dict:
-    """Ledgered acknowledgment that a design is underpowered [D001, AC-4].
-
-    ``mde`` is ``None`` (ledgered as ``null``) when the MDE was incomputable —
-    no swept effect reached target power, the maximally underpowered case; the
-    field is therefore genuinely optional, not a float that was set to null.
-    """
-    return emit(
-        ledger_path,
-        ctx,
-        ACKNOWLEDGED_UNDERPOWERED,
-        {"mde": mde, "hypothesized_effect": hypothesized_effect},
-    )
 
 
 def record_chain_anchor(
@@ -315,6 +307,25 @@ def append_human_verdict(
 # EVAL-6 events
 # ---------------------------------------------------------------------------
 FINDINGS_RENDERED = register_event("findings_rendered")
+CANT_ANALYZE = register_event("cant_analyze")
+
+
+def record_cant_analyze(
+    ledger_path, ctx: EventContext, *, mode: str, reason: str, detail: str = ""
+) -> dict:
+    """Fail-closed refusal of an analyze render [EVAL-6 §7.2, AN-3].
+
+    A refused official/exploratory render (calibration incomplete, provenance
+    invalid, disclosure missing, unregistered metric) lands exactly one event
+    instead of escaping the CLI with none. **Additive event type** — old ledgers
+    simply lack it, so no existing hash chain is invalidated (EVAL-6 decisions
+    ledger + migration note)."""
+    return emit(
+        ledger_path,
+        ctx,
+        CANT_ANALYZE,
+        {"mode": mode, "reason": reason, "detail": detail},
+    )
 
 
 def record_findings_rendered(
@@ -375,6 +386,84 @@ def record_reveal(
 # EVAL-8 events
 # ---------------------------------------------------------------------------
 CURATION_APPROVAL = register_event("curation_approval")
+TASK_ADMITTED = register_event("task_admitted")
+CALIBRATION_RUN = register_event("calibration_run")
+SUBSET_DRAW = register_event("subset_draw")
+
+
+def record_task_admitted(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    candidate_id: str,
+    task_sha: str,
+    baseline_ref: str,
+) -> dict:
+    """Ledger a corpus admission decision [EVAL-8 §7.2, CO-4].
+
+    Admission (curation approval AND a clean baseline, both chain-verified) flips
+    a candidate to ``admitted``; this event puts that decision on the chain rather
+    than only in mutable manifest JSON. **Additive event type** — old ledgers lack
+    it, so no existing chain is invalidated."""
+    return emit(
+        ledger_path,
+        ctx,
+        TASK_ADMITTED,
+        {"candidate_id": candidate_id, "task_sha": task_sha, "baseline_ref": baseline_ref},
+    )
+
+
+def record_calibration_run(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    corpus_id: str,
+    semver: str,
+    kind: str,
+    run: dict,
+    status: str,
+) -> dict:
+    """Ledger a corpus calibration run [EVAL-8 §7.2, AC-2, CO-4].
+
+    Calibration status must be chain-anchored, not hand-editable manifest JSON —
+    a hand-edited ``full-run-validated`` status otherwise passes the official
+    fence. **Additive event type**."""
+    return emit(
+        ledger_path,
+        ctx,
+        CALIBRATION_RUN,
+        {"corpus_id": corpus_id, "semver": semver, "kind": kind, "run": run, "status": status},
+    )
+
+
+def record_subset_draw(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    corpus_id: str,
+    semver: str,
+    seed: int,
+    stratum_key: str,
+    task_ids: list,
+    strata: dict,
+) -> dict:
+    """Ledger a seeded stratified calibration-subset draw [EVAL-8 §7.2, CO-9].
+
+    The draw was recorded only in mutable manifest JSON; ledger it so the
+    selection is auditable and tamper-evident. **Additive event type**."""
+    return emit(
+        ledger_path,
+        ctx,
+        SUBSET_DRAW,
+        {
+            "corpus_id": corpus_id,
+            "semver": semver,
+            "seed": seed,
+            "stratum_key": stratum_key,
+            "task_ids": task_ids,
+            "strata": strata,
+        },
+    )
 
 
 def record_curation_approval(

@@ -16,6 +16,7 @@ from harness.review.kappa import (
 )
 from harness.review.packet import ReviewPacketItem, ReviewResponse, build_review_packet
 from harness.review.record import (
+    ReviewError,
     RevealError,
     record_human_verdict,
     reveal_comparison,
@@ -43,6 +44,14 @@ def _human(winner, cid, source="human", task_class="cls"):
     ev = [Evidence(kind="diff", response=winner, hunk="h")] if winner in ("A", "B") else []
     return Verdict(winner=Winner(winner), reason="r", evidence=ev, provenance=_prov("human"),
                    source=source, comparison_id=cid, task_class=task_class)
+
+
+def _seed_judge(ledger, ctx, cid, winner="A"):
+    """Append the judge verdict a comparison must have before a human reviews it."""
+    ev = [Evidence(kind="diff", response=winner, hunk="h")] if winner in ("A", "B") else []
+    jv = Verdict(winner=Winner(winner), reason="x", evidence=ev, provenance=_prov(),
+                 comparison_id=cid, task_class="cls")
+    append_verdict(ledger, ctx, verdict=jv.model_dump(mode="json"))
 
 
 # --- AC-1: scrub shares the blinding core -----------------------------------
@@ -152,6 +161,7 @@ def test_ac3_no_judge_or_arm_content():
 def test_ac4_verdict_event_schema(tmp_path):
     ledger = tmp_path / "l.ndjson"
     ctx = fixed_ctx()
+    _seed_judge(ledger, ctx, "cmp-1")
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"),
                          arm_recognized=True, arm_guess="A", actual_arm="A")
     from harness.ledger.query import find_events
@@ -173,6 +183,7 @@ def test_ac4_integrity_pre_unblind(tmp_path):
 def test_ac4_reveal_after_verdict(tmp_path):
     ledger = tmp_path / "l.ndjson"
     ctx = fixed_ctx()
+    _seed_judge(ledger, ctx, "cmp-1")
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"),
                          arm_recognized=False, arm_guess=None)
     rec = reveal_comparison(ledger, ctx, comparison_id="cmp-1",
@@ -244,7 +255,9 @@ def test_ac6_integrity_rate_reported(tmp_path):
                              passed=True, provenance={"image_digest": "d"})
         seed_trial_and_grade(ledger, ctx, trial_id=f"t-{i}", task_id=f"t{i}", arm="treatment",
                              passed=True, provenance={"image_digest": "d"})
-    # two human reviews, one recognized the arm
+    # two human reviews (of comparisons the judge produced), one recognized the arm
+    _seed_judge(ledger, ctx, "t0")
+    _seed_judge(ledger, ctx, "t1")
     record_human_verdict(ledger, ctx, verdict=_human("A", "t0"), arm_recognized=True,
                          arm_guess="A", actual_arm="A")
     record_human_verdict(ledger, ctx, verdict=_human("A", "t1"), arm_recognized=False,
@@ -259,6 +272,63 @@ def test_ac6_integrity_rate_reported(tmp_path):
     assert "integrity" in findings.model_dump()
 
 
+def test_rv1_refuses_duplicate_verdict(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    _seed_judge(ledger, ctx, "cmp-1")
+    record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
+                         arm_guess=None)
+    # a second verdict for the same comparison poisons kappa/integrity — refuse it
+    with pytest.raises(ReviewError):
+        record_human_verdict(ledger, ctx, verdict=_human("B", "cmp-1"), arm_recognized=False,
+                             arm_guess=None)
+    from harness.ledger.query import find_events
+    assert len(find_events(ledger, "human_verdict")) == 1
+
+
+def test_rv1_refuses_post_reveal_verdict(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    _seed_judge(ledger, ctx, "cmp-1")
+    record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
+                         arm_guess=None)
+    reveal_comparison(ledger, ctx, comparison_id="cmp-1",
+                      arm_identities={"1": "arm_a", "2": "arm_b"})
+    # a verdict after the unblinding is unblinded and must be refused (RV-1)
+    with pytest.raises(ReviewError):
+        record_human_verdict(ledger, ctx, verdict=_human("B", "cmp-1"), arm_recognized=False,
+                             arm_guess=None)
+
+
+def test_rv8_refuses_duplicate_reveal(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    _seed_judge(ledger, ctx, "cmp-1")
+    record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
+                         arm_guess=None)
+    reveal_comparison(ledger, ctx, comparison_id="cmp-1",
+                      arm_identities={"1": "arm_a", "2": "arm_b"})
+    with pytest.raises(RevealError):
+        reveal_comparison(ledger, ctx, comparison_id="cmp-1",
+                          arm_identities={"1": "arm_a", "2": "arm_b"})
+    from harness.ledger.query import find_events
+    assert len(find_events(ledger, "reveal")) == 1
+
+
+def test_rv9_refuses_unjudged_comparison(tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    _seed_judge(ledger, ctx, "cmp-1")
+    # a verdict for a comparison the judge produced is fine
+    record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
+                         arm_guess=None)
+    # a mistyped comparison id (no judge verdict) would silently drop from kappa —
+    # refuse it loudly instead (RV-9)
+    with pytest.raises(ReviewError):
+        record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-typo"),
+                             arm_recognized=False, arm_guess=None)
+
+
 def test_reveal_refuses_tampered_chain(tmp_path):
     """PL-6/AC-4: the reveal gate reads the ledger to check a human verdict
     exists; a forged human_verdict must not enable a premature unblinding."""
@@ -269,15 +339,18 @@ def test_reveal_refuses_tampered_chain(tmp_path):
 
     ledger = tmp_path / "l.ndjson"
     ctx = fixed_ctx()
+    _seed_judge(ledger, ctx, "cmp-1")
+    _seed_judge(ledger, ctx, "cmp-2")
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"),
                          arm_recognized=False, arm_guess=None)
-    # a successor event so tampering the first line is detectable by the chain
+    # a successor event so tampering the human-verdict line is chain-detectable
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-2"),
                          arm_recognized=False, arm_guess=None)
     lines = ledger.read_text(encoding="utf-8").splitlines()
-    obj = json.loads(lines[0])
-    obj["integrity"]["arm_recognized"] = True  # byte change breaks chain at line 2
-    lines[0] = canonical_line(obj)
+    hv_idx = 2  # after the two judge seeds, the first human verdict is line index 2
+    obj = json.loads(lines[hv_idx])
+    obj["integrity"]["arm_recognized"] = True  # byte change breaks the chain at its successor
+    lines[hv_idx] = canonical_line(obj)
     ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     with pytest.raises(ChainIntegrityError):

@@ -118,9 +118,15 @@ def lock_experiment(
             task_dicts, corpus_id=spec.corpus.id, semver=spec.corpus.version
         )
 
-    # PL-3: the lock is the genesis event. Write it *first*, before any rider,
-    # so its prev_hash is all-zeros and the chain anchors on the lock even when
-    # an underpowered acknowledgment is also recorded.
+    # PL-14: the lock is the single genesis event. An underpowered acknowledgment
+    # rides *inline* on the lock event (not a second event), so locking an
+    # acknowledged-underpowered design is one attempted operation ⇒ one event,
+    # and the lock stays the chain genesis (prev_hash all-zeros).
+    ack_payload = (
+        {"mde": mde_val, "hypothesized_effect": spec.hypothesized_effect}
+        if ack_underpowered
+        else None
+    )
     event = events.record_experiment_locked(
         ledger_path,
         ctx,
@@ -131,14 +137,8 @@ def lock_experiment(
         attested_by=attested_by,
         method=attestation_method,
         task_commitment=task_commitment,
+        acknowledged_underpowered=ack_payload,
     )
-    if ack_underpowered:
-        events.record_acknowledged_underpowered(
-            ledger_path,
-            ctx,
-            mde=mde_val,
-            hypothesized_effect=spec.hypothesized_effect,
-        )
     return LockOutcome(spec=spec, spec_sha256=sha, mde=mde, event=event)
 
 
@@ -186,10 +186,47 @@ def _plan_lock_entrypoint(ctx_dir: str) -> None:
     )
 
 
+def _prepare_underpowered(ctx_dir: str) -> None:
+    # Make the fixture experiment underpowered (hypothesized_effect below any
+    # reasonable MDE). Not a ledger write — just fixture prep, so the sweep still
+    # measures only the lock event fn appends.
+    import yaml
+
+    p = Path(ctx_dir) / "experiment.yaml"
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    data["hypothesized_effect"] = 0.001
+    p.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+
+def _plan_lock_underpowered_entrypoint(ctx_dir: str) -> None:
+    # PL-14: the acknowledged-underpowered path must also be one event. Lock the
+    # (now underpowered) design with acknowledgment; the acknowledgment rides
+    # inline on the single lock event instead of a second event.
+    from ..ledger.events import EventContext
+    from .power import AssumedVariance
+
+    d = Path(ctx_dir)
+    lock_experiment(
+        d / "experiment.yaml",
+        d / "ledger.ndjson",
+        ctx=EventContext(experiment_id="prop"),
+        variance_source=AssumedVariance(p=0.5, rho=0.3, n_tasks=20),
+        acknowledge_underpowered=True,
+        n_sim=8,
+        n_boot=40,
+        deltas=[0.2, 0.4],
+    )
+
+
 def _register() -> None:
     from ..entrypoints import register_entrypoint
 
     register_entrypoint("plan-lock", _plan_lock_entrypoint)
+    register_entrypoint(
+        "plan-lock-underpowered",
+        _plan_lock_underpowered_entrypoint,
+        prepare=_prepare_underpowered,
+    )
 
 
 _register()

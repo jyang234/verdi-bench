@@ -39,7 +39,7 @@ def register(app: typer.Typer) -> None:
         """Record a human verdict + integrity answers (strictly pre-reveal)."""
         from ..judge.schema import Evidence, Verdict, VerdictProvenance, Winner
         from ..ledger.events import EventContext
-        from .record import record_human_verdict
+        from .record import ReviewError, record_human_verdict
 
         ledger_path = experiment_dir / "ledger.ndjson"
         ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())
@@ -54,10 +54,14 @@ def register(app: typer.Typer) -> None:
             winner=Winner(winner), reason=reason or winner, evidence=evidence,
             provenance=prov, source="human", comparison_id=comparison_id,
         )
-        record_human_verdict(
-            ledger_path, ctx, verdict=verdict, arm_recognized=arm_recognized,
-            arm_guess=arm_guess,
-        )
+        try:
+            record_human_verdict(
+                ledger_path, ctx, verdict=verdict, arm_recognized=arm_recognized,
+                arm_guess=arm_guess,
+            )
+        except ReviewError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
         typer.echo(f"recorded human verdict for {comparison_id} (closes the comparison)")
 
     @review_app.command("reveal")

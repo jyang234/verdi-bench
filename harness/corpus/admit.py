@@ -14,6 +14,7 @@ refuses quarantined tasks; a pending candidate is excluded by
 from __future__ import annotations
 
 from ..ledger import events
+from ..ledger.events import EventContext
 from ..ledger.query import assert_chain, find_events
 from .registry import CorpusError, CorpusManifest, TaskEntry
 
@@ -49,6 +50,7 @@ def has_clean_baseline(ledger_path, task_sha: str) -> bool:
 def admit_task(
     manifest: CorpusManifest,
     ledger_path,
+    ctx: EventContext,
     *,
     candidate_id: str,
     task_sha: str,
@@ -57,8 +59,10 @@ def admit_task(
     """Admit a pending candidate into ``manifest`` iff both preconditions hold.
 
     Refuses loudly on either missing precondition; on success flips the task's
-    status to ``admitted`` and pins its ``baseline_ref``. The task must already
-    exist in the manifest as a pending candidate (mining wrote it there).
+    status to ``admitted``, pins its ``baseline_ref``, and ledgers exactly one
+    ``task_admitted`` event so the admission decision is chain-anchored, not only
+    in mutable manifest JSON [CO-4]. The task must already exist in the manifest
+    as a pending candidate (mining wrote it there).
     """
     # Admission's two preconditions are read from the ledger; verify the chain
     # first so a hand-forged ledger cannot manufacture them [CO-5/PL-6].
@@ -85,4 +89,47 @@ def admit_task(
         )
     task.status = "admitted"
     task.baseline_ref = baseline_ref
+    events.record_task_admitted(
+        ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
+        baseline_ref=baseline_ref,
+    )
     return task
+
+
+# --- one-event property registration [EVAL-3 §M7, XC-3] --------------------
+_PROP_SHA = "s" * 64
+
+
+def _prepare_admit(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    d = Path(ctx_dir)
+    led = d / "ledger.ndjson"
+    ctx = EventContext(experiment_id="prop")
+    events.record_curation_approval(led, ctx, candidate_id="cand-prop",
+                                    task_sha=_PROP_SHA, approver="curator")
+    events.record_flake_baseline(led, ctx, task_id="cand-prop", task_sha=_PROP_SHA, k=5,
+                                 results=[{"run": i, "passed": True} for i in range(5)],
+                                 verdict="clean")
+
+
+def _admit_entrypoint(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    d = Path(ctx_dir)
+    manifest = CorpusManifest(
+        corpus_id="internal-prop", semver="1.0.0", kind="internal",
+        boundary_path="/tmp/prop-boundary",
+        tasks=[TaskEntry(task_id="cand-prop", sha=_PROP_SHA, status="pending-curation")],
+    )
+    admit_task(manifest, d / "ledger.ndjson", EventContext(experiment_id="prop"),
+               candidate_id="cand-prop", task_sha=_PROP_SHA, baseline_ref="b1")
+
+
+def _register() -> None:
+    from ..entrypoints import register_entrypoint
+
+    register_entrypoint("corpus-admit", _admit_entrypoint, prepare=_prepare_admit)
+
+
+_register()

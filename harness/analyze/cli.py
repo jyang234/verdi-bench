@@ -23,6 +23,77 @@ def _actor() -> str:
         return "unknown"
 
 
+def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False, actor: str = "unknown"):
+    """Render findings, ledgering exactly one event either way [EVAL-6 §M6, AN-3].
+
+    Returns the render path on success (after emitting ``findings_rendered``), or
+    ``None`` on a fail-closed refusal (after emitting exactly one ``cant_analyze``).
+    A refused render never escapes with zero events, and on success the event is
+    written *before* the findings files (re-derivable render, no orphan artifacts).
+    """
+    from ..ledger.events import (
+        EventContext,
+        record_cant_analyze,
+        record_findings_rendered,
+    )
+    from ..plan.lock import assert_lock
+    from ..schema.experiment import ExperimentSpec
+    from .report import (
+        AnalyzeError,
+        cant_analyze_reason,
+        compute_findings,
+        render_html,
+        render_markdown,
+    )
+
+    experiment_dir = Path(experiment_dir)
+    spec_path = experiment_dir / "experiment.yaml"
+    ledger_path = experiment_dir / "ledger.ndjson"
+    assert_lock(spec_path, ledger_path)
+    spec = ExperimentSpec.from_yaml(spec_path)
+    ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
+
+    # AN-3: a refused render lands exactly one cant_analyze event, never escapes.
+    # The corpus-manifest load is inside the envelope too, so a malformed --corpus
+    # fails closed to cant_analyze rather than escaping with no event.
+    try:
+        manifest = None
+        if corpus is not None:
+            from ..corpus.registry import CorpusManifest
+
+            try:
+                manifest = CorpusManifest.load(corpus)
+            except Exception as e:  # bad path / malformed manifest JSON
+                raise AnalyzeError(f"could not load corpus manifest {corpus}: {e}") from e
+        findings = compute_findings(ledger_path, spec, spec.seed, corpus_manifest=manifest)
+        renderer = render_html if html else render_markdown
+        rendered = renderer(findings, ledger_path, mode, corpus_manifest=manifest)
+    except AnalyzeError as e:
+        record_cant_analyze(
+            ledger_path, ctx, mode=mode, reason=cant_analyze_reason(e).value, detail=str(e)
+        )
+        return None
+
+    suffix = "html" if html else "md"
+    out_json = experiment_dir / "findings.json"
+    out_render = experiment_dir / f"findings.{mode}.{suffix}"
+    findings_json = findings.model_dump_json()
+
+    # AN-3: ledger the render *before* writing the files, so an interrupted write
+    # leaves a re-derivable provenance record rather than orphan artifacts.
+    record_findings_rendered(
+        ledger_path,
+        ctx,
+        mode=mode,
+        primary_metric=findings.primary_metric,
+        ledger_head_hash=findings.provenance.ledger_head_hash,
+        findings_sha256=hashlib.sha256(findings_json.encode("utf-8")).hexdigest(),
+    )
+    out_json.write_text(findings_json, encoding="utf-8")
+    out_render.write_text(rendered, encoding="utf-8")
+    return out_render
+
+
 def register(app: typer.Typer) -> None:
     @app.command()
     def analyze(
@@ -37,49 +108,40 @@ def register(app: typer.Typer) -> None:
         html: bool = typer.Option(False, "--html", help="Render HTML instead of markdown"),
     ) -> None:
         """Render pre-registered official or exploratory findings."""
-        from ..ledger.events import EventContext, record_findings_rendered
-        from ..plan.lock import assert_lock
-        from ..schema.experiment import ExperimentSpec
-        from .report import (
-            compute_findings,
-            render_html,
-            render_markdown,
-        )
-
         if official and exploratory:
             raise typer.BadParameter("choose at most one of --official/--exploratory")
         mode = "official" if official else "exploratory"
+        out = run_analyze(experiment_dir, mode=mode, corpus=corpus, html=html, actor=_actor())
+        if out is None:
+            typer.echo(f"refused {mode} render; recorded cant_analyze", err=True)
+            raise typer.Exit(code=2)
+        typer.echo(f"rendered {mode} findings → {out}")
 
-        experiment_dir = Path(experiment_dir)
-        spec_path = experiment_dir / "experiment.yaml"
-        ledger_path = experiment_dir / "ledger.ndjson"
-        assert_lock(spec_path, ledger_path)
-        spec = ExperimentSpec.from_yaml(spec_path)
 
-        manifest = None
-        if corpus is not None:
-            from ..corpus.registry import CorpusManifest
+# --- one-event property registration [EVAL-3 §M7, XC-3] --------------------
+def _prepare_analyze(ctx_dir: str) -> None:
+    # lock the experiment so the render has a spec to analyze (one event, seeded
+    # before the sweep snapshots the count).
+    from ..ledger.events import EventContext
+    from ..plan.lock import lock_experiment
 
-            manifest = CorpusManifest.load(corpus)
+    d = Path(ctx_dir)
+    lock_experiment(
+        d / "experiment.yaml", d / "ledger.ndjson",
+        ctx=EventContext(experiment_id="prop"), n_sim=8, n_boot=40, deltas=[0.2, 0.4],
+    )
 
-        findings = compute_findings(ledger_path, spec, spec.seed, corpus_manifest=manifest)
-        renderer = render_html if html else render_markdown
-        rendered = renderer(findings, ledger_path, mode, corpus_manifest=manifest)
 
-        suffix = "html" if html else "md"
-        out_json = experiment_dir / "findings.json"
-        out_render = experiment_dir / f"findings.{mode}.{suffix}"
-        findings_json = findings.model_dump_json()
-        out_json.write_text(findings_json, encoding="utf-8")
-        out_render.write_text(rendered, encoding="utf-8")
+def _analyze_entrypoint(ctx_dir: str) -> None:
+    # An official render with no calibrated corpus fails closed to exactly one
+    # cant_analyze event (the AN-3 path).
+    run_analyze(Path(ctx_dir), mode="official", corpus=None, actor="prop")
 
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())
-        record_findings_rendered(
-            ledger_path,
-            ctx,
-            mode=mode,
-            primary_metric=findings.primary_metric,
-            ledger_head_hash=findings.provenance.ledger_head_hash,
-            findings_sha256=hashlib.sha256(findings_json.encode("utf-8")).hexdigest(),
-        )
-        typer.echo(f"rendered {mode} findings → {out_render}")
+
+def _register() -> None:
+    from ..entrypoints import register_entrypoint
+
+    register_entrypoint("analyze", _analyze_entrypoint, prepare=_prepare_analyze)
+
+
+_register()

@@ -35,7 +35,6 @@ def test_ac6_all_shipped_events_registered():
     # every constructor's type must be registered
     for name in [
         "experiment_locked",
-        "acknowledged_underpowered",
         "chain_anchor",
         "trial",
         "trial_infra_failed",
@@ -45,5 +44,12 @@ def test_ac6_all_shipped_events_registered():
         "cant_grade",
         "flake_baseline",
         "judge_verdict",
+        "cant_analyze",
+        "task_admitted",
+        "calibration_run",
+        "subset_draw",
     ]:
         assert name in events.REGISTERED_EVENTS
+    # PL-14: the acknowledgment folded into experiment_locked; the separate event
+    # type is retired.
+    assert "acknowledged_underpowered" not in events.REGISTERED_EVENTS

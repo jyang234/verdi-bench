@@ -412,12 +412,12 @@ the listed condition holds:
 | Invariant (§6) | Current status | Flips when |
 |---|---|---|
 | Arms insulated; no rubric/holdout content to the agent | Partially real (leak-refusal test genuine; property test vacuous; grade path agent-forgeable) | XC-4 fixed + Phase 1 exit |
-| Fail closed; no operation without a ledger event | False in every stage | Phase 3 exit (all-stage property sweep) |
+| Fail closed; no operation without a ledger event | **Enforced (Phase 3)** — the one-event property sweep covers every ledgered stage operation (12 entrypoints, expected-set asserted); judge/process/review/analyze/corpus fail-closed | Phase 3 exit (all-stage property sweep) ✓ |
 | Claims tagged [computed]/[judgment]; provenance stamped | Tags do not exist (AN-6); provenance real | Phase 5 (tags implemented + owned test) |
 | Orchestrator can't tamper (chain tamper-evident) | Chain sound but never verified downstream (PL-6) | Phase 1 exit |
 | experiment.yaml sha-locked; primary/rule immutable | Lock fence real; TOCTOU + re-lock + tasks.yaml holes | Phase 1 exit + D-6 |
 | Local = ADVISORY | Stamped but never surfaced in findings (AN-11) | Phase 5 |
-| Internal corpora never enter the instrument repo | Declaration-only (CO-1) | Phase 3 (write-destination enforcement) |
+| Internal corpora never enter the instrument repo | **Enforced (Phase 3)** — boundary checked on the actual write destination in `save()` and `corpus mine --out` (CO-1) | Phase 3 (write-destination enforcement) ✓ |
 | Cost ceiling declared and enforced | Schema yes; enforcement per-process with bypasses | Phase 2 exit |
 
 **Before the first official finding** (master plan §9), additionally:
