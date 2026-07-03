@@ -15,7 +15,7 @@ from harness.cli import app
 from harness.corpus.registry import CorpusManifest
 from harness.ledger.events import record_flake_baseline
 from harness.ledger.query import find_events
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import fixed_ctx, seed_trial_and_grade
 
 runner = CliRunner()
 
@@ -80,6 +80,35 @@ def test_co8_mine_approve_admit_cli_flow(tmp_path):
     assert rad.exit_code == 0, rad.output
     assert CorpusManifest.load(mpath).is_schedulable("cand-x") is True
     assert len(find_events(ledger, "task_admitted")) == 1
+
+
+def test_co4_calibrate_ledgers_run_from_grades(tmp_path):
+    """The run-path calibration hook derives p / n_tasks from a completed run's
+    grades and ledgers a calibration_run, advancing the manifest [CO-4]."""
+    manifest = CorpusManifest(corpus_id="internal-z", semver="1.0.0", kind="internal",
+                              boundary_path=str(tmp_path / "boundary"))
+    mpath = tmp_path / "manifest.json"
+    manifest.save(mpath)
+
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    ledger = expdir / "ledger.ndjson"
+    ctx = fixed_ctx(experiment_id="exp")
+    # two tasks graded: one passes, one fails -> p = 0.5, n_tasks = 2
+    seed_trial_and_grade(ledger, ctx, trial_id="t1", task_id="ta", arm="control", passed=True)
+    seed_trial_and_grade(ledger, ctx, trial_id="t2", task_id="tb", arm="control", passed=False)
+
+    r = runner.invoke(app, ["corpus", "calibrate", str(expdir), "--manifest", str(mpath),
+                            "--kind", "full", "--rho", "0.3"])
+    assert r.exit_code == 0, r.output
+    runs = find_events(ledger, "calibration_run")
+    assert len(runs) == 1
+    assert runs[0]["run"]["n_tasks"] == 2
+    assert abs(runs[0]["run"]["p"] - 0.5) < 1e-9
+    # the saved manifest carries the run (what bench plan's variance loader reads)
+    m = CorpusManifest.load(mpath)
+    assert m.calibration.status == "full-run-validated"
+    assert m.calibration.runs[-1]["n_tasks"] == 2
 
 
 def test_co7_admit_rejects_self_approval_cli(tmp_path):

@@ -169,6 +169,55 @@ def register(app: typer.Typer) -> None:
         )
         typer.echo(f"approved {candidate_id} (sha={task_sha[:12]}…) signed by {who}")
 
+    @corpus_app.command("calibrate")
+    def corpus_calibrate(
+        experiment_dir: Path = typer.Argument(..., help="Dir with a completed run's ledger"),
+        manifest_path: Path = typer.Option(..., "--manifest", help="manifest.json to advance"),
+        kind: str = typer.Option("full", "--kind", help="subset | full"),
+        rho: float = typer.Option(0.3, "--rho", help="within-task correlation [recorded assumption]"),
+    ) -> None:
+        """Record a calibration run from a completed run's realized variance [CO-4].
+
+        Derives ``p`` (mean holdout pass rate) and ``n_tasks`` from the ledger's
+        grades — the run-path hook that finally invokes ``ledger_calibration_run``
+        so a calibration run is chain-anchored and feeds ``bench plan``'s power
+        gate [PL-5]. ``rho`` is a recorded assumption (full estimation is Phase 5).
+        """
+        from ..ledger import events
+        from ..ledger.events import EventContext
+        from ..ledger.query import find_events
+        from .ledger_ops import ledger_calibration_run
+        from .registry import CorpusManifest
+
+        if kind not in ("subset", "full"):
+            typer.echo("--kind must be 'subset' or 'full'", err=True)
+            raise typer.Exit(code=2)
+        ledger_path = experiment_dir / "ledger.ndjson"
+        manifest = CorpusManifest.load(manifest_path)
+
+        trial_task = {
+            ev["trial_record"]["trial_id"]: ev["trial_record"]["task_id"]
+            for ev in find_events(ledger_path, events.TRIAL)
+        }
+        by_task: dict[str, list[float]] = {}
+        for ev in find_events(ledger_path, events.GRADE):
+            task_id = trial_task.get(ev["trial_id"])
+            if task_id is None:
+                continue
+            by_task.setdefault(task_id, []).append(1.0 if ev["binary_score"] else 0.0)
+        if not by_task:
+            typer.echo("no graded trials to calibrate from", err=True)
+            raise typer.Exit(code=2)
+        all_scores = [s for xs in by_task.values() for s in xs]
+        p = sum(all_scores) / len(all_scores)
+        n_tasks = len(by_task)
+        run = {"p": round(p, 6), "rho": rho, "n_tasks": n_tasks, "kind": kind}
+
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())
+        ledger_calibration_run(ledger_path, ctx, manifest, run, kind=kind)
+        manifest.save(manifest_path)
+        typer.echo(f"calibration ({kind}): p={p:.3f} n_tasks={n_tasks} → {manifest.calibration.status}")
+
     @corpus_app.command("admit")
     def corpus_admit(
         experiment_dir: Path = typer.Argument(..., help="Dir with ledger.ndjson"),
