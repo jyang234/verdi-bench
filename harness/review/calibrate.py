@@ -65,6 +65,11 @@ def kappa_by_class_ipw(
             out[cls] = ClassCalibration(cls, n, kappa=None, sufficient=False, escalate=False)
             continue
         k = estimate_kappa(cls_items, KappaEstimator.ipw, floor_prob=floor_prob)
+        if k is None:
+            # D-5: degenerate marginals ⇒ no chance-corrected information;
+            # insufficient, not perfect, and cannot escalate on undefined.
+            out[cls] = ClassCalibration(cls, n, kappa=None, sufficient=False, escalate=False)
+            continue
         out[cls] = ClassCalibration(
             cls, n, kappa=k, sufficient=True, escalate=k < kappa_threshold
         )

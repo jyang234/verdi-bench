@@ -22,6 +22,7 @@ the fence is mechanical:
 
 from __future__ import annotations
 
+import html as _html
 from collections import defaultdict
 from enum import Enum
 from typing import Literal, Optional
@@ -34,7 +35,7 @@ from ..schema.metrics import PrimaryMetric
 from ..version import instrument_identity
 from .confounds import asymmetric_null_fields, flag_confounds
 from .effect import effect_sizes
-from .nullsim import VarianceParams, select_ci_method
+from .nullsim import NULL_BINARY, NULL_CONTINUOUS, coverage_from_deltas
 from .stats import BootstrapResult, paired_bootstrap
 
 # Telemetry-derived primary metrics and the field each reads.
@@ -60,6 +61,11 @@ class CalibrationIncompleteError(AnalyzeError):
     """Official render requested before the corpus is full-run-validated."""
 
 
+class CorpusMismatchError(AnalyzeError):
+    """Official render requested against a corpus that is not the pre-registered
+    one — a different id/semver, or one missing tasks the experiment ran [AN-2]."""
+
+
 class ProvenanceError(AnalyzeError):
     """A finding is missing provenance, or the head hash no longer verifies."""
 
@@ -72,6 +78,7 @@ class CantAnalyzeReason(str, Enum):
     """Closed set of fail-closed analyze-refusal reasons [AN-3]."""
 
     calibration_incomplete = "calibration_incomplete"
+    corpus_mismatch = "corpus_mismatch"
     unregistered_metric = "unregistered_metric"
     disclosure_missing = "disclosure_missing"
     provenance_invalid = "provenance_invalid"
@@ -82,6 +89,7 @@ def cant_analyze_reason(exc: AnalyzeError) -> CantAnalyzeReason:
     """Map an ``AnalyzeError`` to its enumerated ``cant_analyze`` reason."""
     return {
         CalibrationIncompleteError: CantAnalyzeReason.calibration_incomplete,
+        CorpusMismatchError: CantAnalyzeReason.corpus_mismatch,
         UnregisteredOfficialError: CantAnalyzeReason.unregistered_metric,
         DisclosureError: CantAnalyzeReason.disclosure_missing,
         ProvenanceError: CantAnalyzeReason.provenance_invalid,
@@ -109,6 +117,9 @@ class ComparisonFinding(BaseModel):
     stats: dict
     effect: dict
     decision: dict
+    # AN-6: machine-checkable provenance of the claim — "computed" (a deterministic
+    # function of the ledger) vs "judgment" (rests on the advisory judge)
+    claim_tag: Literal["computed", "judgment"]
     excluded_from_official: bool = False
     exclusion_reason: Optional[str] = None
 
@@ -126,12 +137,19 @@ class FindingsDocument(BaseModel):
     seed: int
     primary_metric: str
     decision_rule: str
+    # the pre-registered corpus identity, so the official fence can bind a cited
+    # manifest to the spec's corpus without re-reading the spec at render [AN-2]
+    spec_corpus: dict
     comparisons: list[ComparisonFinding]
     mde: MDEBlock
     ci_selection: dict
     confounds: list[dict]
     secondary_metrics: dict
     integrity: dict
+    # AN-9: orphan grades (no matching trial) counted, never silently dropped
+    ledger_consistency: dict
+    # AN-11: grade-trust tiers — local/fake results are ADVISORY, surfaced not stamped
+    tier: dict
     process: Optional[dict] = None
     judge_calibration: Optional[dict] = None
     provenance: Provenance
@@ -159,6 +177,45 @@ def _holdout_values(ledger_path) -> dict[str, dict[str, list[float]]]:
     return acc
 
 
+def _orphan_grades(ledger_path) -> list[str]:
+    """Grade events whose ``trial_id`` has no matching trial record [AN-9].
+
+    A grade with no trial is a ledger inconsistency that silently shrinks n; it is
+    surfaced on the findings and rendered loudly, never dropped in silence."""
+    trials = _trial_index(ledger_path)
+    return sorted(
+        ev["trial_id"]
+        for ev in find_events(ledger_path, events.GRADE)
+        if ev["trial_id"] not in trials
+    )
+
+
+def _ledger_consistency(ledger_path) -> dict:
+    """Ledger-consistency diagnostics that ride every render [AN-9]."""
+    orphans = _orphan_grades(ledger_path)
+    return {"orphan_grades": orphans, "n_orphan_grades": len(orphans)}
+
+
+def _tier_summary(ledger_path) -> dict:
+    """Grade-trust tiers across the experiment's trials [AN-11, AC-9].
+
+    Local / fake-engine results are ADVISORY, not trusted-container grades; the
+    tier is surfaced in the render so "Local = ADVISORY" is reflected, not just
+    silently stamped on each record."""
+    from ..adapters.base import ADVISORY
+
+    tiers = sorted(
+        {
+            # `... or {}` / `... or ADVISORY` (not `.get(default)`): a record whose
+            # provenance or tier serialized as JSON null must still read as the
+            # lowest-trust ADVISORY band, never crash sorted() on a None member.
+            (ev["trial_record"].get("provenance") or {}).get("tier") or ADVISORY
+            for ev in find_events(ledger_path, events.TRIAL)
+        }
+    )
+    return {"tiers": tiers, "advisory": ADVISORY in tiers}
+
+
 def _telemetry_values(ledger_path, field: str) -> dict[str, dict[str, list[float]]]:
     """``task_id -> arm -> [telemetry field per non-null trial]``."""
     acc: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
@@ -170,17 +227,49 @@ def _telemetry_values(ledger_path, field: str) -> dict[str, dict[str, list[float
     return acc
 
 
-def _judge_preference_values(ledger_path) -> list[float]:
-    """Per-comparison preference in {+1 (A), -1 (B), 0 (tie/cant)}.
+def _judge_preference_by_task(
+    ledger_path, arm_a: str, arm_b: str
+) -> tuple[list[float], list[float]]:
+    """Per-task ``(arm_a win-rate, arm_b win-rate)`` for the ``(arm_a, arm_b)``
+    comparison [AN-1].
 
-    Judge preference is already an A-vs-B quantity, so each comparison is its own
-    cluster and the value is the delta directly.
+    Each ``judge_verdict`` is attributed to a physical arm through its recorded
+    ``arm_map`` (A/B → arm), so a verdict counts **only** for the arm pair it was
+    actually judged over — the same pooled verdicts no longer feed every pair, and
+    the A↔arm mapping is read, never assumed (a 3-arm design's unjudged pair gets
+    no data instead of another pair's verdicts). ``TIE`` and ``CANT_JUDGE`` are
+    non-answers: excluded, **never imputed** as 0. Verdicts are grouped by
+    ``task_id`` and reduced to a per-task win-rate, so the analysis unit is the
+    task cluster (the bootstrap resamples tasks, not individual verdicts). A task
+    with no real A/B verdict for this pair contributes nothing.
     """
-    out = []
+    pair = {arm_a, arm_b}
+    per_task: dict[str, dict[str, int]] = defaultdict(lambda: {"a": 0, "n": 0})
     for ev in find_events(ledger_path, events.JUDGE_VERDICT):
-        w = ev["verdict"]["winner"]
-        out.append(1.0 if w == "A" else -1.0 if w == "B" else 0.0)
-    return out
+        v = ev["verdict"]
+        arm_map = v.get("arm_map")
+        if not arm_map or {arm_map.get("A"), arm_map.get("B")} != pair:
+            continue  # unmapped, or a different arm pair — never assume the frame
+        w = v["winner"]
+        if w == "A":
+            winner_arm = arm_map["A"]
+        elif w == "B":
+            winner_arm = arm_map["B"]
+        else:
+            continue  # TIE / CANT_JUDGE — excluded, never imputed [AN-1]
+        task_id = v.get("task_id")
+        if task_id is None:
+            continue  # cannot cluster an unkeyed verdict
+        per_task[task_id]["n"] += 1
+        if winner_arm == arm_a:
+            per_task[task_id]["a"] += 1
+    a_vals, b_vals = [], []
+    for task_id in sorted(per_task):
+        c = per_task[task_id]
+        a_rate = c["a"] / c["n"]  # n > 0 by construction
+        a_vals.append(a_rate)
+        b_vals.append(1.0 - a_rate)
+    return a_vals, b_vals
 
 
 def _mean(xs: list[float]) -> float:
@@ -198,6 +287,22 @@ def _paired_arm_series(
             a_vals.append(_mean(arms[arm_a]))
             b_vals.append(_mean(arms[arm_b]))
     return a_vals, b_vals
+
+
+def _comparison_series(
+    primary: str, per_task, ledger_path, arm_a: str, arm_b: str
+) -> tuple[list[float], list[float], list[float]]:
+    """One arm pair's ``(a_vals, b_vals, per-task deltas)`` for the primary metric.
+
+    The single place the per-comparison series is derived, so coverage selection
+    (over the primary pair) and each rendered comparison read the same definition.
+    """
+    if primary == PrimaryMetric.judge_preference.value:
+        a_vals, b_vals = _judge_preference_by_task(ledger_path, arm_a, arm_b)
+    else:
+        a_vals, b_vals = _paired_arm_series(per_task, arm_a, arm_b)
+    deltas = [a - b for a, b in zip(a_vals, b_vals)]
+    return a_vals, b_vals, deltas
 
 
 # --- findings computation --------------------------------------------------
@@ -224,13 +329,26 @@ def _mde_block(ledger_path) -> MDEBlock:
     )
 
 
-def _variance_params(ledger_path) -> VarianceParams:
-    mde = _lock_event(ledger_path).get("mde", {})
-    return VarianceParams(
-        p=float(mde.get("p", 0.5)),
-        rho=float(mde.get("rho", 0.3)),
-        n_tasks=int(mde.get("n_tasks", 50)),
-    )
+def _claim_tag_for_metric(primary: str) -> str:
+    """The claim provenance of the primary metric [AN-6, master plan §6].
+
+    ``computed`` — a deterministic function of the ledger (holdout grading,
+    telemetry). ``judgment`` — the advisory judge's preference; the aggregation is
+    computed but the underlying signal is a model judgment, and a reader must be
+    told which."""
+    return "judgment" if primary == PrimaryMetric.judge_preference.value else "computed"
+
+
+def _null_model_for_metric(primary: str) -> str:
+    """The coverage null appropriate to the primary metric [AN-4].
+
+    Cost / wall-time are continuous; holdout-pass-rate and judge-preference are
+    bounded (0/1 or ±1) — a continuous primary must not be scored under a binary
+    null. The coverage sim resamples the realized deltas either way, so this is a
+    disclosure label, but it makes the metric/null match auditable."""
+    if primary in _METRIC_TELEMETRY_FIELD:  # cost_per_task, wall_time
+        return NULL_CONTINUOUS
+    return NULL_BINARY  # holdout_pass_rate, judge_preference
 
 
 def _judge_summary(ledger_path) -> dict:
@@ -386,14 +504,10 @@ def compute_findings(
     *,
     corpus_manifest=None,
     coverage_n_sim: int = 200,
-    coverage_n_boot: int = 500,
     n_boot: int = 10_000,
 ) -> FindingsDocument:
     """Compute the findings document — pure and reproducible in ``seed``."""
     primary = spec.primary_metric.value
-    params = _variance_params(ledger_path)
-    selection = select_ci_method(params, seed, n_sim=coverage_n_sim, n_boot=coverage_n_boot)
-    ci_method = selection.selected_method
 
     # metric → per-task per-arm value series
     if primary == PrimaryMetric.holdout_pass_rate.value:
@@ -411,17 +525,29 @@ def compute_findings(
     excluded_fields = set(asymmetric_null_fields(ledger_path))
     parsed_rule = spec.parsed_rule
 
-    comparisons: list[ComparisonFinding] = []
     arm_a = spec.arms[0].name
+    claim_tag = _claim_tag_for_metric(primary)
+    null_model = _null_model_for_metric(primary)
+
+    comparisons: list[ComparisonFinding] = []
+    selection = None  # the primary (first) comparison's coverage selection → ci_selection
     for other in spec.arms[1:]:
         arm_b = other.name
-        if primary == PrimaryMetric.judge_preference.value:
-            deltas = _judge_preference_values(ledger_path)
-            a_vals = [max(d, 0.0) for d in deltas]
-            b_vals = [max(-d, 0.0) for d in deltas]
-        else:
-            a_vals, b_vals = _paired_arm_series(per_task, arm_a, arm_b)
-            deltas = [a - b for a, b in zip(a_vals, b_vals)]
+        a_vals, b_vals, deltas = _comparison_series(primary, per_task, ledger_path, arm_a, arm_b)
+        # AN-4 + AN-10: select the CI method by coverage under a metric-appropriate
+        # null at the REALIZED N — THIS comparison's own per-task deltas recentered
+        # to H0 — at the SAME n_boot the deployed interval uses. Selecting
+        # per-comparison means a degenerate or differently-distributed pair cannot
+        # miscalibrate another pair's interval (a 3-arm design's empty first pair no
+        # longer forces `percentile` on a well-powered second pair); the primary
+        # (first) pair drives the headline ci_selection. No assumed 0.5/0.3/50
+        # parameters, never a binary null under a continuous metric.
+        sel = coverage_from_deltas(
+            deltas, seed, null_model=null_model, n_sim=coverage_n_sim, n_boot=n_boot,
+        )
+        if selection is None:
+            selection = sel
+        ci_method = sel.selected_method
 
         excluded = metric_field is not None and metric_field in excluded_fields
         if excluded:
@@ -430,9 +556,9 @@ def compute_findings(
             comparisons.append(
                 ComparisonFinding(
                     label=f"{arm_a} vs {arm_b}", arm_a=arm_a, arm_b=arm_b,
-                    n_tasks=len(deltas), stats={}, effect={},
+                    n_tasks=len(deltas), stats={}, effect={}, claim_tag=claim_tag,
                     decision={"rule": parsed_rule.raw, "observed_delta": None,
-                              "decides_positive": None},
+                              "detected": None, "decides_positive": None},
                     excluded_from_official=True,
                     exclusion_reason=(
                         f"telemetry field {metric_field!r} has asymmetric nulls; "
@@ -446,9 +572,9 @@ def compute_findings(
             comparisons.append(
                 ComparisonFinding(
                     label=f"{arm_a} vs {arm_b}", arm_a=arm_a, arm_b=arm_b, n_tasks=0,
-                    stats={}, effect={},
+                    stats={}, effect={}, claim_tag=claim_tag,
                     decision={"rule": parsed_rule.raw, "observed_delta": None,
-                              "decides_positive": None},
+                              "detected": None, "decides_positive": None},
                     excluded_from_official=True,
                     exclusion_reason="no paired task data",
                 )
@@ -458,6 +584,10 @@ def compute_findings(
         boot: BootstrapResult = paired_bootstrap(deltas, seed, ci_method, n_boot=n_boot)
         eff = effect_sizes(a_vals, b_vals)
         observed = eff.mean_paired_delta
+        # AN-8: a decision is positive only when the effect is DETECTED (the CI
+        # excludes 0) and the rule fires — never the raw rule on a null delta. The
+        # artifact now matches the render, which already gates on detection.
+        detected = boot.excludes_zero()
         comparisons.append(
             ComparisonFinding(
                 label=f"{arm_a} vs {arm_b}",
@@ -466,10 +596,12 @@ def compute_findings(
                 n_tasks=boot.n_tasks,
                 stats=boot.as_dict(),
                 effect=eff.as_dict(),
+                claim_tag=claim_tag,
                 decision={
                     "rule": parsed_rule.raw,
                     "observed_delta": observed,
-                    "decides_positive": parsed_rule.decides_positive(observed),
+                    "detected": detected,
+                    "decides_positive": detected and parsed_rule.decides_positive(observed),
                 },
                 excluded_from_official=excluded,
                 exclusion_reason=(
@@ -500,12 +632,15 @@ def compute_findings(
         seed=seed,
         primary_metric=primary,
         decision_rule=parsed_rule.raw,
+        spec_corpus={"id": spec.corpus.id, "version": spec.corpus.version},
         comparisons=comparisons,
         mde=_mde_block(ledger_path),
         ci_selection=selection.as_dict(),
         confounds=flag_confounds(ledger_path, spec),
         secondary_metrics=_secondary_metrics(ledger_path, spec),
         integrity=_integrity(ledger_path),
+        ledger_consistency=_ledger_consistency(ledger_path),
+        tier=_tier_summary(ledger_path),
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
         provenance=provenance,
@@ -551,7 +686,7 @@ def _assert_head_hash(findings: FindingsDocument, ledger_path) -> None:
 
 
 def _comparison_lines(cf: ComparisonFinding, mde: MDEBlock) -> list[str]:
-    lines = [f"**Comparison: {cf.label}**  (n_tasks={cf.n_tasks})"]
+    lines = [f"**Comparison: {cf.label}**  (n_tasks={cf.n_tasks}) [{cf.claim_tag}]"]
     if not cf.stats:
         lines.append(f"- No paired task data ({cf.exclusion_reason}).")
         return lines
@@ -624,24 +759,85 @@ def render_markdown(
                 f"primary metric is {findings.primary_metric!r}; only the "
                 "primary metric + decision rule are official [AC-5]"
             )
-        _assert_official_calibration(findings, corpus_manifest)
+        _assert_official_calibration(findings, corpus_manifest, ledger_path)
         return _render_official_md(findings)
     return _render_exploratory_md(findings)
 
 
-def _assert_official_calibration(findings: FindingsDocument, corpus_manifest) -> None:
-    """Official render requires a full-run-validated corpus [EVAL-8 AC-2 hook]."""
-    corpus = findings.provenance.corpus
+def _task_ids_run(ledger_path) -> set[str]:
+    """The set of task ids the experiment actually ran (from trial records)."""
+    return {ev["trial_record"]["task_id"] for ev in find_events(ledger_path, events.TRIAL)}
+
+
+def _ledgered_calibration_status(ledger_path, corpus_id: str, semver: str) -> Optional[str]:
+    """The latest calibration status **on the chain** for a corpus, or None.
+
+    Reads ``calibration_run`` events (last-write-wins in ledger order) rather than
+    the hand-editable ``manifest.calibration.status`` [CO-4]."""
     status = None
-    if corpus_manifest is not None:
-        status = corpus_manifest.calibration.status
-    elif corpus is not None:
-        status = corpus.get("calibration_status")
+    for ev in find_events(ledger_path, events.CALIBRATION_RUN):
+        if ev.get("corpus_id") == corpus_id and ev.get("semver") == semver:
+            status = ev.get("status")
+    return status
+
+
+def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, ledger_path) -> None:
+    """Bind the official fence to corpus identity [AN-2, D-P5-2].
+
+    All three checks — a fence that trusts fewer is a hand-editable bypass:
+
+    1. the cited manifest is the **pre-registered** corpus (id + semver match
+       ``spec.corpus``); a different corpus cannot be laundered into an official
+       finding;
+    2. every task the experiment **ran** is an admitted task in that manifest, so
+       the manifest actually covers the data;
+    3. the corpus is full-run-validated per the **ledgered** ``calibration_run``
+       events, not the mutable ``manifest.calibration.status`` [CO-4].
+
+    Note on check (2): D-P5-2 framed this as reconciling ``manifest.task_shas()``
+    with the lock's ``task_commitment``, but those are different hash domains —
+    the commitment hashes each task's *tasks.yaml entry* (corpus/commit.py) while
+    ``task_shas()`` are *corpus-cache blob* shas — so a direct sha comparison is
+    not well-defined. Membership is the achievable analyze-time binding; the task
+    *content* the experiment ran is separately fenced at run/grade/judge time by
+    ``assert_task_commitment`` against that same ``task_commitment``. The
+    manifest's cited task shas are provenance, not an independently anchored
+    integrity claim.
+    """
+    spec_corpus = findings.spec_corpus
+    if corpus_manifest is None:
+        raise CalibrationIncompleteError(
+            "official findings require a full-run-validated corpus manifest; none "
+            f"provided for {spec_corpus['id']}@{spec_corpus['version']} [EVAL-8 AC-2]"
+        )
+    # 1. corpus identity: the cited manifest must be the pre-registered corpus.
+    if (
+        corpus_manifest.corpus_id != spec_corpus["id"]
+        or corpus_manifest.semver != spec_corpus["version"]
+    ):
+        raise CorpusMismatchError(
+            f"official render cites corpus {corpus_manifest.corpus_id}@"
+            f"{corpus_manifest.semver}, but the experiment pre-registered "
+            f"{spec_corpus['id']}@{spec_corpus['version']}; the primary metric is "
+            "official only against the corpus it was registered on [AN-2]"
+        )
+    # 2. every task the experiment ran must be admitted in that manifest.
+    missing = sorted(t for t in _task_ids_run(ledger_path) if not corpus_manifest.is_schedulable(t))
+    if missing:
+        raise CorpusMismatchError(
+            f"official render cites {corpus_manifest.corpus_id}@{corpus_manifest.semver}, "
+            f"but tasks {missing} were run and are not admitted in it; the manifest "
+            "does not cover the experiment's data [AN-2]"
+        )
+    # 3. full-run-validated per the LEDGERED calibration_run events, not manifest JSON.
+    status = _ledgered_calibration_status(ledger_path, spec_corpus["id"], spec_corpus["version"])
     if status != "full-run-validated":
         raise CalibrationIncompleteError(
-            "official findings require the corpus to be full-run-validated "
-            f"(status={status!r}); calibrate before the first official finding "
-            "[EVAL-8 AC-2]"
+            f"corpus {spec_corpus['id']}@{spec_corpus['version']} is not "
+            f"full-run-validated on the chain (ledgered status={status!r}); a "
+            "manifest JSON status alone does not satisfy the fence — calibrate "
+            "through a ledgered calibration_run before the first official finding "
+            "[EVAL-8 AC-2, CO-4]"
         )
 
 
@@ -666,6 +862,23 @@ def _render_official_md(findings: FindingsDocument) -> str:
     out += ["", "## Confounds (disclosed, non-suppressing)"]
     out += [f"- {c['flag']}" for c in findings.confounds] or ["- none"]
     out += ["", f"## Blinding integrity", f"- {_integrity_line(findings)}"]
+    tier = _tier_lines(findings)
+    if tier:
+        out += ["", "## Grade tier", *tier]
+    consistency = _ledger_consistency_lines(findings)
+    if consistency:
+        out += ["", "## Ledger consistency", *consistency]
+    # AN-12 / REVIEW-D-3: the process section is retained in the official render
+    # under an explicit EXPLORATORY/advisory label with the unblinded disclosure —
+    # never a primary metric, never stripped (findings.json already hashes it into
+    # findings_sha256, so stripping the markdown would desync from the artifact)
+    # [EVAL-9 AC-6].
+    if findings.process is not None:
+        out += [
+            "",
+            f"## Process diagnostics — {_WATERMARK} (advisory secondary, NEVER a primary metric)",
+            *_process_lines(findings),
+        ]
     out += ["", "## Provenance", *_provenance_lines(findings)]
     out += ["", f"CI method selected by coverage: {findings.ci_selection['selected_method']}"]
     return "\n".join(out) + "\n"
@@ -695,6 +908,12 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
     out += section("Confounds (disclosed, non-suppressing)",
                    [f"- {c['flag']}: {c}" for c in findings.confounds] or ["- none"])
     out += section("Blinding integrity", [f"- {_integrity_line(findings)}"])
+    tier = _tier_lines(findings)
+    if tier:
+        out += section("Grade tier", tier)
+    consistency = _ledger_consistency_lines(findings)
+    if consistency:
+        out += section("Ledger consistency", consistency)
     out += section("CI method selection (coverage)", [f"- {findings.ci_selection}"])
     out += section("Provenance", _provenance_lines(findings))
     return "\n".join(out) + "\n"
@@ -773,6 +992,28 @@ def _process_lines(findings: FindingsDocument) -> list[str]:
     return lines
 
 
+def _tier_lines(findings: FindingsDocument) -> list[str]:
+    """A loud line when any result is ADVISORY-tier [AN-11]; empty if all trusted."""
+    t = findings.tier
+    if not t.get("advisory"):
+        return []
+    return [
+        f"- ⚠ ADVISORY: results include ADVISORY-tier grades (local / no trusted "
+        f"container) — advisory, not authoritative; tiers present: {t['tiers']} [AC-9]"
+    ]
+
+
+def _ledger_consistency_lines(findings: FindingsDocument) -> list[str]:
+    """A loud warning line when orphan grades were excluded [AN-9]; empty if clean."""
+    lc = findings.ledger_consistency
+    if lc["n_orphan_grades"] == 0:
+        return []
+    return [
+        f"- ⚠ LEDGER INCONSISTENCY: {lc['n_orphan_grades']} orphan grade(s) with no "
+        f"matching trial record were excluded from analysis: {lc['orphan_grades']}"
+    ]
+
+
 def _integrity_line(findings: FindingsDocument) -> str:
     i = findings.integrity
     if i["rate"] is None:
@@ -806,7 +1047,10 @@ def render_html(
     for line in md.splitlines():
         if mode != "official" and (line.startswith("## ") or line.startswith("### ")):
             body_lines.append(banner)
-        body_lines.append(f"<p>{line}</p>")
+        # AN-5: escape the rendered content — an arm name / reason carrying markup
+        # (e.g. a <script>) must land inert, not verbatim. The banner above is our
+        # own trusted markup and is emitted unescaped.
+        body_lines.append(f"<p>{_html.escape(line)}</p>")
     style = (
         "<style>.watermark{background:#fee;color:#900;padding:4px;"
         "font-weight:bold;border:1px solid #900;margin:6px 0}</style>"

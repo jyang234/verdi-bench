@@ -40,13 +40,20 @@ def test_ac2_assert_lock_passes_when_unchanged(tmp_path):
 
 
 def test_pl1_power_at_real_n(tmp_path):
-    """PL-1: with a task source, power is computed at repetitions × corpus size,
-    not the variance source's default n_tasks=50."""
+    """PL-1 + D-P5-4: with a task source, power is computed at the corpus's real
+    task-*cluster* count with ``repetitions`` correlated reps per task, not the
+    variance source's default n_tasks=50.
+
+    Phase 5 5A changed the model from a flat ``repetitions × corpus size``
+    observation count to task clustering: ``n_tasks`` is now the cluster count
+    (4 tasks) and ``repetitions`` (3) rides alongside, because correlated reps are
+    not independent observations."""
     spec = write_experiment_yaml(tmp_path / "experiment.yaml", repetitions=3)
     ledger = tmp_path / "ledger.ndjson"
     task_dicts = [{"id": f"t{i}", "prompt": "p"} for i in range(4)]
     outcome = lock_experiment(spec, ledger, ctx=fixed_ctx(), task_dicts=task_dicts, **FAST)
-    assert outcome.mde["n_tasks"] == 12  # 3 repetitions × 4 tasks, not 50
+    assert outcome.mde["n_tasks"] == 4  # 4 task clusters, not 50 and not a flat 12
+    assert outcome.mde["repetitions"] == 3  # reps ride alongside the cluster count
 
 
 def test_pl1_gate_skip_flagged(tmp_path):

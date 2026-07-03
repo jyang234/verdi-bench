@@ -8,6 +8,7 @@ from harness.analyze.confounds import flag_confounds
 from harness.analyze.effect import cliffs_delta, effect_sizes
 from harness.analyze.report import (
     CalibrationIncompleteError,
+    CorpusMismatchError,
     ProvenanceError,
     UnregisteredOfficialError,
     compute_findings,
@@ -16,8 +17,12 @@ from harness.analyze.report import (
 )
 from harness.analyze.stats import paired_bootstrap
 from harness.corpus.registry import CorpusManifest, TaskEntry
+from harness.judge.schema import Evidence, Verdict, VerdictProvenance, Winner
 from harness.ledger.events import (
+    append_verdict,
+    record_calibration_run,
     record_executed_order,
+    record_grade,
     record_trial_infra_failed,
 )
 from harness.ledger.query import ledger_head_hash, verify
@@ -27,16 +32,31 @@ from tests.fixtures.builders import (
     seed_trial_and_grade,
 )
 
-_FAST = dict(coverage_n_sim=40, coverage_n_boot=100, n_boot=500)
+_FAST = dict(coverage_n_sim=40, n_boot=500)
 
 
 def _full_corpus():
+    # AN-2: the fence binds the cited manifest to the pre-registered spec corpus
+    # (public-mini@1.0.0) and to the tasks the experiment ran (task0..task4), so
+    # the manifest must match both — the old terminal-bench@2.0.0 / one-task
+    # manifest was the mismatch the shipped tests baked in.
     m = CorpusManifest(
-        corpus_id="terminal-bench", semver="2.0.0", kind="public",
-        tasks=[TaskEntry(task_id="task0", sha="a" * 64, status="admitted")],
+        corpus_id="public-mini", semver="1.0.0", kind="public",
+        tasks=[TaskEntry(task_id=f"task{i}", sha="a" * 64, status="admitted") for i in range(5)],
     )
+    # status is kept for provenance, but the FENCE now reads the ledgered
+    # calibration_run events (CO-4), so official tests must _seed_full_calibration.
     m.calibration.status = "full-run-validated"
     return m
+
+
+def _seed_full_calibration(ledger, ctx, *, corpus_id="public-mini", semver="1.0.0"):
+    """Ledger a full-run-validated calibration_run for the corpus — the chain-
+    anchored status the AN-2 fence binds to (not the mutable manifest JSON)."""
+    record_calibration_run(
+        ledger, ctx, corpus_id=corpus_id, semver=semver, kind="full",
+        run={"p": 0.5, "rho": 0.3, "n_tasks": 5}, status="full-run-validated",
+    )
 
 
 def _populate(ledger, ctx, *, control_pass, treatment_pass, tasks=5, reps=2,
@@ -170,6 +190,236 @@ def test_ac4_flags_emitted_telemetry_null(tmp_path):
     assert flags[0]["fields"] == ["tokens_in"]
 
 
+# --- AN-4: coverage at the realized N with a metric-appropriate null ---------
+def test_an4_continuous_metric_uses_continuous_null(tmp_path):
+    """AN-4: a continuous primary (cost) selects its CI method under a *continuous*
+    null at the realized paired-task count — not the old paired-binary null at the
+    assumed n_tasks=50. The null model used is recorded for disclosure."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(
+        tmp_path / "e", ctx=ctx, primary_metric="cost_per_task",
+        decision_rule="delta_cost_per_task < 0",
+    )
+    for i in range(6):  # BOTH arms report cost ⇒ not excluded, 6 paired tasks
+        seed_trial_and_grade(ledger, ctx, trial_id=f"c-{i}", task_id=f"task{i}", arm="control",
+                             telemetry={"cost": 1.0 + 0.1 * i, "wall_time_s": 10.0},
+                             provenance={"image_digest": "d"})
+        seed_trial_and_grade(ledger, ctx, trial_id=f"t-{i}", task_id=f"task{i}", arm="treatment",
+                             telemetry={"cost": 1.1 + 0.1 * i, "wall_time_s": 9.0},
+                             provenance={"image_digest": "d"})
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    assert f.ci_selection["null_model"] == "paired_continuous"
+    assert f.ci_selection["n_tasks"] == 6  # realized paired-task count, not 50
+
+
+def test_an4_binary_metric_uses_binary_null_at_realized_n(tmp_path):
+    """AN-4: a binary primary (holdout) uses a paired-binary null, again at the
+    realized paired-task count."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # holdout_pass_rate
+    _populate(ledger, ctx, control_pass=lambda i: i % 2 == 0, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    assert f.ci_selection["null_model"] == "paired_binary"
+    assert f.ci_selection["n_tasks"] == 5  # _populate seeds 5 paired tasks
+
+
+# --- AN-1 / AN-7: judge-preference filtered by arm pair, clustered, not imputed -
+_PREF_ARMS = [
+    {"name": "control", "platform": "claude_code",
+     "model": "anthropic/claude-3-5-sonnet-20241022", "payload": {}},
+    {"name": "treatment", "platform": "codex", "model": "openai/gpt-4o-2024-08-06", "payload": {}},
+    {"name": "challenger", "platform": "codex",
+     "model": "openai/gpt-4o-mini-2024-07-18", "payload": {}},
+]
+
+
+def _pref_ledger(tmp_path, ctx, *, arms):
+    spec, _, ledger = locked_experiment(
+        tmp_path / "e", ctx=ctx, arms=arms,
+        primary_metric="judge_preference", decision_rule="delta_judge_preference > 0",
+    )
+    return spec, ledger
+
+
+def _seed_pref_verdict(ledger, ctx, *, cid, task_id, winner, arm_map):
+    prov = VerdictProvenance(
+        judge_model="fake/judge-1", rubric_sha256="r" * 64, packet_sha256="p" * 64,
+        call_ids=["c1", "c2"], orders="both", temperature=0.0, ts="t",
+    )
+    ev = (
+        [] if winner in ("TIE", "CANT_JUDGE")
+        else [Evidence(kind="diff", response=winner, hunk="@@")]
+    )
+    v = Verdict(
+        winner=Winner(winner), reason="x", evidence=ev, provenance=prov,
+        comparison_id=cid, task_id=task_id, task_class="cls", arm_map=arm_map,
+    )
+    append_verdict(ledger, ctx, verdict=v.model_dump(mode="json"))
+
+
+def test_an1_judge_preference_filtered_by_arm_pair(tmp_path):
+    """AN-1: judge-preference deltas are filtered by arm pair via the recorded
+    arm_map and attributed to the physical arm — the same pooled verdicts no
+    longer feed every comparison. control beats treatment but loses to challenger,
+    so the two comparisons must report OPPOSITE signs, not one pooled 0.0."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS)
+    ct = {"A": "control", "B": "treatment"}
+    cc = {"A": "control", "B": "challenger"}
+    for i in range(4):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+        _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    by_label = {cf.label: cf for cf in f.comparisons}
+    assert by_label["control vs treatment"].effect["mean_paired_delta"] == 1.0
+    assert by_label["control vs challenger"].effect["mean_paired_delta"] == -1.0
+
+
+def test_an1_cant_judge_and_tie_excluded_not_imputed(tmp_path):
+    """AN-1: CANT_JUDGE and TIE are non-answers — excluded from the preference
+    series, never imputed as 0.0. n reflects real A/B verdicts only."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    for i in range(3):
+        _seed_pref_verdict(ledger, ctx, cid=f"w-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    _seed_pref_verdict(ledger, ctx, cid="tie", task_id="t3", winner="TIE", arm_map=ct)
+    _seed_pref_verdict(ledger, ctx, cid="cant", task_id="t4", winner="CANT_JUDGE", arm_map=ct)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    cf = f.comparisons[0]
+    assert cf.n_tasks == 3  # only the real A/B tasks, not 5
+    assert cf.effect["mean_paired_delta"] == 1.0  # not diluted to 0.6 by imputed 0s
+
+
+def test_an1_per_task_winrate_clusters_reps(tmp_path):
+    """AN-1: multiple verdicts for one task reduce to that task's win-rate (the
+    cluster), so the bootstrap resamples tasks, not individual verdicts."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    _seed_pref_verdict(ledger, ctx, cid="a0", task_id="t0", winner="A", arm_map=ct)
+    _seed_pref_verdict(ledger, ctx, cid="a1", task_id="t0", winner="A", arm_map=ct)  # t0 winrate 1.0
+    _seed_pref_verdict(ledger, ctx, cid="b0", task_id="t1", winner="A", arm_map=ct)
+    _seed_pref_verdict(ledger, ctx, cid="b1", task_id="t1", winner="B", arm_map=ct)  # t1 winrate 0.5
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    cf = f.comparisons[0]
+    assert cf.n_tasks == 2  # two task clusters, not four verdicts
+    assert cf.effect["mean_paired_delta"] == 0.5  # mean of per-task deltas (+1, 0)
+
+
+# --- AN-8 / AN-9: artifact-honest decisions + orphan flagging ---------------
+def test_an8_decides_positive_gated_on_detection(tmp_path):
+    """AN-8: findings.json's decides_positive is False for a null result (CI
+    includes 0), matching the render — not the raw rule fired on an undetected,
+    noisy positive delta."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # rule delta_holdout_pass_rate > 0
+    # control slightly ahead on one noisy task ⇒ observed delta > 0 but CI includes 0
+    _populate(ledger, ctx, control_pass=lambda i: i in {0, 1, 2, 4},
+              treatment_pass=lambda i: i in {0, 2, 4})
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    cf = f.comparisons[0]
+    detected = cf.stats["ci_low"] > 0 or cf.stats["ci_high"] < 0
+    assert detected is False
+    assert cf.decision["observed_delta"] > 0  # raw rule delta_>_0 WOULD fire
+    assert cf.decision["decides_positive"] is False  # but it is gated on detection
+    assert cf.decision["detected"] is False
+
+
+def test_an8_decides_positive_true_when_detected(tmp_path):
+    """AN-8: a clean detected effect that meets the rule still decides positive."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    cf = f.comparisons[0]
+    assert cf.decision["detected"] is True
+    assert cf.decision["decides_positive"] is True
+
+
+def test_an9_orphan_grades_flagged(tmp_path):
+    """AN-9: a grade with no matching trial record is a ledger inconsistency —
+    flagged loudly, not silently dropped (which would shrink n in silence)."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    record_grade(ledger, ctx, trial_id="ghost", task_sha="s", assertions=[], binary_score=True)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.ledger_consistency["n_orphan_grades"] == 1
+    assert "ghost" in f.ledger_consistency["orphan_grades"]
+    md = render_markdown(f, ledger, "exploratory")
+    assert "orphan" in md.lower()
+
+
+# --- AN-6 / AN-5 / AN-11: claim tags, HTML escaping, ADVISORY surfacing ------
+def test_an6_computed_metric_tagged_computed(tmp_path):
+    """AN-6: every comparison carries a machine-checkable claim_tag and the render
+    shows the marker; a deterministic outcome metric is [computed]."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # holdout_pass_rate
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.comparisons and all(cf.claim_tag == "computed" for cf in f.comparisons)
+    assert "[computed]" in render_markdown(f, ledger, "exploratory")
+
+
+def test_an6_judge_preference_tagged_judgment(tmp_path):
+    """AN-6: a judge-preference primary rests on the advisory judge — [judgment]."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    for i in range(3):
+        _seed_pref_verdict(ledger, ctx, cid=f"w-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.comparisons and all(cf.claim_tag == "judgment" for cf in f.comparisons)
+    assert "[judgment]" in render_markdown(f, ledger, "exploratory")
+
+
+def test_an5_render_html_escapes_arm_name(tmp_path):
+    """AN-5: a <script> in an arm name is escaped in the HTML render, not emitted
+    verbatim (the review packet already escapes; render_html did not)."""
+    ctx = fixed_ctx()
+    evil = "ctl<script>alert(1)</script>"
+    arms = [
+        {"name": evil, "platform": "claude_code",
+         "model": "anthropic/claude-3-5-sonnet-20241022", "payload": {}},
+        {"name": "treatment", "platform": "codex", "model": "openai/gpt-4o-2024-08-06", "payload": {}},
+    ]
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx, arms=arms)
+    for i in range(3):
+        seed_trial_and_grade(ledger, ctx, trial_id=f"c{i}", task_id=f"t{i}", arm=evil,
+                             passed=True, provenance={"image_digest": "d"})
+        seed_trial_and_grade(ledger, ctx, trial_id=f"x{i}", task_id=f"t{i}", arm="treatment",
+                             passed=False, provenance={"image_digest": "d"})
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    html_out = render_html(f, ledger, "exploratory")
+    assert "<script>alert(1)</script>" not in html_out  # not emitted verbatim
+    assert "&lt;script&gt;" in html_out                  # escaped
+
+
+def test_coverage_insufficient_echoes_ci_level():
+    """With <2 realized clusters, coverage selection is 'insufficient' and reports
+    the REQUESTED ci_level as nominal (not a hardcoded 0.95), so the disclosed
+    nominal agrees with the level the percentile fallback deploys."""
+    from harness.analyze.nullsim import NULL_CONTINUOUS, coverage_from_deltas
+
+    sel = coverage_from_deltas([0.3], seed=1, null_model=NULL_CONTINUOUS, ci_level=0.90)
+    assert sel.null_model == "insufficient_data"
+    assert sel.selected_method == "percentile"
+    assert sel.nominal == 0.90
+
+
+def test_an11_advisory_tier_surfaced(tmp_path):
+    """AN-11: local/fake results are ADVISORY-tier; the render surfaces the tier so
+    'Local = ADVISORY' is honestly reflected, not silently stamped."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.tier["advisory"] is True
+    assert "ADVISORY" in render_markdown(f, ledger, "exploratory")
+
+
 def test_ac4_flags_emitted_egress(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "eg", ctx=ctx)
@@ -219,8 +469,9 @@ def test_ac5_unregistered_refused(tmp_path):
     with pytest.raises(UnregisteredOfficialError):
         render_markdown(f, ledger, "official", metric="cost_per_task",
                         corpus_manifest=_full_corpus())
-    # official render before full-run calibration is refused
-    with pytest.raises(CalibrationIncompleteError):
+    # official render against a corpus that is not the pre-registered one is
+    # refused (AN-2: corpus "c" ≠ the spec's public-mini)
+    with pytest.raises(CorpusMismatchError):
         render_markdown(f, ledger, "official", corpus_manifest=CorpusManifest(
             corpus_id="c", semver="1.0.0", kind="public", tasks=[]))
 
@@ -314,11 +565,58 @@ def test_ac5_official_happy_path(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    _seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     md = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
     assert "Official findings" in md
     assert "EXPLORATORY" not in md  # official carries no watermark
     assert spec.primary_metric.value in md
+
+
+# --- AN-2: official fence bound to corpus identity --------------------------
+def test_an2_official_fence_refuses_mismatched_corpus(tmp_path):
+    """AN-2: a corpus that is not the pre-registered one is refused for official —
+    even when it claims full-run-validated in its JSON. Reproduces the accepted
+    TOTALLY-DIFFERENT-CORPUS bypass."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # spec corpus public-mini@1.0.0
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    _seed_full_calibration(ledger, ctx)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    wrong = CorpusManifest(
+        corpus_id="totally-different", semver="9.9.9", kind="public",
+        tasks=[TaskEntry(task_id=f"task{i}", sha="a" * 64, status="admitted") for i in range(5)],
+    )
+    wrong.calibration.status = "full-run-validated"
+    with pytest.raises(CorpusMismatchError):
+        render_markdown(f, ledger, "official", corpus_manifest=wrong)
+
+
+def test_an2_official_fence_refuses_unledgered_status(tmp_path):
+    """AN-2/CO-4: the right corpus but only a hand-edited manifest status (no
+    ledgered calibration_run) is refused — the JSON status is not trusted."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    with pytest.raises(CalibrationIncompleteError):  # _full_corpus status set in memory only
+        render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+
+
+def test_an2_official_fence_refuses_uncovered_task(tmp_path):
+    """AN-2: a manifest that omits a task the experiment ran does not cover the
+    data and is refused, even with the right id/semver and a ledgered status."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)  # task0..4
+    _seed_full_calibration(ledger, ctx)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    short = CorpusManifest(
+        corpus_id="public-mini", semver="1.0.0", kind="public",
+        tasks=[TaskEntry(task_id=f"task{i}", sha="a" * 64, status="admitted") for i in range(3)],
+    )
+    with pytest.raises(CorpusMismatchError):  # task3, task4 not admitted in `short`
+        render_markdown(f, ledger, "official", corpus_manifest=short)
 
 
 def test_ac5_exploratory_watermark(tmp_path):
@@ -347,8 +645,14 @@ def test_ac6_finding_provenance(tmp_path):
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     p = f.provenance
     assert p.instrument_version and p.instrument_git_sha
-    assert p.corpus["corpus_id"] == "terminal-bench"
+    assert p.corpus["corpus_id"] == "public-mini"
     assert "task_shas" in p.corpus  # EVAL-8 semver + shas cited end-to-end [AC-6]
+    # AN-6: every comparison claim carries a machine-checkable [computed]/[judgment]
+    # tag, and the render surfaces it — provenance is not just fields, claims are typed
+    assert f.comparisons and all(
+        cf.claim_tag in ("computed", "judgment") for cf in f.comparisons
+    )
+    assert f"[{f.comparisons[0].claim_tag}]" in render_markdown(f, ledger, "exploratory")
     # recorded head hash matches verify_chain output at compute time
     assert verify(ledger).ok
     assert p.ledger_head_hash == ledger_head_hash(ledger)
@@ -380,6 +684,7 @@ def test_ac7_asymmetric_nulls_excluded(tmp_path):
         seed_trial_and_grade(ledger, ctx, trial_id=f"t-{i}", task_id=f"task{i}", arm="treatment",
                              telemetry={"cost": 1.0, "wall_time_s": 9.0},
                              provenance={"image_digest": "d"})
+    _seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     cf = f.comparisons[0]
     assert cf.excluded_from_official is True

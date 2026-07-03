@@ -37,8 +37,26 @@ def test_ac7_escalation_table():
         hw = "B" if i % 2 == 0 else "A"  # judge anti-correlated with human
         bad.append({"task_class": "hard", "judge_winner": jw, "human_winner": hw})
     table = kappa_by_class(good + bad, kappa_threshold=0.6, min_human_verdicts=20)
-    assert table["easy"].kappa == 1.0 and table["easy"].escalate is False
+    # D-5 (JD-4): the "easy" class is all-A/all-A — zero chance-corrected
+    # information, so kappa is undefined and the class is insufficient (not
+    # 1.0/sufficient, which over-credited the judge when there is no signal).
+    assert table["easy"].kappa is None and table["easy"].sufficient is False
+    assert table["easy"].escalate is False  # cannot escalate on undefined kappa
     assert table["hard"].kappa < 0.6 and table["hard"].escalate is True
+
+
+def test_jd4_degenerate_kappa_undefined_insufficient():
+    """JD-4/D-5: zero chance-corrected information (all raters pick one category) ⇒
+    kappa undefined and the class insufficient, in BOTH kappa families — not
+    1.0/sufficient."""
+    from harness.review.kappa import weighted_kappa
+
+    assert cohens_kappa(["A"] * 20, ["A"] * 20) is None
+    assert weighted_kappa([3] * 10, [3] * 10, weight="quadratic",
+                          categories=[1, 2, 3, 4, 5]) is None
+    pairs = [{"task_class": "c", "judge_winner": "A", "human_winner": "A"} for _ in range(20)]
+    table = kappa_by_class(pairs, min_human_verdicts=1)
+    assert table["c"].kappa is None and table["c"].sufficient is False
 
 
 def test_ac7_insufficient_human_verdicts():

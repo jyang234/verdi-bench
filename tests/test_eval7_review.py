@@ -274,8 +274,7 @@ def test_ac6_integrity_rate_reported(tmp_path):
                          arm_guess="A", actual_arm="A")
     record_human_verdict(ledger, ctx, verdict=_human("A", "t1"), arm_recognized=False,
                          arm_guess=None)
-    findings = compute_findings(ledger, spec, spec.seed, coverage_n_sim=30, coverage_n_boot=80,
-                                n_boot=300)
+    findings = compute_findings(ledger, spec, spec.seed, coverage_n_sim=30, n_boot=300)
     assert findings.integrity["n_reviews"] == 2
     assert abs(findings.integrity["rate"] - 0.5) < 1e-9
     md = render_markdown(findings, ledger, "exploratory")

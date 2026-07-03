@@ -103,8 +103,7 @@ def test_ac2_disclosure_required(tmp_path):
     fp = FakeProvider([json.dumps({"scores": {d: 4 for d in r.dimension_ids}})] * 6)
     score_trial_process("c0", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
                         scorer_id="judge", provider=fp)
-    findings = compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, coverage_n_boot=60,
-                                n_boot=200)
+    findings = compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, n_boot=200)
     assert findings.process is not None
     assert findings.process["disclosure"]["unblinded"] is True
     # strip the disclosure ⇒ render must refuse
@@ -356,21 +355,38 @@ def test_ac6_exploratory_rendering(tmp_path):
     score_trial_process("c0", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
                         scorer_id="judge", provider=fp)
     findings = compute_findings(ledger, spec, spec.seed, corpus_manifest=None,
-                                coverage_n_sim=20, coverage_n_boot=60, n_boot=200)
+                                coverage_n_sim=20, n_boot=200)
     # exploratory render shows process as a labeled, disclosed secondary
     md = render_markdown(findings, ledger, "exploratory")
     assert "Process diagnostics (EXPLORATORY secondary)" in md
     assert "UNBLINDED DIAGNOSTIC" in md
     assert "planning_quality" in md
-    # official-path exclusion: process never appears in an official render
-    from harness.corpus.registry import CorpusManifest
-    manifest = CorpusManifest(corpus_id="c", semver="1.0.0", kind="public", tasks=[])
+    # official-path exclusion: process never appears in an official render.
+    # AN-2: the cited manifest must be the pre-registered corpus (public-mini@1.0.0),
+    # cover the tasks run (t0..t2), and be full-run-validated on the chain.
+    from harness.corpus.registry import CorpusManifest, TaskEntry
+    from harness.ledger.events import record_calibration_run
+    manifest = CorpusManifest(
+        corpus_id="public-mini", semver="1.0.0", kind="public",
+        tasks=[TaskEntry(task_id=f"t{i}", sha="a" * 64, status="admitted") for i in range(3)],
+    )
     manifest.calibration.status = "full-run-validated"
+    record_calibration_run(ledger, ctx, corpus_id="public-mini", semver="1.0.0", kind="full",
+                           run={"p": 0.5, "rho": 0.3, "n_tasks": 3}, status="full-run-validated")
     findings2 = compute_findings(ledger, spec, spec.seed, corpus_manifest=manifest,
-                                 coverage_n_sim=20, coverage_n_boot=60, n_boot=200)
+                                 coverage_n_sim=20, n_boot=200)
     official = render_markdown(findings2, ledger, "official", corpus_manifest=manifest)
-    assert "UNBLINDED DIAGNOSTIC" not in official
-    assert "planning_quality" not in official
+    # D-3 (AN-12): the process section IS shown in the official render, but under an
+    # explicit EXPLORATORY/advisory label with the unblinded disclosure — retained,
+    # not stripped, since findings.json already hashes it into findings_sha256 and
+    # stripping the markdown would desync from the artifact [EVAL-9 AC-6].
+    assert "Pre-registered primary metric" in official  # the pre-registered content
+    assert "EXPLORATORY" in official  # the process section carries the exploratory label
+    assert "UNBLINDED DIAGNOSTIC" in official  # with the unblinded disclosure
+    assert "planning_quality" in official
+    # kept in findings.json so findings_sha256 still covers it (not stripped)
+    assert findings2.process is not None
+    assert "planning_quality" in findings2.model_dump_json()
 
 
 # --- AC-7: telemetry juxtaposed + correlation reported ----------------------

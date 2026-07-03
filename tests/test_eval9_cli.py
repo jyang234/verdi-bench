@@ -134,7 +134,7 @@ def test_pr5_analyze_render_surfaces_kappa_and_correlations(tmp_path):
     ]).exit_code == 0
 
     spec = ExperimentSpec.from_yaml(expdir / "experiment.yaml")
-    findings = compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, coverage_n_boot=40, n_boot=100)
+    findings = compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, n_boot=100)
     proc = findings.process
     assert proc is not None
     # AC-5: per-dimension judge<->human kappa is present and computed over >=1 pair

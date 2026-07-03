@@ -30,14 +30,16 @@ def weighted_kappa(
     sample_weights: Optional[Sequence[float]] = None,
     weight: str = "unweighted",
     categories: Optional[list] = None,
-) -> float:
+) -> Optional[float]:
     """Cohen's kappa with optional sample weights and category disagreement weights.
 
     ``weight``: ``"unweighted"`` (nominal — reduces to Cohen's kappa),
     ``"linear"`` or ``"quadratic"`` (ordinal). ``sample_weights`` reweight items
-    (IPW). Returns 1.0 when there is no expected disagreement and observed
-    disagreement is also zero; 0.0 when expected disagreement is ~0 but observed
-    is not (no reliable signal), mirroring the base ``cohens_kappa`` guard.
+    (IPW). Returns ``None`` when there is **zero chance-corrected information** —
+    the expected disagreement is ~0 (both raters concentrated on one category), so
+    kappa is undefined [JD-4, REVIEW-D-5]. Callers treat it as *insufficient*, not
+    perfect; mirrors the base ``cohens_kappa`` guard so the two kappa families
+    agree on the degenerate case.
     """
     a = list(a)
     b = list(b)
@@ -75,8 +77,12 @@ def weighted_kappa(
 
     num = sum(disagreement(i, j) * obs[i][j] for i in range(k) for j in range(k))
     den = sum(disagreement(i, j) * row[i] * col[j] for i in range(k) for j in range(k))
-    if den < 1e-12:
-        return 1.0 if num < 1e-12 else 0.0
+    # Same tolerance as ``cohens_kappa`` (1e-9), so the two kappa families agree on
+    # the degenerate case exactly (for unweighted kappa ``den == 1 - pe``); a
+    # smaller tolerance would let a ~1e-10 denominator produce a wild finite kappa
+    # in the review/process path while the judge path returned None [D-5].
+    if den < 1e-9:
+        return None  # undefined: no chance-corrected information [D-5]
     return 1.0 - num / den
 
 
@@ -103,8 +109,11 @@ def estimate_kappa(
     weight: str = "unweighted",
     floor_prob: float = FLOOR_INCLUSION_PROB,
     categories: Optional[list] = None,
-) -> float:
-    """Estimate kappa over the reviewed set under the chosen correction [D003]."""
+) -> Optional[float]:
+    """Estimate kappa over the reviewed set under the chosen correction [D003].
+
+    ``None`` when the reviewed labels carry zero chance-corrected information
+    (degenerate marginals) — undefined, not perfect [JD-4, REVIEW-D-5]."""
     method = KappaEstimator(method)
     used = list(items)
     sample_weights: Optional[list[float]] = None
@@ -128,7 +137,7 @@ def estimate_kappa(
 @dataclass(frozen=True)
 class KappaReport:
     headline_method: str
-    headline: float
+    headline: Optional[float]  # None ⇒ undefined (degenerate) [D-5]
     sensitivity_method: str
     sensitivity: Optional[float]
     floor_prob: float = FLOOR_INCLUSION_PROB  # the inclusion prob used for IPW [RV-5]

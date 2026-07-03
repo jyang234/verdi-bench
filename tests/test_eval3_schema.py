@@ -73,6 +73,12 @@ def test_ac1_extra_key_forbidden():
         ("anthropic/claude-sonnet", True),
         ("openai/gpt-5", True),
         ("gemini-1.5-pro-002", True),  # missing provider
+        # JD-6: a bare dotted version names a mutable family, not a pinned build —
+        # it must be rejected (a date / build stamp / -NNN suffix is required).
+        ("google/gemini-1.5-pro", True),
+        ("openai/gpt-4.1", True),
+        # ...but the same family with a pinned build suffix is accepted
+        ("openai/gpt-4.1-2025-04-14", False),
     ],
 )
 def test_ac1_alias_detection(model, is_alias):

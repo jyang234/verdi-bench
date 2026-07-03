@@ -18,7 +18,9 @@ from typing import Callable, Union
 
 from .base import Provider
 
-_HOLDOUT_RE = re.compile(r"## Holdout results\n(.*)")
+# Holdout results are fenced with a content-derived delimiter [JD-8]; read the
+# JSON between the open/close fence markers, not the fence line itself.
+_HOLDOUT_RE = re.compile(r"## Holdout results\n<<[0-9a-f]+>>\n(.*)\n<<[0-9a-f]+>>")
 # a rubric dimension renders as "## <name> (<dim_id>), scale 1..<n>"
 _DIM_RE = re.compile(r"\(([a-z_][a-z0-9_]*)\), scale 1\.\.")
 _PROCESS_SYSTEM_MARKER = "how the work was done"
