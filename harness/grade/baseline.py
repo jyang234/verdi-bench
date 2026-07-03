@@ -20,7 +20,7 @@ from typing import Optional
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import find_events
-from .container import GradingContainer, GradingContainerError
+from .container import GraderUnavailableError, GradingContainer, GradingContainerError
 from .deterministic import compute_binary_score, parse_holdout_output
 from .types import GradeTask
 
@@ -44,6 +44,11 @@ def flake_baseline(
     k: int = DEFAULT_K,
 ) -> BaselineOutcome:
     """Run holdouts k times on the unmodified workspace; quarantine on any fail."""
+    if k < 1:
+        raise ValueError(
+            f"flake baseline needs k >= 1 (got {k}); a 'clean' verdict cannot come "
+            "from zero runs [GR-10]"
+        )
     container = container or GradingContainer()
     workspace = Path(workspace)
     results: list[dict] = []
@@ -53,9 +58,24 @@ def flake_baseline(
             run = container.run(workspace, task.holdouts_dir)
             assertions = parse_holdout_output(run.raw_output)
             passed = compute_binary_score(assertions)
-        except (GradingContainerError, ValueError):
-            passed = False
-        results.append({"run": i, "passed": passed})
+        except GraderUnavailableError:
+            # Transient infra outage — the baseline is inconclusive, NOT flake
+            # evidence. Fail loud so admission retries rather than quarantining a
+            # healthy task version from a hiccup [GR-8]. Nothing is ledgered.
+            raise
+        except (GradingContainerError, ValueError) as e:
+            # The grader RAN and the holdouts did not cleanly pass (terminal
+            # failure or malformed output) — genuine flake evidence [GR-8].
+            results.append({"run": i, "passed": False, "detail": str(e)})
+            clean = False
+            continue
+        # Record the assertion vector so a quarantine verdict is auditable from
+        # the ledger alone [GR-13], not just {run, passed}.
+        results.append({
+            "run": i,
+            "passed": passed,
+            "assertions": [a.model_dump(mode="json") for a in assertions],
+        })
         if not passed:
             clean = False
 
@@ -72,20 +92,18 @@ def flake_baseline(
     return BaselineOutcome(verdict=verdict, results=results, event=ev)
 
 
-def load_quarantine(ledger_path) -> set[str]:
-    """Task ids whose *most recent* flake baseline quarantined them.
+def load_quarantine(ledger_path) -> set[tuple[str, str]]:
+    """Task *versions* ``(task_id, task_sha)`` whose most recent flake baseline
+    quarantined them [D-2, GR-10].
 
-    The scheduler matches on ``task_id`` (a ``Trial`` carries no sha), so the
-    quarantine reflects each task's latest baseline: a task re-admitted with a
-    new clean baseline clears quarantine, and a newly-flaky one enters it. Keyed
-    by ``task_id`` with latest-event-wins (the ledger is append-only, so later
-    events supersede earlier ones for the same task).
+    Keyed by the task version per EVAL-5 AC-2 ("quarantines that task version"):
+    a clean baseline for a *new* version does not clear an *old* version's
+    quarantine, so a re-mined task can't launder a flaky predecessor. A genuinely
+    fixed flake — the *same* version re-baselined clean — does clear, since it is
+    latest-event-wins **within a version** (the ledger being append-only). The
+    scheduler compares each planned task's ``task_sha`` against this set.
     """
-    latest_by_task: dict[str, dict] = {}
+    latest: dict[tuple[str, str], dict] = {}
     for ev in find_events(ledger_path, events.FLAKE_BASELINE):
-        latest_by_task[ev["task_id"]] = ev  # append-order ⇒ last wins
-    return {
-        ev["task_id"]
-        for ev in latest_by_task.values()
-        if ev["verdict"] == "quarantined"
-    }
+        latest[(ev["task_id"], ev["task_sha"])] = ev  # append-order ⇒ last wins
+    return {key for key, ev in latest.items() if ev["verdict"] == "quarantined"}

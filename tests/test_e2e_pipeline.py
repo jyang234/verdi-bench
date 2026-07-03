@@ -70,6 +70,31 @@ def test_fake_pipeline_plan_run_grade(tmp_path):
     assert runner.invoke(app, ["verify-chain", str(ledger)]).exit_code == 0
 
 
+def test_run_refuses_quarantined_task_version(tmp_path):
+    """RN-5 + D-2: bench run loads the flake quarantine from the ledger and
+    refuses to run a task version with a quarantining baseline — no trials run."""
+    from harness.corpus.commit import load_task_dicts, task_content_sha
+    from harness.ledger.events import EventContext, record_flake_baseline
+
+    expdir = tmp_path / "exp"
+    ledger = _setup(expdir, [{"id": "t1", "prompt": "solve", "fake_behavior": {"native_log": {}}}])
+    assert runner.invoke(
+        app, ["plan", str(expdir / "experiment.yaml"), "--ledger", str(ledger)]
+    ).exit_code == 0
+
+    # quarantine the exact task version bench run will compute for t1
+    sha = task_content_sha(load_task_dicts(expdir)[0])
+    record_flake_baseline(
+        ledger, EventContext(experiment_id="exp", clock=lambda: "t"),
+        task_id="t1", task_sha=sha, k=5,
+        results=[{"run": i, "passed": False} for i in range(5)], verdict="quarantined",
+    )
+
+    r = runner.invoke(app, ["run", str(expdir)])
+    assert r.exit_code != 0  # refused
+    assert find_events(ledger, "trial") == []  # nothing ran
+
+
 # --- docker-marked: the real grading container -----------------------------
 def _docker_available() -> bool:
     if not shutil.which("docker"):

@@ -21,7 +21,7 @@ from ..schema.experiment import ExperimentSpec
 from .types import RunConfig, Task
 
 
-def _task_from_dict(t: dict) -> Task:
+def _task_from_dict(t: dict, task_sha: str) -> Task:
     return Task(
         id=t["id"],
         prompt=t.get("prompt", ""),
@@ -29,6 +29,7 @@ def _task_from_dict(t: dict) -> Task:
         timeout_s=t.get("timeout_s"),
         holdout_canaries=t.get("holdout_canaries", []),
         fake_behavior=t.get("fake_behavior", {}),
+        task_sha=task_sha,
     )
 
 
@@ -44,10 +45,12 @@ def register(app: typer.Typer) -> None:
             TaskCommitmentError,
             assert_task_commitment,
             load_task_dicts,
+            task_content_sha,
         )
+        from ..grade.baseline import load_quarantine
         from ..ledger.events import EventContext
         from ..plan.lock import assert_lock
-        from .interleave import schedule
+        from .interleave import QuarantinedTaskError, schedule
 
         experiment_dir = Path(experiment_dir)
         spec_path = experiment_dir / "experiment.yaml"
@@ -67,9 +70,12 @@ def register(app: typer.Typer) -> None:
         except TaskCommitmentError as e:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
-        tasks = [_task_from_dict(t) for t in task_dicts]
+        tasks = [_task_from_dict(t, task_content_sha(t)) for t in task_dicts]
         task_map = {t.id: t for t in tasks}
         arm_map = {a.name: a for a in spec.arms}
+        # RN-5: honor the flake quarantine — a quarantined task version (its clean
+        # baseline never established) must not be scheduled [EVAL-5, D-2].
+        quarantine = load_quarantine(ledger_path)
 
         trials = enumerate_trials(
             [t.id for t in tasks], [a.name for a in spec.arms], spec.repetitions
@@ -86,16 +92,21 @@ def register(app: typer.Typer) -> None:
             actor = "unknown"
         ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
 
-        result = schedule(
-            order,
-            tasks=task_map,
-            arms=arm_map,
-            workspace_root=experiment_dir / "workspaces",
-            ledger_path=ledger_path,
-            ctx=ctx,
-            config=config,
-            cost_ceiling=spec.cost_ceiling.amount,
-        )
+        try:
+            result = schedule(
+                order,
+                tasks=task_map,
+                arms=arm_map,
+                workspace_root=experiment_dir / "workspaces",
+                ledger_path=ledger_path,
+                ctx=ctx,
+                config=config,
+                cost_ceiling=spec.cost_ceiling.amount,
+                quarantined_tasks=quarantine,
+            )
+        except QuarantinedTaskError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
         typer.echo(
             f"ran {len(result.records)} trials "
             f"(infra_failures={result.infra_failures}, "

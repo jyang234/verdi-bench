@@ -28,6 +28,9 @@ class Task:
     holdout_canaries: list[str] = field(default_factory=list)
     # FAKE-ENGINE ONLY: scripts deterministic behavior for tests.
     fake_behavior: dict = field(default_factory=dict)
+    # content sha of this task version — the scheduler compares (id, task_sha)
+    # against the flake quarantine so quarantine is version-scoped [D-2].
+    task_sha: Optional[str] = None
 
 
 @dataclass

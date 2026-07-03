@@ -127,7 +127,7 @@ def schedule(
     ctx: EventContext,
     config: RunConfig,
     cost_ceiling: float,
-    quarantined_tasks: Optional[set[str]] = None,
+    quarantined_tasks: Optional[set[tuple[str, str]]] = None,
     max_infra_retries: int = 3,
 ) -> ScheduleResult:
     workspace_root = Path(workspace_root)
@@ -146,12 +146,6 @@ def schedule(
             cell = (planned.task_id, planned.arm, planned.repetition)
             if cell in done_cells:
                 continue  # already executed in a prior run — resume, don't duplicate
-
-            if planned.task_id in quarantined:
-                raise QuarantinedTaskError(
-                    f"task {planned.task_id} is quarantined (no clean flake baseline) "
-                    "and must not be scheduled [EVAL-5]"
-                )
 
             # Cost guard: refuse to start once at/over the ceiling [AC-7].
             if guard.would_exceed():
@@ -172,6 +166,16 @@ def schedule(
 
             task = tasks[planned.task_id]
             arm = arms[planned.arm]
+
+            # Quarantine is version-scoped: refuse this exact task version if its
+            # flake baseline quarantined it [D-2]. A policy violation (a locked
+            # experiment scheduling a quarantined version) halts loudly rather
+            # than failing one cell — executed_order still lands via the finally.
+            if (planned.task_id, task.task_sha) in quarantined:
+                raise QuarantinedTaskError(
+                    f"task version ({planned.task_id}, {task.task_sha}) is quarantined "
+                    "(no clean flake baseline) and must not be scheduled [EVAL-5]"
+                )
 
             try:
                 record = _run_with_infra_reruns(
