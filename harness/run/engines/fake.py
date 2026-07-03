@@ -37,16 +37,32 @@ class FakeEngine:
             json.dumps(native_log), encoding="utf-8"
         )
 
+        # FAKE-ENGINE ONLY: simulate the agent writing files into its workspace
+        # OUTSIDE artifacts/ (its solution, scratch configs, …). Lets insulation
+        # and redaction tests exercise the whole-workspace surface a real trial
+        # exposes, not just the captured transcript.
+        for rel, content in (b.get("workspace_files") or {}).items():
+            wf = Path(request.workspace) / rel
+            wf.parent.mkdir(parents=True, exist_ok=True)
+            wf.write_text(content, encoding="utf-8")
+
         outcome = Outcome(b.get("outcome", "completed"))
         egress_attempts = list(b.get("egress_attempts", []))
         egress_violation = False
         if request.proxy is not None:
             for host in egress_attempts:
-                if not request.proxy.is_allowed(host):
+                allowed = request.proxy.is_allowed(host)
+                if not allowed:
                     egress_violation = True
-                    if request.proxy.log_path:
-                        with open(request.proxy.log_path, "a", encoding="utf-8") as fh:
-                            fh.write(f"DENY {host} trial={request.trial_id}\n")
+                if request.proxy.log_path:
+                    # structured JSONL keyed to the trial — the same format a real
+                    # metering proxy emits, so one parser serves both engines [RN-11].
+                    with open(request.proxy.log_path, "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps({
+                            "trial": request.trial_id,
+                            "host": host,
+                            "decision": "allow" if allowed else "deny",
+                        }) + "\n")
 
         return EngineResult(
             outcome=outcome,
@@ -62,4 +78,5 @@ class FakeEngine:
             egress_attempts=egress_attempts,
             executed_at=request.ts,
             proxy_metered_cost=b.get("proxy_metered_cost"),
+            failure_reason=b.get("infra_reason"),  # scripted reason [RN-14]
         )

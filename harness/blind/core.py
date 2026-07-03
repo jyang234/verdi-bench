@@ -113,6 +113,13 @@ _SECRET_PATTERNS = [
     r"github_pat_[A-Za-z0-9_]{22,}",    # GitHub fine-grained PAT
     r"glpat-[A-Za-z0-9_\-]{20,}",       # GitLab PAT
     r"xox[baprs]-[A-Za-z0-9\-]{10,}",   # Slack
+    # Full PEM private-key block, header THROUGH footer — the key body must be
+    # scrubbed too, not just the BEGIN marker [RN-8]. Non-greedy; ``[\s\S]``
+    # spans newlines without needing a global DOTALL flag.
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+    # Fallback for a TRUNCATED key (BEGIN with no matching END): still scrub the
+    # header marker, as the pre-RN-8 pattern did — never leave it behind. Applied
+    # after the full-block pattern, so a complete key is already fully redacted.
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
 ]
 

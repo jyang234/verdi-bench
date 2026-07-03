@@ -10,6 +10,7 @@ raised as an exception.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,8 +91,17 @@ def run_trial(
 
     result = config.engine.run(request)
 
-    # Redact secrets from captured artifacts before they persist [AC-8].
-    redact_artifacts(result.artifacts_dir, config.redact_extra_patterns)
+    # Redact secrets from the whole trial workspace before it persists [AC-8].
+    # RN-7: the agent can write secrets anywhere in the workspace (Harbor mounts
+    # it rw and the grader later reads it), not just under artifacts/. RN-9: the
+    # injected provider-key VALUES scrub as literals even when their shape is not
+    # a known key pattern. (The trial request is mounted read-only OUTSIDE the
+    # workspace, so it is not a redaction target [EVAL-4-D-8].)
+    extra_patterns = list(config.redact_extra_patterns)
+    extra_patterns += [
+        re.escape(v) for v in (config.provider_keys or {}).values() if v
+    ]
+    redact_artifacts(workspace, extra_patterns)
 
     # Normalize telemetry from agent-native logs [AC-2]; unmeasurable ⇒ null.
     adapter = get_adapter(arm.platform)
@@ -103,9 +113,18 @@ def run_trial(
     )
     if result.egress_attempts:
         flags.egress_attempts = result.egress_attempts
-    if result.proxy_metered_cost is not None and telemetry.cost is not None:
-        # surface the cross-check delta; do NOT reconcile [risks §10]
-        flags.proxy_cost_delta = round(result.proxy_metered_cost - telemetry.cost, 6)
+    if result.proxy_metered_cost is not None:
+        # Cross-check signal. Surfaced on the record so the cost guard can enforce
+        # on it when the arm can't self-report cost (telemetry null) [RN-2] — but
+        # it is NEVER written into telemetry.cost: nulls are flagged, not imputed
+        # [D004]. When both exist, also surface the delta; do NOT reconcile.
+        flags.proxy_metered_cost = result.proxy_metered_cost
+        if telemetry.cost is not None:
+            flags.proxy_cost_delta = round(result.proxy_metered_cost - telemetry.cost, 6)
+    if result.failure_reason is not None:
+        # carry the engine's infra-failure reason so the scheduler ledgers it
+        # instead of the fake-only fake_behavior placeholder [RN-14]
+        flags.failure_reason = result.failure_reason
 
     provenance = Provenance(
         image_digest=result.image_digest,

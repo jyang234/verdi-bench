@@ -28,6 +28,9 @@ class Task:
     holdout_canaries: list[str] = field(default_factory=list)
     # FAKE-ENGINE ONLY: scripts deterministic behavior for tests.
     fake_behavior: dict = field(default_factory=dict)
+    # content sha of this task version — the scheduler compares (id, task_sha)
+    # against the flake quarantine so quarantine is version-scoped [D-2].
+    task_sha: Optional[str] = None
 
 
 @dataclass
@@ -88,6 +91,9 @@ class EngineResult:
     executed_at: Optional[str] = None
     # proxy-metered cost, kept as a cross-check signal only [risks §10]
     proxy_metered_cost: Optional[float] = None
+    # machine-readable reason an infra failure occurred, set by the engine so the
+    # scheduler ledgers a real reason instead of a fake-only placeholder [RN-14]
+    failure_reason: Optional[str] = None
 
 
 class Engine(Protocol):

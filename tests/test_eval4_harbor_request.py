@@ -1,0 +1,111 @@
+"""EVAL-4 RN-4/D-8 — the trial-image contract: prompt + arm config reach the
+container through a read-only /verdi/request.json mount, outside the workspace.
+
+The unit tests drive the seam with a fake docker runner (no daemon). The
+docker-marked test proves a REAL container reads its request; it is skipped
+where no daemon is present and runs in a labelled/scheduled CI job.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from harness.run.engines.harbor import TRIAL_REQUEST_MOUNT, HarborEngine
+from harness.run.seam import run_trial
+from harness.run.types import RunConfig, Task
+from harness.schema.experiment import Arm
+from tests.fixtures.run_fakes import FakeDockerRunner
+
+
+def _arm(**kw):
+    base = dict(name="control", platform="claude_code",
+                model="anthropic/claude-3-5-sonnet-20241022")
+    base.update(kw)
+    return Arm(**base)
+
+
+def _pinned_task():
+    return Task(id="t", prompt="solve X", image="verdi-bench/agent@sha256:" + "a" * 64)
+
+
+class _CapturingRunner(FakeDockerRunner):
+    """Reads the /verdi/request.json the harness mounts, during the run."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.request_payload = None
+        self.request_host_path: Path | None = None
+
+    def run_container(self, cmd, timeout_s, env=None):
+        for i, tok in enumerate(cmd):
+            if tok == "--volume" and cmd[i + 1].endswith(f":{TRIAL_REQUEST_MOUNT}:ro"):
+                host = cmd[i + 1].split(":")[0]
+                self.request_host_path = Path(host)
+                self.request_payload = json.loads(Path(host).read_text(encoding="utf-8"))
+        return super().run_container(cmd, timeout_s, env)
+
+
+def test_ac1_trial_request_delivered_readonly(tmp_path):
+    """RN-4/D-8: prompt + arm (name, model, payload) reach the container."""
+    arm = _arm(model="anthropic/claude-3-5-sonnet-20241022", payload={"temperature": 0})
+    runner = _CapturingRunner(native_log={})
+    run_trial(_pinned_task(), arm, tmp_path / "ws", RunConfig(engine=HarborEngine(runner=runner)))
+    p = runner.request_payload
+    assert p is not None, "no /verdi/request.json was mounted"
+    assert p["prompt"] == "solve X"
+    assert p["arm"] == "control"
+    assert p["model"] == "anthropic/claude-3-5-sonnet-20241022"
+    assert p["payload"] == {"temperature": 0}
+
+
+def test_trial_request_outside_workspace_and_cleaned(tmp_path):
+    """D-8: the request lives OUTSIDE the workspace (so it never pollutes the
+    graded copy) and the host temp file is cleaned up after the trial."""
+    ws = tmp_path / "ws"
+    runner = _CapturingRunner(native_log={})
+    run_trial(_pinned_task(), _arm(), ws, RunConfig(engine=HarborEngine(runner=runner)))
+    req = runner.request_host_path
+    assert req is not None
+    assert ws.resolve() not in req.resolve().parents  # not under the workspace
+    assert not req.exists()  # cleaned up
+
+
+# --- docker-marked: a REAL container reads its request ---------------------
+from tests.fixtures.docker import DOCKER_AVAILABLE  # noqa: E402
+
+
+@pytest.mark.docker
+@pytest.mark.skipif(not DOCKER_AVAILABLE, reason="no docker daemon available")
+def test_docker_trial_reads_its_request(tmp_path):
+    """A real container reads /verdi/request.json and its prompt/arm land in an
+    artifact — proving the harness↔image contract end to end (RN-4/D-8)."""
+    ctx = tmp_path / "img"
+    ctx.mkdir()
+    (ctx / "Dockerfile").write_text(
+        "FROM busybox\n"
+        # copy the mounted request into the workspace artifacts so the harness
+        # can read back what the container saw
+        'CMD ["sh", "-c", "mkdir -p /workspace/artifacts && '
+        'cp /verdi/request.json /workspace/artifacts/seen_request.json"]\n',
+        encoding="utf-8",
+    )
+    image = "verdi-bench/trial-req-e2e:latest"
+    subprocess.run(["docker", "build", "-t", image, str(ctx)], check=True, capture_output=True)
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    arm = _arm(payload={"temperature": 0})
+    # reference by tag: --pull=never runs the local image, and resolve_digest
+    # pins provenance to its image Id (the local-image fallback).
+    rec = run_trial(
+        Task(id="t", prompt="solve X", image=image), arm, ws, RunConfig(engine=HarborEngine()),
+    )
+    seen = json.loads((ws / "artifacts" / "seen_request.json").read_text(encoding="utf-8"))
+    assert seen["prompt"] == "solve X"
+    assert seen["arm"] == "control"
+    assert rec.provenance.image_digest and rec.provenance.image_digest.startswith("sha256:")

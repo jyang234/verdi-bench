@@ -96,3 +96,109 @@ def test_ac5_infra_exhaustion_no_trial_event(tmp_path):
     )
     assert len(find_events(tmp_path / "l.ndjson", "trial")) == 0
     assert len(find_events(tmp_path / "l.ndjson", "trial_infra_failed")) == 3  # 1 + 2 retries
+
+
+def test_ac5_infra_reason_from_engine_result(tmp_path):
+    """RN-14: a REAL engine's infra failure ledgers a reason from the EngineResult,
+    not the fake-only task.fake_behavior['infra_reason'] placeholder."""
+    from harness.run.engines.harbor import HarborEngine
+    from tests.fixtures.run_fakes import FakeDockerRunner
+
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p")}  # a real trial: no fake_behavior at all
+    order = [Trial(task_id="t", arm="A", repetition=0)]
+    ledger = tmp_path / "l.ndjson"
+    schedule(
+        order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+        ctx=fixed_ctx(),
+        config=RunConfig(engine=HarborEngine(runner=FakeDockerRunner(daemon_error=True))),
+        cost_ceiling=100.0, max_infra_retries=0,
+    )
+    infra = find_events(ledger, "trial_infra_failed")
+    assert len(infra) == 1
+    assert infra[0]["reason"] == "daemon_error"  # not the "infra_failed" placeholder
+
+
+def _schedule_one(order, tasks, arms, tmp_path):
+    ledger = tmp_path / "l.ndjson"
+    schedule(
+        order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
+    )
+    return ledger
+
+
+def test_ac5_unknown_task_fails_cell_not_run(tmp_path):
+    """RN-15: a planned task id absent from the map fails that cell closed
+    (trial_infra_failed) and does not abort the run; executed_order still lands."""
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={"native_log": {}})}
+    order = [Trial(task_id="ghost", arm="A", repetition=0),
+             Trial(task_id="t", arm="A", repetition=0)]
+    ledger = _schedule_one(order, tasks, arms, tmp_path)
+    infra = find_events(ledger, "trial_infra_failed")
+    assert any(e["task_id"] == "ghost" and e["reason"] == "unknown_task" for e in infra)
+    assert len(find_events(ledger, "trial")) == 1  # the good cell still ran
+    assert find_events(ledger, "executed_order")  # AC-4 event landed despite the bad cell
+
+
+def test_ac5_holdout_leak_fails_cell_not_run(tmp_path):
+    """RN-15: a canary leaking into the prompt fails that cell closed, never an
+    exception that aborts the whole schedule mid-loop."""
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="LEAKME", holdout_canaries=["LEAKME"],
+                       fake_behavior={"native_log": {}})}
+    order = [Trial(task_id="t", arm="A", repetition=0)]
+    ledger = _schedule_one(order, tasks, arms, tmp_path)
+    infra = find_events(ledger, "trial_infra_failed")
+    assert len(infra) == 1 and infra[0]["reason"] == "holdout_leak"
+    assert find_events(ledger, "executed_order")
+
+
+def test_ac5_unknown_platform_fails_cell_not_run(tmp_path):
+    """RN-15: an arm whose platform has no adapter fails that cell closed."""
+    arms = {"A": Arm(name="A", platform="nonesuch", model="x/y-1.0")}
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={"native_log": {}})}
+    order = [Trial(task_id="t", arm="A", repetition=0)]
+    ledger = _schedule_one(order, tasks, arms, tmp_path)
+    infra = find_events(ledger, "trial_infra_failed")
+    assert len(infra) == 1 and infra[0]["reason"] == "unknown_platform"
+    assert find_events(ledger, "executed_order")
+
+
+def test_ac5_unexpected_error_fails_cell_closed(tmp_path):
+    """RN-15 (review #3): ANY unexpected exception during a trial fails that cell
+    closed with a typed reason and does NOT escape schedule() to abort the run."""
+    class BoomEngine(FakeEngine):
+        def run(self, request):
+            raise RuntimeError("kaboom")
+
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p"), "u": Task(id="u", prompt="p")}
+    order = [Trial(task_id="t", arm="A", repetition=0), Trial(task_id="u", arm="A", repetition=0)]
+    ledger = tmp_path / "l.ndjson"
+    schedule(order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+             ctx=fixed_ctx(), config=RunConfig(engine=BoomEngine()), cost_ceiling=100.0)
+    infra = find_events(ledger, "trial_infra_failed")
+    assert len(infra) == 2  # both cells failed closed, run not aborted
+    assert all(e["reason"] == "trial_error:RuntimeError" for e in infra)
+    assert find_events(ledger, "executed_order")  # AC-4 event still lands
+
+
+def test_ac5_redaction_error_fails_cell_closed(tmp_path):
+    """RN-15 (review #3): a RedactionError maps to a specific reason and fails the
+    cell closed instead of escaping schedule()."""
+    from harness.run.redact import RedactionError
+
+    class LeakyEngine(FakeEngine):
+        def run(self, request):
+            raise RedactionError("cannot scrub a root-owned artifact")
+
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p")}
+    order = [Trial(task_id="t", arm="A", repetition=0)]
+    ledger = tmp_path / "l.ndjson"
+    schedule(order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+             ctx=fixed_ctx(), config=RunConfig(engine=LeakyEngine()), cost_ceiling=100.0)
+    infra = find_events(ledger, "trial_infra_failed")
+    assert len(infra) == 1 and infra[0]["reason"] == "redaction_error"
