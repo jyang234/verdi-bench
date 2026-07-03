@@ -2,8 +2,24 @@
 
 from __future__ import annotations
 
-from .base import Provider, ProviderRefusal
+from .base import Provider, ProviderError, ProviderRefusal
 from ._http import post_json, require_key
+
+
+def _content(resp: dict) -> str:
+    """Extract the completion text, failing closed on an error-shaped 200 [JD-3].
+
+    An error body must raise ``ProviderError`` (→ provider_error), not silently
+    yield ``""`` that a downstream parser then misclassifies as ``parse``.
+    """
+    if resp.get("type") == "error" or "error" in resp:
+        raise ProviderError(f"anthropic error response: {resp.get('error', resp)}")
+    if resp.get("stop_reason") == "refusal":
+        raise ProviderRefusal("model refused")
+    content = resp.get("content")
+    if not isinstance(content, list):
+        raise ProviderError(f"unexpected anthropic response shape: {resp}")
+    return "".join(b.get("text", "") for b in content if b.get("type") == "text")
 
 
 class AnthropicProvider(Provider):
@@ -23,7 +39,4 @@ class AnthropicProvider(Provider):
             body,
             {"x-api-key": require_key("ANTHROPIC_API_KEY"), "anthropic-version": "2023-06-01"},
         )
-        if resp.get("stop_reason") == "refusal":  # pragma: no cover - real path
-            raise ProviderRefusal("model refused")
-        parts = [b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text"]
-        return "".join(parts)
+        return _content(resp)

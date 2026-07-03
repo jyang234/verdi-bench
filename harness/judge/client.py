@@ -27,7 +27,7 @@ from .providers.base import (
     ProviderTimeout,
     get_provider,
 )
-from .schema import Evidence, Verdict, VerdictProvenance, Winner
+from .schema import CantJudgeReason, Evidence, Verdict, VerdictProvenance, Winner
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -98,7 +98,6 @@ def judge_pair(
     ``comparison_id``/``task_class`` ride onto the verdict so calibration
     (kappa) can join judge and human verdicts by comparison [AC-7].
     """
-    provider = provider or get_provider(config.model)
     call_ids: list[str] = []
 
     def _provenance() -> VerdictProvenance:
@@ -112,10 +111,10 @@ def judge_pair(
             ts=ts,
         )
 
-    def _cant(reason: str) -> Verdict:
+    def _cant(reason: CantJudgeReason) -> Verdict:
         v = Verdict(
             winner=Winner.CANT_JUDGE,
-            reason=reason,
+            reason=reason.value,
             evidence=[],
             confidence=0.0,
             provenance=_provenance(),
@@ -125,13 +124,23 @@ def judge_pair(
         events.append_verdict(ledger_path, ctx, verdict=v.model_dump(mode="json"))
         return v
 
+    # JD-2: resolve the provider *inside* the fail-closed envelope. An unknown
+    # prefix (legal per D001) raises ProviderError; recording it as
+    # CANT_JUDGE(provider_error) keeps "an attempted comparison without a verdict
+    # event is unrepresentable" true instead of escaping with no event [AC-8].
+    if provider is None:
+        try:
+            provider = get_provider(config.model)
+        except ProviderError:
+            return _cant(CantJudgeReason.PROVIDER_ERROR)
+
     # A leaking packet is never sent — but the leak is fail-closed *data*, so it
     # is recorded as CANT_JUDGE(identity_leak) rather than escaping with no event
     # (an attempted comparison without a verdict event is unrepresentable) [AC-8].
     try:
         validate_identity_free(packet, canaries)
     except IdentityLeakError:
-        return _cant("identity_leak")
+        return _cant(CantJudgeReason.IDENTITY_LEAK)
 
     orders_to_run = ["AB", "BA"] if config.orders == "both" else ["AB"]
     mapped: list[tuple[str, list[Evidence], str]] = []
@@ -139,14 +148,19 @@ def judge_pair(
         try:
             raw, call_id = _call(provider, config.model, packet, order, config.temperature)
         except ProviderTimeout:
-            return _cant("timeout")
+            return _cant(CantJudgeReason.TIMEOUT)
         except ProviderRefusal:
-            return _cant("refusal")
+            return _cant(CantJudgeReason.REFUSAL)
         except ProviderError:
-            return _cant("provider_error")
+            return _cant(CantJudgeReason.PROVIDER_ERROR)
+        except (KeyError, IndexError):
+            # JD-3: an error-shaped/safety-blocked 200 can raise KeyError/IndexError
+            # while a provider extracts content — a transport-shape failure, not a
+            # JSON parse failure. Fail closed to provider_error, not parse.
+            return _cant(CantJudgeReason.PROVIDER_ERROR)
         except (ValueError, ValidationError, json.JSONDecodeError):
             call_ids.append("unparsed")
-            return _cant("parse")
+            return _cant(CantJudgeReason.PARSE)
         call_ids.append(call_id)
         mapped.append(_map_call(raw, order))
 
@@ -156,7 +170,7 @@ def judge_pair(
     # preserve the judge's own rationale(s), not just the winner letters
     reasons = [r for _, _, r in mapped if r]
     if any(w == "CANT_JUDGE" for w in winners):
-        return _cant("judge_cant_judge")
+        return _cant(CantJudgeReason.JUDGE_CANT_JUDGE)
 
     if len(set(winners)) == 1:
         winner_str = winners[0]
@@ -179,7 +193,7 @@ def judge_pair(
         )
     except ValidationError:
         # e.g. a substantive winner with no evidence ⇒ malformed
-        return _cant("malformed")
+        return _cant(CantJudgeReason.MALFORMED)
 
     events.append_verdict(ledger_path, ctx, verdict=verdict.model_dump(mode="json"))
     return verdict
