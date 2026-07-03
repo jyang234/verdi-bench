@@ -18,6 +18,7 @@ seam collapses to ``percentile`` and nothing else changes.
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Protocol
 
 import numpy as np
@@ -92,6 +93,16 @@ class ClusterRobustTCI:
 
     name = "cluster_robust_t"
 
+    # Below this fraction of usable (non-zero-SE) bootstrap resamples the
+    # studentized quantile is unreliable (computed over a degenerate remnant),
+    # so rather than dropping the degenerate resamples in silence [AN-11] we
+    # disclose the drop and fall back transparently to the SE-free percentile
+    # interval. Kept low (10%) so ordinary discrete-metric bootstraps — where a
+    # sizeable minority of resamples legitimately tie and carry zero SE — still
+    # studentize over their ample usable remainder unchanged; only genuine
+    # near-total degeneracy triggers the fallback.
+    _MIN_USABLE_FRACTION = 0.1
+
     def interval(self, deltas, boot_means, boot_ses, level):
         n = deltas.shape[0]
         m = float(deltas.mean())
@@ -99,7 +110,16 @@ class ClusterRobustTCI:
         if se == 0.0:
             return PercentileCI().interval(deltas, boot_means, boot_ses, level)
         good = boot_ses > 0
-        if not good.any():
+        n_boot = int(boot_ses.shape[0])
+        n_good = int(good.sum())
+        if n_good < max(2, self._MIN_USABLE_FRACTION * n_boot):
+            if n_good < n_boot:
+                warnings.warn(
+                    f"cluster_robust_t: {n_boot - n_good}/{n_boot} bootstrap "
+                    f"resamples had zero SE; falling back to the percentile "
+                    f"interval instead of studentizing over the remnant [AN-11]",
+                    stacklevel=2,
+                )
             return PercentileCI().interval(deltas, boot_means, boot_ses, level)
         t_star = (boot_means[good] - m) / boot_ses[good]
         lo_p, hi_p = _tails(level)
@@ -117,7 +137,11 @@ class BCaCI:
     def interval(self, deltas, boot_means, boot_ses, level):
         m = float(deltas.mean())
         n = deltas.shape[0]
-        frac = float(np.mean(boot_means < m))
+        # Mid-p bias correction: on discrete deltas many bootstrap means tie with
+        # the observed mean, and a strict ``<`` biases z0 low (understating the
+        # bootstrap mass at/below m). Count ties at half weight — the standard
+        # mid-p fix [AN-11].
+        frac = float(np.mean(boot_means < m)) + 0.5 * float(np.mean(boot_means == m))
         z0 = _norm_ppf(frac)
         if not math.isfinite(z0) or n < 3:
             return PercentileCI().interval(deltas, boot_means, boot_ses, level)
