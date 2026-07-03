@@ -127,3 +127,52 @@ def test_ac3_empty_holdout_not_vacuous_pass(tmp_path):
     # holdout_pass_rate for a trial that verified nothing)
     out, ledger = _grade(tmp_path, {"assertions": []})
     assert find_events(ledger, "grade")[0]["binary_score"] is False
+
+
+class _FreshCopyRunner:
+    """A runner that (like DockerGradeRunner) grades a fresh workspace copy and
+    writes its *own* holdout output — records what it was handed."""
+
+    fresh_workspace_copy = True
+
+    def __init__(self, output):
+        self.output = output
+        self.saw_stale = None
+        self.copy_path = None
+
+    def run_holdouts(self, cmd, workspace, holdouts_dir):
+        from pathlib import Path
+
+        from harness.grade.container import HoldoutRun
+
+        self.copy_path = Path(workspace)
+        self.saw_stale = (Path(workspace) / "holdout_results.json").exists()
+        return HoldoutRun(self.output)
+
+
+def test_grade_ignores_forged_results_and_protects_evidence(tmp_path):
+    """GR-1/GR-3: a runner that grades a fresh copy must not see an
+    agent-written holdout_results.json (deleted in the copy), must grade a copy
+    (not the original), and must not mutate the ledgered trial evidence.
+    """
+    import json
+
+    ws = write_workspace(tmp_path)
+    # the subject agent forges an all-pass results file in its own workspace
+    forged = {"assertions": [{"id": "h1", "result": "pass"}]}
+    (ws / "holdout_results.json").write_text(json.dumps(forged), encoding="utf-8")
+
+    # the real grader output disagrees (a failure)
+    runner = _FreshCopyRunner({"assertions": [{"id": "h1", "result": "fail"}]})
+    container = GradingContainer(runner=runner)
+    ledger = tmp_path / "l.ndjson"
+    grade_trial("trial-1", _task(), ws, ledger, fixed_ctx(), container=container)
+
+    # graded a *copy*, not the original workspace
+    assert runner.copy_path != ws
+    # the forged file was deleted before grading — the grader saw a clean copy
+    assert runner.saw_stale is False
+    # the recorded grade reflects the grader's output, not the forged all-pass
+    assert find_events(ledger, "grade")[0]["binary_score"] is False
+    # the original workspace (ledgered evidence) is untouched
+    assert json.loads((ws / "holdout_results.json").read_text()) == forged
