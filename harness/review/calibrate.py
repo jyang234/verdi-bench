@@ -22,6 +22,18 @@ from .sample import (
 )
 
 
+def calibration_from_spec(ledger_path, spec, seed: int) -> dict[str, ClassCalibration]:
+    """Per-class IPW kappa at the spec's locked ``EscalationConfig`` — the single
+    seam both ``bench judge`` and the analyze render call, so the escalation
+    wiring (which arms, seed, thresholds feed calibration) cannot drift between
+    them [JD-9, RV-4]."""
+    esc = spec.judge.escalation
+    return kappa_by_class_ipw(
+        ledger_path, arm_a=spec.arms[0].name, arm_b=spec.arms[1].name, seed=seed,
+        kappa_threshold=esc.kappa_threshold, min_human_verdicts=esc.min_human_verdicts,
+    )
+
+
 def kappa_by_class_ipw(
     ledger_path,
     *,

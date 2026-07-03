@@ -20,6 +20,11 @@ from .sample import comparisons_from_ledger as records_from_ledger
 from .sample import select_for_review
 
 
+class ReviewBuildError(RuntimeError):
+    """A review packet could not be built (e.g. a mandatory disagreement whose
+    trial artifacts are missing) — fail loud rather than silently drop it [AC-2]."""
+
+
 def _swap(seed: int, comparison_id: str) -> bool:
     """Per-comparison Response-1/2 order, deterministic in (seed, comparison_id)."""
     return sub_seed(seed, f"review_response_order:{comparison_id}") % 2 == 1
@@ -44,6 +49,15 @@ def build_review(ledger_path, spec, task_dicts, ctx: EventContext, *, seed: int)
     for sel in selected:
         cmp = artifacts.get(sel.comparison_id)
         if cmp is None:
+            # A mandatory disagreement with no assembled artifacts (its trials are
+            # missing/unpaired) would silently vanish from review and kappa,
+            # defeating "every disagreement is reviewed" — fail loud instead [AC-2].
+            if sel.stratum == "mandatory":
+                raise ReviewBuildError(
+                    f"comparison {sel.comparison_id!r} is a mandatory disagreement "
+                    "but has no assembled trial artifacts to review; refusing to "
+                    "silently drop it from the reviewed set [EVAL-7 AC-2]"
+                )
             continue
         if _swap(seed, sel.comparison_id):
             first_arm, first, second_arm, second = (

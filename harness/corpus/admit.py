@@ -123,7 +123,16 @@ def admit_task(
             "authorized-curator keyring; a self-generated key cannot launder an "
             "approval [D-P4-3]"
         )
-    if task.miner is not None and approval["approver"] == task.miner:
+    # The approver≠miner bar can only be enforced if the miner is recorded; a
+    # candidate with no miner cannot be verified, so admission is refused rather
+    # than silently skipping the bar (which would let a miner self-approve any
+    # task whose miner id was never recorded) [CO-7, D-P4-3, fail-closed].
+    if task.miner is None:
+        raise SelfApprovalError(
+            f"candidate {candidate_id!r} has no recorded miner; the approver≠miner "
+            "bar cannot be verified, so admission is refused [CO-7]"
+        )
+    if approval["approver"] == task.miner:
         raise SelfApprovalError(
             f"approver {approval['approver']!r} is the miner of {candidate_id!r}; "
             "the miner cannot approve their own task [CO-7]"

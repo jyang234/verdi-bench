@@ -111,7 +111,10 @@ class ExperimentSpec(BaseModel):
     cost_ceiling: CostCeiling
     # PL-12: a detectable effect is a positive fraction ≤ 1. A negative value is
     # always "underpowered" and a value > 1 always passes the gate — both are
-    # nonsense, refused at plan before any lock.
+    # nonsense. Enforced at the schema, so an out-of-range value is rejected on
+    # every spec load (a nonsense effect is invalid everywhere, not just at plan);
+    # verdi-bench has no pre-existing locked specs, so this cannot brick an
+    # in-flight experiment.
     hypothesized_effect: Optional[float] = Field(default=None, gt=0, le=1)
     fractional_scoring: bool = False
 

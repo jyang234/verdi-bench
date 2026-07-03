@@ -214,15 +214,7 @@ class CorpusManifest(BaseModel):
                 if t.status == "admitted":
                     t.status = "pending-curation"
 
-    def stage_candidate(
-        self,
-        task_id: str,
-        *,
-        sha: str,
-        miner: Optional[str] = None,
-        plugins: Optional[list[str]] = None,
-        metadata: Optional[dict] = None,
-    ) -> TaskEntry:
+    def stage_candidate(self, task_id: str, *, sha: str, miner: Optional[str] = None) -> TaskEntry:
         """Insert a mined candidate as a ``pending-curation`` task [CO-8].
 
         This is the missing mine→manifest link: ``admit_task`` requires the
@@ -231,10 +223,7 @@ class CorpusManifest(BaseModel):
         a silent overwrite would drop the prior candidate's provenance."""
         if self.task(task_id) is not None:
             raise CorpusError(f"task {task_id!r} already exists in manifest {self.corpus_id!r}")
-        entry = TaskEntry(
-            task_id=task_id, sha=sha, status="pending-curation", miner=miner,
-            plugins=plugins or [], metadata=metadata or {},
-        )
+        entry = TaskEntry(task_id=task_id, sha=sha, status="pending-curation", miner=miner)
         self.tasks.append(entry)
         return entry
 

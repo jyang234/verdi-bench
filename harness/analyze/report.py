@@ -244,18 +244,21 @@ def _judge_calibration(ledger_path, spec, seed) -> Optional[dict]:
     """Per-class judge↔human kappa + escalation flags [EVAL-2 AC-7, RV-4], through
     the IPW seam at the locked EscalationConfig. None when the judge produced no
     verdicts; the ``by_class`` table is empty until human review exists."""
-    if not find_events(ledger_path, events.JUDGE_VERDICT):
+    verdicts = find_events(ledger_path, events.JUDGE_VERDICT)
+    if not verdicts:
         return None
-    from ..review.calibrate import kappa_by_class_ipw
+    from ..review.calibrate import calibration_from_spec
 
     esc = spec.judge.escalation
-    cal = kappa_by_class_ipw(
-        ledger_path, arm_a=spec.arms[0].name, arm_b=spec.arms[1].name, seed=seed,
-        kappa_threshold=esc.kappa_threshold, min_human_verdicts=esc.min_human_verdicts,
-    )
+    cal = calibration_from_spec(ledger_path, spec, seed)
+    # JD-11: surface single-order verdicts so a full experiment that skipped D003
+    # order-debiasing cannot do so silently — the flag becomes visible, not just
+    # recorded on each verdict.
+    single_order = sum(1 for v in verdicts if v["verdict"].get("single_order"))
     return {
         "kappa_threshold": esc.kappa_threshold,
         "min_human_verdicts": esc.min_human_verdicts,
+        "single_order_verdicts": single_order,
         "by_class": {
             c: {"kappa": v.kappa, "n": v.n, "sufficient": v.sufficient, "escalate": v.escalate}
             for c, v in sorted(cal.items())
@@ -278,7 +281,10 @@ def _integrity(ledger_path) -> dict:
         n += 1
         if integrity.get("arm_recognized"):
             recognized += 1
-            if integrity.get("arm_guess") and integrity["arm_guess"] == integrity.get("actual_arm"):
+            # `is not None` (not truthiness): a valid-but-falsy arm id (e.g. an arm
+            # literally named "0") must still count as a guess [RV-6].
+            guess = integrity.get("arm_guess")
+            if guess is not None and guess == integrity.get("actual_arm"):
                 guessed_right += 1
     rate = recognized / n if n else None
     guess_acc = guessed_right / recognized if recognized else None
@@ -712,6 +718,11 @@ def _judge_calibration_lines(findings: FindingsDocument) -> list[str]:
         f"- thresholds: kappa ≥ {jc['kappa_threshold']} at ≥ {jc['min_human_verdicts']} "
         "human verdicts (below ⇒ flagged for panel escalation) [AC-7]"
     ]
+    if jc.get("single_order_verdicts"):
+        lines.append(
+            f"- ⚠ {jc['single_order_verdicts']} verdict(s) used single-order judging "
+            "(D003 order-debiasing skipped — smoke-run only) [JD-11]"
+        )
     if not jc["by_class"]:
         lines.append("- no human-reviewed comparisons yet — kappa pending")
         return lines

@@ -89,7 +89,12 @@ def lock_experiment(
         variance_source = AssumedVariance()
     # PL-1: compute power at the design's REAL N — ``repetitions × corpus size`` —
     # when the task source is available, not the variance source's calibration
-    # n_tasks (default 50, which ignored the actual design).
+    # n_tasks (default 50, which ignored the actual design). NOTE: this treats each
+    # (task, repetition) as an independent paired observation, matching the current
+    # analyze clustering (each verdict its own bootstrap cluster). When repetitions
+    # > 1 those reps are correlated within a task, so power is optimistic; the
+    # cluster-by-task fix for BOTH the power sim and the analysis is AN-1 (Phase 5,
+    # statistical correctness).
     real_n = spec.repetitions * len(task_dicts) if task_dicts else None
     mde = mde_check(spec, variance_source, n=real_n, **mde_kwargs)
 

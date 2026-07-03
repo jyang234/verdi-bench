@@ -34,7 +34,7 @@ def register(app: typer.Typer) -> None:
         from ..ledger.events import EventContext
         from ..plan.lock import assert_lock
         from ..schema.experiment import ExperimentSpec
-        from ..review.calibrate import kappa_by_class_ipw
+        from ..review.calibrate import calibration_from_spec
         from .assemble import comparisons_from_ledger
         from .client import judge_pair
         from .packet import build_packet
@@ -65,6 +65,7 @@ def register(app: typer.Typer) -> None:
         rubric = rubric_path.read_text(encoding="utf-8")
 
         task_classes = {t["id"]: t.get("task_class", "default") for t in task_dicts}
+        prompts = {t["id"]: t.get("prompt", "") for t in task_dicts}
         canaries = arm_canaries(spec.arms)
         ctx = EventContext(experiment_id=experiment_dir.name)
 
@@ -72,9 +73,7 @@ def register(app: typer.Typer) -> None:
         for cmp in comparisons:
             packet = build_packet(
                 cmp.response_a, cmp.response_b,
-                task_prompt=next(
-                    (t["prompt"] for t in task_dicts if t["id"] == cmp.task_id), ""
-                ),
+                task_prompt=prompts.get(cmp.task_id, ""),
                 rubric=rubric,
             )
             judge_pair(
@@ -88,15 +87,9 @@ def register(app: typer.Typer) -> None:
         # Thread the locked EscalationConfig through calibration [JD-9, D006]:
         # per-class kappa against any human verdicts, through the D003 IPW seam
         # (not raw pooled kappa over the disagreement-heavy reviewed set) [RV-4].
-        # Empty until human review exists — the real escalation table rides the
-        # analyze render post-review.
-        esc = spec.judge.escalation
-        cal = kappa_by_class_ipw(
-            ledger_path,
-            arm_a=spec.arms[0].name, arm_b=spec.arms[1].name, seed=spec.seed,
-            kappa_threshold=esc.kappa_threshold,
-            min_human_verdicts=esc.min_human_verdicts,
-        )
+        # The same seam feeds the analyze render, so the two can't drift. Empty
+        # until human review exists — the real escalation table rides analyze.
+        cal = calibration_from_spec(ledger_path, spec, spec.seed)
         for cls in sorted(cal):
             c = cal[cls]
             if not c.sufficient:

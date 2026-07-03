@@ -25,7 +25,7 @@ from typing import Optional
 
 from ..ledger import events
 from ..ledger.query import find_events
-from ..plan.seeds import index_at, sub_seed
+from ..plan.seeds import seeded_shuffle, sub_seed
 from .kappa import ReviewedItem
 
 FLOOR_FRACTION = 0.2
@@ -126,11 +126,7 @@ def select_for_review(records: list[ComparisonRecord], seed: int) -> list[Select
     ordered = sorted(agreements, key=lambda r: r.comparison_id)
     k = math.ceil(FLOOR_FRACTION * len(ordered)) if ordered else 0
     if k > 0:
-        base = sub_seed(seed, "review_floor")
-        shuffled = list(ordered)
-        for i in range(len(shuffled) - 1, 0, -1):
-            j = index_at(base, i, i + 1)
-            shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+        shuffled = seeded_shuffle(list(ordered), sub_seed(seed, "review_floor"))
         for r in shuffled[:k]:
             selected.append(SelectedItem(r.comparison_id, r.task_class, "floor"))
 
@@ -140,11 +136,7 @@ def select_for_review(records: list[ComparisonRecord], seed: int) -> list[Select
     # disagreements. The stratum stays recorded per item (for IPW reweighting),
     # it is simply not reconstructable from the order the reviewer sees.
     selected.sort(key=lambda s: s.comparison_id)
-    order_base = sub_seed(seed, "review_order")
-    for i in range(len(selected) - 1, 0, -1):
-        j = index_at(order_base, i, i + 1)
-        selected[i], selected[j] = selected[j], selected[i]
-    return selected
+    return seeded_shuffle(selected, sub_seed(seed, "review_order"))
 
 
 def realized_floor_prob(records: list[ComparisonRecord]) -> float:
@@ -176,6 +168,12 @@ def reviewed_kappa_items(ledger_path, selected: list[SelectedItem]) -> list[Revi
         v = ev["verdict"]
         cid = v.get("comparison_id")
         if cid not in strata or cid not in judge:
+            continue
+        # JD-5: CANT_JUDGE is a fail-closed non-answer, not a kappa category —
+        # excluded here exactly as pairs_from_ledger excludes it, so the IPW
+        # escalation path and the raw path agree instead of one counting an
+        # abstention as a disagreement and over-flagging escalation.
+        if judge[cid] == "CANT_JUDGE" or v["winner"] == "CANT_JUDGE":
             continue
         stratum, task_class = strata[cid]
         items.append(

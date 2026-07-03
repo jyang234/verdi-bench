@@ -181,7 +181,10 @@ def test_ac3_mine_candidate():
 
 
 # --- AC-4: admission gate ---------------------------------------------------
-def _pending_manifest(candidate_id="cand-1", sha="s" * 64, miner=None):
+def _pending_manifest(candidate_id="cand-1", sha="s" * 64, miner="miner-bot"):
+    # miner defaults to a recorded id distinct from the "curator" approver, so
+    # admission's approver≠miner bar is satisfiable (a task with no recorded miner
+    # is refused — see test_dp4_3_admit_refuses_unrecorded_miner).
     return CorpusManifest(
         corpus_id="internal-koala",
         semver="1.0.0",
@@ -227,6 +230,21 @@ def test_dp4_3_self_approval_refused(tmp_path):
         admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
                    baseline_ref="b1", keyring=_KEYRING)
     assert manifest.is_schedulable("cand-1") is False
+
+
+def test_dp4_3_admit_refuses_unrecorded_miner(tmp_path):
+    """A candidate with no recorded miner cannot have the approver≠miner bar
+    verified, so admission is refused rather than silently skipping it [CO-7]."""
+    from harness.corpus.admit import SelfApprovalError
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    manifest = _pending_manifest(miner=None)  # miner never recorded
+    _approve(ledger, ctx, "cand-1", "s" * 64, approver="curator-alice")
+    _clean_baseline(ledger, ctx)
+    with pytest.raises(SelfApprovalError):
+        admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+                   baseline_ref="b1", keyring=_KEYRING)
 
 
 def test_dp4_3_off_keyring_signer_refused(tmp_path):

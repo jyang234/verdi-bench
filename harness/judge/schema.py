@@ -83,9 +83,12 @@ class Verdict(BaseModel):
     # comparison's per-arm holdout rates (its deterministic winner) without
     # assuming comparison_id == task_id [RV-3/RV-4].
     task_id: Optional[str] = None
-    # D-P4-1 (a slice of AN-1): the A/B -> physical-arm map, so the judge-vs-human
-    # kappa join resolves both winners to the same arm frame instead of assuming
-    # convention. None on legacy verdicts (analyze falls back to the assumed frame).
+    # D-P4-1 (a slice of AN-1): the A/B -> physical-arm map the judge scored in,
+    # recorded as per-verdict provenance so Phase-5 judge-preference analysis (AN-1)
+    # can attribute a delta to the right arm without assuming convention. (The
+    # Phase-4 kappa join is already frame-correct because review record translates
+    # the human's response pick into this same A=arms[0] frame — arm_map is the
+    # durable record of that frame, read by analyze.) None on legacy verdicts.
     arm_map: Optional[dict[str, str]] = None
     # JD-11: True when orders='single' — D003 order-debiasing was skipped, so a
     # full experiment cannot silently omit it. Rides visibly on the verdict.
