@@ -59,10 +59,11 @@ def get_provider(model_id: str) -> Provider:
 
         return GoogleProvider()
     if provider == "fake":
-        # The deterministic no-network judge — the judge analog of `--engine
-        # fake`, selected by a `fake/...` judge-model prefix. Not a vendor
-        # allow/deny entry: any prefix still resolves or fails closed [D001].
-        from .fake import DeterministicFakeJudge
+        # The deterministic no-network provider — the analog of `--engine fake`,
+        # selected by a `fake/...` model prefix; serves judge verdicts and process
+        # scores. Not a vendor allow/deny entry: any prefix still resolves or
+        # fails closed [D001].
+        from .fake import DeterministicFakeProvider
 
-        return DeterministicFakeJudge()
+        return DeterministicFakeProvider()
     raise ProviderError(f"no client for provider prefix {provider!r}")
