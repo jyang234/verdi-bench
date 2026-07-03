@@ -174,15 +174,15 @@ identity-inequality bar.
      add `cryptography` (pyca; 3.12-compatible) and use **Ed25519**, whose
      signatures are deterministic (RFC 8032) so the signing path introduces no
      unseeded randomness; test fixtures use fixed keypairs.
-  **One sub-decision remains (flagged, needs confirmation before 4E lands):** a
-  bare signature proves only "the holder of *this* key signed," not "an
-  *authorized curator* signed." To be genuinely tamper-resistant, admission
-  should verify the signer against a **trust root** — a small allowlist of
-  authorized curator public keys (committed to the instrument repo or pinned via
-  config). *Recommendation:* add the minimal authorized-curator keyring so a
-  self-generated key cannot launder an approval; without it the signature is an
-  integrity check but not an authorization one. *(Owned by 4E — see the slice for
-  the contract-field migration note.)*
+  **Sub-decision RESOLVED `minimal-authorized-curator-keyring` (jyang):** admission
+  verifies the signer against a **trust root** — a minimal allowlist of authorized
+  curator public keys — so a self-generated key cannot launder an approval. A bare
+  valid signature would be an integrity check only; the keyring makes it an
+  authorization check. Shape: a small keyring of authorized curator public keys
+  (committed to the instrument repo / pinned via config); `admit_task` refuses a
+  signature from a key absent from the keyring (`UnauthorizedCuratorError`), in
+  addition to the signature-validity and signer≠miner checks. *(Owned by 4E — see
+  the slice for the contract-field migration note.)*
 
 - **D-P4-4 (JD-9/PR-5/RV-3/CO-8) — verb surfaces + inputs: RESOLVED
   `bench judge` / `bench review build` / `bench process score` /
@@ -377,12 +377,12 @@ non-self approval, and put calibration on the chain from the run path.
   holdout **content/diff** (today paths only, `cli.py:107-109`) so the
   solution-leakage check is performable. The manifest is saved after an in-memory
   admission.
-  - **Sub-decision open (confirm before this slice lands):** whether admission
-    also verifies the signer against a **trust root** — an allowlist of
-    authorized curator public keys — so a self-generated key cannot launder an
-    approval. *Recommend adding the minimal keyring*; without it the signature is
-    an integrity check, not an authorization one. If deferred, note it explicitly
-    as residual risk in the slice.
+  - **Trust root (RESOLVED `minimal keyring`):** admission verifies the signer
+    against a minimal allowlist of authorized curator public keys (committed to
+    the instrument repo / pinned via config); a signature from a key absent from
+    the keyring is refused (`UnauthorizedCuratorError`), so a self-generated key
+    cannot launder an approval — the signature becomes an authorization check, not
+    just an integrity one.
 - **Run-path calibration hook (CO-4 Phase-4 half):** invoke
   `ledger_calibration_run` (`ledger_ops.py:22`, today only entrypoint/tests) from
   the run/baseline path so a calibration run actually ledgers a `calibration_run`
@@ -390,9 +390,11 @@ non-self approval, and put calibration on the chain from the run path.
   fence to the ledgered status is Phase 5, AN-2.)
 - **Reproduce-first:** a mined candidate cannot be admitted today (no manifest
   insertion, no miner recorded, no `admit` verb) → after, `mine → approve → admit`
-  emits one `task_admitted` only when the approval carries a valid signature;
-  an approval signed by the miner's key is refused (`SelfApprovalError`); a
-  tampered signature is refused at admission; `corpus review` shows holdout
+  emits one `task_admitted` only when the approval carries a valid signature from
+  an authorized-keyring curator; an approval signed by the miner's key is refused
+  (`SelfApprovalError`); a signature from an off-keyring key is refused
+  (`UnauthorizedCuratorError`); a tampered signature is refused at admission;
+  `corpus review` shows holdout
   content; a run-path calibration run emits one `calibration_run` (today nothing
   invokes it). Extends `tests/test_eval8_corpus.py`, `tests/test_eval8_commit.py`,
   a new `tests/test_eval8_attestation.py`.
@@ -508,10 +510,9 @@ Restating the review's §5 Phase 4 exit against the slices:
 - **Judgment calls flagged for cheap veto:** the `review_packet_built` event
   shape and the `arm_map` pulled forward from AN-1 (D-P4-1); the minimal
   cache-storage-plus-`is_schedulable` scope (D-P4-2); the `power_gate_skipped`
-  flag placement. **One open sub-decision** (needs confirmation before 4E lands):
-  whether signed admission also verifies the signer against an authorized-curator
-  **trust root** (recommended) or accepts any valid signature. Direction-setting
-  choices beyond these get a check-in.
+  flag placement. All Phase-4 direction-setting decisions — including the D-P4-3
+  trust-root sub-decision (resolved: minimal authorized-curator keyring) — are now
+  settled; anything new that arises mid-slice gets a check-in.
 
 ## Verification
 
@@ -535,9 +536,9 @@ two guarded field additions (`arm_map` on `judge_verdict`, signature fields on
 `curation_approval`), and the two lock changes (`power_gate_skipped` flag,
 `hypothesized_effect` bounds) — each with a decisions-ledger entry + migration
 note — plus the `cryptography` (Ed25519) dependency for signed attestation. The
-four decisions (D-P4-1..4) are **resolved** and recorded in the owning
-`evalN.decisions.ndjson`; **one sub-decision under D-P4-3 (authorized-curator
-trust root) remains open** and I'll confirm it before 4E lands. Slices land in the
-order 4A → 4B → 4C, 4D, 4E → 4F, 4G, then 4H last. I'll report at natural
+four decisions (D-P4-1..4) and the D-P4-3 trust-root sub-decision (minimal
+authorized-curator keyring) are all **resolved** and recorded in the owning
+`evalN.decisions.ndjson` — Phase 4 has no open direction-setting decisions left.
+Slices land in the order 4A → 4B → 4C, 4D, 4E → 4F, 4G, then 4H last. I'll report at natural
 breakpoints and check in before Phase 5 (statistical correctness). No PR unless
 you ask.
