@@ -411,12 +411,12 @@ the listed condition holds:
 
 | Invariant (§6) | Current status | Flips when |
 |---|---|---|
-| Arms insulated; no rubric/holdout content to the agent | Partially real (leak-refusal test genuine; property test vacuous; grade path agent-forgeable) | XC-4 fixed + Phase 1 exit |
+| Arms insulated; no rubric/holdout content to the agent | **Enforced (Phase 6)** — the insulation property test is now genuine: canary refusal is tested across every request channel (prompt, arm payload, fake_behavior) and the tautological prompt assertion was replaced (XC-4); leak-refusal genuine; Phase 1 exit done | Phase 6 (XC-4 fixed) ✓ |
 | Fail closed; no operation without a ledger event | **Enforced (Phase 3)** — the one-event property sweep covers every ledgered stage operation (12 entrypoints, expected-set asserted); judge/process/review/analyze/corpus fail-closed | Phase 3 exit (all-stage property sweep) ✓ |
-| Claims tagged [computed]/[judgment]; provenance stamped | Tags do not exist (AN-6); provenance real | Phase 5 (tags implemented + owned test) |
+| Claims tagged [computed]/[judgment]; provenance stamped | **Enforced (Phase 5)** — structured `claim_tag` on each finding (`report.py`), renders derive the `[computed]`/`[judgment]` marker, `test_ac6_finding_provenance` asserts every claim carries one; provenance real | Phase 5 (tags implemented + owned test) ✓ |
 | Orchestrator can't tamper (chain tamper-evident) | Chain sound but never verified downstream (PL-6) | Phase 1 exit |
 | experiment.yaml sha-locked; primary/rule immutable | Lock fence real; TOCTOU + re-lock + tasks.yaml holes | Phase 1 exit + D-6 |
-| Local = ADVISORY | Stamped but never surfaced in findings (AN-11) | Phase 5 |
+| Local = ADVISORY | **Enforced (Phase 5)** — the ADVISORY grade tier is surfaced as a label in the renders (`report.py`), not just stamped (AN-11) | Phase 5 ✓ |
 | Internal corpora never enter the instrument repo | **Enforced (Phase 3)** — boundary checked on the actual write destination in `save()` and `corpus mine --out` (CO-1) | Phase 3 (write-destination enforcement) ✓ |
 | Cost ceiling declared and enforced | Schema yes; enforcement per-process with bypasses | Phase 2 exit |
 
