@@ -90,9 +90,9 @@ def verify_chain_cmd(
 ) -> None:
     """Verify the hash chain; nonzero exit names the first broken link."""
     from .ledger.anchors import verify_against_anchor
-    from .ledger.chain import verify_chain
+    from .ledger.query import verify  # read-side seam; never import ledger.chain directly
 
-    result = verify_chain(ledger)
+    result = verify(ledger)
     if not result.ok:
         typer.echo(f"CHAIN BROKEN: {result.detail}", err=True)
         raise typer.Exit(code=1)
