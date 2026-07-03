@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from harness.run.redact import redact_artifacts, redact_text
 from harness.run.seam import run_trial
 from harness.run.types import RunConfig, Task
@@ -82,3 +84,90 @@ def test_ac8_extra_patterns_configurable(tmp_path):
     n = redact_artifacts(d, extra_patterns=[r"KOALA-[A-Z0-9\-]+"])
     assert n == 1
     assert "KOALA-SECRET-123" not in (d / "log.txt").read_text()
+
+
+def test_ac8_denylist_scans_unlisted_suffixes(tmp_path):
+    """RN-6: files outside the old allowlist (.bak, .env.local) must still scrub —
+    scan everything except known binaries, not an allowlist that fails open."""
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "backup.bak").write_text("token: ghp_" + "a" * 36 + "\n")
+    (d / ".env.local").write_text("KEY=sk-" + "b" * 32 + "\n")
+    # a known-binary suffix is still skipped (over-scanning binaries is pointless)
+    (d / "logo.png").write_text("sk-" + "c" * 32 + "\n")
+    n = redact_artifacts(d)
+    assert n == 2
+    assert "ghp_" not in (d / "backup.bak").read_text()
+    assert "sk-" not in (d / ".env.local").read_text()
+    assert "sk-" in (d / "logo.png").read_text()  # binary untouched
+
+
+def test_ac8_full_pem_body_redacted():
+    """RN-8: the whole PEM block scrubs, not just the BEGIN header — the key body
+    (the part a downstream scanner without the marker would miss) must be gone."""
+    pem = (
+        "-----BEGIN RSA PRIVATE KEY-----\n"
+        "MIIEowIBAAKCAQEAsecretbodyline1\n"
+        "abcDEF123+/keymaterialxyz==\n"
+        "-----END RSA PRIVATE KEY-----"
+    )
+    scrubbed, n = redact_text(f"leaked:\n{pem}\ntail")
+    assert n >= 1
+    assert "MIIEowIBAAK" not in scrubbed  # body gone
+    assert "keymaterialxyz" not in scrubbed
+    assert "PRIVATE KEY" not in scrubbed  # markers gone too
+    assert "leaked:" in scrubbed and "tail" in scrubbed
+
+
+def test_ac8_redacts_whole_workspace_not_just_artifacts(tmp_path):
+    """RN-7: the agent writes a secret into a workspace file OUTSIDE artifacts/;
+    redaction must cover the whole workspace (harbor mounts it rw, grade reads it)."""
+    from harness.run.engines.fake import FakeEngine
+
+    secret = "sk-" + "w" * 32
+    task = Task(id="t", prompt="p", fake_behavior={
+        "native_log": {},
+        "workspace_files": {"solution.py": f"API_KEY = '{secret}'\n"},
+    })
+    run_trial(task, _arm(), tmp_path / "ws", RunConfig(engine=FakeEngine()))
+    sol = (tmp_path / "ws" / "solution.py").read_text()
+    assert secret not in sol
+    assert "[REDACTED]" in sol
+
+
+def test_ac8_injected_key_value_redacted_as_literal(tmp_path):
+    """RN-9: an injected provider key whose SHAPE isn't a known pattern still
+    scrubs, because its literal value is added from config.provider_keys."""
+    from harness.run.engines.fake import FakeEngine
+
+    odd = "internal-corp-token-2f9c"  # matched by no _SECRET_PATTERNS shape
+    task = Task(id="t", prompt="p", fake_behavior={
+        "native_log": {},
+        "transcript_extra": [f"export CORP_TOKEN={odd}"],
+    })
+    cfg = RunConfig(engine=FakeEngine(), provider_keys={"CORP_TOKEN": odd})
+    run_trial(task, _arm(), tmp_path / "ws", cfg)
+    transcript = (tmp_path / "ws" / "artifacts" / "transcript.txt").read_text()
+    assert odd not in transcript
+
+
+def test_ac8_unreadable_file_fails_loud(tmp_path, monkeypatch):
+    """RN-16: an unreadable file at the sole write barrier is a loud failure, not
+    a silent skip that would let an un-scanned artifact through."""
+    import pytest
+
+    from harness.run.redact import RedactionError
+
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "secrets.log").write_text("data", encoding="utf-8")
+    orig = Path.read_bytes
+
+    def boom(self):
+        if self.name == "secrets.log":
+            raise OSError("simulated unreadable")
+        return orig(self)
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    with pytest.raises(RedactionError):
+        redact_artifacts(d)

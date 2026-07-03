@@ -10,6 +10,7 @@ raised as an exception.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,8 +91,17 @@ def run_trial(
 
     result = config.engine.run(request)
 
-    # Redact secrets from captured artifacts before they persist [AC-8].
-    redact_artifacts(result.artifacts_dir, config.redact_extra_patterns)
+    # Redact secrets from the whole trial workspace before it persists [AC-8].
+    # RN-7: the agent can write secrets anywhere in the workspace (Harbor mounts
+    # it rw and the grader later reads it), not just under artifacts/. RN-9: the
+    # injected provider-key VALUES scrub as literals even when their shape is not
+    # a known key pattern. (The trial request is mounted read-only OUTSIDE the
+    # workspace, so it is not a redaction target [EVAL-4-D-8].)
+    extra_patterns = list(config.redact_extra_patterns)
+    extra_patterns += [
+        re.escape(v) for v in (config.provider_keys or {}).values() if v
+    ]
+    redact_artifacts(workspace, extra_patterns)
 
     # Normalize telemetry from agent-native logs [AC-2]; unmeasurable ⇒ null.
     adapter = get_adapter(arm.platform)

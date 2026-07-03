@@ -37,6 +37,15 @@ class FakeEngine:
             json.dumps(native_log), encoding="utf-8"
         )
 
+        # FAKE-ENGINE ONLY: simulate the agent writing files into its workspace
+        # OUTSIDE artifacts/ (its solution, scratch configs, …). Lets insulation
+        # and redaction tests exercise the whole-workspace surface a real trial
+        # exposes, not just the captured transcript.
+        for rel, content in (b.get("workspace_files") or {}).items():
+            wf = Path(request.workspace) / rel
+            wf.parent.mkdir(parents=True, exist_ok=True)
+            wf.write_text(content, encoding="utf-8")
+
         outcome = Outcome(b.get("outcome", "completed"))
         egress_attempts = list(b.get("egress_attempts", []))
         egress_violation = False
