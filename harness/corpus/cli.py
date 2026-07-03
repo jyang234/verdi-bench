@@ -53,8 +53,13 @@ def register(app: typer.Typer) -> None:
         seed: int = typer.Option(..., "--seed"),
         size: int = typer.Option(30, "--size"),
         stratum_key: str = typer.Option("category", "--stratum-key"),
+        ledger: Path = typer.Option(
+            None, "--ledger", help="Ledger to record the subset_draw event [CO-9]"
+        ),
     ) -> None:
         """Select and record a stratified calibration subset."""
+        from ..ledger.events import EventContext
+        from .ledger_ops import ledger_subset_draw
         from .registry import CorpusManifest
         from .stratify import calibration_subset
 
@@ -63,6 +68,11 @@ def register(app: typer.Typer) -> None:
             manifest, seed, target_size=size, stratum_key=stratum_key
         )
         manifest.save(manifest_path)
+        # CO-9: ledger the draw so the seeded selection is auditable and
+        # tamper-evident, not only in the mutable manifest JSON.
+        if ledger is not None:
+            ctx = EventContext(experiment_id=manifest.corpus_id, actor=_actor())
+            ledger_subset_draw(ledger, ctx, manifest, subset)
         typer.echo(f"subset: {len(subset.task_ids)} task(s) over {len(subset.strata['sizes'])} strata")
 
     @corpus_app.command("mine")
@@ -80,6 +90,11 @@ def register(app: typer.Typer) -> None:
             files=[MRFile(**f) for f in data.get("files", [])],
         )
         candidate = mine_mr(mr, ticket.read_text(encoding="utf-8"))
+        # CO-1: a mined candidate carries ticket text + holdout contents — internal
+        # corpus data that must never be written into the instrument repo.
+        from .registry import assert_outside_instrument
+
+        assert_outside_instrument(out)
         out.write_text(
             json.dumps(candidate.__dict__, sort_keys=True, indent=2), encoding="utf-8"
         )

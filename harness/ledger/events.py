@@ -394,6 +394,84 @@ def record_reveal(
 # EVAL-8 events
 # ---------------------------------------------------------------------------
 CURATION_APPROVAL = register_event("curation_approval")
+TASK_ADMITTED = register_event("task_admitted")
+CALIBRATION_RUN = register_event("calibration_run")
+SUBSET_DRAW = register_event("subset_draw")
+
+
+def record_task_admitted(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    candidate_id: str,
+    task_sha: str,
+    baseline_ref: str,
+) -> dict:
+    """Ledger a corpus admission decision [EVAL-8 §7.2, CO-4].
+
+    Admission (curation approval AND a clean baseline, both chain-verified) flips
+    a candidate to ``admitted``; this event puts that decision on the chain rather
+    than only in mutable manifest JSON. **Additive event type** — old ledgers lack
+    it, so no existing chain is invalidated."""
+    return emit(
+        ledger_path,
+        ctx,
+        TASK_ADMITTED,
+        {"candidate_id": candidate_id, "task_sha": task_sha, "baseline_ref": baseline_ref},
+    )
+
+
+def record_calibration_run(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    corpus_id: str,
+    semver: str,
+    kind: str,
+    run: dict,
+    status: str,
+) -> dict:
+    """Ledger a corpus calibration run [EVAL-8 §7.2, AC-2, CO-4].
+
+    Calibration status must be chain-anchored, not hand-editable manifest JSON —
+    a hand-edited ``full-run-validated`` status otherwise passes the official
+    fence. **Additive event type**."""
+    return emit(
+        ledger_path,
+        ctx,
+        CALIBRATION_RUN,
+        {"corpus_id": corpus_id, "semver": semver, "kind": kind, "run": run, "status": status},
+    )
+
+
+def record_subset_draw(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    corpus_id: str,
+    semver: str,
+    seed: int,
+    stratum_key: str,
+    task_ids: list,
+    strata: dict,
+) -> dict:
+    """Ledger a seeded stratified calibration-subset draw [EVAL-8 §7.2, CO-9].
+
+    The draw was recorded only in mutable manifest JSON; ledger it so the
+    selection is auditable and tamper-evident. **Additive event type**."""
+    return emit(
+        ledger_path,
+        ctx,
+        SUBSET_DRAW,
+        {
+            "corpus_id": corpus_id,
+            "semver": semver,
+            "seed": seed,
+            "stratum_key": stratum_key,
+            "task_ids": task_ids,
+            "strata": strata,
+        },
+    )
 
 
 def record_curation_approval(

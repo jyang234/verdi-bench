@@ -43,6 +43,39 @@ class BoundaryViolationError(CorpusError):
     """An internal corpus targeted a path inside the instrument repo [AC-5]."""
 
 
+class UnsafeTaskIdError(CorpusError):
+    """A registry-supplied task_id would traverse outside the task cache [CO-6]."""
+
+
+def _assert_safe_task_id(task_id: str) -> str:
+    """Reject a task_id that could escape the cache dir when used as a filename.
+
+    The id becomes ``<cache>/tasks/<task_id>.json``; a separator, ``..`` segment,
+    absolute path, or empty id could write outside the cache, so it is refused at
+    the manifest boundary — a traversal id is unrepresentable [CO-6]."""
+    if not task_id or task_id in (".", ".."):
+        raise UnsafeTaskIdError(f"empty or dotted task_id {task_id!r}")
+    if "/" in task_id or "\\" in task_id or "\x00" in task_id:
+        raise UnsafeTaskIdError(f"task_id {task_id!r} contains a path separator")
+    if ".." in Path(task_id).parts or Path(task_id).is_absolute():
+        raise UnsafeTaskIdError(f"task_id {task_id!r} traverses outside the cache")
+    return task_id
+
+
+def assert_outside_instrument(path) -> None:
+    """Refuse a write destination inside the instrument repo tree [CO-1].
+
+    Internal corpora (candidate JSON, internal manifests) carry holdout content
+    and must never be written into the instrument repo. Enforced on the actual
+    destination path, not just a declared boundary string."""
+    resolved = Path(path).resolve()
+    if resolved == INSTRUMENT_ROOT or INSTRUMENT_ROOT in resolved.parents:
+        raise BoundaryViolationError(
+            f"refusing to write {resolved} inside the instrument repo "
+            f"{INSTRUMENT_ROOT}; internal corpora never enter the instrument repo [AC-5]"
+        )
+
+
 class TaskEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -56,6 +89,11 @@ class TaskEntry(BaseModel):
     metadata: dict = {}
     # ``format`` is a Literal ⇒ a non-harbor task fails schema by construction,
     # the strongest form of the D003 rule (master plan §7.4 / EVAL-1-D005).
+
+    @field_validator("task_id")
+    @classmethod
+    def _task_id_is_safe(cls, v: str) -> str:
+        return _assert_safe_task_id(v)
 
 
 class Dataset(BaseModel):
@@ -214,9 +252,12 @@ class CorpusManifest(BaseModel):
 
     def save(self, path) -> Path:
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # validate structural rules before persisting
+        # validate structural rules before persisting; an internal corpus is also
+        # refused a destination inside the instrument repo [CO-1].
         self.assert_boundary()
+        if self.kind == "internal":
+            assert_outside_instrument(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.to_json() + "\n", encoding="utf-8")
         return path
 
