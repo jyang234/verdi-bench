@@ -137,8 +137,12 @@ class HarborEngine:
             cmd, request.timeout_s, env=request.provider_keys or {}
         )
 
+        failure_reason: Optional[str] = None
         if result.daemon_error:
             outcome = Outcome.infra_failed
+            # the docker daemon/config error (exit 125) — a real reason the
+            # scheduler can ledger, not the fake-only placeholder [RN-14]
+            failure_reason = "daemon_error"
         elif result.timed_out:
             outcome = Outcome.timeout
         else:
@@ -163,6 +167,7 @@ class HarborEngine:
             egress_violation=egress_violation,
             egress_attempts=egress_attempts,
             executed_at=request.ts,
+            failure_reason=failure_reason,
         )
 
     @staticmethod

@@ -88,6 +88,9 @@ class EngineResult:
     executed_at: Optional[str] = None
     # proxy-metered cost, kept as a cross-check signal only [risks §10]
     proxy_metered_cost: Optional[float] = None
+    # machine-readable reason an infra failure occurred, set by the engine so the
+    # scheduler ledgers a real reason instead of a fake-only placeholder [RN-14]
+    failure_reason: Optional[str] = None
 
 
 class Engine(Protocol):

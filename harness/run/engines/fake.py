@@ -71,4 +71,5 @@ class FakeEngine:
             egress_attempts=egress_attempts,
             executed_at=request.ts,
             proxy_metered_cost=b.get("proxy_metered_cost"),
+            failure_reason=b.get("infra_reason"),  # scripted reason [RN-14]
         )

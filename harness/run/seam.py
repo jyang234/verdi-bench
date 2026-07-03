@@ -121,6 +121,10 @@ def run_trial(
         flags.proxy_metered_cost = result.proxy_metered_cost
         if telemetry.cost is not None:
             flags.proxy_cost_delta = round(result.proxy_metered_cost - telemetry.cost, 6)
+    if result.failure_reason is not None:
+        # carry the engine's infra-failure reason so the scheduler ledgers it
+        # instead of the fake-only fake_behavior placeholder [RN-14]
+        flags.failure_reason = result.failure_reason
 
     provenance = Provenance(
         image_digest=result.image_digest,
