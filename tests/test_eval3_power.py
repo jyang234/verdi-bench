@@ -106,10 +106,17 @@ def test_pl5_calibration_variance_from_runs():
 
 
 def test_ac4_mde_computed():
-    res = mde_check(_spec(), AssumedVariance(p=0.5, rho=0.3, n_tasks=80), **FAST)
-    assert res["method"] == "paired_binary_bootstrap_sim"
-    # a bigger N should detect a smaller-or-equal effect than a tiny N
-    assert res["mde"] is None or res["mde"] <= 0.5
+    # More task clusters => more power => a strictly smaller detectable effect.
+    # (The old assertion `mde is None or mde <= 0.5` was a tautology: the swept
+    # deltas top out at 0.5, so it held regardless of what the sim computed [XC-4].)
+    small = mde_check(_spec(), AssumedVariance(p=0.5, rho=0.3, n_tasks=8), **FAST)
+    large = mde_check(_spec(), AssumedVariance(p=0.5, rho=0.3, n_tasks=200), **FAST)
+    assert small["method"] == "paired_binary_bootstrap_sim"
+    # the small design must actually resolve an MDE in range (not None)...
+    assert small["mde"] is not None
+    # ...and the larger design must detect a strictly smaller effect. Fails if
+    # the power model stops responding to N.
+    assert large["mde"] is not None and large["mde"] < small["mde"]
 
 
 def test_ac4_assumed_variance_flagged():
