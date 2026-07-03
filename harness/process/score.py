@@ -24,11 +24,17 @@ from typing import Callable, Literal, Optional
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..analyze.confounds import judge_vendor_overlap
-from ..judge.providers.base import Provider, ProviderError, get_provider
+from ..judge.providers.base import (
+    Provider,
+    ProviderError,
+    ProviderRefusal,
+    ProviderTimeout,
+    get_provider,
+)
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import assert_chain, find_events
-from .packet import ProcessPacket, build_process_packet
+from .packet import ProcessPacket, RedactionLeakError, build_process_packet
 from .rubric import ProcessRubric, SCALE_MAX, SCALE_MIN
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -39,6 +45,24 @@ DEFAULT_MARGIN = 1.15  # conservative: assume the payload is 15% larger than cou
 class TranscriptPolicy(str, Enum):
     full_or_cant_score = "full_or_cant_score"
     # recorded_truncation would add a branch here [D004]; v1 does not truncate.
+
+
+class CantScoreReason(str, Enum):
+    """Enumerated per-dimension fail-closed reasons [EVAL-9 §7.2].
+
+    A closed set, mirroring judge's ``CantJudgeReason`` and grade's
+    ``cant_grade`` taxonomy — no more ad-hoc "parse" vs "unparsed" strings.
+    Stored on ``DimensionScore.cant_score_reason`` (str), so additive."""
+
+    redaction_leak = "redaction_leak"
+    context_overflow = "context_overflow"
+    provider_error = "provider_error"
+    timeout = "timeout"
+    refusal = "refusal"
+    parse = "parse"
+    judge_declared = "judge_declared"  # the judge replied the instructed "CANT_SCORE"
+    out_of_range = "out_of_range"
+    human_cant = "human_cant"
 
 
 # --- schema ----------------------------------------------------------------
@@ -88,6 +112,15 @@ class ProcessScore(BaseModel):
     scores: list[DimensionScore]
     provenance: ProcessScoreProvenance
 
+    @model_validator(mode="after")
+    def _no_duplicate_dims(self) -> "ProcessScore":
+        # PR-8: a duplicate dimension double-counts in kappa/correlation; refuse it
+        # at the schema so no path (judge or human) can ledger one.
+        ids = [s.dim_id for s in self.scores]
+        if len(ids) != len(set(ids)):
+            raise ValueError("process score has duplicate dimension ids")
+        return self
+
 
 # --- token counting seam ---------------------------------------------------
 def _heuristic_token_count(text: str) -> int:
@@ -100,9 +133,11 @@ def _emit(ledger_path, ctx, score: ProcessScore) -> ProcessScore:
     return score
 
 
-def _all_cant(rubric: ProcessRubric, reason: str, tokens: Optional[int] = None) -> list[DimensionScore]:
+def _all_cant(
+    rubric: ProcessRubric, reason: CantScoreReason, tokens: Optional[int] = None
+) -> list[DimensionScore]:
     return [
-        DimensionScore(dim_id=d.id, cant_score_reason=reason, tokens=tokens)
+        DimensionScore(dim_id=d.id, cant_score_reason=reason.value, tokens=tokens)
         for d in rubric.dimensions
     ]
 
@@ -112,14 +147,22 @@ def _parse_judge_scores(text: str, rubric: ProcessRubric) -> list[DimensionScore
     if not m:
         raise ValueError("no JSON object in judge process output")
     raw = json.loads(m.group(0)).get("scores", {})
+    # PR-1: a non-object ``scores`` (e.g. a list) must fail closed to parse, not
+    # raise AttributeError on ``raw.get`` and escape with no event.
+    if not isinstance(raw, dict):
+        raise ValueError(f"judge process 'scores' must be an object, got {type(raw).__name__}")
     out: list[DimensionScore] = []
     for d in rubric.dimensions:
         v = raw.get(d.id)
-        if isinstance(v, bool) or not isinstance(v, int):
-            # missing or non-integer ⇒ per-dimension CANT_SCORE(unparsed)
-            out.append(DimensionScore(dim_id=d.id, cant_score_reason="unparsed"))
+        if v == "CANT_SCORE":
+            # PR-4: the judge used the instructed sentinel ⇒ a first-class,
+            # judge-declared CANT_SCORE, not an "unparsed" mishap.
+            out.append(DimensionScore(dim_id=d.id, cant_score_reason=CantScoreReason.judge_declared.value))
+        elif isinstance(v, bool) or not isinstance(v, int):
+            # missing or non-integer ⇒ per-dimension CANT_SCORE(parse)
+            out.append(DimensionScore(dim_id=d.id, cant_score_reason=CantScoreReason.parse.value))
         elif not d.is_valid_score(v):
-            out.append(DimensionScore(dim_id=d.id, cant_score_reason="out_of_range"))
+            out.append(DimensionScore(dim_id=d.id, cant_score_reason=CantScoreReason.out_of_range.value))
         else:
             out.append(DimensionScore(dim_id=d.id, score=v))
     return out
@@ -164,8 +207,13 @@ def score_trial_process(
                          comparison_id=comparison_id, scores=scores, provenance=prov),
         )
 
-    # Redaction check happens in build_process_packet (fail closed on secrets).
-    packet: ProcessPacket = build_process_packet(transcript, rubric, telemetry=telemetry)
+    # PR-2: the redaction re-scan in build_process_packet raises RedactionLeakError;
+    # it must fail closed to CANT_SCORE(redaction_leak) (mirroring judge's
+    # identity_leak), never escape with no event.
+    try:
+        packet: ProcessPacket = build_process_packet(transcript, rubric, telemetry=telemetry)
+    except RedactionLeakError:
+        return _score(_all_cant(rubric, CantScoreReason.redaction_leak))
     messages = packet.render_judge()
 
     # Full-or-CANT_SCORE token gate [D004]: count the *rendered payload*, apply a
@@ -173,18 +221,71 @@ def score_trial_process(
     payload_text = "".join(m["content"] for m in messages)
     counted = token_counter(payload_text)
     if counted * margin > max_context_tokens:
-        return _score(_all_cant(rubric, "context_overflow", tokens=counted))
+        return _score(_all_cant(rubric, CantScoreReason.context_overflow, tokens=counted))
 
-    provider = provider or get_provider(provider_model)
+    # PR-3: resolve the provider inside the fail-closed envelope so an unknown
+    # prefix records CANT_SCORE(provider_error) instead of escaping.
+    if provider is None:
+        try:
+            provider = get_provider(provider_model)
+        except ProviderError:
+            return _score(_all_cant(rubric, CantScoreReason.provider_error))
+    # PR-4: split timeout/refusal from the generic provider error.
     try:
         text = provider.complete(provider_model, messages, 0.0)
+    except ProviderTimeout:
+        return _score(_all_cant(rubric, CantScoreReason.timeout))
+    except ProviderRefusal:
+        return _score(_all_cant(rubric, CantScoreReason.refusal))
     except ProviderError:
-        return _score(_all_cant(rubric, "provider_error"))
+        return _score(_all_cant(rubric, CantScoreReason.provider_error))
     try:
         scores = _parse_judge_scores(text, rubric)
-    except (ValueError, json.JSONDecodeError):
-        return _score(_all_cant(rubric, "parse"))
+    except (ValueError, TypeError, AttributeError, json.JSONDecodeError):
+        return _score(_all_cant(rubric, CantScoreReason.parse))
     return _score(scores)
+
+
+def human_scores_from_mapping(
+    raw: dict, rubric: ProcessRubric
+) -> list[DimensionScore]:
+    """Parse a ``{dim_id: 1-5 | "CANT_SCORE"}`` mapping against the rubric [PR-7].
+
+    Every rubric dimension must appear exactly once; an unknown or missing key is
+    a loud error, never a silent ``CANT_SCORE("human_cant")`` that degrades a real
+    score. ``"CANT_SCORE"`` is the only accepted non-numeric value.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError(f"human scores must be an object, got {type(raw).__name__}")
+    valid = set(rubric.dimension_ids)
+    unknown = sorted(set(raw) - valid)
+    if unknown:
+        raise ValueError(f"unknown dimension id(s) {unknown}; rubric dims are {rubric.dimension_ids}")
+    missing = sorted(valid - set(raw))
+    if missing:
+        raise ValueError(f"missing score(s) for dimension(s) {missing}; every dimension must be scored")
+    out: list[DimensionScore] = []
+    for d in rubric.dimensions:
+        v = raw[d.id]
+        if v == "CANT_SCORE":
+            out.append(DimensionScore(dim_id=d.id, cant_score_reason=CantScoreReason.human_cant.value))
+        else:
+            out.append(DimensionScore(dim_id=d.id, score=int(v)))
+    return out
+
+
+def _assert_scores_cover_rubric(rubric: ProcessRubric, scores: list[DimensionScore]) -> None:
+    """PR-8: refuse a human score set whose dims do not match the rubric exactly."""
+    ids = [s.dim_id for s in scores]
+    if len(ids) != len(set(ids)):
+        raise ValueError("duplicate dimension ids in process score")
+    valid = set(rubric.dimension_ids)
+    unknown = sorted(set(ids) - valid)
+    if unknown:
+        raise ValueError(f"unknown dimension id(s) {unknown}; rubric {rubric.rubric_version} dims are {rubric.dimension_ids}")
+    missing = sorted(valid - set(ids))
+    if missing:
+        raise ValueError(f"missing score(s) for dimension(s) {missing}; every rubric dimension must be scored")
 
 
 class ProcessSequencingError(RuntimeError):
@@ -215,6 +316,9 @@ def record_human_process_score(
     verdicts, so process comes strictly after verdict + reveal. Refused if no
     reveal event references ``comparison_id``.
     """
+    # PR-8: refuse a score set that does not cover the rubric exactly (unknown,
+    # missing, or duplicate dims) before touching the ledger.
+    _assert_scores_cover_rubric(rubric, dimension_scores)
     # The firewall reads the ledger to check the reveal happened; verify the
     # chain first so a forged reveal cannot let trajectory scoring run before the
     # genuine outcome verdict [PL-6/AC-3].

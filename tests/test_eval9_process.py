@@ -181,6 +181,121 @@ def test_ac4_provider_error_cant_score(tmp_path):
     assert all(s.cant_score_reason == "provider_error" for s in ps.scores)
 
 
+# --- §7.2 fail-closed sweep (PR-1/2/3/4/7/8) --------------------------------
+def test_pr1_list_shaped_scores_fail_closed(tmp_path):
+    # {"scores": [3,4,5]} (a list, not a dict) raised AttributeError past the
+    # parse handler -> escape with no event. It must fail closed to one event.
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    r = _rubric()
+    fp = FakeProvider([json.dumps({"scores": [3, 4, 5]})])
+    ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
+                             scorer_id="judge", provider=fp)
+    assert all(s.cant_score_reason == "parse" for s in ps.scores)
+    assert len(find_events(ledger, "process_score")) == 1
+
+
+def test_pr2_redaction_leak_fails_closed(tmp_path):
+    # a surviving secret canary raised RedactionLeakError before any try -> escape.
+    # It must record one process_score, all dims CANT_SCORE(redaction_leak).
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    r = _rubric()
+    leaky = "token AKIA" + "1234567890123456"
+    ps = score_trial_process("t1", leaky, r, ledger_path=ledger, ctx=ctx, ts="t",
+                             scorer_id="judge", provider=FakeProvider(["unused"]))
+    assert all(s.cant_score_reason == "redaction_leak" for s in ps.scores)
+    assert len(find_events(ledger, "process_score")) == 1
+
+
+def test_pr3_unknown_provider_fails_closed(tmp_path):
+    # get_provider ran before the try; an unknown prefix escaped with no event.
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    r = _rubric()
+    ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
+                             scorer_id="judge", provider_model="mystery/model-x")
+    assert all(s.cant_score_reason == "provider_error" for s in ps.scores)
+    assert len(find_events(ledger, "process_score")) == 1
+
+
+def test_pr4_judge_declared_cant_score_reason(tmp_path):
+    # a judge-declared per-dimension "CANT_SCORE" (what the packet instructs) must
+    # ledger reason "judge_declared", not the ad-hoc "unparsed".
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    r = _rubric()
+    scores = {d: 3 for d in r.dimension_ids}
+    first = r.dimension_ids[0]
+    scores[first] = "CANT_SCORE"
+    fp = FakeProvider([json.dumps({"scores": scores})])
+    ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
+                             scorer_id="judge", provider=fp)
+    by_id = {s.dim_id: s for s in ps.scores}
+    assert by_id[first].cant_score_reason == "judge_declared"
+    assert by_id[r.dimension_ids[1]].score == 3
+
+
+def test_pr4_timeout_and_refusal_distinct_reasons(tmp_path):
+    from harness.judge.providers.base import ProviderRefusal, ProviderTimeout
+
+    ctx = fixed_ctx()
+    r = _rubric()
+    for i, (exc, reason) in enumerate([
+        (ProviderTimeout("slow"), "timeout"),
+        (ProviderRefusal("no"), "refusal"),
+    ]):
+        ledger = tmp_path / f"l{i}.ndjson"
+        ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
+                                 scorer_id="judge", provider=FakeProvider([exc]))
+        assert all(s.cant_score_reason == reason for s in ps.scores)
+
+
+def test_pr7_human_scores_reject_unknown_and_missing_dims():
+    # the CLI parsing helper must error on a typoed/unknown dim and on a missing
+    # dim rather than silently degrading a real score to CANT_SCORE("human_cant").
+    from harness.process.score import human_scores_from_mapping
+
+    r = _rubric()
+    full = {d: 4 for d in r.dimension_ids}
+    # a typoed/unknown key is rejected
+    with pytest.raises(ValueError):
+        human_scores_from_mapping({**full, "planing_quality": 3}, r)
+    # a missing dimension is rejected (no silent human_cant)
+    partial = dict(full)
+    partial.pop(r.dimension_ids[0])
+    with pytest.raises(ValueError):
+        human_scores_from_mapping(partial, r)
+    # a complete, well-formed mapping parses (CANT_SCORE allowed explicitly)
+    ok = human_scores_from_mapping({**full, r.dimension_ids[0]: "CANT_SCORE"}, r)
+    assert len(ok) == len(r.dimension_ids)
+
+
+def test_pr8_human_score_validates_against_rubric(tmp_path):
+    from harness.ledger.events import record_reveal
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    r = _rubric()
+    record_reveal(ledger, ctx, verdict_event_id="cmp-1",
+                  revealed={"judge_verdict_id": "j", "arm_identities": {}})
+    good = [DimensionScore(dim_id=d.id, score=4) for d in r.dimensions]
+    # a subset (missing dims) is refused
+    with pytest.raises(ValueError):
+        record_human_process_score("t1", r, good[:-1], ledger_path=ledger, ctx=ctx,
+                                   ts="t", scorer_id="human", comparison_id="cmp-1")
+    # an unknown dim is refused
+    bad = good + [DimensionScore(dim_id="not_a_dim", score=3)]
+    with pytest.raises(ValueError):
+        record_human_process_score("t1", r, bad, ledger_path=ledger, ctx=ctx,
+                                   ts="t", scorer_id="human", comparison_id="cmp-1")
+    # a duplicate dim is refused
+    dup = good + [DimensionScore(dim_id=r.dimension_ids[0], score=2)]
+    with pytest.raises(ValueError):
+        record_human_process_score("t1", r, dup, ledger_path=ledger, ctx=ctx,
+                                   ts="t", scorer_id="human", comparison_id="cmp-1")
+
+
 # --- AC-5: weighted kappa + per-dimension gates -----------------------------
 def test_ac5_weighted_kappa():
     # quadratic-weighted kappa hand-check (see calibrate/kappa derivation): 2/3
