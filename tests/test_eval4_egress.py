@@ -30,10 +30,14 @@ def test_ac3_egress_flagged(tmp_path):
     config = RunConfig(engine=FakeEngine(), proxy=proxy)
     rec = run_trial(task, _arm(), tmp_path / "ws", config)
     assert rec.flags.egress_violation is True
-    # proxy log recorded the denial (the cross-check signal), keyed to trial
-    log = (tmp_path / "proxy.log").read_text()
-    assert "DENY evil.example.com" in log
-    assert rec.trial_id in log
+    # proxy log is structured JSONL keyed to the trial [RN-11]: the denial for
+    # the forbidden host is attributed to this trial.
+    import json
+
+    lines = [json.loads(l) for l in (tmp_path / "proxy.log").read_text().splitlines() if l.strip()]
+    deny = [r for r in lines if r["host"] == "evil.example.com"]
+    assert deny and deny[0]["decision"] == "deny"
+    assert deny[0]["trial"] == rec.trial_id
 
 
 def test_ac3_no_violation_when_allowlisted(tmp_path):

@@ -100,7 +100,9 @@ def test_ac3_harbor_command_carries_proxy_and_key_names(tmp_path):
     run_trial(Task(id="t", prompt="p"), _arm(), tmp_path / "ws", cfg)
     cmd = runner.last_cmd
     assert "verdi-metered" in cmd  # routed through the metering network
-    assert "HTTP_PROXY=http://proxy:3128" in cmd
+    # HTTP_PROXY points at the metering proxy (its exact per-trial-auth form is
+    # asserted in test_eval4_harbor_egress.py).
+    assert any(t.startswith("HTTP_PROXY=") and "proxy:3128" in t for t in cmd)
     assert "ANTHROPIC_API_KEY" in cmd  # NAME on the argv
     assert "sk-secret" not in " ".join(cmd)  # VALUE never on the argv
     assert runner.last_env.get("ANTHROPIC_API_KEY") == "sk-secret"  # value via child env

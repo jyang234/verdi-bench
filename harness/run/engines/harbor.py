@@ -39,12 +39,42 @@ HARBOR_VERSION = "harbor-pinned-0.1.0"  # version-pinned in images [D005]
 # trial image's entrypoint reads it to learn its task and which arm it is.
 TRIAL_REQUEST_MOUNT = "/verdi/request.json"
 
+# The restricted docker network a proxied trial joins — it reaches only the
+# metering proxy, nothing else [RN-11, D001].
+METERED_NETWORK = "verdi-metered"
+
+
+def _container_name(trial_id: str) -> str:
+    """Deterministic container name for a trial, so a timed-out container is
+    killable by name [RN-10]."""
+    return f"verdi-{trial_id}"
+
+
+def _with_trial_auth(proxy_url: str, trial_id: str) -> str:
+    """Insert the trial id as the proxy-auth username so the metering proxy
+    attributes egress to this trial [RN-11, D-10]. A URL that already carries
+    userinfo is left as-is."""
+    if "://" not in proxy_url:
+        return proxy_url
+    scheme, rest = proxy_url.split("://", 1)
+    if "@" in rest:
+        return proxy_url
+    return f"{scheme}://{trial_id}@{rest}"
+
 
 @dataclass
 class RunOutput:
     exit_status: int
     daemon_error: bool = False
     timed_out: bool = False
+
+
+def _name_from_cmd(cmd: list[str]) -> Optional[str]:
+    if "--name" in cmd:
+        i = cmd.index("--name")
+        if i + 1 < len(cmd):
+            return cmd[i + 1]
+    return None
 
 
 class CommandRunner(Protocol):
@@ -54,9 +84,43 @@ class CommandRunner(Protocol):
 
     def resolve_digest(self, image: str) -> Optional[str]: ...
 
+    def ensure_metered_network(self) -> None: ...
+
 
 class DockerCliRunner:
     """Default runner shelling out to the ``docker`` CLI."""
+
+    def ensure_metered_network(self) -> None:
+        """Create the restricted metering network if it's absent [RN-11].
+
+        ``--internal`` gives the trial no direct external connectivity — only the
+        proxy (attached to this network) can reach model APIs. Best-effort: if
+        docker is unreachable the trial itself fails closed as a daemon_error, so
+        this does not mask that."""
+        try:
+            inspect = subprocess.run(
+                ["docker", "network", "inspect", METERED_NETWORK],
+                capture_output=True, timeout=30, check=False,
+            )
+            if inspect.returncode == 0:
+                return
+            subprocess.run(
+                ["docker", "network", "create", "--internal", METERED_NETWORK],
+                capture_output=True, timeout=30, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return
+
+    @staticmethod
+    def _kill(name: Optional[str]) -> None:
+        """Kill and reap a container by name [RN-10]. Best-effort."""
+        if not name:
+            return
+        for args in (["docker", "kill", name], ["docker", "wait", name]):
+            try:
+                subprocess.run(args, capture_output=True, timeout=30, check=False)
+            except (OSError, subprocess.SubprocessError):
+                pass
 
     def resolve_digest(self, image: str) -> Optional[str]:
         if "@sha256:" in image:
@@ -86,6 +150,11 @@ class DockerCliRunner:
                 cmd, capture_output=True, text=True, timeout=timeout_s, env=child_env
             )
         except subprocess.TimeoutExpired:
+            # Kill the CONTAINER, not just the docker CLI: the CLI dying on timeout
+            # leaves the container running and writing into the still-mounted
+            # workspace AFTER redaction. Kill by name and reap it before returning,
+            # so redaction sees a final, static workspace [RN-10].
+            self._kill(_name_from_cmd(cmd))
             return RunOutput(exit_status=124, timed_out=True)
         except (OSError, FileNotFoundError):
             return RunOutput(exit_status=125, daemon_error=True)
@@ -114,6 +183,8 @@ class HarborEngine:
         # --pull=never: a trial must run the pre-baked, digest-pinned image; never
         # silently pull an unpinned tag at trial time [RN-12, D005].
         cmd = ["docker", "run", "--rm", "--pull=never"]
+        # a deterministic name so a timed-out container is killable by name [RN-10]
+        cmd += ["--name", _container_name(request.trial_id)]
         # pinned quotas [D003]
         if q.cpus is not None:
             cmd += ["--cpus", str(q.cpus)]
@@ -121,10 +192,13 @@ class HarborEngine:
             cmd += ["--memory", str(q.mem)]
         # network insulation: default-deny; egress only via the metering proxy
         if request.proxy is not None and request.proxy.proxy_url:
-            cmd += ["--env", f"HTTP_PROXY={request.proxy.proxy_url}"]
-            cmd += ["--env", f"HTTPS_PROXY={request.proxy.proxy_url}"]
-            # a restricted docker network that only reaches the proxy
-            cmd += ["--network", "verdi-metered"]
+            # inject the trial id as the proxy-auth credential so the metering
+            # proxy attributes every request to this trial [RN-11, D-10].
+            proxy_url = _with_trial_auth(request.proxy.proxy_url, request.trial_id)
+            cmd += ["--env", f"HTTP_PROXY={proxy_url}"]
+            cmd += ["--env", f"HTTPS_PROXY={proxy_url}"]
+            # a restricted docker network that only reaches the proxy [RN-11]
+            cmd += ["--network", METERED_NETWORK]
         else:
             cmd += ["--network", "none"]
         # provider keys injected as env — never in image layers or ledger [AC-8],
@@ -164,6 +238,11 @@ class HarborEngine:
                 executed_at=request.ts,
                 failure_reason="unpinned_image",
             )
+
+        if request.proxy is not None:
+            # ensure the restricted metering network exists before a trial joins
+            # it — it was referenced by --network but never created [RN-11].
+            self._runner.ensure_metered_network()
 
         # Write the trial request to a host temp file (outside the workspace) and
         # bind-mount it read-only; clean it up once the container has exited [RN-4].
@@ -242,6 +321,12 @@ class HarborEngine:
 
     @staticmethod
     def _scan_proxy_log(request: TrialRequest) -> tuple[list[str], bool]:
+        """Parse the metering proxy's structured JSONL, keyed on trial [RN-11].
+
+        Each line is ``{"trial","host","decision":"allow|deny"}``; only lines for
+        this trial count (per-trial attribution via the injected proxy credential),
+        and any ``deny`` is an egress violation. A malformed line is skipped, not
+        silently treated as clean traffic."""
         if request.proxy is None or not request.proxy.log_path:
             return [], False
         p = Path(request.proxy.log_path)
@@ -250,10 +335,18 @@ class HarborEngine:
         attempts: list[str] = []
         violation = False
         for line in p.read_text(encoding="utf-8").splitlines():
-            if f"trial={request.trial_id}" in line:
-                parts = line.split()
-                if len(parts) >= 2:
-                    attempts.append(parts[1])
-                if line.startswith("DENY"):
-                    violation = True
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("trial") != request.trial_id:
+                continue
+            host = rec.get("host")
+            if host:
+                attempts.append(host)
+            if rec.get("decision") == "deny":
+                violation = True
         return attempts, violation

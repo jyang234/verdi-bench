@@ -51,11 +51,18 @@ class FakeEngine:
         egress_violation = False
         if request.proxy is not None:
             for host in egress_attempts:
-                if not request.proxy.is_allowed(host):
+                allowed = request.proxy.is_allowed(host)
+                if not allowed:
                     egress_violation = True
-                    if request.proxy.log_path:
-                        with open(request.proxy.log_path, "a", encoding="utf-8") as fh:
-                            fh.write(f"DENY {host} trial={request.trial_id}\n")
+                if request.proxy.log_path:
+                    # structured JSONL keyed to the trial — the same format a real
+                    # metering proxy emits, so one parser serves both engines [RN-11].
+                    with open(request.proxy.log_path, "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps({
+                            "trial": request.trial_id,
+                            "host": host,
+                            "decision": "allow" if allowed else "deny",
+                        }) + "\n")
 
         return EngineResult(
             outcome=outcome,

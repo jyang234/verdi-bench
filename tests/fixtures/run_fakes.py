@@ -34,6 +34,10 @@ class FakeDockerRunner:
         self.exit_status = exit_status
         self.digest = digest
         self.last_cmd: list[str] | None = None
+        self.metered_network_ensured = False
+
+    def ensure_metered_network(self) -> None:
+        self.metered_network_ensured = True
 
     def resolve_digest(self, image: str) -> str:
         if "@sha256:" in image:
