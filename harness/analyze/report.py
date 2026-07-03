@@ -133,6 +133,7 @@ class FindingsDocument(BaseModel):
     secondary_metrics: dict
     integrity: dict
     process: Optional[dict] = None
+    judge_calibration: Optional[dict] = None
     provenance: Provenance
 
 
@@ -237,6 +238,30 @@ def _judge_summary(ledger_path) -> dict:
     models = sorted({v["verdict"]["provenance"]["judge_model"] for v in verdicts})
     rubrics = sorted({v["verdict"]["provenance"]["rubric_sha256"] for v in verdicts})
     return {"judge_models": models, "rubric_shas": rubrics, "n_verdicts": len(verdicts)}
+
+
+def _judge_calibration(ledger_path, spec, seed) -> Optional[dict]:
+    """Per-class judge↔human kappa + escalation flags [EVAL-2 AC-7, RV-4], through
+    the IPW seam at the locked EscalationConfig. None when the judge produced no
+    verdicts; the ``by_class`` table is empty until human review exists."""
+    if not find_events(ledger_path, events.JUDGE_VERDICT):
+        return None
+    from ..review.calibrate import kappa_by_class_ipw
+
+    esc = spec.judge.escalation
+    cal = kappa_by_class_ipw(
+        ledger_path, arm_a=spec.arms[0].name, arm_b=spec.arms[1].name, seed=seed,
+        kappa_threshold=esc.kappa_threshold, min_human_verdicts=esc.min_human_verdicts,
+    )
+    return {
+        "kappa_threshold": esc.kappa_threshold,
+        "min_human_verdicts": esc.min_human_verdicts,
+        "by_class": {
+            c: {"kappa": v.kappa, "n": v.n, "sufficient": v.sufficient, "escalate": v.escalate}
+            for c, v in sorted(cal.items())
+        },
+        "escalation_candidates": sorted(c for c, v in cal.items() if v.escalate),
+    }
 
 
 def _integrity(ledger_path) -> dict:
@@ -476,6 +501,7 @@ def compute_findings(
         secondary_metrics=_secondary_metrics(ledger_path, spec),
         integrity=_integrity(ledger_path),
         process=_process_section(ledger_path, spec, seed),
+        judge_calibration=_judge_calibration(ledger_path, spec, seed),
         provenance=provenance,
     )
 
@@ -656,6 +682,8 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
     for cf in findings.comparisons:
         out += section(f"Primary metric — {cf.label}", _comparison_lines(cf, findings.mde))
     out += section("Secondary metrics (exploratory)", _secondary_lines(findings))
+    if findings.judge_calibration is not None:
+        out += section("Judge calibration (per class)", _judge_calibration_lines(findings))
     if findings.process is not None:
         out += section("Process diagnostics (EXPLORATORY secondary)", _process_lines(findings))
     out += section("Confounds (disclosed, non-suppressing)",
@@ -675,6 +703,26 @@ def _secondary_lines(findings: FindingsDocument) -> list[str]:
             "vendor-incomparable and NOT compared across arms; cross-vendor "
             f"comparisons restricted to {sm['cross_vendor_allowed_fields']}"
         )
+    return lines
+
+
+def _judge_calibration_lines(findings: FindingsDocument) -> list[str]:
+    jc = findings.judge_calibration
+    lines = [
+        f"- thresholds: kappa ≥ {jc['kappa_threshold']} at ≥ {jc['min_human_verdicts']} "
+        "human verdicts (below ⇒ flagged for panel escalation) [AC-7]"
+    ]
+    if not jc["by_class"]:
+        lines.append("- no human-reviewed comparisons yet — kappa pending")
+        return lines
+    for cls, c in jc["by_class"].items():
+        if not c["sufficient"]:
+            lines.append(f"- {cls}: n={c['n']} (insufficient for kappa)")
+        else:
+            flag = " ESCALATE" if c["escalate"] else ""
+            lines.append(f"- {cls}: kappa={_fmt(c['kappa'], 3)} (n={c['n']}){flag}")
+    if jc["escalation_candidates"]:
+        lines.append(f"- escalation candidates: {jc['escalation_candidates']}")
     return lines
 
 
