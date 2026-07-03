@@ -16,7 +16,7 @@ from typing import Literal
 
 from ..ledger import events
 from ..ledger.events import EventContext
-from .registry import CalibrationSubset, CorpusManifest
+from .registry import CalibrationSubset, CorpusManifest, TaskEntry
 
 
 def ledger_calibration_run(
@@ -62,3 +62,47 @@ def ledger_subset_draw(
         task_ids=list(subset.task_ids),
         strata=subset.strata,
     )
+
+
+# --- one-event property registration [EVAL-3 §M7, XC-3] --------------------
+def _prop_manifest() -> CorpusManifest:
+    return CorpusManifest(
+        corpus_id="prop", semver="1.0.0", kind="public",
+        tasks=[
+            TaskEntry(task_id=f"t{i}", sha=f"{i}".rjust(64, "0"), status="admitted",
+                      metadata={"category": "io"})
+            for i in range(4)
+        ],
+    )
+
+
+def _calibration_run_entrypoint(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    d = Path(ctx_dir)
+    ledger_calibration_run(
+        d / "ledger.ndjson", EventContext(experiment_id="prop"),
+        _prop_manifest(), {"anchor_delta": 0.01}, kind="subset",
+    )
+
+
+def _subset_draw_entrypoint(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    from .stratify import calibration_subset
+
+    d = Path(ctx_dir)
+    manifest = _prop_manifest()
+    subset = calibration_subset(manifest, seed=7, target_size=2, stratum_key="category")
+    ledger_subset_draw(d / "ledger.ndjson", EventContext(experiment_id="prop"),
+                       manifest, subset)
+
+
+def _register() -> None:
+    from ..entrypoints import register_entrypoint
+
+    register_entrypoint("corpus-calibration-run", _calibration_run_entrypoint)
+    register_entrypoint("corpus-subset-draw", _subset_draw_entrypoint)
+
+
+_register()

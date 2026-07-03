@@ -210,7 +210,8 @@ def _lock_event(ledger_path) -> dict:
 def _mde_block(ledger_path) -> MDEBlock:
     lock = _lock_event(ledger_path)
     mde = lock.get("mde", {})
-    ack = bool(find_events(ledger_path, events.ACKNOWLEDGED_UNDERPOWERED))
+    # PL-14: the acknowledgment now rides inline on the lock event.
+    ack = bool(lock.get("acknowledged_underpowered"))
     return MDEBlock(
         value=mde.get("mde"),
         assumption_based_mde="assumption_based_mde" in mde.get("flags", []),

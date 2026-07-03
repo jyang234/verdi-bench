@@ -103,8 +103,12 @@ def test_ac4_ack_ledgered(tmp_path):
         acknowledge_underpowered=True,
         **FAST,
     )
-    assert len(find_events(ledger, events.ACKNOWLEDGED_UNDERPOWERED)) == 1
-    assert len(find_events(ledger, events.EXPERIMENT_LOCKED)) == 1
+    # PL-14: the acknowledgment rides inline on the single lock event (one
+    # attempted operation ⇒ one event), not a separate second event.
+    locks = find_events(ledger, events.EXPERIMENT_LOCKED)
+    assert len(locks) == 1
+    assert len(read_events(ledger)) == 1
+    assert locks[0]["acknowledged_underpowered"]["hypothesized_effect"] == 0.001
 
 
 def test_lock_reads_spec_once_no_toctou(tmp_path, monkeypatch):
@@ -150,9 +154,9 @@ def test_relock_refused(tmp_path):
 
 
 def test_lock_is_genesis_on_ack_path(tmp_path):
-    """PL-3: even on the acknowledged-underpowered path the lock is the genesis
-    event — it is written before the acknowledgment rider, so its prev_hash is
-    all-zeros and `assert_lock` keys the true genesis."""
+    """PL-3/PL-14: on the acknowledged-underpowered path the lock is the sole
+    genesis event — the acknowledgment rides inline, so prev_hash is all-zeros,
+    `assert_lock` keys the true genesis, and exactly one event is appended."""
     spec = write_experiment_yaml(tmp_path / "experiment.yaml", hypothesized_effect=0.001)
     ledger = tmp_path / "ledger.ndjson"
     lock_experiment(
@@ -164,9 +168,10 @@ def test_lock_is_genesis_on_ack_path(tmp_path):
         **FAST,
     )
     all_events = read_events(ledger)
+    assert len(all_events) == 1  # PL-14: one attempted operation ⇒ one event
     assert all_events[0]["event"] == "experiment_locked"
     assert all_events[0]["prev_hash"] == "0" * 64  # genesis
-    assert all_events[1]["event"] == "acknowledged_underpowered"
+    assert all_events[0]["acknowledged_underpowered"]["mde"] is not None
 
 
 def test_assert_lock_refuses_tampered_chain(tmp_path):

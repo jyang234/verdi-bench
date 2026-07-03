@@ -94,3 +94,42 @@ def admit_task(
         baseline_ref=baseline_ref,
     )
     return task
+
+
+# --- one-event property registration [EVAL-3 §M7, XC-3] --------------------
+_PROP_SHA = "s" * 64
+
+
+def _prepare_admit(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    d = Path(ctx_dir)
+    led = d / "ledger.ndjson"
+    ctx = EventContext(experiment_id="prop")
+    events.record_curation_approval(led, ctx, candidate_id="cand-prop",
+                                    task_sha=_PROP_SHA, approver="curator")
+    events.record_flake_baseline(led, ctx, task_id="cand-prop", task_sha=_PROP_SHA, k=5,
+                                 results=[{"run": i, "passed": True} for i in range(5)],
+                                 verdict="clean")
+
+
+def _admit_entrypoint(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    d = Path(ctx_dir)
+    manifest = CorpusManifest(
+        corpus_id="internal-prop", semver="1.0.0", kind="internal",
+        boundary_path="/tmp/prop-boundary",
+        tasks=[TaskEntry(task_id="cand-prop", sha=_PROP_SHA, status="pending-curation")],
+    )
+    admit_task(manifest, d / "ledger.ndjson", EventContext(experiment_id="prop"),
+               candidate_id="cand-prop", task_sha=_PROP_SHA, baseline_ref="b1")
+
+
+def _register() -> None:
+    from ..entrypoints import register_entrypoint
+
+    register_entrypoint("corpus-admit", _admit_entrypoint, prepare=_prepare_admit)
+
+
+_register()

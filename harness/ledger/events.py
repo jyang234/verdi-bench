@@ -99,7 +99,6 @@ def emit(ledger_path, ctx: EventContext, event_type: str, payload: dict) -> dict
 # EVAL-3 events
 # ---------------------------------------------------------------------------
 EXPERIMENT_LOCKED = register_event("experiment_locked")
-ACKNOWLEDGED_UNDERPOWERED = register_event("acknowledged_underpowered")
 CHAIN_ANCHOR = register_event("chain_anchor")
 
 
@@ -114,6 +113,7 @@ def record_experiment_locked(
     attested_by: str,
     method: str,
     task_commitment: Optional[dict] = None,
+    acknowledged_underpowered: Optional[dict] = None,
 ) -> dict:
     """Genesis lock event [AC-2, D004, D008].
 
@@ -121,6 +121,13 @@ def record_experiment_locked(
     and a hash over the per-task content shas, so run/grade can refuse tasks
     that were swapped after lock [PL-7]. Optional for compatibility with
     task-less plan flows; required by run/grade when real tasks are present.
+
+    ``acknowledged_underpowered`` (additive field, PL-14) carries the
+    ``{mde, hypothesized_effect}`` acknowledgment inline **on the lock event**
+    when an underpowered design is locked with acknowledgment — one attempted
+    operation, one event. It replaces the former separate
+    ``acknowledged_underpowered`` event so the one-event-per-operation property
+    holds for the documented underpowered path.
     """
     payload = {
         "spec_sha256": spec_sha256,
@@ -131,24 +138,9 @@ def record_experiment_locked(
     }
     if task_commitment is not None:
         payload["task_commitment"] = task_commitment
+    if acknowledged_underpowered is not None:
+        payload["acknowledged_underpowered"] = acknowledged_underpowered
     return emit(ledger_path, ctx, EXPERIMENT_LOCKED, payload)
-
-
-def record_acknowledged_underpowered(
-    ledger_path, ctx: EventContext, *, mde: Optional[float], hypothesized_effect: float
-) -> dict:
-    """Ledgered acknowledgment that a design is underpowered [D001, AC-4].
-
-    ``mde`` is ``None`` (ledgered as ``null``) when the MDE was incomputable —
-    no swept effect reached target power, the maximally underpowered case; the
-    field is therefore genuinely optional, not a float that was set to null.
-    """
-    return emit(
-        ledger_path,
-        ctx,
-        ACKNOWLEDGED_UNDERPOWERED,
-        {"mde": mde, "hypothesized_effect": hypothesized_effect},
-    )
 
 
 def record_chain_anchor(

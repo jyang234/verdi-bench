@@ -158,3 +158,86 @@ def reveal_comparison(
         verdict_event_id=comparison_id,
         revealed={"judge_verdict_id": judge_id, "arm_identities": arm_identities},
     )
+
+
+# --- one-event property registration [EVAL-3 §M7, XC-3] --------------------
+_PROP_CID = "cmp-prop"
+
+
+def _seed_judge_verdict(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    from ..judge.schema import Evidence, Verdict, VerdictProvenance, Winner
+    from ..ledger.events import EventContext
+
+    d = Path(ctx_dir)
+    jv = Verdict(
+        winner=Winner.A, reason="x",
+        evidence=[Evidence(kind="diff", response="A", hunk="h")],
+        provenance=VerdictProvenance(
+            judge_model="m", rubric_sha256="a", packet_sha256="b",
+            call_ids=["c1", "c2"], orders="both", temperature=0.0, ts="t"),
+        comparison_id=_PROP_CID, task_class="cls",
+    )
+    events.append_verdict(d / "ledger.ndjson", EventContext(experiment_id="prop"),
+                          verdict=jv.model_dump(mode="json"))
+
+
+def _human_verdict(cid: str) -> Verdict:
+    from ..judge.schema import Evidence, Verdict, VerdictProvenance, Winner
+
+    return Verdict(
+        winner=Winner.A, reason="r",
+        evidence=[Evidence(kind="diff", response="A", hunk="h")],
+        provenance=VerdictProvenance(
+            judge_model="human", rubric_sha256="human", packet_sha256="human",
+            call_ids=["human"], orders="single", temperature=0.0, ts="t"),
+        source="human", comparison_id=cid, task_class="cls",
+    )
+
+
+def _review_record_entrypoint(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    from ..ledger.events import EventContext
+
+    d = Path(ctx_dir)
+    record_human_verdict(
+        d / "ledger.ndjson", EventContext(experiment_id="prop"),
+        verdict=_human_verdict(_PROP_CID), arm_recognized=False, arm_guess=None,
+    )
+
+
+def _prepare_reveal(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    from ..ledger.events import EventContext
+
+    _seed_judge_verdict(ctx_dir)
+    d = Path(ctx_dir)
+    record_human_verdict(
+        d / "ledger.ndjson", EventContext(experiment_id="prop"),
+        verdict=_human_verdict(_PROP_CID), arm_recognized=False, arm_guess=None,
+    )
+
+
+def _review_reveal_entrypoint(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    from ..ledger.events import EventContext
+
+    d = Path(ctx_dir)
+    reveal_comparison(
+        d / "ledger.ndjson", EventContext(experiment_id="prop"),
+        comparison_id=_PROP_CID, arm_identities={"1": "arm_a", "2": "arm_b"},
+    )
+
+
+def _register() -> None:
+    from ..entrypoints import register_entrypoint
+
+    register_entrypoint("review-record", _review_record_entrypoint, prepare=_seed_judge_verdict)
+    register_entrypoint("review-reveal", _review_reveal_entrypoint, prepare=_prepare_reveal)
+
+
+_register()

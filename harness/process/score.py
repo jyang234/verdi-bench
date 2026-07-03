@@ -339,3 +339,28 @@ def record_human_process_score(
         comparison_id=comparison_id, scores=dimension_scores, provenance=prov,
     )
     return _emit(ledger_path, ctx, score)
+
+
+# --- one-event property registration [EVAL-3 §M7, XC-3] --------------------
+def _process_entrypoint(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    from ..judge.providers.fake import FakeProvider
+    from .rubric import default_rubric
+
+    d = Path(ctx_dir)
+    r = default_rubric()
+    fp = FakeProvider([json.dumps({"scores": {dim: 3 for dim in r.dimension_ids}})])
+    score_trial_process(
+        "trial-x", "clean transcript", r, ledger_path=d / "ledger.ndjson",
+        ctx=EventContext(experiment_id="prop"), ts="t0", scorer_id="judge", provider=fp,
+    )
+
+
+def _register() -> None:
+    from ..entrypoints import register_entrypoint
+
+    register_entrypoint("process", _process_entrypoint)
+
+
+_register()

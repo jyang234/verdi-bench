@@ -197,3 +197,42 @@ def judge_pair(
 
     events.append_verdict(ledger_path, ctx, verdict=verdict.model_dump(mode="json"))
     return verdict
+
+
+# --- one-event property registration [EVAL-3 §M7, XC-3] --------------------
+def _judge_entrypoint(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    from ..ledger.events import EventContext
+    from ..schema.judge_config import JudgeConfig
+    from .packet import ResponseArtifacts, build_packet
+    from .providers.fake import FakeProvider
+
+    d = Path(ctx_dir)
+    packet = build_packet(
+        ResponseArtifacts(diff="diff a", holdout_results=[{"id": "h1", "result": "pass"}]),
+        ResponseArtifacts(diff="diff b", holdout_results=[{"id": "h1", "result": "fail"}]),
+        task_prompt="do the task",
+        rubric="judge on correctness",
+    )
+    config = JudgeConfig(
+        model="google/gemini-1.5-pro-002", rubric="rubrics/code-task-v1.md",
+        orders="both", temperature=0.0,
+    )
+    v1 = json.dumps({"winner": "1", "reason": "x",
+                     "evidence": [{"kind": "diff", "response": 1, "hunk": "@@"}], "confidence": 0.9})
+    v2 = json.dumps({"winner": "2", "reason": "x",
+                     "evidence": [{"kind": "diff", "response": 2, "hunk": "@@"}], "confidence": 0.9})
+    judge_pair(
+        packet, config, d / "ledger.ndjson", EventContext(experiment_id="prop"),
+        ts="t0", provider=FakeProvider([v1, v2]),
+    )
+
+
+def _register() -> None:
+    from ..entrypoints import register_entrypoint
+
+    register_entrypoint("judge", _judge_entrypoint)
+
+
+_register()
