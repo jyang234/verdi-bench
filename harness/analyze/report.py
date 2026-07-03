@@ -292,12 +292,13 @@ def _secondary_metrics(ledger_path, spec) -> dict:
     }
 
 
-def _process_section(ledger_path) -> Optional[dict]:
-    """Openly-unblinded process diagnostics [EVAL-9 §M6].
+def _process_section(ledger_path, spec, seed) -> Optional[dict]:
+    """Openly-unblinded process diagnostics [EVAL-9 §M6, PR-5].
 
-    Reads ``process_score`` events (ledger data — no import of the process
-    subsystem) into an EXPLORATORY-only section carrying the mandatory unblinded
-    disclosure block. Returns None when no process scores exist.
+    Reads ``process_score`` events into an EXPLORATORY-only section carrying the
+    mandatory unblinded disclosure block, plus the per-dimension judge↔human
+    kappa and score-vs-telemetry correlations (with ``style_only`` flags) the
+    plan's M5 requires [AC-5/AC-7]. Returns None when no process scores exist.
     """
     evs = find_events(ledger_path, events.PROCESS_SCORE)
     if not evs:
@@ -326,6 +327,10 @@ def _process_section(ledger_path) -> Optional[dict]:
         }
         for dim, b in sorted(dims.items())
     }
+    # PR-5: fold in the AC-5 per-dimension kappa and AC-7 telemetry correlations.
+    from ..process.calibrate import dimension_diagnostics
+
+    diagnostics = dimension_diagnostics(ledger_path, spec, seed)
     return {
         "exploratory": True,
         "disclosure": {
@@ -336,6 +341,10 @@ def _process_section(ledger_path) -> Optional[dict]:
         },
         "rubric_versions": sorted(rubric_versions),
         "dimensions": dimensions,
+        "kappa_by_dimension": diagnostics["kappa_by_dimension"],
+        "correlations": diagnostics["correlations"],
+        "style_only": diagnostics["style_only"],
+        "floor_prob": diagnostics["floor_prob"],
     }
 
 
@@ -466,7 +475,7 @@ def compute_findings(
         confounds=flag_confounds(ledger_path, spec),
         secondary_metrics=_secondary_metrics(ledger_path, spec),
         integrity=_integrity(ledger_path),
-        process=_process_section(ledger_path),
+        process=_process_section(ledger_path, spec, seed),
         provenance=provenance,
     )
 
@@ -683,6 +692,25 @@ def _process_lines(findings: FindingsDocument) -> list[str]:
             f"(scored={d['n_scored']}, cant_score={d['n_cant_score']}, "
             f"scorers={d['scorer_kinds']})"
         )
+    # PR-5: per-dimension judge↔human kappa [AC-5] and telemetry correlations [AC-7]
+    kappa = p.get("kappa_by_dimension") or {}
+    if kappa:
+        lines.append("- judge↔human agreement (quadratic-weighted IPW kappa):")
+        for dim, k in kappa.items():
+            if not k["sufficient"]:
+                lines.append(f"  - {dim}: n={k['n']} (insufficient)")
+            else:
+                flag = " ESCALATE" if k["escalate"] else ""
+                lines.append(f"  - {dim}: kappa={_fmt(k['kappa'], 3)} (n={k['n']}){flag}")
+    corr = p.get("correlations") or {}
+    if corr:
+        lines.append("- score-vs-telemetry correlation (Spearman):")
+        for dim, c in corr.items():
+            tag = " [STYLE-ONLY]" if c["style_only"] else ""
+            shown = {k: _fmt(v, 2) for k, v in c["correlations"].items()}
+            lines.append(f"  - {dim}: {shown}{tag}")
+        if p.get("style_only"):
+            lines.append(f"- style-only dimensions (uncorrelated with their correlates): {p['style_only']}")
     return lines
 
 
