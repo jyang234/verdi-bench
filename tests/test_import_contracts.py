@@ -55,6 +55,5 @@ def test_completed_contract_catches_planted_import(module, planted, target):
         assert target in result.stdout, result.stdout
     finally:
         path.write_text(original, encoding="utf-8")
-
-    # and green again once restored
-    assert _run_lint().returncode == 0
+    # Restoration is covered by test_baseline_contracts_are_green; re-running
+    # lint-imports here would just re-spawn the slow import-graph walk again.

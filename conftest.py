@@ -6,10 +6,12 @@ tests are named ``test_ac<N>_*`` so AC coverage is recomputable mechanically.
 Two layers:
 
 * **Enforcement (unconditional)** — at collection, :func:`check_ac_coverage`
-  statically verifies that every story's pre-registered ACs are covered by a
-  ``test_ac<N>_*`` test, with no missing/misnamed/duplicate AC test [XC-2 /
-  REVIEW-D-P6-1]. A violation fails the session loudly; a regression that drops
-  or renames an AC test can no longer pass green.
+  statically verifies, per story and at AC-number granularity, that every
+  spec-declared AC is covered by a ``test_ac<N>_*`` test, with no
+  misnamed/spec-less/duplicate AC test [XC-2 / REVIEW-D-P6-1]. A violation fails
+  the session loudly; a regression that drops a story's last test for an AC, adds
+  a test for an undeclared AC, or duplicates an AC test name can no longer pass
+  green.
 * **Reporting (``--ac-report``)** — prints the AC numbers exercised by the
   collected tests at session end, a convenience layered on top.
 """

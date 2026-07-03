@@ -23,9 +23,11 @@ jobs:
   # 3.12 compatibility gate [XC-6 / REVIEW-D-7]. The local dev floor is relaxed to
   # 3.11 (the 3.12 standalone build is unreachable behind the proxy), but the plan
   # binds 3.12+, so verify the whole codebase parses/compiles under a real 3.12
-  # interpreter. Compile-only (no project sync), so it is cheap and needs no deps —
-  # it catches the common forward-incompat regressions (f-string backslashes, new
-  # syntax, removed stdlib) without a full 3.12 test matrix.
+  # interpreter. Compile-only (no project sync), so it is cheap and needs no deps.
+  # It catches syntax/grammar-level forward-incompat regressions (f-string
+  # backslash rules, match/walrus, removed *syntax*); because it compiles without
+  # importing, it does NOT catch runtime breaks like a removed stdlib *module* —
+  # a full 3.12 test matrix would be needed for that.
   py312-compat:
     runs-on: ubuntu-latest
     steps:

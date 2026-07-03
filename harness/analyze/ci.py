@@ -113,11 +113,14 @@ class ClusterRobustTCI:
         n_boot = int(boot_ses.shape[0])
         n_good = int(good.sum())
         if n_good < max(2, self._MIN_USABLE_FRACTION * n_boot):
-            if n_good < n_boot:
+            if n_boot - n_good:  # some resamples were degenerate — disclose the drop
+                # Constant message so Python's default per-message dedup fires: this
+                # runs once per null-sim iteration, and an interpolated count would
+                # defeat dedup and flood a degenerate discrete-metric sim [AN-11].
                 warnings.warn(
-                    f"cluster_robust_t: {n_boot - n_good}/{n_boot} bootstrap "
-                    f"resamples had zero SE; falling back to the percentile "
-                    f"interval instead of studentizing over the remnant [AN-11]",
+                    "cluster_robust_t: too many zero SE bootstrap resamples; "
+                    "falling back to the percentile interval instead of "
+                    "studentizing over the remnant [AN-11]",
                     stacklevel=2,
                 )
             return PercentileCI().interval(deltas, boot_means, boot_ses, level)
