@@ -19,8 +19,14 @@ from ..ledger import events
 from ..ledger.query import find_events
 
 
-def cohens_kappa(labels_a: list[str], labels_b: list[str]) -> float:
-    """Cohen's kappa between two equal-length label sequences."""
+def cohens_kappa(labels_a: list[str], labels_b: list[str]) -> Optional[float]:
+    """Cohen's kappa between two equal-length label sequences.
+
+    Returns ``None`` when there is **zero chance-corrected information** — the
+    expected agreement is ~total (both raters concentrated on one category), so
+    ``1 - pe ≈ 0`` and kappa is undefined [JD-4, REVIEW-D-5]. Callers treat an
+    undefined kappa as *insufficient* (not perfect): all-A/all-A is no signal
+    about the judge, not evidence of perfect agreement."""
     if len(labels_a) != len(labels_b):
         raise ValueError("label sequences must be equal length")
     n = len(labels_a)
@@ -33,13 +39,8 @@ def cohens_kappa(labels_a: list[str], labels_b: list[str]) -> float:
     count_a = {c: labels_a.count(c) / n for c in categories}
     count_b = {c: labels_b.count(c) / n for c in categories}
     pe = sum(count_a[c] * count_b[c] for c in categories)
-    # Near-degenerate marginals (almost all one category) make 1-pe tiny and
-    # kappa numerically unstable/extreme; a tolerance guard avoids both exact
-    # pe==1 float fragility and the wild swings when 1-pe ≈ 0. When the expected
-    # agreement is ~total, kappa is undefined — report perfect iff observed
-    # agreement is also ~total, else 0 (no reliable signal beyond chance).
     if 1 - pe < 1e-9:
-        return 1.0 if po >= 1 - 1e-9 else 0.0
+        return None  # undefined: no chance-corrected information [D-5]
     return (po - pe) / (1 - pe)
 
 
@@ -76,6 +77,11 @@ def kappa_by_class(
         k = cohens_kappa(
             [i["judge_winner"] for i in items], [i["human_winner"] for i in items]
         )
+        if k is None:
+            # D-5: enough verdicts, but no chance-corrected information (degenerate
+            # marginals) — insufficient, not perfect; cannot escalate on undefined.
+            out[cls] = ClassCalibration(cls, n, kappa=None, sufficient=False, escalate=False)
+            continue
         out[cls] = ClassCalibration(
             cls, n, kappa=k, sufficient=True, escalate=k < kappa_threshold
         )

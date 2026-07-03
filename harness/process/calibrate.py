@@ -62,6 +62,11 @@ def process_kappa_by_dimension(
             items, estimator, weight="quadratic", categories=_ORDINAL_CATEGORIES,
             floor_prob=floor_prob,
         )
+        if k is None:
+            # D-5: degenerate marginals (all one score) ⇒ undefined kappa;
+            # insufficient, not perfect — the same guard as outcome kappa.
+            out[dim_id] = DimensionCalibration(dim_id, n, None, sufficient=False, escalate=False)
+            continue
         out[dim_id] = DimensionCalibration(
             dim_id, n, kappa=k, sufficient=True, escalate=k < kappa_threshold
         )

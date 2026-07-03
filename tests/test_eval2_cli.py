@@ -106,7 +106,11 @@ def test_jd9_canaries_derived_from_spec(tmp_path):
 def test_jd9_escalation_config_threaded(tmp_path):
     """A low ``min_human_verdicts`` in the locked escalation block makes a class
     'sufficient' where the hardcoded default 20 would not — proving the
-    EscalationConfig reaches calibration (JD-9)."""
+    EscalationConfig reaches calibration (JD-9).
+
+    The human verdict *disagrees* with the judge (judge A, human B) so the reviewed
+    pair carries both categories and kappa is defined (=0) under D-5 — an all-agree
+    single item would be degenerate/insufficient regardless of the threshold."""
     from harness.judge.schema import Verdict, VerdictProvenance, Winner
     from harness.ledger.events import append_human_verdict
 
@@ -117,10 +121,11 @@ def test_jd9_escalation_config_threaded(tmp_path):
     ctx = fixed_ctx(experiment_id="exp")
     seed_trial_and_grade(ledger, ctx, trial_id="tr-a", task_id="t1", arm="control", passed=True)
     seed_trial_and_grade(ledger, ctx, trial_id="tr-b", task_id="t1", arm="treatment", passed=False)
-    # a human verdict agreeing with the judge (winner A) on the same comparison
+    # a human verdict DISAGREEING with the judge (judge A, human B) — a defined,
+    # non-degenerate pair (kappa = 0), so the class is sufficient at min=1.
     hv = Verdict(
-        winner=Winner.A, reason="agree",
-        evidence=[{"kind": "diff", "response": "A", "hunk": "h"}],
+        winner=Winner.B, reason="disagree",
+        evidence=[{"kind": "diff", "response": "B", "hunk": "h"}],
         provenance=VerdictProvenance(judge_model="human", rubric_sha256="human",
             packet_sha256="human", call_ids=["human"], orders="single",
             temperature=0.0, ts="t"),
@@ -130,8 +135,9 @@ def test_jd9_escalation_config_threaded(tmp_path):
 
     r = runner.invoke(app, ["judge", str(expdir)])
     assert r.exit_code == 0, r.output
-    # sufficient at min_human_verdicts=1 (would be insufficient at the default 20)
-    assert "class refactor: n=1 kappa=1.000" in r.output
+    # sufficient at min_human_verdicts=1 (would be insufficient at the default 20);
+    # kappa is defined (0.000) and below threshold ⇒ escalate
+    assert "class refactor: n=1 kappa=0.000 ESCALATE" in r.output
 
 
 def test_jd11_single_order_flagged_through_verb(tmp_path):
