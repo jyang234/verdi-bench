@@ -20,6 +20,23 @@ jobs:
       - name: Fast suite (no Docker)
         run: uv run pytest -m "not docker" -q
 
+  # 3.12 compatibility gate [XC-6 / REVIEW-D-7]. The local dev floor is relaxed to
+  # 3.11 (the 3.12 standalone build is unreachable behind the proxy), but the plan
+  # binds 3.12+, so verify the whole codebase parses/compiles under a real 3.12
+  # interpreter. Compile-only (no project sync), so it is cheap and needs no deps —
+  # it catches the common forward-incompat regressions (f-string backslashes, new
+  # syntax, removed stdlib) without a full 3.12 test matrix.
+  py312-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install Python 3.12
+        run: uv python install 3.12
+      - name: Compile under 3.12 (syntax/compat gate)
+        run: uv run --no-project --python 3.12 python -m compileall -q harness tests conftest.py
+
   # Real-container suite: the docker-marked tests that exercise the grade + Harbor
   # paths against a live daemon. GitHub-hosted ubuntu runners ship with Docker, so
   # these actually execute here (the fast job above deselects them).
