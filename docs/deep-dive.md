@@ -400,12 +400,12 @@ itself, and so should its documentation:
   field you cannot measure stays `None` — the tests that own null-honesty
   will hold you to it.
 - **A new grader** = a plugin in `harness/grade/plugins/` (see
-  `groundwork.py`). It runs inside the no-LLM import contract, but note the
-  isolation asymmetry [PRA-M6]: unlike holdout assertions (which run in the
-  fresh-copy, network-less grading container), plugins currently execute
-  in-process on the harness host against the agent-controlled workspace. Treat a
-  plugin as trusted operator code, not sandboxed — running plugins under the
-  container discipline is planned hardening.
+  `groundwork.py`). It runs inside the no-LLM import contract and, on the real
+  (docker) grade path, inside the same fresh-copy, **network-less** grading
+  container as holdout assertions [PRA-M6] — so a plugin that shells out over the
+  agent-controlled workspace has no network and no host access. Only the
+  no-daemon `LocalGradeRunner` runs plugins in-process (an explicit ADVISORY
+  fallback, stamped `grader_name="local"`).
 - **A new gaming detector** = a detector in `harness/forensics/detectors.py`
   plus its planted-violation and clean fixtures, plus a vocabulary version
   bump — the closed-enum test forces the bump; findings across versions are

@@ -82,13 +82,36 @@ def test_ac4_unknown_plugin_fails_closed(tmp_path):
     assert find_events(ledger, "cant_grade")[0]["reason"] == "plugin_error"
 
 
-def test_m6_plugin_isolation_asymmetry_is_disclosed():
-    """PRA-M6 (documented fallback): the plugin seam and the deep dive must state
-    that grader plugins run in-process on the host (not sandboxed like holdouts),
-    so the isolation asymmetry is never mistaken for a guarantee."""
+def test_m6_plugin_isolation_documented():
+    """PRA-M6: the plugin seam and the deep dive must state that plugins run
+    network-less in the grade container on the real path (with the no-daemon
+    in-process path an explicit ADVISORY exception)."""
     import harness.grade.plugins as plugins_mod
 
-    assert "not sandboxed" in plugins_mod.__doc__.lower() or "NOT sandboxed" in plugins_mod.__doc__
-    assert "in-process" in plugins_mod.__doc__.lower()
+    doc = plugins_mod.__doc__.lower()
+    assert "network none" in doc.replace("-", " ") or "--network none" in plugins_mod.__doc__
+    assert "advisory" in doc  # the local in-process fallback is disclosed
     deep = (Path(__file__).resolve().parents[1] / "docs" / "deep-dive.md").read_text()
-    assert "isolation asymmetry" in deep.lower() and "in-process" in deep.lower()
+    assert "network-less" in deep.lower()
+
+
+def test_m6_plugin_command_is_network_less_and_hardened():
+    """PRA-M6: the containerized plugin command drops all network and
+    capabilities and runs the plugin entrypoint — plugins are no longer executed
+    unsandboxed in the host process."""
+    from harness.grade.container import GradingContainer
+
+    gc = GradingContainer(image="verdi-bench/grader@sha256:" + "a" * 64)
+    cmd = gc.build_plugin_command(Path("/ws"), ["groundwork"])
+    assert cmd[:5] == ["docker", "run", "--rm", "--network", "none"]
+    assert "--cap-drop" in cmd and cmd[cmd.index("--cap-drop") + 1] == "ALL"
+    assert "no-new-privileges" in cmd
+    assert cmd[-4:] == ["python", "-m", "harness.grade.run_plugin", "groundwork"]
+
+
+def test_m6_docker_runner_routes_plugins_to_container():
+    """PRA-M6: the docker runner declares it runs plugins in a container, so
+    GradingContainer.run_plugins takes the isolated path (not in-process)."""
+    from harness.grade.container import DockerGradeRunner
+
+    assert DockerGradeRunner.runs_plugins_in_container is True
