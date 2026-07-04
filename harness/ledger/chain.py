@@ -31,6 +31,18 @@ from typing import Callable, Optional
 GENESIS_PREV_HASH = "0" * 64
 
 
+class TruncatedLedgerError(RuntimeError):
+    """The ledger's final line is unterminated — appending would concatenate.
+
+    A well-formed ledger ends every line, including the last, in ``\\n``. A
+    file whose final byte is not a newline is truncated (an interrupted write,
+    a hand edit). Appending onto it would splice the new event onto the tail of
+    the partial line, silently corrupting both. ``append_event`` refuses
+    instead, so the truncation is repaired deliberately rather than buried
+    [PL-13].
+    """
+
+
 def canonical_line(obj: dict) -> str:
     """The canonical single-line JSON serialization (no trailing newline)."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -74,6 +86,31 @@ def _last_line(path: Path) -> Optional[str]:
     return None
 
 
+def _refuse_truncated_final_line(path: Path) -> None:
+    """Raise :class:`TruncatedLedgerError` if the file's last byte is not ``\\n``.
+
+    Called under the append lock before any hashing. A non-empty ledger whose
+    final byte is a newline is well-formed and returns silently — the common
+    path stays O(1). Only the (rare) truncated case reads the whole file, to
+    name the offending line count in the refusal.
+    """
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        if size == 0:
+            return  # empty ledger: genesis append, nothing to concatenate onto
+        fh.seek(size - 1)
+        if fh.read(1) == b"\n":
+            return
+        fh.seek(0)
+        n_lines = fh.read().count(b"\n") + 1  # unterminated tail is a line too
+    raise TruncatedLedgerError(
+        f"ledger {path} ends without a trailing newline; its final line "
+        f"(line {n_lines}) is truncated — refusing to append onto a partial "
+        "line. Repair or truncate the ledger deliberately first."
+    )
+
+
 def head_hash(path: Path) -> str:
     """Hash of the current last line — the value a new event's prev_hash takes."""
     last = _last_line(path)
@@ -102,6 +139,7 @@ def append_event(
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
+        _refuse_truncated_final_line(path)
         # compute prev_hash under the lock so concurrent appends can't race
         stored["prev_hash"] = head_hash(path)
         line = (canonical_line(stored) + "\n").encode("utf-8")

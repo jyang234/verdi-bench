@@ -89,6 +89,26 @@ def test_ac7_append_atomic(tmp_path):
     assert chain.verify_chain(ledger).ok
 
 
+def test_ac7_append_refuses_truncated_final_line(tmp_path):
+    """A ledger whose final line lost its newline must not be appended onto.
+
+    Detection previously lived only in ``verify_chain``; ``append_event``
+    happily chained a new line onto the unterminated fragment. Refuse loudly
+    (PL-13) and leave the file byte-identical.
+    """
+    ledger = tmp_path / "l.ndjson"
+    _append_n(ledger, 2, _ctx())
+    full = ledger.read_bytes()
+    assert full.endswith(b"\n")
+    truncated = full[:-1]  # strip the trailing newline: final line is now partial
+    ledger.write_bytes(truncated)
+
+    with pytest.raises(chain.TruncatedLedgerError) as exc:
+        record_chain_anchor(ledger, _ctx(), head_hash="0" * 64, height=99)
+    assert "2" in str(exc.value)  # names the (unterminated) line count
+    assert ledger.read_bytes() == truncated  # nothing appended, no concatenation
+
+
 def test_ac7_concurrent_appends_chain(tmp_path):
     """Appends under flock stay consistent even when interleaved."""
     import threading
