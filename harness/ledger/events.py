@@ -197,14 +197,19 @@ def record_trial(ledger_path, ctx: EventContext, *, trial_record: dict) -> dict:
 
 
 def record_trial_infra_failed(
-    ledger_path, ctx: EventContext, *, trial_id: str, task_id: str, arm: str, reason: str
+    ledger_path, ctx: EventContext, *, trial_id: str, task_id: str, arm: str,
+    reason: str, cost: Optional[float] = None
 ) -> dict:
-    return emit(
-        ledger_path,
-        ctx,
-        TRIAL_INFRA_FAILED,
-        {"trial_id": trial_id, "task_id": task_id, "arm": arm, "reason": reason},
-    )
+    """A per-trial infra failure. ``cost`` (additive field [PRA-M8]) carries any
+    spend the attempt already incurred before it failed — a post-engine failure
+    (redaction/trajectory) happens AFTER the container ran and the proxy metered
+    it, so recording that cost keeps it enforceable against the pre-registered
+    ceiling and durable across resume. Absent/None = no spend attributed (the
+    pre-M8 default; the attempt never reached the engine)."""
+    payload = {"trial_id": trial_id, "task_id": task_id, "arm": arm, "reason": reason}
+    if cost is not None:
+        payload["cost"] = cost
+    return emit(ledger_path, ctx, TRIAL_INFRA_FAILED, payload)
 
 
 def record_run_stopped_cost_ceiling(

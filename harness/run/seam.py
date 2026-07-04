@@ -120,6 +120,19 @@ def run_trial(
 
     result = config.engine.run(request)
 
+    # PRA-M8: the container has now run and the proxy has metered it, so any spend
+    # is already incurred. If a post-engine step below (redaction, trajectory)
+    # raises, the scheduler ledgers trial_infra_failed — which must carry this
+    # spend so it counts against the ceiling and survives resume, instead of
+    # burning budget invisibly. We stamp the best-available enforcement cost onto
+    # the exception; the telemetry-derived figure replaces the proxy figure once
+    # telemetry is normalized below.
+    _spend: Optional[float] = result.proxy_metered_cost
+
+    def _attach_spend(exc: BaseException) -> BaseException:
+        exc.enforcement_cost = _spend
+        return exc
+
     # Redact secrets from the whole trial workspace before it persists [AC-8].
     # RN-7: the agent can write secrets anywhere in the workspace (Harbor mounts
     # it rw and the grader later reads it), not just under artifacts/. RN-9: the
@@ -130,11 +143,18 @@ def run_trial(
     extra_patterns += [
         re.escape(v) for v in (config.provider_keys or {}).values() if v
     ]
-    redact_artifacts(workspace, extra_patterns)
+    try:
+        redact_artifacts(workspace, extra_patterns)
+    except BaseException as exc:  # PRA-M8: carry the already-incurred spend
+        raise _attach_spend(exc)
 
     # Normalize telemetry from agent-native logs [AC-2]; unmeasurable ⇒ null.
     adapter = get_adapter(arm.platform)
     telemetry = adapter.normalize(result.native_log)
+    # PRA-M8: once telemetry is known, prefer the self-reported cost for any
+    # subsequent post-engine failure (matching the completed-trial enforcement).
+    if telemetry.cost is not None:
+        _spend = telemetry.cost
 
     # Per-model attribution [EVAL-21 AC-2, AC-4]: a v2 generic log may split
     # telemetry across the arm's DECLARED models. Self-reported testimony, so
@@ -167,9 +187,9 @@ def run_trial(
     if result.outcome != Outcome.infra_failed:
         try:
             native_log = _redacted_native_log(Path(result.artifacts_dir), trial_id)
-        except TrajectoryCorruptError:
+        except TrajectoryCorruptError as exc:
             if result.outcome != Outcome.timeout:
-                raise
+                raise _attach_spend(exc)  # PRA-M8: carry the already-incurred spend
             # A timeout kill can truncate agent_log.json mid-write. The timeout
             # outcome is data (the RN-17 seam keeps it); destroying the trial as
             # trajectory_corrupt would erase the datapoint and its spend. The
@@ -180,11 +200,14 @@ def run_trial(
             adapter.normalize_trajectory(native_log) if native_log is not None else None
         )
         if steps is not None:
-            trajectory_sha = persist_trajectory(
-                TrajectoryRecord(trial_id=trial_id, platform=arm.platform, steps=steps),
-                result.artifacts_dir,
-                extra_patterns,
-            )
+            try:
+                trajectory_sha = persist_trajectory(
+                    TrajectoryRecord(trial_id=trial_id, platform=arm.platform, steps=steps),
+                    result.artifacts_dir,
+                    extra_patterns,
+                )
+            except BaseException as exc:  # PRA-M8: carry the already-incurred spend
+                raise _attach_spend(exc)
 
     flags = Flags(egress_violation=result.egress_violation)
     if telemetry_by_model:
