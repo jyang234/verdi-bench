@@ -145,6 +145,7 @@ uv run bench anchor ledger.ndjson --out anchors.ndjson       # refuses a tampere
 uv run bench status <experiment-dir> [--json]          # lifecycle snapshot (read-only, ledgers nothing)
 uv run bench serve  <experiment-dir> [--port 8383]     # live operator view (read-only, loopback, unblinded — see banner)
 uv run bench serve  --root <workspace-dir>             # workspace home: every experiment under the root, one dashboard
+uv run bench author <workspace-dir> [--actor <name>]   # draft/validate/preview experiments; the lock is its one ledgered op
 
 uv run bench corpus import <tasks-dir> --cache <dir>   # idempotent public import
 uv run bench corpus subset <manifest> --seed 1234      # stratified calibration subset

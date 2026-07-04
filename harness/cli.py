@@ -178,6 +178,7 @@ def _register_stage_commands() -> None:
         (".contamination.cli", "register"),
         (".status.cli", "register"),
         (".serve.cli", "register"),
+        (".author.cli", "register"),
     ]:
         try:
             mod = import_module(module_name, __package__)

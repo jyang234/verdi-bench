@@ -1,7 +1,8 @@
 ---
-# MACHINE CONTRACT — PROPOSED (not yet graduated; AC enforcement begins when
-# this file moves to docs/design/specs/ in the same commit as its first AC
-# tests). Drafted 2026-07-04: the second half of the original 2026-07-04
+# MACHINE CONTRACT — see template header for consumers and YAML style rules.
+# Graduated from specs/proposed/ 2026-07-04 in the same commit as the story's
+# first AC tests, all four local decisions resolved (see
+# eval17.decisions.ndjson). The second half of the original 2026-07-04
 # directive ("configure the experiments in the UI") — deferred by EVAL-13/14
 # until the mutation obligations could be designed rather than bolted on.
 kind: "story"
@@ -28,31 +29,37 @@ acceptance:
     vc: "Malformed drafts return the named SpecError per field; the power preview equals mde_check's output for the same inputs; the sha shown for a draft equals sha256 of its exact bytes; the ledger is byte-identical after any number of previews."
     touchpoints:
       - "harness/author/server.py:make_author_server"
-    tests: []
+    tests:
+      - "test_ac1_previews_pure_reads"
   - id: "AC-2"
     text: "The lock is a ceremony producing exactly one event: a single mutating endpoint calls lock_experiment verbatim with the launch-bound actor and an explicit attested_by; the ceremony displays the draft's sha, MDE and flags before commitment, requires an explicit underpowered acknowledgment (riding inline on the lock event, PL-14) when the gate demands one, and every refusal (AlreadyLocked, Underpowered, missing rubric, task-commitment or chain errors) surfaces the typed error's own message. The sha displayed pre-lock equals the ledgered spec_sha256 — byte fidelity end to end (D002: the editable text pane is what locks; no serialization round-trip between preview and commit)."
     vc: "One lock POST appends exactly one experiment_locked event carrying actor/attestation/acknowledgment; the pre-lock sha equals the event's spec_sha256; each refusal class renders its typed message; a second lock attempt is refused with AlreadyLockedError's message."
     touchpoints:
       - "harness/plan/lock.py:lock_experiment"
-    tests: []
+    tests:
+      - "test_ac2_lock_ceremony_one_event"
+      - "test_ac2_page_ceremony_drive"
   - id: "AC-3"
     text: "Post-lock immutability is a UI fact, not just a backend refusal: a locked experiment renders read-only in the authoring surface (no edit or re-lock affordance; re-planning is creating a new draft directory), and draft writes are structurally confined to unlocked draft directories — an authoring write that would touch a locked experiment's pre-registered files is refused loudly."
     vc: "A locked experiment's authoring view carries no mutating affordances; a draft-write request naming a locked directory is refused with the reason; a new draft in a fresh directory proceeds."
     touchpoints:
       - "harness/author/server.py:make_author_server"
-    tests: []
+    tests:
+      - "test_ac3_post_lock_readonly_refusals"
   - id: "AC-4"
     text: "Surface separation and posture: authoring is its own verb and server (bench author), never a mode of the operator observer — the EVAL-14 AC-8 GET-only posture of bench serve is untouched; the authoring server binds loopback by default, requires a resolvable actor at launch (refused loudly, never 'unknown'), serves self-contained pages (the needle property), and its mutating routes are the enumerated ceremony endpoints only — everything else is GET and side-effect-free."
     vc: "bench serve's posture tests still pass unmodified; bench author without a resolvable actor exits with the ActorResolutionError message; the authoring page passes the needle scan; non-enumerated POST routes are refused."
     touchpoints:
       - "harness/author/cli.py:register"
-    tests: []
+    tests:
+      - "test_ac4_posture_actor_needles_routes"
   - id: "AC-5"
     text: "Task and rubric authoring feed the same commitment the CLI path locks: the tasks.yaml editor validates through load_task_dicts (dup/missing ids loud), the rubric file is created/edited beside the draft, and the ceremony's lock_experiment call commits task content and rubric hash exactly as bench plan does — a UI-authored lock and a CLI lock over the same bytes produce the same event payload (timestamps and actor aside)."
     vc: "Locking the same draft via the ceremony and via bench plan yields payload-identical experiment_locked events modulo provenance; invalid tasks.yaml is refused with load_task_dicts' message; a missing rubric refuses with the lock's own RubricCommitmentError."
     touchpoints:
       - "harness/author/page.py:AUTHOR_PAGE"
-    tests: []
+    tests:
+      - "test_ac5_tasks_rubric_commitment_parity"
 
 constraints:
   - text: "One mutating ledger operation in the whole story — the lock — and it flows through lock_experiment verbatim: no new event kinds, no reimplemented validation, the one-event-per-operation property extended to the ceremony endpoint. Draft file writes are pre-registration workspace, not evidence: they exist only in unlocked draft directories."
@@ -62,12 +69,12 @@ constraints:
   - text: "Byte fidelity is the contract: what the user saw hashed is what locked. The structured wizard only ever emits into the editable text pane; the pane's exact bytes are validated, previewed, and locked [D002]."
     enforced_by: "AC-1/AC-2 sha-equality tests on graduation"
 
-decisions: []
-open_decisions:
-  - "EVAL-17-D001"  # surface: new bench author verb + harness/author subsystem (recommended) vs extending bench serve with mutating routes
-  - "EVAL-17-D002"  # spec text fidelity: wizard-emits-editable-text-pane, pane bytes lock (recommended) vs form-model-serializes-at-lock
-  - "EVAL-17-D003"  # stage execution from the browser: excluded in v1 (recommended) vs a run trigger with process management
-  - "EVAL-17-D004"  # draft residence: plain directories under the workspace root, invisible to the operator home until a ledger exists (recommended) vs a drafts registry
+decisions:
+  - "EVAL-17-D001"  # surface (RESOLVED: new-author-verb)
+  - "EVAL-17-D002"  # text fidelity (RESOLVED: wizard-emits-editable-text)
+  - "EVAL-17-D003"  # stage execution (RESOLVED: excluded-v1)
+  - "EVAL-17-D004"  # draft residence (RESOLVED: plain-directories)
+open_decisions: []
 
 policy_proposals: []
 predicted_reach: null
