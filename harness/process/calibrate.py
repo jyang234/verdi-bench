@@ -20,7 +20,7 @@ from ..review.kappa import (
     FLOOR_INCLUSION_PROB,
     KappaEstimator,
     ReviewedItem,
-    estimate_kappa,
+    keyed_kappa_gate,
 )
 from .rubric import SCALE_MAX, SCALE_MIN, ProcessRubric
 
@@ -49,31 +49,34 @@ def process_kappa_by_dimension(
     """Quadratic-weighted, IPW-corrected kappa per dimension; gates independently.
 
     ``floor_prob`` is the realized floor inclusion probability ``ceil(0.2n)/n`` —
-    the same correction outcome kappa uses [RV-5], passed by the caller.
+    the same correction outcome kappa uses [RV-5], passed by the caller. The
+    gate mechanics (min-pairs, degenerate-marginals-are-insufficient [D-5],
+    threshold escalation) live once in :func:`keyed_kappa_gate`; only the
+    ordinal weighting is this tier's.
     """
-    out: dict[str, DimensionCalibration] = {}
-    for dim_id, items in items_by_dim.items():
-        items = list(items)
-        n = len(items)
-        if n < min_pairs:
-            out[dim_id] = DimensionCalibration(dim_id, n, None, sufficient=False, escalate=False)
-            continue
-        k = estimate_kappa(
-            items, estimator, weight="quadratic", categories=_ORDINAL_CATEGORIES,
-            floor_prob=floor_prob,
-        )
-        if k is None:
-            # D-5: degenerate marginals (all one score) ⇒ undefined kappa;
-            # insufficient, not perfect — the same guard as outcome kappa.
-            out[dim_id] = DimensionCalibration(dim_id, n, None, sufficient=False, escalate=False)
-            continue
-        out[dim_id] = DimensionCalibration(
-            dim_id, n, kappa=k, sufficient=True, escalate=k < kappa_threshold
-        )
-    return out
+    gated = keyed_kappa_gate(
+        items_by_dim,
+        weight="quadratic",
+        categories=_ORDINAL_CATEGORIES,
+        kappa_threshold=kappa_threshold,
+        min_pairs=min_pairs,
+        estimator=estimator,
+        floor_prob=floor_prob,
+    )
+    return {
+        dim_id: DimensionCalibration(dim_id, c.n, c.kappa, c.sufficient, c.escalate)
+        for dim_id, c in gated.items()
+    }
 
 
-def dimension_diagnostics(ledger_path, spec, seed: int, *, rubric: Optional[ProcessRubric] = None):
+def dimension_diagnostics(
+    ledger_path,
+    spec,
+    seed: int,
+    *,
+    rubric: Optional[ProcessRubric] = None,
+    exclude_trials: frozenset[str] | set[str] = frozenset(),
+):
     """Assemble per-dimension judge↔human kappa + score-vs-telemetry correlations
     from the ledger [PR-5, AC-5/AC-7].
 
@@ -81,6 +84,10 @@ def dimension_diagnostics(ledger_path, spec, seed: int, *, rubric: Optional[Proc
     the trials in the EVAL-7 reviewed set (so the IPW strata apply), while the
     correlation runs over every judge-scored trial vs its telemetry. Returns the
     diagnostics block ``analyze`` folds into its process section.
+
+    ``exclude_trials`` drops those trials' scores from every table here — the
+    EVAL-11 D007 quarantine path, applied at the same point as the section's
+    per-dimension means so the diagnostics cannot disagree with them.
     """
     from collections import defaultdict
 
@@ -100,6 +107,8 @@ def dimension_diagnostics(ledger_path, spec, seed: int, *, rubric: Optional[Proc
     cid_by_trial: dict[str, str] = {}
     for ev in find_events(ledger_path, events.PROCESS_SCORE):
         ps = ev["process_score"]
+        if ps["trial_id"] in exclude_trials:
+            continue
         kind = ps["provenance"]["scorer"]["kind"]
         smap = {ds["dim_id"]: ds.get("score") for ds in ps["scores"]}
         (judge_by_trial if kind == "judge" else human_by_trial)[ps["trial_id"]] = smap

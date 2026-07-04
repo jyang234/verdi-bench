@@ -137,16 +137,23 @@ def selfcheck_status(ledger_path) -> str:
 
     A passing selfcheck validates the realized per-task deltas *at the moment it
     ran*. If any data-bearing event (``trial`` / ``grade`` / ``cant_grade`` /
-    ``judge_verdict`` — the events feeding the analyzed deltas) was appended
-    **after** the latest selfcheck, that pass is **stale**: it certified a
-    different dataset than the render now analyzes. The append-only ledger makes
-    this a pure ordering test — the latest selfcheck must post-date the last
-    data-bearing event. (Non-data events — anchors, calibration runs, renders —
-    do not invalidate a pass.)"""
+    ``judge_verdict``, and ``forensic_quarantine``, which removes trials from
+    the analyzed deltas [EVAL-11 D007] — the events feeding the analysis) was
+    appended **after** the latest selfcheck, that pass is **stale**: it
+    certified a different dataset than the render now analyzes. The append-only
+    ledger makes this a pure ordering test — the latest selfcheck must
+    post-date the last data-bearing event. (Non-data events — anchors,
+    calibration runs, renders — do not invalidate a pass.)"""
     from ..ledger import events
     from ..ledger.query import read_events
 
-    data_kinds = {events.TRIAL, events.GRADE, events.CANT_GRADE, events.JUDGE_VERDICT}
+    data_kinds = {
+        events.TRIAL,
+        events.GRADE,
+        events.CANT_GRADE,
+        events.JUDGE_VERDICT,
+        events.FORENSIC_QUARANTINE,
+    }
     last_data_idx = -1
     last_selfcheck: Optional[tuple[int, bool]] = None
     for i, ev in enumerate(read_events(ledger_path)):

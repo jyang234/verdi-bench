@@ -51,6 +51,10 @@ class ClaudeCodeAdapter(Adapter):
         here (labeling one from command text would be estimation, not
         measurement). No ``messages`` key at all ⇒ no trajectory (``None``),
         the honest absent state [AC-2].
+
+        ``command`` [EVAL-11-D005]: a Bash tool_use carries its command string;
+        every non-shell step is a measured ``""``; a malformed Bash input is
+        null (unmeasurable), never guessed.
         """
         messages = native_log.get("messages")
         if not isinstance(messages, list):
@@ -63,17 +67,25 @@ class ClaudeCodeAdapter(Adapter):
                 if not isinstance(c, dict):
                     continue
                 if c.get("type") == "text":
-                    steps.append(TrajectoryStep(kind="message"))
+                    steps.append(TrajectoryStep(kind="message", command=""))
                 elif c.get("type") == "tool_use":
                     name = c.get("name")
                     tool_input = c.get("input")
                     file_path = (
                         tool_input.get("file_path") if isinstance(tool_input, dict) else None
                     )
+                    if name == "Bash":
+                        raw_cmd = (
+                            tool_input.get("command") if isinstance(tool_input, dict) else None
+                        )
+                        command = raw_cmd if isinstance(raw_cmd, str) else None
+                    else:
+                        command = ""
                     steps.append(
                         TrajectoryStep(
                             kind="file_edit" if name in _FILE_EDIT_TOOLS else "tool_call",
                             files_touched=[str(file_path)] if file_path else None,
+                            command=command,
                         )
                     )
         return steps

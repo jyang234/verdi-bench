@@ -174,6 +174,7 @@ def _register_stage_commands() -> None:
         (".analyze.cli", "register"),
         (".review.cli", "register"),
         (".process.cli", "register"),
+        (".forensics.cli", "register"),
         (".contamination.cli", "register"),
     ]:
         try:

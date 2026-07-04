@@ -638,6 +638,77 @@ def record_process_score(
 
 
 # ---------------------------------------------------------------------------
+# EVAL-11 events
+# ---------------------------------------------------------------------------
+FORENSICS_REPORT = register_event("forensics_report")
+FORENSIC_SPOTCHECK = register_event("forensic_spotcheck")
+FORENSIC_QUARANTINE = register_event("forensic_quarantine")
+
+
+def record_forensics_report(
+    ledger_path, ctx: EventContext, *, forensics_report: dict
+) -> dict:
+    """One forensics scan: metrics, flags, coverage, advisory reviews [EVAL-11].
+
+    Additive event kind — old ledgers simply lack it. The payload stamps its
+    ``vocabulary_version`` [AC-1]; per-trial CANT_REVIEW rides inside the
+    ``reviews`` block, so a scan is one event whether the advisory pass
+    succeeded, failed closed, or was skipped."""
+    if "vocabulary_version" not in forensics_report:
+        raise ValueError(
+            "forensics_report must stamp its vocabulary_version [EVAL-11 AC-1]; "
+            "findings from different vocabularies must never merge silently"
+        )
+    # Validate the exact shape the findings reader indexes — a malformed report
+    # must refuse HERE with a named field, not KeyError every later analyze.
+    if not isinstance(forensics_report.get("flags"), list):
+        raise ValueError("forensics_report.flags must be a list (may be empty)")
+    coverage = forensics_report.get("coverage")
+    if not isinstance(coverage, dict) or not {"trials", "covered", "gaps"} <= set(coverage):
+        raise ValueError(
+            "forensics_report.coverage must carry trials/covered/gaps [AC-6]; "
+            f"got {coverage!r}"
+        )
+    return emit(ledger_path, ctx, FORENSICS_REPORT, {"forensics_report": forensics_report})
+
+
+def record_forensic_spotcheck(
+    ledger_path, ctx: EventContext, *, trial_id: str, labels: dict, stratum: str
+) -> dict:
+    """A human's per-detector spot-check of one trial [EVAL-11 AC-4, D006].
+
+    ``labels`` maps detector ids to booleans; ``stratum`` is the trial's
+    EVAL-7 review stratum (``mandatory`` | ``floor``) so IPW kappa applies."""
+    if stratum not in ("mandatory", "floor"):
+        raise ValueError(
+            f"stratum must be 'mandatory' or 'floor' (the EVAL-7 review strata), "
+            f"got {stratum!r}"
+        )
+    return emit(
+        ledger_path,
+        ctx,
+        FORENSIC_SPOTCHECK,
+        {"forensic_spotcheck": {"trial_id": trial_id, "labels": labels, "stratum": stratum}},
+    )
+
+
+def record_forensic_quarantine(
+    ledger_path, ctx: EventContext, *, trial_id: str, reason: str
+) -> dict:
+    """A ledgered operator disposition [EVAL-11 D003, D007]: the quarantined
+    trial's data leaves the comparisons and every render discloses it. Never
+    written by a detector — only the CLI verb a human invokes."""
+    if not reason:
+        raise ValueError("a quarantine without a reason is an invisible disposition")
+    return emit(
+        ledger_path,
+        ctx,
+        FORENSIC_QUARANTINE,
+        {"forensic_quarantine": {"trial_id": trial_id, "reason": reason}},
+    )
+
+
+# ---------------------------------------------------------------------------
 # EVAL-10 events
 # ---------------------------------------------------------------------------
 CONTAMINATION_PROBE = register_event("contamination_probe")

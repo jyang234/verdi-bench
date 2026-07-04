@@ -29,6 +29,7 @@ source_modules =
     harness.corpus
     harness.contamination
     harness.blind
+    harness.forensics
     harness.run.seam
     harness.run.interleave
     harness.run.budget
@@ -90,5 +91,16 @@ source_modules =
     harness.corpus
     harness.contamination
     harness.blind
+    harness.forensics
 forbidden_modules =
     harness.ledger.chain
+
+[importlinter:contract:forensics-deterministic-tier-llm-free]
+name = Deterministic forensics imports no LLM client [EVAL-11 AC-3]
+type = forbidden
+source_modules =
+    harness.forensics.metrics
+    harness.forensics.detectors
+forbidden_modules =
+    harness.judge.providers
+    harness.judge.client

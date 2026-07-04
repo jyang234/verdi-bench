@@ -283,4 +283,51 @@ def test_canonical_bytes_deterministic(tmp_path):
     assert bytes_a.replace(a.trial_id.encode(), b"TID") == bytes_b.replace(
         b.trial_id.encode(), b"TID"
     )
-    assert TrajectoryRecord.model_validate(json.loads(bytes_a)).schema_version == 1
+    # literal pin, deliberately not the constant: bumping the versioned
+    # contract must fail a test until a human approves it [EVAL-12-D001]
+    assert TrajectoryRecord.model_validate(json.loads(bytes_a)).schema_version == 2
+
+
+def test_v1_record_loads_under_v2_model(tmp_path):
+    """Migration [EVAL-11-D005]: a pre-change v1 record (no ``command`` field)
+    validates under the v2 model and reads back with ``command`` null on every
+    step — unmeasurable, never backfilled."""
+    v1 = {
+        "schema_version": 1,
+        "trial_id": "old",
+        "platform": "claude_code",
+        "steps": [{"kind": "tool_call"}, {"kind": "message", "relative_ts": 1.0}],
+    }
+    p = tmp_path / TRAJECTORY_FILENAME
+    p.write_text(json.dumps(v1), encoding="utf-8")
+    rec = load_trajectory(p)
+    assert rec.schema_version == 1
+    assert all(s.command is None for s in rec.steps)
+
+
+def test_command_measured_vs_unmeasurable():
+    """[EVAL-11-D005] Both adapters distinguish a measured command string, a
+    measured not-a-shell-command (\"\"), and an unmeasurable null."""
+    claude = ClaudeCodeAdapter().normalize_trajectory(
+        {
+            "messages": [
+                {"content": [{"type": "tool_use", "name": "Bash",
+                              "input": {"command": "rm -rf build"}}]},
+                {"content": [{"type": "tool_use", "name": "Edit",
+                              "input": {"file_path": "a.py"}}]},
+                {"content": [{"type": "tool_use", "name": "Bash", "input": "garbled"}]},
+            ]
+        }
+    )
+    assert [s.command for s in claude] == ["rm -rf build", "", None]
+
+    codex = CodexAdapter().normalize_trajectory(
+        {
+            "events": [
+                {"type": "exec", "cmd": "pytest -q", "parsed_cmd": "test"},
+                {"type": "patch", "files": []},
+                {"type": "exec"},
+            ]
+        }
+    )
+    assert [s.command for s in codex] == ["pytest -q", "", None]

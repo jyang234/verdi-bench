@@ -188,6 +188,9 @@ class FindingsDocument(BaseModel):
     contamination: dict = {}
     process: Optional[dict] = None
     judge_calibration: Optional[dict] = None
+    # EVAL-11: forensic flags/coverage/kappa + operator quarantines — additive,
+    # disclosure-only (never a fence input, never a primary metric) [D004]
+    forensics: Optional[dict] = None
     provenance: Provenance
 
 
@@ -204,13 +207,51 @@ def _trial_index(ledger_path) -> dict[str, dict]:
 def _holdout_values(ledger_path) -> dict[str, dict[str, list[float]]]:
     """``task_id -> arm -> [binary pass (0/1) per trial]`` from grade events."""
     trials = _trial_index(ledger_path)
+    quarantined = _quarantined_trial_ids(ledger_path)
     acc: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     for ev in find_events(ledger_path, events.GRADE):
+        if ev["trial_id"] in quarantined:
+            continue
         rec = trials.get(ev["trial_id"])
         if rec is None:
             continue
         acc[rec["task_id"]][rec["arm"]].append(1.0 if ev["binary_score"] else 0.0)
     return acc
+
+
+# --- EVAL-11: operator quarantine [D003, D007] -------------------------------
+def _quarantine_entries(ledger_path) -> list[dict]:
+    """Ledgered operator quarantines, with the acting operator — the only path
+    by which forensics affects a comparison, always a disclosed human act."""
+    return [
+        {
+            "trial_id": ev["forensic_quarantine"]["trial_id"],
+            "reason": ev["forensic_quarantine"]["reason"],
+            "actor": ev["provenance"]["actor"],
+        }
+        for ev in find_events(ledger_path, events.FORENSIC_QUARANTINE)
+    ]
+
+
+def _quarantined_trial_ids(ledger_path) -> set[str]:
+    return {e["trial_id"] for e in _quarantine_entries(ledger_path)}
+
+
+def _quarantined_comparison_ids(ledger_path) -> set[str]:
+    """The judged comparisons a quarantined trial participated in — a verdict
+    over a quarantined response leaves the comparison with its trial [D007]."""
+    from ..judge.assemble import comparison_id_for
+
+    quarantined = _quarantined_trial_ids(ledger_path)
+    if not quarantined:
+        return set()  # the common case: skip the trial-index rebuild entirely
+    trials = _trial_index(ledger_path)
+    out: set[str] = set()
+    for trial_id in quarantined:
+        rec = trials.get(trial_id)
+        if rec is not None:
+            out.add(comparison_id_for(rec["task_id"], rec["repetition"]))
+    return out
 
 
 def _orphan_grades(ledger_path) -> list[str]:
@@ -279,9 +320,12 @@ def _override_summary(ledger_path) -> dict:
 
 def _telemetry_values(ledger_path, field: str) -> dict[str, dict[str, list[float]]]:
     """``task_id -> arm -> [telemetry field per non-null trial]``."""
+    quarantined = _quarantined_trial_ids(ledger_path)
     acc: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     for ev in find_events(ledger_path, events.TRIAL):
         rec = ev["trial_record"]
+        if rec["trial_id"] in quarantined:
+            continue
         val = rec.get("telemetry", {}).get(field)
         if val is not None:
             acc[rec["task_id"]][rec["arm"]].append(float(val))
@@ -314,9 +358,12 @@ def _judge_preference_rates(ledger_path, arm_a: str, arm_b: str) -> dict[str, fl
     task-keyed core of :func:`_judge_preference_by_task`, exposed so the
     dossier's per-task view keeps task identity [EVAL-12 AC-6]."""
     pair = {arm_a, arm_b}
+    quarantined_cids = _quarantined_comparison_ids(ledger_path)
     per_task: dict[str, dict[str, int]] = defaultdict(lambda: {"a": 0, "n": 0})
     for ev in find_events(ledger_path, events.JUDGE_VERDICT):
         v = ev["verdict"]
+        if v.get("comparison_id") in quarantined_cids:
+            continue  # a verdict over a quarantined response leaves with it [D007]
         arm_map = v.get("arm_map")
         if not arm_map or {arm_map.get("A"), arm_map.get("B")} != pair:
             continue  # unmapped, or a different arm pair — never assume the frame
@@ -520,8 +567,13 @@ def _secondary_metrics(ledger_path, spec) -> dict:
     fields = ("tokens_in", "tokens_out", "tokens_cache", "cost", "wall_time_s", "tool_calls")
     per_arm: dict[str, dict[str, float]] = defaultdict(dict)
     raw: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    quarantined = _quarantined_trial_ids(ledger_path)
     for ev in find_events(ledger_path, events.TRIAL):
         rec = ev["trial_record"]
+        if rec["trial_id"] in quarantined:
+            # D007: a quarantined trial's data leaves EVERY rendered aggregate,
+            # not just the primary comparison — one document, one exclusion rule
+            continue
         for f in fields:
             val = rec.get("telemetry", {}).get(f)
             if val is not None:
@@ -547,7 +599,12 @@ def _process_section(ledger_path, spec, seed) -> Optional[dict]:
     kappa and score-vs-telemetry correlations (with ``style_only`` flags) the
     plan's M5 requires [AC-5/AC-7]. Returns None when no process scores exist.
     """
-    evs = find_events(ledger_path, events.PROCESS_SCORE)
+    quarantined = _quarantined_trial_ids(ledger_path)
+    evs = [
+        ev
+        for ev in find_events(ledger_path, events.PROCESS_SCORE)
+        if ev["process_score"]["trial_id"] not in quarantined
+    ]
     if not evs:
         return None
     dims: dict[str, dict] = defaultdict(lambda: {"scores": [], "n_cant": 0, "scorer_kinds": set()})
@@ -574,10 +631,14 @@ def _process_section(ledger_path, spec, seed) -> Optional[dict]:
         }
         for dim, b in sorted(dims.items())
     }
-    # PR-5: fold in the AC-5 per-dimension kappa and AC-7 telemetry correlations.
+    # PR-5: fold in the AC-5 per-dimension kappa and AC-7 telemetry correlations
+    # — under the same quarantine exclusion as the dimension means above, so
+    # the section cannot disagree with its own diagnostics [D007].
     from ..process.calibrate import dimension_diagnostics
 
-    diagnostics = dimension_diagnostics(ledger_path, spec, seed)
+    diagnostics = dimension_diagnostics(
+        ledger_path, spec, seed, exclude_trials=frozenset(quarantined)
+    )
     return {
         "exploratory": True,
         "disclosure": {
@@ -593,6 +654,55 @@ def _process_section(ledger_path, spec, seed) -> Optional[dict]:
         "style_only": diagnostics["style_only"],
         "floor_prob": diagnostics["floor_prob"],
     }
+
+
+def _forensics_section(ledger_path, spec) -> Optional[dict]:
+    """Forensic disclosure block [EVAL-11 AC-5/AC-6]: the latest report's flags
+    and coverage, the LLM↔human per-detector kappa table, and any operator
+    quarantines. Disclosure-only — nothing here feeds the fence [D004]; returns
+    None when no forensic activity exists on the ledger."""
+    from ..forensics.review import spotcheck_kappa
+    from ..ledger.query import latest_event
+
+    report_ev = latest_event(ledger_path, events.FORENSICS_REPORT)
+    quarantined = _quarantine_entries(ledger_path)
+    if report_ev is None and not quarantined:
+        return None
+    # a quarantine naming a trial the ledger does not know excluded nothing —
+    # surfaced loudly, the AN-9 orphan-grade posture
+    trial_ids = set(_trial_index(ledger_path))
+    for q in quarantined:
+        q["orphan"] = q["trial_id"] not in trial_ids
+    section: dict = {"quarantined": quarantined}
+    if report_ev is not None:
+        fr = report_ev["forensics_report"]
+        section.update(
+            {
+                "vocabulary_version": fr["vocabulary_version"],
+                "flags": fr["flags"],
+                "coverage": fr["coverage"],
+                "spotcheck_kappa": spotcheck_kappa(ledger_path, spec=spec, report=fr),
+            }
+        )
+        if "reviews" in fr:
+            reviews = fr["reviews"]
+            cant_reasons = sorted(
+                r["cant_review_reason"]
+                for r in reviews.values()
+                if r.get("cant_review_reason") is not None
+            )
+            section["reviews"] = {
+                "n_reviewed": sum(
+                    1 for r in reviews.values() if r.get("suspicions") is not None
+                ),
+                "n_cant_review": len(cant_reasons),
+                "cant_review_reasons": cant_reasons,
+            }
+        else:
+            # --no-review is a SKIPPED advisory pass — never rendered as a
+            # pass that ran and reviewed nothing [honest reporting]
+            section["reviews"] = None
+    return section
 
 
 def compute_findings(
@@ -744,6 +854,7 @@ def compute_findings(
         contamination=contamination_summary(ledger_path, spec, corpus_manifest),
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
+        forensics=_forensics_section(ledger_path, spec),
         provenance=provenance,
     )
 
@@ -811,6 +922,82 @@ def _comparison_lines(cf: ComparisonFinding, mde: MDEBlock) -> list[str]:
         lines.append(f"- No effect ≥ MDE detected (MDE={mde_val}).")
     if cf.excluded_from_official:
         lines.append(f"- ⚠ EXCLUDED from official comparison: {cf.exclusion_reason}")
+    return lines
+
+
+def _forensic_flags_for_comparison(findings: FindingsDocument, cf: ComparisonFinding) -> list[str]:
+    """Forensic flags on trials of either arm of THIS comparison — rendered
+    beside it, non-suppressing [EVAL-11 AC-5]: the comparison's numbers are
+    computed exactly as without the flag; the flag is adjacent evidence."""
+    if findings.forensics is None:
+        return []
+    pair = {cf.arm_a, cf.arm_b}
+    return [
+        f"- ⚠ forensic flag [{f['detector']}]: trial {f['trial_id']} "
+        f"(task {f['task_id']}, arm {f['arm']}) — evidence, not a verdict"
+        for f in findings.forensics.get("flags", [])
+        if f["arm"] in pair
+    ]
+
+
+def _forensics_lines(findings: FindingsDocument) -> list[str]:
+    """The forensic disclosure section [EVAL-11 AC-5/AC-6] for both renders."""
+    fx = findings.forensics or {}
+    lines = [
+        "Forensic flags are evidence, never verdicts: no flag alters a grade, "
+        "comparison, or fence outcome [EVAL-11 D003/D004]."
+    ]
+    if "vocabulary_version" in fx:
+        lines.append(f"- vocabulary version: {fx['vocabulary_version']}")
+        flags = fx.get("flags", [])
+        if flags:
+            lines += [
+                f"- [{f['detector']}] trial {f['trial_id']} (task {f['task_id']}, "
+                f"arm {f['arm']})"
+                for f in flags
+            ]
+        else:
+            lines.append("- no flags")
+        cov = fx["coverage"]
+        lines.append(f"- coverage: {cov['covered']}/{cov['trials']} trial(s) profiled")
+        # AC-6: each uncovered trial renders its id + reason; full coverage
+        # renders no gap line at all
+        for gap in cov["gaps"]:
+            lines.append(f"  - coverage gap: trial {gap['trial_id']} — {gap['reason']}")
+        if "reviews" in fx:
+            rv = fx["reviews"]
+            if rv is None:
+                lines.append(
+                    "- advisory review pass: NOT RUN for this scan (--no-review)"
+                )
+            else:
+                reasons = ", ".join(rv["cant_review_reasons"])
+                lines.append(
+                    f"- advisory reviews [judgment]: {rv['n_reviewed']} reviewed, "
+                    f"{rv['n_cant_review']} CANT_REVIEW"
+                    + (f" (reasons: {reasons})" if reasons else "")
+                )
+        kappa = (fx.get("spotcheck_kappa") or {}).get("kappa_by_detector") or {}
+        if kappa:
+            lines.append("- LLM↔human agreement (unweighted IPW kappa, per detector):")
+            for det, k in kappa.items():
+                if not k["sufficient"]:
+                    lines.append(f"  - {det}: n={k['n']} (insufficient)")
+                else:
+                    flag = " ESCALATE" if k["escalate"] else ""
+                    lines.append(f"  - {det}: kappa={_fmt(k['kappa'], 3)} (n={k['n']}){flag}")
+    for q in fx.get("quarantined", []):
+        if q.get("orphan"):
+            lines.append(
+                f"- ⚠ ORPHAN QUARANTINE by operator {q['actor']}: trial "
+                f"{q['trial_id']} — {q['reason']} — NO SUCH TRIAL on this "
+                "ledger; nothing was excluded"
+            )
+        else:
+            lines.append(
+                f"- ⚠ QUARANTINED by operator {q['actor']}: trial {q['trial_id']} — "
+                f"{q['reason']} (excluded from comparisons) [D007]"
+            )
     return lines
 
 
@@ -1092,6 +1279,8 @@ def _render_official_md(findings: FindingsDocument) -> str:
             )
             continue
         out.extend(_comparison_lines(cf, findings.mde))
+        # EVAL-11 AC-5: flags render beside the comparison they affect
+        out.extend(_forensic_flags_for_comparison(findings, cf))
     out += ["", "## Confounds (disclosed, non-suppressing)"]
     out += [f"- {c['flag']}" for c in findings.confounds] or ["- none"]
     out += ["", "## Contamination (disclosed, non-suppressing)"]
@@ -1125,6 +1314,14 @@ def _render_official_md(findings: FindingsDocument) -> str:
             f"## Process diagnostics — {_WATERMARK} (advisory secondary, NEVER a primary metric)",
             *_process_lines(findings),
         ]
+    # EVAL-11 AC-5: disclosed in the OFFICIAL render too — disclosure-only,
+    # never a fence input [D004]
+    if findings.forensics is not None:
+        out += [
+            "",
+            "## Forensic flags (disclosed, non-suppressing)",
+            *_forensics_lines(findings),
+        ]
     out += ["", "## Provenance", *_provenance_lines(findings)]
     out += ["", f"CI method selected by coverage: {findings.ci_selection['selected_method']}"]
     return "\n".join(out) + "\n"
@@ -1145,12 +1342,19 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
     ])
     out += section("Minimum detectable effect", _mde_lines(findings.mde))
     for cf in findings.comparisons:
-        out += section(f"Primary metric — {cf.label}", _comparison_lines(cf, findings.mde))
+        out += section(
+            f"Primary metric — {cf.label}",
+            _comparison_lines(cf, findings.mde)
+            # EVAL-11 AC-5: flags render beside the comparison they affect
+            + _forensic_flags_for_comparison(findings, cf),
+        )
     out += section("Secondary metrics (exploratory)", _secondary_lines(findings))
     if findings.judge_calibration is not None:
         out += section("Judge calibration (per class)", _judge_calibration_lines(findings))
     if findings.process is not None:
         out += section("Process diagnostics (EXPLORATORY secondary)", _process_lines(findings))
+    if findings.forensics is not None:
+        out += section("Forensic flags (disclosed, non-suppressing)", _forensics_lines(findings))
     out += section("Confounds (disclosed, non-suppressing)",
                    [f"- {c['flag']}: {c}" for c in findings.confounds] or ["- none"])
     out += section("Contamination (disclosed, non-suppressing)",
