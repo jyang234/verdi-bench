@@ -130,6 +130,94 @@ def test_retry_terminal_override_regrades_and_discloses(tmp_path):
     assert "override-graded" in md and "Terminal overrides" in md
 
 
+def test_fake_pipeline_rerun_yields_byte_identical_analysis_inputs(tmp_path):
+    """7A-4 exit: the fake-engine pipeline run twice end-to-end yields
+    byte-identical analysis inputs.
+
+    Every re-runnable verb (run, grade, judge, review build, process score) is
+    invoked a second time over the completed ledger. The re-runs must append no
+    data-bearing events; the only permitted append is run's per-invocation
+    ``executed_order`` audit record [AC-4], which must repeat the completed
+    prior order — a resume, not a fragment. The findings computed before and
+    after the re-runs must be byte-identical except the provenance head
+    pointer, which legitimately advances past the audit record. (``bench
+    plan`` re-lock refusal is owned by test_eval3_lock.)
+    """
+    from harness.analyze.report import compute_findings, render_markdown
+    from harness.schema.experiment import ExperimentSpec
+
+    expdir = tmp_path / "exp"
+    expdir.mkdir(parents=True, exist_ok=True)
+    write_experiment_yaml(
+        expdir / "experiment.yaml", repetitions=1,
+        judge={"model": "fake/deterministic-2026-01-01", "rubric": "rubric.md",
+               "orders": "both", "temperature": 0,
+               "escalation": {"kappa_threshold": 0.6, "min_human_verdicts": 1}},
+    )
+    (expdir / "tasks.yaml").write_text(
+        yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "solve it", "task_class": "refactor"}]}),
+        encoding="utf-8",
+    )
+    ledger = expdir / "ledger.ndjson"
+
+    def _ok(*args):
+        r = runner.invoke(app, list(args))
+        assert r.exit_code == 0, f"{args}\n{r.output}"
+
+    _ok("plan", str(expdir / "experiment.yaml"), "--ledger", str(ledger))
+    _ok("run", str(expdir))
+    for ev in find_events(ledger, "trial"):
+        ws = Path(ev["trial_record"]["artifacts_path"]).parent
+        (ws / "holdout_results.json").write_text(
+            json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
+        )
+    _ok("grade", str(expdir), "--runner", "local")
+    _ok("judge", str(expdir))
+    _ok("review", "build", str(expdir))
+    _ok("process", "score", str(expdir))
+
+    spec = ExperimentSpec.from_yaml(expdir / "experiment.yaml")
+    data_kinds = ("trial", "grade", "cant_grade", "judge_verdict",
+                  "review_packet_built", "process_score")
+    before_bytes = ledger.read_bytes()
+    before_counts = {k: len(find_events(ledger, k)) for k in data_kinds}
+    md_before = render_markdown(
+        compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, n_boot=200),
+        ledger, "exploratory",
+    )
+
+    # second end-to-end pass over the completed ledger
+    _ok("run", str(expdir))
+    _ok("grade", str(expdir), "--runner", "local")
+    _ok("judge", str(expdir))
+    _ok("review", "build", str(expdir))
+    _ok("process", "score", str(expdir))
+
+    after_bytes = ledger.read_bytes()
+    # append-only: every first-pass evidence line is byte-identical
+    assert after_bytes.startswith(before_bytes)
+    # zero new data-bearing events...
+    assert {k: len(find_events(ledger, k)) for k in data_kinds} == before_counts
+    # ...and the only appended events are run's executed_order audit records,
+    # each repeating the completed prior order
+    new_events = [json.loads(line) for line in after_bytes[len(before_bytes):].splitlines()]
+    assert new_events and all(e["event"] == "executed_order" for e in new_events)
+    orders = find_events(ledger, "executed_order")
+    assert all(o["order"] == orders[0]["order"] for o in orders[1:])
+
+    md_after = render_markdown(
+        compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, n_boot=200),
+        ledger, "exploratory",
+    )
+
+    def _sans_head(md: str) -> str:
+        return "\n".join(l for l in md.splitlines() if "ledger head:" not in l)
+
+    assert "ledger head:" in md_before  # the normalization removes something real
+    assert _sans_head(md_before) == _sans_head(md_after)
+    _ok("verify-chain", str(ledger))
+
+
 def test_run_refuses_quarantined_task_version(tmp_path):
     """RN-5 + D-2: bench run loads the flake quarantine from the ledger and
     refuses to run a task version with a quarantining baseline — no trials run."""
