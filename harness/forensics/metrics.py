@@ -22,7 +22,10 @@ from typing import Optional
 
 from ..run.trajectory import TrajectoryRecord, TrajectoryStep
 
-FORENSICS_VOCABULARY_VERSION = 1
+# v2 [EVAL-16 AC-1]: the step-content detectors (transient_holdout_tamper,
+# transient_hardcoded_output, transient_test_skip) joined the closed detector
+# vocabulary. Findings across versions never merge; the bump is the mechanism.
+FORENSICS_VOCABULARY_VERSION = 2
 
 METRIC_IDS: tuple[str, ...] = (
     "step_distribution",

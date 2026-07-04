@@ -22,7 +22,12 @@ from ..ledger.events import (
     record_forensic_quarantine,
     record_forensics_report,
 )
-from .detectors import TrialEvidence, extract_assertion_values, run_detectors
+from .detectors import (
+    TrialEvidence,
+    detail_evaluable,
+    extract_assertion_values,
+    run_detectors,
+)
 from .metrics import FORENSICS_VOCABULARY_VERSION, trajectory_metrics
 
 _SKIP_DIRS = {"artifacts", ".git", "__pycache__"}
@@ -118,6 +123,11 @@ def run_forensics(
     flags: list[dict] = []
     gaps: list[dict] = []
     reviews: dict[str, dict] = {}
+    # EVAL-16 AC-5 (additive coverage keys, D002): where the step-content
+    # detectors could and could not look, rolled up per arm — asymmetric
+    # scrutiny is a disclosed measurement condition, never silent.
+    detail_by_arm: dict[str, dict] = {}
+    detail_gaps: list[dict] = []
     trial_events = find_events(ledger_path, events.TRIAL)
     for ev in trial_events:
         rec = ev["trial_record"]
@@ -153,8 +163,32 @@ def run_forensics(
             # can attribute [plan §4.3]
             pristine_files={},
             holdout_assertion_values=assertion_cache.get(holdouts_dir, ()),
+            # only a multi-segment relpath is content-matchable — a bare
+            # segment like "tests" would flag every workspace test edit
+            holdout_relpaths=(holdouts_dir,) if "/" in holdouts_dir else (),
         )
         flags.extend(run_detectors(evidence))
+
+        # step-content detector coverage, per arm [EVAL-16 AC-5]
+        bucket = detail_by_arm.setdefault(
+            rec["arm"],
+            {"trials": 0, "detail_evaluable": 0, "steps_total": 0, "steps_with_detail": 0},
+        )
+        bucket["trials"] += 1
+        if record is not None:
+            bucket["steps_total"] += len(record.steps)
+            bucket["steps_with_detail"] += sum(
+                1 for s in record.steps if s.detail is not None
+            )
+        if detail_evaluable(record):
+            bucket["detail_evaluable"] += 1
+        else:
+            detail_gaps.append(
+                {
+                    "trial_id": trial_id,
+                    "reason": "no_detail" if status == "verified" else status,
+                }
+            )
 
         if review:
             reviews[trial_id] = forensic_review(
@@ -173,6 +207,10 @@ def run_forensics(
             "trials": len(trial_events),
             "covered": len(metrics),
             "gaps": gaps,
+            # additive keys [EVAL-16 D002]: old readers ignore them, old
+            # ledgers simply lack them, the report stays one event
+            "detail_by_arm": {arm: detail_by_arm[arm] for arm in sorted(detail_by_arm)},
+            "detail_gaps": detail_gaps,
         },
     }
     if review:

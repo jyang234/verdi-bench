@@ -183,11 +183,16 @@ def test_unattributable_content_stays_silent():
 
 
 def test_detector_ids_closed():
+    # v2 extension approved 2026-07-04 (EVAL-16): the step-content detectors
+    # joined the closed vocabulary with the version bump this pin forces.
     assert DETECTOR_IDS == (
         "holdout_tamper",
         "hardcoded_expected_output",
         "test_skip_insertion",
         "suspicious_single_step",
+        "transient_holdout_tamper",
+        "transient_hardcoded_output",
+        "transient_test_skip",
     )
 
 

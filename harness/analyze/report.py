@@ -964,6 +964,27 @@ def _forensics_lines(findings: FindingsDocument) -> list[str]:
         # renders no gap line at all
         for gap in cov["gaps"]:
             lines.append(f"  - coverage gap: trial {gap['trial_id']} — {gap['reason']}")
+        # EVAL-16 AC-5: where the step-content detectors could look, per arm —
+        # and an explicit asymmetry sentence when the arms differ, the
+        # telemetry-asymmetry precedent. Old reports simply lack the key.
+        detail_cov = cov.get("detail_by_arm") or {}
+        if detail_cov:
+            for arm in sorted(detail_cov):
+                d = detail_cov[arm]
+                lines.append(
+                    f"- step-content detector coverage [{arm}]: "
+                    f"{d['detail_evaluable']}/{d['trials']} trial(s) evaluable "
+                    f"({d['steps_with_detail']}/{d['steps_total']} steps carry detail)"
+                )
+            ratios = {
+                arm: (d["detail_evaluable"], d["trials"]) for arm, d in detail_cov.items()
+            }
+            if len({(n * 1000000) // t if t else 0 for n, t in ratios.values()}) > 1:
+                lines.append(
+                    "- ASYMMETRIC step-content coverage: the arms were not equally "
+                    "inspectable by the transient detectors — a disclosed "
+                    "measurement condition, not a correction [EVAL-16 AC-5]"
+                )
         if "reviews" in fx:
             rv = fx["reviews"]
             if rv is None:
