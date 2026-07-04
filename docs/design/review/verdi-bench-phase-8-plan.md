@@ -1,16 +1,28 @@
 # verdi-bench — Phase 8 plan: close the production-readiness register
 
-> **Implementation status (2026-07-04).** Slices 8A, 8C, 8B, 8D, 8F, 8H, 8G, 8I,
-> 8J and the code half of 8E are implemented, tested, and committed on this
-> branch; `make verify` is green. Closed: **PRA-H1, H2, H3** (all three
-> ship-blockers) and **M1–M5, M7, M9–M16, L1–L10** with owning tests. **Deferred
-> to a Docker-capable session** (no daemon in the implementation environment to
-> validate): PRA-**H5** browser CI job, PRA-**M6** full plugin containerization
-> (documented-as-trusted fallback shipped instead, per D-P8-2), PRA-**M8**
-> exception-path cost field, PRA-**M2** per-arm provider keys, and the
-> real-container/real-proxy assertions for 8E (the reference proxy config +
-> fail-loud code shipped; the e2e is docker-gated). See the updated Completeness
-> map below.
+> **Implementation status (2026-07-04) — ALL High and Medium findings closed.**
+> Every register item is implemented with owning tests on this branch; `make
+> verify` is green and all 7 import contracts hold.
+>
+> - **High (5/5):** PRA-H1, H2, H3 closed in the first pass; **H4** closed (proxy
+>   fail-loud + reference config + real-container egress-attribution e2e +
+>   VERDI_REQUIRE_PROXY so it can't skip-green); **H5** closed (browser paths
+>   env-configurable + VERDI_REQUIRE_BROWSER + a CI `browser` job; the 10 UI ACs
+>   validated running locally).
+> - **Medium (16/16):** M1, M3–M5, M10–M16 closed in the first pass; **M2**
+>   (per-arm provider keys), **M8** (exception-path cost), **M9** (dead-proxy
+>   fast-abort) closed with fast-suite tests; **M6** (containerize plugins) and
+>   **M7** (real-container kill) closed with docker-marked tests validated
+>   against a live daemon.
+> - **Low/Info:** L1–L10 closed.
+>
+> A Docker daemon was brought up in the implementation environment, so the
+> container-dependent items (M6, M7, H4) were validated locally against real
+> containers using FROM-scratch static images (registry pulls are policy-blocked,
+> so no base image is pulled). The only artifact that can be exercised solely in
+> CI is the *shipped `squid.conf` itself* — it needs the pullable squid image;
+> the harness↔proxy contract it depends on is proven here with a real container.
+> The completeness map below reflects the delivered state.
 
 **Date:** 2026-07-04 · **Follows:** the production-readiness & competitive audit
 (`verdi-bench-production-readiness-audit.md`, this branch, `3f639f1`).
