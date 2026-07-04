@@ -26,9 +26,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional, Sequence
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
-from ..blind.core import secret_pattern_list
+from ..blind.core import identity_pattern_list, secret_pattern_list
 from ..judge.providers.base import (
     Provider,
     ProviderContextOverflow,
@@ -40,9 +40,8 @@ from ..review.kappa import (
     FLOOR_INCLUSION_PROB,
     KappaEstimator,
     ReviewedItem,
-    estimate_kappa,
+    keyed_kappa_gate,
 )
-from ..review.scrub import ScrubError, assert_identity_free, blind_scrub
 from .detectors import DETECTOR_IDS
 
 JUDGMENT_TAG = "[judgment]"
@@ -55,11 +54,15 @@ DEFAULT_MARGIN = 1.15
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 _BINARY_CATEGORIES = [0, 1]
 DEFAULT_KAPPA_THRESHOLD = 0.6
+# The secret list takes no per-experiment extras here — compile it once, not
+# once per reviewed trial.
+_SECRET_PATTERNS = secret_pattern_list()
 
 
 class CantReviewReason(str, Enum):
     """Closed fail-closed vocabulary [AC-4] — the CANT_SCORE analog."""
 
+    no_transcript = "no_transcript"
     identity_leak = "identity_leak"
     redaction_leak = "redaction_leak"
     context_overflow = "context_overflow"
@@ -134,7 +137,11 @@ def _heuristic_token_count(text: str) -> int:
     return len(text) // 4 + 1
 
 
-def _parse_review(text: str) -> tuple[dict[str, bool], str]:
+def _parse_review(text: str) -> tuple[dict, str]:
+    """Extract the JSON shape only — the ForensicReview model validator is the
+    single source of truth for the suspicion-key contract, so the two can
+    never drift; its ValidationError is a ValueError the caller's fail-closed
+    envelope already maps to CANT_REVIEW(parse)."""
     m = _JSON_RE.search(text or "")
     if not m:
         raise ValueError("no JSON object in forensic review output")
@@ -143,12 +150,8 @@ def _parse_review(text: str) -> tuple[dict[str, bool], str]:
     narrative = raw.get("narrative")
     if not isinstance(suspicions, dict) or not isinstance(narrative, str) or not narrative:
         raise ValueError("forensic review must carry a suspicions object and a narrative")
-    if set(suspicions) != set(DETECTOR_IDS) or not all(
-        isinstance(v, bool) for v in suspicions.values()
-    ):
-        raise ValueError(
-            f"suspicions must map exactly {sorted(DETECTOR_IDS)} to booleans"
-        )
+    if not all(isinstance(v, bool) for v in suspicions.values()):
+        raise ValueError("suspicion values must be booleans")
     return suspicions, narrative
 
 
@@ -165,24 +168,31 @@ def forensic_review(
 ) -> ForensicReview:
     """Review one blinded transcript; every path yields a ForensicReview.
 
-    Full-or-CANT_REVIEW: blinding failure, secret leak, context overflow,
-    provider fault, and unparseable output each fail closed to their named
-    reason — a review is never silently absent from the report [AC-4].
+    Full-or-CANT_REVIEW: an absent/empty transcript, blinding failure, secret
+    leak, context overflow, provider fault, and unparseable output each fail
+    closed to their named reason — a review is never silently absent from the
+    report, and a review is never fabricated from zero evidence [AC-4].
     """
 
     def _cant(reason: CantReviewReason) -> ForensicReview:
         return ForensicReview(trial_id=trial_id, cant_review_reason=reason.value)
 
+    # A trial with no transcript has nothing to review — a provider would
+    # happily narrate an empty packet, which would then pollute n_reviewed and
+    # the spot-check kappa join. Fail closed instead.
+    if not transcript.strip():
+        return _cant(CantReviewReason.no_transcript)
+
     # Blinding is fail-closed [AC-4]: scrub through the shared core, then
-    # re-scan — an identity canary surviving the scrub blocks the call.
-    try:
-        blinded = blind_scrub(transcript, canaries)
-        assert_identity_free(blinded, canaries)
-    except ScrubError:
+    # re-scan with the SAME pattern list — an identity canary surviving the
+    # scrub blocks the call (and one compile serves both passes).
+    identity_patterns = identity_pattern_list(extra_literals=canaries)
+    blinded, _ = identity_patterns.scrub(transcript)
+    if identity_patterns.contains(blinded):
         return _cant(CantReviewReason.identity_leak)
     # Redaction is upstream (EVAL-4); a surviving secret canary must never
     # reach a provider payload — the process-packet defense in depth.
-    if secret_pattern_list().contains(blinded):
+    if _SECRET_PATTERNS.contains(blinded):
         return _cant(CantReviewReason.redaction_leak)
 
     messages = build_forensic_packet(blinded)
@@ -206,13 +216,16 @@ def forensic_review(
 
     try:
         suspicions, narrative = _parse_review(text)
-    except (ValueError, json.JSONDecodeError):
+        # The model validator owns the suspicion-key contract; a wrong key set
+        # raises ValidationError (a ValueError) and fails closed here, not in
+        # the caller.
+        return ForensicReview(
+            trial_id=trial_id,
+            suspicions=suspicions,
+            narrative=f"{JUDGMENT_TAG} {narrative}",
+        )
+    except (ValueError, json.JSONDecodeError, ValidationError):
         return _cant(CantReviewReason.parse)
-    return ForensicReview(
-        trial_id=trial_id,
-        suspicions=suspicions,
-        narrative=f"{JUDGMENT_TAG} {narrative}",
-    )
 
 
 # --- per-detector kappa calibration [AC-4] -----------------------------------
@@ -233,49 +246,45 @@ def detector_kappa(
     estimator: KappaEstimator | str = KappaEstimator.ipw,
     floor_prob: float = FLOOR_INCLUSION_PROB,
 ) -> dict[str, DetectorCalibration]:
-    """Unweighted, IPW-corrected kappa per detector; gates independently —
-    the process_kappa_by_dimension mechanics over binary flag categories."""
-    out: dict[str, DetectorCalibration] = {}
-    for detector_id, items in items_by_detector.items():
-        items = list(items)
-        n = len(items)
-        if n < min_pairs:
-            out[detector_id] = DetectorCalibration(
-                detector_id, n, None, sufficient=False, escalate=False
-            )
-            continue
-        k = estimate_kappa(
-            items, estimator, weight="unweighted", categories=_BINARY_CATEGORIES,
-            floor_prob=floor_prob,
-        )
-        if k is None:
-            # degenerate marginals ⇒ undefined kappa: insufficient, not perfect
-            out[detector_id] = DetectorCalibration(
-                detector_id, n, None, sufficient=False, escalate=False
-            )
-            continue
-        out[detector_id] = DetectorCalibration(
-            detector_id, n, kappa=k, sufficient=True, escalate=k < kappa_threshold
-        )
-    return out
+    """Unweighted, IPW-corrected kappa per detector; gates independently — the
+    shared :func:`keyed_kappa_gate` mechanics over binary flag categories, so
+    the gate cannot drift from EVAL-9's per-dimension tier."""
+    gated = keyed_kappa_gate(
+        items_by_detector,
+        weight="unweighted",
+        categories=_BINARY_CATEGORIES,
+        kappa_threshold=kappa_threshold,
+        min_pairs=min_pairs,
+        estimator=estimator,
+        floor_prob=floor_prob,
+    )
+    return {
+        detector_id: DetectorCalibration(detector_id, c.n, c.kappa, c.sufficient, c.escalate)
+        for detector_id, c in gated.items()
+    }
 
 
-def spotcheck_kappa(ledger_path) -> dict:
+def spotcheck_kappa(ledger_path, *, spec=None, report: Optional[dict] = None) -> dict:
     """Pair the latest forensics_report's LLM suspicions with ledgered human
     spot-checks (``forensic_spotcheck`` events) into the per-detector kappa
     table analyze folds into findings [AC-4, D006].
 
     Strata ride the spot-check events themselves (recorded against the EVAL-7
-    reviewed sample), so the IPW correction applies without re-deriving the
-    sample here.
+    reviewed sample). When ``spec`` is provided the IPW correction uses the
+    sample's *realized* floor inclusion probability (``ceil(0.2n)/n``, the
+    RV-5 correction outcome and process kappa both use), not the nominal 0.2.
+    ``report`` short-circuits the latest-event fetch when the caller already
+    holds the forensics_report payload.
     """
     from collections import defaultdict
 
     from ..ledger import events
     from ..ledger.query import find_events, latest_event
 
-    report = latest_event(ledger_path, events.FORENSICS_REPORT)
-    reviews = (report or {}).get("forensics_report", {}).get("reviews", {})
+    if report is None:
+        report_ev = latest_event(ledger_path, events.FORENSICS_REPORT)
+        report = (report_ev or {}).get("forensics_report", {})
+    reviews = report.get("reviews") or {}
     items: dict[str, list[ReviewedItem]] = defaultdict(list)
     n_spotchecks = 0
     for ev in find_events(ledger_path, events.FORENSIC_SPOTCHECK):
@@ -293,9 +302,19 @@ def spotcheck_kappa(ledger_path) -> dict:
                     a=int(llm_label), b=int(bool(human_label)), stratum=sc["stratum"]
                 )
             )
-    calibrations = detector_kappa(items)
+    floor_prob = FLOOR_INCLUSION_PROB
+    if spec is not None and items:
+        from ..review.sample import comparisons_from_ledger, realized_floor_prob
+
+        records = comparisons_from_ledger(
+            ledger_path, arm_a=spec.arms[0].name, arm_b=spec.arms[1].name
+        )
+        if records:
+            floor_prob = realized_floor_prob(records)
+    calibrations = detector_kappa(items, floor_prob=floor_prob)
     return {
         "n_spotchecks": n_spotchecks,
+        "floor_prob": floor_prob,
         "kappa_by_detector": {
             d: {"kappa": c.kappa, "n": c.n, "sufficient": c.sufficient,
                 "escalate": c.escalate}

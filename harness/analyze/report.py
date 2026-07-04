@@ -230,9 +230,12 @@ def _quarantined_comparison_ids(ledger_path) -> set[str]:
     over a quarantined response leaves the comparison with its trial [D007]."""
     from ..judge.assemble import comparison_id_for
 
+    quarantined = _quarantined_trial_ids(ledger_path)
+    if not quarantined:
+        return set()  # the common case: skip the trial-index rebuild entirely
     trials = _trial_index(ledger_path)
     out: set[str] = set()
-    for trial_id in _quarantined_trial_ids(ledger_path):
+    for trial_id in quarantined:
         rec = trials.get(trial_id)
         if rec is not None:
             out.add(comparison_id_for(rec["task_id"], rec["repetition"]))
@@ -552,8 +555,13 @@ def _secondary_metrics(ledger_path, spec) -> dict:
     fields = ("tokens_in", "tokens_out", "tokens_cache", "cost", "wall_time_s", "tool_calls")
     per_arm: dict[str, dict[str, float]] = defaultdict(dict)
     raw: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    quarantined = _quarantined_trial_ids(ledger_path)
     for ev in find_events(ledger_path, events.TRIAL):
         rec = ev["trial_record"]
+        if rec["trial_id"] in quarantined:
+            # D007: a quarantined trial's data leaves EVERY rendered aggregate,
+            # not just the primary comparison — one document, one exclusion rule
+            continue
         for f in fields:
             val = rec.get("telemetry", {}).get(f)
             if val is not None:
@@ -611,10 +619,14 @@ def _process_section(ledger_path, spec, seed) -> Optional[dict]:
         }
         for dim, b in sorted(dims.items())
     }
-    # PR-5: fold in the AC-5 per-dimension kappa and AC-7 telemetry correlations.
+    # PR-5: fold in the AC-5 per-dimension kappa and AC-7 telemetry correlations
+    # — under the same quarantine exclusion as the dimension means above, so
+    # the section cannot disagree with its own diagnostics [D007].
     from ..process.calibrate import dimension_diagnostics
 
-    diagnostics = dimension_diagnostics(ledger_path, spec, seed)
+    diagnostics = dimension_diagnostics(
+        ledger_path, spec, seed, exclude_trials=frozenset(quarantined)
+    )
     return {
         "exploratory": True,
         "disclosure": {
@@ -632,7 +644,7 @@ def _process_section(ledger_path, spec, seed) -> Optional[dict]:
     }
 
 
-def _forensics_section(ledger_path) -> Optional[dict]:
+def _forensics_section(ledger_path, spec) -> Optional[dict]:
     """Forensic disclosure block [EVAL-11 AC-5/AC-6]: the latest report's flags
     and coverage, the LLM↔human per-detector kappa table, and any operator
     quarantines. Disclosure-only — nothing here feeds the fence [D004]; returns
@@ -644,30 +656,40 @@ def _forensics_section(ledger_path) -> Optional[dict]:
     quarantined = _quarantine_entries(ledger_path)
     if report_ev is None and not quarantined:
         return None
+    # a quarantine naming a trial the ledger does not know excluded nothing —
+    # surfaced loudly, the AN-9 orphan-grade posture
+    trial_ids = set(_trial_index(ledger_path))
+    for q in quarantined:
+        q["orphan"] = q["trial_id"] not in trial_ids
     section: dict = {"quarantined": quarantined}
     if report_ev is not None:
         fr = report_ev["forensics_report"]
-        reviews = fr.get("reviews") or {}
-        cant_reasons = sorted(
-            r["cant_review_reason"]
-            for r in reviews.values()
-            if r.get("cant_review_reason") is not None
-        )
         section.update(
             {
                 "vocabulary_version": fr["vocabulary_version"],
                 "flags": fr["flags"],
                 "coverage": fr["coverage"],
-                "reviews": {
-                    "n_reviewed": sum(
-                        1 for r in reviews.values() if r.get("suspicions") is not None
-                    ),
-                    "n_cant_review": len(cant_reasons),
-                    "cant_review_reasons": cant_reasons,
-                },
-                "spotcheck_kappa": spotcheck_kappa(ledger_path),
+                "spotcheck_kappa": spotcheck_kappa(ledger_path, spec=spec, report=fr),
             }
         )
+        if "reviews" in fr:
+            reviews = fr["reviews"]
+            cant_reasons = sorted(
+                r["cant_review_reason"]
+                for r in reviews.values()
+                if r.get("cant_review_reason") is not None
+            )
+            section["reviews"] = {
+                "n_reviewed": sum(
+                    1 for r in reviews.values() if r.get("suspicions") is not None
+                ),
+                "n_cant_review": len(cant_reasons),
+                "cant_review_reasons": cant_reasons,
+            }
+        else:
+            # --no-review is a SKIPPED advisory pass — never rendered as a
+            # pass that ran and reviewed nothing [honest reporting]
+            section["reviews"] = None
     return section
 
 
@@ -819,7 +841,7 @@ def compute_findings(
         rubric_committed=_lock_event(ledger_path).get("rubric_sha256") is not None,
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
-        forensics=_forensics_section(ledger_path),
+        forensics=_forensics_section(ledger_path, spec),
         provenance=provenance,
     )
 
@@ -929,12 +951,19 @@ def _forensics_lines(findings: FindingsDocument) -> list[str]:
         # renders no gap line at all
         for gap in cov["gaps"]:
             lines.append(f"  - coverage gap: trial {gap['trial_id']} — {gap['reason']}")
-        rv = fx.get("reviews")
-        if rv is not None:
-            lines.append(
-                f"- advisory reviews [judgment]: {rv['n_reviewed']} reviewed, "
-                f"{rv['n_cant_review']} CANT_REVIEW{rv['cant_review_reasons'] or ''}"
-            )
+        if "reviews" in fx:
+            rv = fx["reviews"]
+            if rv is None:
+                lines.append(
+                    "- advisory review pass: NOT RUN for this scan (--no-review)"
+                )
+            else:
+                reasons = ", ".join(rv["cant_review_reasons"])
+                lines.append(
+                    f"- advisory reviews [judgment]: {rv['n_reviewed']} reviewed, "
+                    f"{rv['n_cant_review']} CANT_REVIEW"
+                    + (f" (reasons: {reasons})" if reasons else "")
+                )
         kappa = (fx.get("spotcheck_kappa") or {}).get("kappa_by_detector") or {}
         if kappa:
             lines.append("- LLM↔human agreement (unweighted IPW kappa, per detector):")
@@ -945,10 +974,17 @@ def _forensics_lines(findings: FindingsDocument) -> list[str]:
                     flag = " ESCALATE" if k["escalate"] else ""
                     lines.append(f"  - {det}: kappa={_fmt(k['kappa'], 3)} (n={k['n']}){flag}")
     for q in fx.get("quarantined", []):
-        lines.append(
-            f"- ⚠ QUARANTINED by operator {q['actor']}: trial {q['trial_id']} — "
-            f"{q['reason']} (excluded from comparisons) [D007]"
-        )
+        if q.get("orphan"):
+            lines.append(
+                f"- ⚠ ORPHAN QUARANTINE by operator {q['actor']}: trial "
+                f"{q['trial_id']} — {q['reason']} — NO SUCH TRIAL on this "
+                "ledger; nothing was excluded"
+            )
+        else:
+            lines.append(
+                f"- ⚠ QUARANTINED by operator {q['actor']}: trial {q['trial_id']} — "
+                f"{q['reason']} (excluded from comparisons) [D007]"
+            )
     return lines
 
 

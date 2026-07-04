@@ -87,10 +87,16 @@ def deterministic_process_scores(messages: list[dict]) -> str:
 def deterministic_forensic_review(messages: list[dict]) -> str:
     """A forensic review deterministic in the packet content: each detector's
     suspicion bit is a stable hash of transcript + detector id, so fixture
-    experiments produce reproducible calibration tables without a network."""
+    experiments produce reproducible calibration tables without a network.
+
+    Detector ids are parsed only from the harness-authored instruction tail
+    (after the LAST ``Reply as JSON:``), never from the embedded transcript —
+    transcript text that happens to contain the key pattern must not inject
+    bogus suspicion keys."""
     body = messages[-1]["content"]
+    instruction_tail = body.rsplit("Reply as JSON:", 1)[-1]
     suspicions: dict[str, bool] = {}
-    for detector in _FORENSIC_DETECTOR_RE.findall(body):
+    for detector in _FORENSIC_DETECTOR_RE.findall(instruction_tail):
         h = hashlib.sha256(f"{body}||{detector}".encode("utf-8")).digest()
         suspicions[detector] = bool(h[0] % 2)
     return json.dumps(

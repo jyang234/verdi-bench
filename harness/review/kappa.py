@@ -135,6 +135,54 @@ def estimate_kappa(
 
 
 @dataclass(frozen=True)
+class KeyedCalibration:
+    """One key's judge↔human agreement gate result — the shared shape behind
+    EVAL-9's per-dimension and EVAL-11's per-detector calibration tables."""
+
+    key: str
+    n: int
+    kappa: Optional[float]
+    sufficient: bool
+    escalate: bool
+
+
+def keyed_kappa_gate(
+    items_by_key: dict[str, Sequence[ReviewedItem]],
+    *,
+    weight: str,
+    categories: list,
+    kappa_threshold: float,
+    min_pairs: int = 1,
+    estimator: KappaEstimator | str = KappaEstimator.ipw,
+    floor_prob: float = FLOOR_INCLUSION_PROB,
+) -> dict[str, KeyedCalibration]:
+    """IPW-corrected kappa per key with independent gates — the one copy of the
+    gate mechanics EVAL-9 (quadratic, ordinal 1..5) and EVAL-11 (unweighted,
+    binary flags) both delegate to, so a gate fix cannot land in only one tier.
+
+    A key below ``min_pairs`` or with degenerate marginals (undefined kappa) is
+    ``sufficient=False`` and never escalates — insufficient, not perfect [D-5].
+    """
+    out: dict[str, KeyedCalibration] = {}
+    for key, items in items_by_key.items():
+        items = list(items)
+        n = len(items)
+        if n < min_pairs:
+            out[key] = KeyedCalibration(key, n, None, sufficient=False, escalate=False)
+            continue
+        k = estimate_kappa(
+            items, estimator, weight=weight, categories=categories, floor_prob=floor_prob
+        )
+        if k is None:
+            out[key] = KeyedCalibration(key, n, None, sufficient=False, escalate=False)
+            continue
+        out[key] = KeyedCalibration(
+            key, n, kappa=k, sufficient=True, escalate=k < kappa_threshold
+        )
+    return out
+
+
+@dataclass(frozen=True)
 class KappaReport:
     headline_method: str
     headline: Optional[float]  # None ⇒ undefined (degenerate) [D-5]

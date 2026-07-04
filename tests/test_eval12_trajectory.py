@@ -283,10 +283,9 @@ def test_canonical_bytes_deterministic(tmp_path):
     assert bytes_a.replace(a.trial_id.encode(), b"TID") == bytes_b.replace(
         b.trial_id.encode(), b"TID"
     )
-    assert (
-        TrajectoryRecord.model_validate(json.loads(bytes_a)).schema_version
-        == TRAJECTORY_SCHEMA_VERSION
-    )
+    # literal pin, deliberately not the constant: bumping the versioned
+    # contract must fail a test until a human approves it [EVAL-12-D001]
+    assert TrajectoryRecord.model_validate(json.loads(bytes_a)).schema_version == 2
 
 
 def test_v1_record_loads_under_v2_model(tmp_path):

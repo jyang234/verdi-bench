@@ -16,8 +16,9 @@ import yaml
 from harness.analyze.dossier import render_dossier
 from harness.analyze.report import compute_findings, render_markdown
 from harness.corpus.registry import CorpusManifest, TaskEntry
-from harness.forensics.cli import run_forensics
+from harness.forensics.detectors import DETECTOR_IDS
 from harness.forensics.metrics import FORENSICS_VOCABULARY_VERSION, METRIC_IDS
+from harness.forensics.scan import UnknownTrialError, quarantine_trial, run_forensics
 from harness.judge.providers.base import ProviderError
 from harness.judge.providers.fake import DeterministicFakeProvider, FakeProvider
 from harness.ledger.events import (
@@ -286,10 +287,8 @@ def test_spotcheck_kappa_table_in_exploratory_render(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     _populate(ledger, ctx)
-    suspicions_yes = {d: True for d in
-                      ("holdout_tamper", "hardcoded_expected_output",
-                       "test_skip_insertion", "suspicious_single_step")}
-    suspicions_no = {d: False for d in suspicions_yes}
+    suspicions_yes = {d: True for d in DETECTOR_IDS}
+    suspicions_no = {d: False for d in DETECTOR_IDS}
     record_forensics_report(
         ledger, ctx,
         forensics_report={
@@ -304,9 +303,9 @@ def test_spotcheck_kappa_table_in_exploratory_render(tmp_path):
         },
     )
     record_forensic_spotcheck(ledger, ctx, trial_id="c-0-0",
-                              labels={k: True for k in suspicions_yes}, stratum="mandatory")
+                              labels={k: True for k in DETECTOR_IDS}, stratum="mandatory")
     record_forensic_spotcheck(ledger, ctx, trial_id="c-1-0",
-                              labels={k: False for k in suspicions_yes}, stratum="floor")
+                              labels={k: False for k in DETECTOR_IDS}, stratum="floor")
     findings = compute_findings(ledger, spec, spec.seed, **_FAST)
     kappa = findings.forensics["spotcheck_kappa"]["kappa_by_detector"]
     assert kappa["holdout_tamper"]["kappa"] == 1.0  # perfect agreement fixture
@@ -352,5 +351,77 @@ def test_quarantine_never_automatic(tmp_path):
     record_forensic_quarantine(ledger, ctx, trial_id="c-4-0", reason="operator call")
     findings = compute_findings(ledger, spec, spec.seed, **_FAST)
     assert findings.forensics["quarantined"] == [
-        {"trial_id": "c-4-0", "reason": "operator call", "actor": "tester"}
+        {"trial_id": "c-4-0", "reason": "operator call", "actor": "tester",
+         "orphan": False}
     ]
+
+
+def test_quarantine_refuses_unknown_trial(tmp_path):
+    """A quarantine naming a trial the ledger does not know is refused loudly —
+    a ledgered exclusion that excluded nothing would be a false disclosure."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
+    _populate(ledger, ctx)
+    with pytest.raises(UnknownTrialError):
+        quarantine_trial(tmp_path, ctx=ctx, trial_id="c-4-O", reason="typo'd id")
+    assert find_events(ledger, "forensic_quarantine") == []
+    # the real id records fine through the same path
+    quarantine_trial(tmp_path, ctx=ctx, trial_id="c-4-0", reason="confirmed")
+    assert len(find_events(ledger, "forensic_quarantine")) == 1
+
+
+def test_orphan_quarantine_disclosed_never_claims_exclusion(tmp_path):
+    """A quarantine event written around the CLI validation (direct constructor)
+    renders as an ORPHAN — the report must not claim an exclusion that never
+    happened."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
+    _populate(ledger, ctx)
+    record_forensic_quarantine(ledger, ctx, trial_id="no-such-trial", reason="typo")
+    findings = compute_findings(ledger, spec, spec.seed, **_FAST)
+    md = render_markdown(findings, ledger, "exploratory")
+    assert "ORPHAN QUARANTINE" in md and "NO SUCH TRIAL" in md
+    assert "no-such-trial" in md
+    assert "(excluded from comparisons)" not in md
+
+
+def test_selfcheck_goes_stale_on_quarantine(tmp_path):
+    """A quarantine changes the analyzed dataset, so a pre-quarantine selfcheck
+    must read stale — the official fence cannot certify excluded data."""
+    from harness.analyze.selfcheck import selfcheck_status
+
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
+    _populate(ledger, ctx)
+    _seed_official_gates(ledger, ctx, spec)
+    assert selfcheck_status(ledger) == "current"
+    record_forensic_quarantine(ledger, ctx, trial_id="c-4-0", reason="tamper")
+    assert selfcheck_status(ledger) == "stale"
+
+
+def test_no_review_scan_renders_as_not_run(tmp_path):
+    """A --no-review scan is a SKIPPED advisory pass and must render as one —
+    never as a pass that ran and reviewed zero trials."""
+    spec, ledger, ctx = _run_scan_experiment(tmp_path)
+    run_forensics(tmp_path, ctx=ctx, review=False)
+    _seed_official_gates(ledger, ctx, spec)
+    findings = compute_findings(ledger, spec, spec.seed, **_FAST)
+    md = render_markdown(findings, ledger, "exploratory")
+    assert "advisory review pass: NOT RUN" in md
+    assert "0 reviewed" not in md
+
+
+def test_forensics_report_constructor_validates_shape(tmp_path):
+    """The typed constructor refuses the shapes the findings reader would
+    KeyError on — validation says what was wrong and where."""
+    ledger = tmp_path / "ledger.ndjson"
+    ctx = fixed_ctx()
+    with pytest.raises(ValueError, match="vocabulary_version"):
+        record_forensics_report(ledger, ctx, forensics_report={"flags": []})
+    with pytest.raises(ValueError, match="flags"):
+        record_forensics_report(ledger, ctx, forensics_report={"vocabulary_version": 1})
+    with pytest.raises(ValueError, match="coverage"):
+        record_forensics_report(
+            ledger, ctx, forensics_report={"vocabulary_version": 1, "flags": []}
+        )
+    assert find_events(ledger, "forensics_report") == []

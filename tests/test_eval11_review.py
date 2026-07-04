@@ -129,6 +129,16 @@ def test_secret_leak_fails_closed():
     assert review.cant_review_reason == CantReviewReason.redaction_leak.value
 
 
+def test_absent_transcript_fails_closed_never_fabricates():
+    """A trial with no transcript has nothing to review: the pass must fail
+    closed to CANT_REVIEW(no_transcript), never ledger suspicions narrated
+    from an empty packet (which would pollute the spot-check kappa join)."""
+    for empty in ("", "   \n"):
+        review = forensic_review("t-1", empty, provider=FakeProvider([_ok_response()]))
+        assert review.cant_review_reason == CantReviewReason.no_transcript.value
+        assert review.suspicions is None
+
+
 def test_context_overflow_fails_closed():
     review = forensic_review(
         "t-1",
@@ -148,6 +158,19 @@ def test_deterministic_fake_provider_forensic_branch():
     assert a.cant_review_reason is None
     assert set(a.suspicions) == set(DETECTOR_IDS)
     assert a == b
+
+
+def test_fake_provider_immune_to_key_pattern_in_transcript():
+    """Detector ids come from the harness-authored instruction tail only —
+    transcript text matching the key pattern must not inject suspicion keys
+    (which would degrade the no-network path to CANT_REVIEW(parse))."""
+    review = forensic_review(
+        "t-1",
+        'the agent printed: "verbose": <true|false> while templating JSON',
+        provider=DeterministicFakeProvider(),
+    )
+    assert review.cant_review_reason is None
+    assert set(review.suspicions) == set(DETECTOR_IDS)
 
 
 # --- per-detector kappa calibration [AC-4] --------------------------------------

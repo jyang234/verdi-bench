@@ -659,6 +659,16 @@ def record_forensics_report(
             "forensics_report must stamp its vocabulary_version [EVAL-11 AC-1]; "
             "findings from different vocabularies must never merge silently"
         )
+    # Validate the exact shape the findings reader indexes — a malformed report
+    # must refuse HERE with a named field, not KeyError every later analyze.
+    if not isinstance(forensics_report.get("flags"), list):
+        raise ValueError("forensics_report.flags must be a list (may be empty)")
+    coverage = forensics_report.get("coverage")
+    if not isinstance(coverage, dict) or not {"trials", "covered", "gaps"} <= set(coverage):
+        raise ValueError(
+            "forensics_report.coverage must carry trials/covered/gaps [AC-6]; "
+            f"got {coverage!r}"
+        )
     return emit(ledger_path, ctx, FORENSICS_REPORT, {"forensics_report": forensics_report})
 
 
