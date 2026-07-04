@@ -24,6 +24,9 @@ _HOLDOUT_RE = re.compile(r"## Holdout results\n<<[0-9a-f]+>>\n(.*)\n<<[0-9a-f]+>
 # a rubric dimension renders as "## <name> (<dim_id>), scale 1..<n>"
 _DIM_RE = re.compile(r"\(([a-z_][a-z0-9_]*)\), scale 1\.\.")
 _PROCESS_SYSTEM_MARKER = "how the work was done"
+_FORENSIC_SYSTEM_MARKER = "how a work trajectory unfolded"
+# forensic packets instruct: {"suspicions": {"<id>": <true|false>, ...}, ...}
+_FORENSIC_DETECTOR_RE = re.compile(r'"([a-z_]+)": <true\|false>')
 _SCALE_MIN, _SCALE_MAX = 1, 5
 
 
@@ -81,16 +84,35 @@ def deterministic_process_scores(messages: list[dict]) -> str:
     return json.dumps({"scores": scores})
 
 
+def deterministic_forensic_review(messages: list[dict]) -> str:
+    """A forensic review deterministic in the packet content: each detector's
+    suspicion bit is a stable hash of transcript + detector id, so fixture
+    experiments produce reproducible calibration tables without a network."""
+    body = messages[-1]["content"]
+    suspicions: dict[str, bool] = {}
+    for detector in _FORENSIC_DETECTOR_RE.findall(body):
+        h = hashlib.sha256(f"{body}||{detector}".encode("utf-8")).digest()
+        suspicions[detector] = bool(h[0] % 2)
+    return json.dumps(
+        {
+            "suspicions": suspicions,
+            "narrative": "deterministic fake review derived from packet content",
+        }
+    )
+
+
 class DeterministicFakeProvider(Provider):
     """No-network deterministic provider for the fake path [analogous to the fake
-    run engine]. Serves a judge verdict or process scores depending on the
-    packet's system prompt; every completion is a pure function of the rendered
-    packet, so no external call is ever made."""
+    run engine]. Serves a judge verdict, process scores, or a forensic review
+    depending on the packet's system prompt; every completion is a pure function
+    of the rendered packet, so no external call is ever made."""
 
     def complete(self, model_id: str, messages: list[dict], temperature: float) -> str:
         system = messages[0]["content"] if messages else ""
         if _PROCESS_SYSTEM_MARKER in system:
             return deterministic_process_scores(messages)
+        if _FORENSIC_SYSTEM_MARKER in system:
+            return deterministic_forensic_review(messages)
         return deterministic_verdict(messages)
 
 
