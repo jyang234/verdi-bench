@@ -8,17 +8,20 @@ not by discipline.
 
 from __future__ import annotations
 
-import getpass
 from pathlib import Path
 
 import typer
 
+from ..ledger.actor import ActorResolutionError, resolve_actor
 
-def _actor() -> str:
+
+def _resolve_actor_or_exit(flag_value):
+    """Resolve the ledgered actor or exit 2 with the named refusal [GR-12]."""
     try:
-        return getpass.getuser()
-    except Exception:  # pragma: no cover
-        return "unknown"
+        return resolve_actor(flag_value)
+    except ActorResolutionError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=2)
 
 
 def register(app: typer.Typer) -> None:
@@ -29,6 +32,7 @@ def register(app: typer.Typer) -> None:
     def review_build(
         experiment_dir: Path = typer.Argument(..., help="Dir with experiment.yaml"),
         out: Path = typer.Option(None, "--out", help="Packet HTML path [default: <dir>/review_packet.html]"),
+        actor: str = typer.Option(None, "--actor", help="Actor recorded on the packet events [GR-12]"),
     ) -> None:
         """Sample + render the blinded review packet; record the Response↔arm map."""
         from ..corpus.commit import (
@@ -56,7 +60,7 @@ def register(app: typer.Typer) -> None:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
 
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
         html, n = build_review(ledger_path, spec, task_dicts, ctx, seed=spec.seed)
         out = out or (experiment_dir / "review_packet.html")
         out.write_text(html, encoding="utf-8")
@@ -76,6 +80,7 @@ def register(app: typer.Typer) -> None:
         arm_guess: str = typer.Option(
             None, "--arm-guess", help="If recognized, your guess of Response 1's arm"
         ),
+        actor: str = typer.Option(None, "--actor", help="Actor recorded on the verdict [GR-12]"),
     ) -> None:
         """Record a human verdict + integrity answers (strictly pre-reveal).
 
@@ -89,7 +94,7 @@ def register(app: typer.Typer) -> None:
         from .record import ReviewError, record_human_verdict, review_packet_built_for
 
         ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
 
         if winner not in ("1", "2", "TIE", "CANT_JUDGE"):
             typer.echo("--winner must be one of: 1 | 2 | TIE | CANT_JUDGE", err=True)
@@ -142,13 +147,14 @@ def register(app: typer.Typer) -> None:
     def review_reveal(
         experiment_dir: Path = typer.Argument(..., help="Dir with ledger.ndjson"),
         comparison_id: str = typer.Option(..., "--comparison-id"),
+        actor: str = typer.Option(None, "--actor", help="Actor recorded on the reveal [GR-12]"),
     ) -> None:
         """Unblind a comparison — refuses before a verdict exists."""
         from ..ledger.events import EventContext
         from .record import RevealError, reveal_comparison
 
         ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
         try:
             rec = reveal_comparison(ledger_path, ctx, comparison_id=comparison_id)
         except RevealError as e:

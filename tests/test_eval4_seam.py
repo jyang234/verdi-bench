@@ -69,35 +69,68 @@ def test_ac1_record_shape_stable(engine_name, tmp_path):
     assert TrialRecord.model_validate(dumped) == rec
 
 
-def test_ac1_engine_isolated():
-    """No module outside the run-engine seam imports Harbor [import-linter].
+# Only the engine module and the engine factory may name Harbor.
+_HARBOR_ALLOWED = {"harness/run/engines/harbor.py", "harness/run/engines/__init__.py"}
 
-    Assert here too: only harness.run.engines.harbor references docker/Harbor.
-    """
+
+def _harbor_offenders(repo_root, source_text=None, source_rel=None):
+    """Return (rel_path, imported_name) for any module outside the seam that
+    NAMES harbor/docker. Inspects both the from-module and the imported member
+    names, so ``from .engines import harbor`` (member = the harbor MODULE) is
+    caught, not just ``import ...harbor`` [7H-1].
+
+    ``source_text``/``source_rel`` inject one module's source in-memory so a
+    planted violation can be checked without writing the tree."""
     import ast
-    import pathlib
 
-    # Only the engine module and the engine factory may name Harbor.
-    allowed = {"harness/run/engines/harbor.py", "harness/run/engines/__init__.py"}
-    # Anchor on __file__, not the cwd: a relative Path("harness") globs nothing
-    # from any other working directory and the scan would pass vacuously [XC-5].
-    repo_root = pathlib.Path(__file__).resolve().parents[1]
     root = repo_root / "harness"
-    assert list(root.rglob("*.py")), "seam scan found no harness modules — bad anchor"
     offenders = []
     for py in root.rglob("*.py"):
         rel = py.relative_to(repo_root).as_posix()
-        if rel in allowed:
+        if rel in _HARBOR_ALLOWED:
             continue
-        tree = ast.parse(py.read_text(encoding="utf-8"))
+        text = source_text if source_rel == rel else py.read_text(encoding="utf-8")
+        tree = ast.parse(text)
         for node in ast.walk(tree):
             names = []
             if isinstance(node, ast.Import):
                 names = [n.name for n in node.names]
             elif isinstance(node, ast.ImportFrom):
-                names = [node.module or ""]
+                # module AND member names: `from .engines import harbor` has
+                # node.module=".engines" and would evade a module-only scan. The
+                # engines/__init__ factory seam is exempt via _HARBOR_ALLOWED.
+                names = [node.module or ""] + [a.name for a in node.names]
             for name in names:
                 last = name.rsplit(".", 1)[-1]
                 if last == "harbor" or name == "docker":
                     offenders.append((rel, name))
+    return offenders
+
+
+def test_ac1_engine_isolated():
+    """No module outside the run-engine seam imports Harbor [import-linter].
+
+    Assert here too: only harness.run.engines.harbor references docker/Harbor.
+    """
+    import pathlib
+
+    # Anchor on __file__, not the cwd: a relative Path("harness") globs nothing
+    # from any other working directory and the scan would pass vacuously [XC-5].
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    assert list((repo_root / "harness").rglob("*.py")), "seam scan found no modules"
+    offenders = _harbor_offenders(repo_root)
     assert not offenders, f"Harbor/docker imported outside the seam: {offenders}"
+
+
+def test_7h1_ast_scan_catches_package_init_harbor_import():
+    """7H-1 reproduce-first: `from .engines import harbor` planted in a package
+    __init__ (harness/run/__init__.py) — evaded by the old module-only scan —
+    is now caught by the member-name inspection."""
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    rel = "harness/run/__init__.py"
+    original = (repo_root / rel).read_text(encoding="utf-8")
+    planted = original + "\nfrom .engines import harbor  # planted violation\n"
+    offenders = _harbor_offenders(repo_root, source_text=planted, source_rel=rel)
+    assert (rel, "harbor") in offenders

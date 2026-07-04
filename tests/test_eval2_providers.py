@@ -36,6 +36,19 @@ def test_openai_empty_choices_raises_provider_error():
         openai_content({"choices": []})
 
 
+def test_openai_context_length_exceeded_is_context_overflow():
+    """PR-9: OpenAI's context_length_exceeded maps to the distinct
+    ProviderContextOverflow (→ context_overflow), not a generic provider_error."""
+    from harness.judge.providers.base import (
+        ProviderContextOverflow,
+        provider_failure_reason,
+    )
+
+    with pytest.raises(ProviderContextOverflow) as exc:
+        openai_content({"error": {"code": "context_length_exceeded", "message": "too long"}})
+    assert provider_failure_reason(exc.value) == "context_overflow"
+
+
 # --- google --------------------------------------------------------------
 def test_google_happy_path():
     resp = {"candidates": [{"content": {"parts": [{"text": "verdict text"}]}}]}
@@ -51,6 +64,28 @@ def test_google_safety_block_raises_provider_error():
 def test_google_error_shaped_body_raises_provider_error():
     with pytest.raises(ProviderError):
         google_content({"error": {"code": 400, "message": "bad request"}})
+
+
+def test_google_key_travels_in_header_not_url(monkeypatch):
+    """JD-10: the Google key must ride an x-goog-api-key header, never the URL
+    query string — a key in the request line leaks through any proxy/access log."""
+    import harness.judge.providers.google as google_mod
+
+    captured = {}
+
+    def fake_post_json(url, body, headers):
+        captured["url"] = url
+        captured["headers"] = headers
+        return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+    monkeypatch.setattr(google_mod, "require_key", lambda name: "SECRET-KEY")
+    monkeypatch.setattr(google_mod, "post_json", fake_post_json)
+
+    out = google_mod.GoogleProvider().complete("google/gemini-1.5-pro-002", [{"role": "user", "content": "hi"}], 0.0)
+    assert out == "ok"
+    assert "SECRET-KEY" not in captured["url"]
+    assert "key=" not in captured["url"]
+    assert captured["headers"]["x-goog-api-key"] == "SECRET-KEY"
 
 
 # --- anthropic -----------------------------------------------------------

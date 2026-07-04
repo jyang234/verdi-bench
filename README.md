@@ -2,9 +2,12 @@
 
 A benchmark-grade A/B evaluation instrument for agent stacks, models, and
 configurations: pre-registered experiments, repeated paired trials in hermetic
-containers, insulated arms, deterministic-first grading, and an outcome-blind
-advisory LLM judge. Every operation is a hash-chained ledger event; every local
-record is stamped `ADVISORY`.
+containers, insulated arms, deterministic-first grading, and an **identity-blind**
+advisory LLM judge. *Identity-blind* (not outcome-blind): the judge never sees
+arm identities, but it does see per-response holdout outcomes by design, so
+`judge_preference` is deliberately not independent of `holdout_pass_rate`
+(disclosed in every render, EVAL-2 D002). Every operation is a hash-chained
+ledger event; every local record is stamped `ADVISORY`.
 
 ## Status
 
@@ -16,7 +19,7 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 | **EVAL-3** | Experiment schema, hash-chained ledger, plan lock, power/MDE, interleave | ✅ |
 | **EVAL-4** | Run seam, adapters, hermetic Harbor engine, cost guard, insulation | ✅ |
 | **EVAL-5** | Deterministic grading, flake baseline, grader plugins | ✅ |
-| **EVAL-2** | Outcome-blind configurable LLM judge, calibration | ✅ |
+| **EVAL-2** | Identity-blind configurable LLM judge, calibration | ✅ |
 | **EVAL-8** | Corpus import (idempotent), stratified calibration, mining, curation gate, boundary | ✅ |
 | **EVAL-6** | Analyze: paired bootstrap, effect sizes, confound flags, pre-registration fence | ✅ |
 | **EVAL-7** | Human review packet (offline, blinded), capture-then-reveal, kappa estimator seam | ✅ |
@@ -53,22 +56,34 @@ recommended option behind a seam (a resolution is a config-sized diff):
 
 ## Usage
 
+Every ledgering verb accepts `--actor <name>` (recorded on its events; refused
+loudly rather than defaulted to `unknown` when the OS user is unresolvable).
+
 ```bash
 uv sync
-uv run bench plan   experiment.yaml --ledger ledger.ndjson   # validate + lock
+uv run bench plan   experiment.yaml --ledger ledger.ndjson   # validate + lock (commits rubric hash)
 uv run bench run    <experiment-dir>                          # execute trials
 uv run bench grade  <experiment-dir>                          # deterministic grades
+uv run bench grade  <experiment-dir> --retry-terminal <trial-id>   # ledgered terminal-cant_grade override
+uv run bench judge  <experiment-dir>                          # identity-blind advisory verdicts (idempotent)
+uv run bench selfcheck <experiment-dir>                      # D008 coverage selfcheck (required before official)
 uv run bench analyze <experiment-dir> --exploratory                # watermarked findings
-uv run bench analyze <experiment-dir> --official --corpus m.json   # fenced official render
+uv run bench analyze <experiment-dir> --official --corpus m.json   # fenced official render (requires a passed selfcheck)
 uv run bench verify-chain ledger.ndjson [--against-anchor anchors.ndjson]
-uv run bench anchor ledger.ndjson --out anchors.ndjson
+uv run bench anchor ledger.ndjson --out anchors.ndjson       # refuses a tampered ledger
 
 uv run bench corpus import <tasks-dir> --cache <dir>   # idempotent public import
 uv run bench corpus subset <manifest> --seed 1234      # stratified calibration subset
 uv run bench corpus mine <mr.json> --ticket t.txt --out cand.json
 uv run bench corpus review <cand.json>                 # curation view
-uv run bench review record <experiment-dir> --comparison-id c1 --winner A ...
+uv run bench corpus approve <experiment-dir> --candidate-id c --task-sha s --signing-key k --approver alice
+uv run bench corpus calibrate <experiment-dir> --manifest m.json   # ledger a calibration_run from grades
+uv run bench corpus admit <experiment-dir> --manifest m.json --candidate-id c --task-sha s --baseline-ref b --keyring keyring.json
+
+uv run bench review build  <experiment-dir>            # blinded human-review packet (idempotent)
+uv run bench review record <experiment-dir> --comparison-id c1 --winner 1|2|TIE|CANT_JUDGE ...
 uv run bench review reveal <experiment-dir> --comparison-id c1   # refuses pre-verdict
+uv run bench process score  <experiment-dir>          # isolated judge process scoring
 uv run bench process record <experiment-dir> --trial-id t1 --comparison-id c1 --scores s.json
 ```
 

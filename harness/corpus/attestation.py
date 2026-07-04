@@ -60,10 +60,33 @@ def verify_approval(
         return False
 
 
-def load_keyring(path) -> set[str]:
-    """The set of authorized curator public keys (hex) from a JSON list file — the
-    trust root admission verifies a signer against [D-P4-3]."""
+class KeyringFormatError(ValueError):
+    """The keyring is in the pre-Phase-7 list format [D-P7-3]."""
+
+
+def load_keyring(path) -> dict[str, str]:
+    """Authorized curators as ``{approver_id: public_key_hex}`` [D-P7-3].
+
+    Binding the approver identity to a key (not just a set of authorized keys) is
+    what closes CO-7: admission verifies each approval against the *named
+    approver's own* key, so an authorized-key holder cannot relabel the approver
+    to launder a self-approval.
+
+    A legacy JSON **list** is refused with a loud migration error — the keyring is
+    local operator state, not a hash-chained artifact, so there is no
+    compatibility shim; it is re-issued in the new format.
+    """
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(data, list):
-        raise ValueError(f"keyring {path} must be a JSON list of public-key hex strings")
-    return {str(k) for k in data}
+    if isinstance(data, list):
+        raise KeyringFormatError(
+            f"keyring {path} is a JSON list (pre-Phase-7 format); it must now be a "
+            'JSON object mapping approver id -> public-key hex, e.g. '
+            '{"alice": "<hex>"}. This binds approver identity to a key so a '
+            "relabeled self-approval is refused [D-P7-3]. Re-issue the keyring."
+        )
+    if not isinstance(data, dict):
+        raise KeyringFormatError(
+            f"keyring {path} must be a JSON object mapping approver id -> "
+            "public-key hex [D-P7-3]"
+        )
+    return {str(k): str(v) for k, v in data.items()}

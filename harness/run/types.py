@@ -67,7 +67,6 @@ class TrialRequest:
     quotas: Quotas
     timeout_s: int
     ts: str
-    concurrency: int = 1
     proxy: Optional[ProxyConfig] = None
     provider_keys: dict = field(default_factory=dict)  # injected at trial start [AC-8]
     fake_behavior: dict = field(default_factory=dict)  # FAKE ENGINE ONLY
@@ -107,7 +106,6 @@ class RunConfig:
     engine: Engine
     default_timeout_s: int = DEFAULT_TIMEOUT_S
     quotas: Quotas = field(default_factory=lambda: Quotas(cpus=2.0, mem="4g"))
-    concurrency: int = 1
     proxy: Optional[ProxyConfig] = None
     redact_extra_patterns: list[str] = field(default_factory=list)
     provider_keys: dict = field(default_factory=dict)

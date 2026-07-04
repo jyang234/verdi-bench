@@ -30,3 +30,8 @@ class ArmModelError(SpecError):
 
 class DecisionRuleError(SpecError):
     """decision_rule string did not parse under DSL v1 [AC-1]."""
+
+
+class ArmNameError(SpecError):
+    """Two arms share a name — the run's arm map would silently collapse them,
+    losing a whole arm's trials [PL-10]."""

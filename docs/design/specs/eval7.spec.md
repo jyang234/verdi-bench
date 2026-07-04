@@ -127,6 +127,13 @@ the integrity questions — "could you identify the arm? guess?" — and
 only then reveals judge verdict and identities, as a ledgered reveal
 event referencing the verdict. The ordering is enforced by the tool, not
 by discipline.
+
+**Note [RV-8(c)]:** post-RV-1 (exactly one human verdict per comparison),
+the `comparison_id` **is** the unique reference to a verdict — there is no
+distinct per-verdict id. The `reveal` event's field is named
+`verdict_event_id` for historical reasons but carries the `comparison_id`;
+the name is kept deliberately (it is inside a hash-chained event format, so
+renaming is contract churn with no information gain).
 ​
 **Integrity as data** [AC-6]. The recognition rate ships with every
 finding. A high rate doesn't invalidate results; it bounds how much the

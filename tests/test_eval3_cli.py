@@ -70,6 +70,43 @@ def test_anchor_cli_writes_ledger_event(tmp_path):
     assert recorded[0]["height"] == ext["height"]
 
 
+def test_anchor_cli_refuses_tampered_ledger(tmp_path):
+    """`bench anchor` must chain-verify before anchoring (7A-2).
+
+    Anchoring a tampered ledger would checkpoint rewritten history as
+    authentic. The verb must exit 1 naming the broken line and append
+    nothing — neither the external anchor line nor the chain_anchor event.
+    """
+    from harness.ledger import events
+    from harness.ledger.query import find_events
+
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    ledger = tmp_path / "ledger.ndjson"
+    anchors = tmp_path / "anchors.ndjson"
+    runner.invoke(app, ["plan", str(spec), "--ledger", str(ledger)])
+    from harness.ledger.events import EventContext, record_chain_anchor
+
+    record_chain_anchor(
+        ledger, EventContext(experiment_id="e", clock=lambda: "t"), head_hash="0" * 64, height=0
+    )
+    events_before = len(find_events(ledger, events.CHAIN_ANCHOR))
+    ledger_before = ledger.read_bytes()
+    # byte-flip a payload on the genesis line: its successor's back-pointer breaks
+    lines = ledger.read_text().splitlines()
+    lines[0] = lines[0].replace("experiment_locked", "experiment_HACKED")
+    ledger.write_text("\n".join(lines) + "\n")
+    ledger_after_tamper = ledger.read_bytes()
+
+    r = runner.invoke(app, ["anchor", str(ledger), "--out", str(anchors)])
+    assert r.exit_code == 1, r.output
+    assert "CHAIN BROKEN" in r.output
+    assert not anchors.exists()  # no external anchor line written
+    # no new chain_anchor event appended (ledger unchanged since the tamper)
+    assert ledger.read_bytes() == ledger_after_tamper
+    assert ledger_before != ledger_after_tamper  # sanity: the tamper landed
+    assert len(find_events(ledger, events.CHAIN_ANCHOR)) == events_before
+
+
 def test_plan_experiment_id_is_dir_name(tmp_path):
     """PL-8: plan stamps experiment_id as the experiment *directory* name (as run
     and grade do), not the yaml stem "experiment"."""

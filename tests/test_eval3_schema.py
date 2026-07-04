@@ -4,14 +4,81 @@ from __future__ import annotations
 
 import pytest
 
+import yaml
+
 from harness.schema.errors import (
     AliasJudgeIdError,
+    ArmModelError,
+    ArmNameError,
     CompositePrimaryMetricError,
     DecisionRuleError,
     MissingCostCeilingError,
 )
 from harness.schema.experiment import ExperimentSpec
 from tests.fixtures.builders import valid_experiment_dict
+
+
+def _mutate_missing_ceiling(d):
+    del d["cost_ceiling"]
+
+
+def _mutate_composite(d):
+    d["primary_metric"] = "holdout_pass_rate+cost_per_task"
+
+
+def _mutate_alias(d):
+    d["judge"]["model"] = "google/gemini-pro"
+
+
+def _mutate_arm_model(d):
+    d["arms"][0]["model"] = "barecodemodel"  # no vendor prefix
+
+
+def _mutate_bad_rule(d):
+    d["primary_metric"] = "cost_per_task"
+    d["decision_rule"] = "delta_holdout_pass_rate > 0"
+
+
+@pytest.mark.parametrize(
+    "mutate,error",
+    [
+        (_mutate_missing_ceiling, MissingCostCeilingError),
+        (_mutate_composite, CompositePrimaryMetricError),
+        (_mutate_alias, AliasJudgeIdError),
+        (_mutate_arm_model, ArmModelError),
+        (_mutate_bad_rule, DecisionRuleError),
+    ],
+)
+@pytest.mark.parametrize("path", ["from_dict", "from_yaml_text"])
+def test_ac1_named_errors_on_both_loader_paths(mutate, error, path):
+    """PL-9: the pydantic validators are the single validation source; both
+    loader paths surface the same distinct named SpecError (proving the collapse
+    of the old _prevalidate duplicate is behavior-preserving)."""
+    data = valid_experiment_dict()
+    mutate(data)
+    with pytest.raises(error):
+        if path == "from_dict":
+            ExperimentSpec.from_dict(data)
+        else:
+            ExperimentSpec.from_yaml_text(yaml.safe_dump(data))
+
+
+def test_pl10_duplicate_arm_names_refused():
+    """PL-10/D-P7-1: duplicate arm names are refused — run's arm_map would
+    otherwise silently collapse two arms into one."""
+    data = valid_experiment_dict()
+    data["arms"][1]["name"] = data["arms"][0]["name"]  # collide the two arm names
+    with pytest.raises(ArmNameError):
+        ExperimentSpec.from_dict(data)
+
+
+def test_pl11_equality_operator_refused_named():
+    """PL-11: '==' in the decision rule is refused, naming the operator —
+    equality on a bootstrap float is never decidable."""
+    data = valid_experiment_dict(decision_rule="delta_holdout_pass_rate == 0")
+    with pytest.raises(DecisionRuleError) as exc:
+        ExperimentSpec.from_dict(data)
+    assert "==" in str(exc.value)
 
 
 def test_ac1_schema_valid():

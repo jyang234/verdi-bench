@@ -52,11 +52,34 @@ def _full_corpus():
 
 def _seed_full_calibration(ledger, ctx, *, corpus_id="public-mini", semver="1.0.0"):
     """Ledger a full-run-validated calibration_run for the corpus — the chain-
-    anchored status the AN-2 fence binds to (not the mutable manifest JSON)."""
+    anchored status the AN-2 fence binds to (not the mutable manifest JSON).
+
+    Also seeds a passing selfcheck: EVAL-1-D008 makes a passed ledgered selfcheck
+    an official-render prerequisite, so the official-ready fixtures need one.
+    (A refusal test that trips an earlier fence check still refuses — the
+    selfcheck check is the fence's last.)"""
     record_calibration_run(
         ledger, ctx, corpus_id=corpus_id, semver=semver, kind="full",
         run={"p": 0.5, "rho": 0.3, "n_tasks": 5}, status="full-run-validated",
     )
+
+
+def _seed_matching_selfcheck(ledger, ctx, spec, *, n_sim=40, n_boot=500):
+    """Seed a passing, current selfcheck [EVAL-1-D008] whose validated CI method
+    matches the method ``compute_findings`` will deploy.
+
+    Runs the real selection (same ``spec.seed`` + params) so ``selected_method``
+    aligns with the render's, then forces ``passed=True``. Call BEFORE
+    ``compute_findings`` and after all data events — the findings are head-bound
+    (``_assert_head_hash``), so nothing may be appended between compute and
+    render, and the selfcheck event does not affect the delta selection. Pass the
+    same ``n_sim``/``n_boot`` the test's ``compute_findings`` uses."""
+    from harness.analyze.selfcheck import run_selfcheck
+    from harness.ledger.events import record_selfcheck
+
+    res = run_selfcheck(ledger, spec, n_sim=n_sim, n_boot=n_boot)
+    res["passed"] = True  # official tests here exercise OTHER gates, not pass/fail
+    record_selfcheck(ledger, ctx, **res)
 
 
 def _populate(ledger, ctx, *, control_pass, treatment_pass, tasks=5, reps=2,
@@ -275,6 +298,36 @@ def test_an1_judge_preference_filtered_by_arm_pair(tmp_path):
     assert by_label["control vs challenger"].effect["mean_paired_delta"] == -1.0
 
 
+def test_an1_attribution_follows_inverted_arm_map(tmp_path):
+    """AN-1 owning test: when the recorded arm_map INVERTS the frame
+    ({"A": treatment, "B": control} with treatment != arms[0]), the win is
+    attributed to the physical arm the map names (treatment), NOT to arms[0].
+    Every existing AN-1 test is frame-aligned, so a regression to arms[0] passes
+    the rest of the suite — this one catches it."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])  # control, treatment
+    inverted = {"A": "treatment", "B": "control"}  # response A is NOT arms[0]
+    for i in range(4):
+        _seed_pref_verdict(ledger, ctx, cid=f"iv-{i}", task_id=f"t{i}", winner="A", arm_map=inverted)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    by_label = {cf.label: cf for cf in f.comparisons}
+    # winner A → treatment (via arm_map), so treatment wins every task and the
+    # control-vs-treatment delta (control_rate - treatment_rate) is -1.0, not +1.0.
+    assert by_label["control vs treatment"].effect["mean_paired_delta"] == -1.0
+
+
+def test_an10_ci_selection_reports_deployed_n_boot(tmp_path):
+    """AN-10 owning test: the coverage selection recorded in the findings uses —
+    and reports — the SAME n_boot the deployed interval uses, so the disclosed
+    ci_selection cannot silently diverge from the bootstrap that produced the CI."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: i % 2 == 0)
+    n_boot = 321  # a non-default value
+    f = compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, n_boot=n_boot)
+    assert f.ci_selection["n_boot"] == n_boot
+
+
 def test_an1_cant_judge_and_tie_excluded_not_imputed(tmp_path):
     """AN-1: CANT_JUDGE and TIE are non-answers — excluded from the preference
     series, never imputed as 0.0. n reflects real A/B verdicts only."""
@@ -418,6 +471,40 @@ def test_an11_advisory_tier_surfaced(tmp_path):
     f = compute_findings(ledger, spec, spec.seed, **_FAST)
     assert f.tier["advisory"] is True
     assert "ADVISORY" in render_markdown(f, ledger, "exploratory")
+
+
+def test_7b3_grader_stamp_local_banners_over_trusted_trials(tmp_path):
+    """7B-3: an explicit --runner local grade over trusted-tier trials must
+    banner ADVISORY. _tier_summary read only trial provenance (the write-only
+    grader-stamp hole); the grade-level grader stamp is now authoritative."""
+    from harness.adapters.base import ADVISORY, Outcome, Provenance, Telemetry, TrialRecord
+    from harness.analyze.report import _tier_summary
+    from harness.ledger.events import record_grade, record_trial
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    rec = TrialRecord.assemble(
+        trial_id="tr", task_id="t0", arm="control", repetition=0,
+        outcome=Outcome.completed, telemetry=Telemetry(),
+        provenance=Provenance(tier="TRUSTED"), artifacts_path="/tmp/tr/artifacts",
+    )
+    record_trial(ledger, ctx, trial_record=rec.model_dump(mode="json"))
+    # trial provenance alone is trusted → no ADVISORY yet
+    assert _tier_summary(ledger)["advisory"] is False
+    # a local (advisory) grade over the trusted trial flips the banner on
+    record_grade(ledger, ctx, trial_id="tr", task_sha="s",
+                 assertions=[{"id": "h1", "source": "holdout_test", "result": "pass"}],
+                 binary_score=True, grader="local")
+    summary = _tier_summary(ledger)
+    assert summary["advisory"] is True
+    assert ADVISORY in summary["tiers"]
+    # an absent grader field (pre-stamp ledger) must add no new signal
+    ledger2 = tmp_path / "l2.ndjson"
+    record_trial(ledger2, ctx, trial_record=rec.model_dump(mode="json"))
+    record_grade(ledger2, ctx, trial_id="tr", task_sha="s",
+                 assertions=[{"id": "h1", "source": "holdout_test", "result": "pass"}],
+                 binary_score=True)  # no grader kwarg
+    assert _tier_summary(ledger2)["advisory"] is False
 
 
 def test_ac4_flags_emitted_egress(tmp_path):
@@ -566,11 +653,106 @@ def test_ac5_official_happy_path(tmp_path):
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     _seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
+    _seed_matching_selfcheck(ledger, ctx, spec)
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     md = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
     assert "Official findings" in md
     assert "EXPLORATORY" not in md  # official carries no watermark
     assert spec.primary_metric.value in md
+
+
+def test_d002_identity_blind_disclosure_in_both_renders(tmp_path):
+    """D-1/D002: both renders carry the [computed] disclosure that the judge is
+    identity-blind (not outcome-blind) — judge_preference is not independent of
+    holdout_pass_rate because the packet includes holdout results by design."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    _seed_full_calibration(ledger, ctx)
+    _seed_matching_selfcheck(ledger, ctx, spec)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    for md in (
+        render_markdown(f, ledger, "exploratory"),
+        render_markdown(f, ledger, "official", corpus_manifest=_full_corpus()),
+    ):
+        assert "identity-blind" in md
+        assert "not independent of holdout_pass_rate" in md
+        assert "[computed]" in md
+
+
+def test_cant_analyze_reason_maps_phase7_fence_errors():
+    """The Phase-7 fence refusals (rubric swap, missing/failed selfcheck) each get
+    their own distinguishable cant_analyze reason — not the generic analyze_error
+    fallback that would erase which gate refused [AN-3 closed set]."""
+    from harness.analyze.report import (
+        CantAnalyzeReason,
+        RubricMismatchError,
+        SelfcheckRequiredError,
+        cant_analyze_reason,
+    )
+
+    assert cant_analyze_reason(RubricMismatchError("x")) == CantAnalyzeReason.rubric_mismatch
+    assert cant_analyze_reason(SelfcheckRequiredError("x")) == CantAnalyzeReason.selfcheck_required
+
+
+def test_dp7_6_official_fence_refuses_rubric_mismatch(tmp_path):
+    """D-P7-6: when the lock committed a rubric_sha256, a verdict whose provenance
+    rubric hash disagrees refuses the official render (post-lock rubric swap)."""
+    from harness.analyze.report import RubricMismatchError
+    from harness.judge.schema import Verdict, VerdictProvenance, Winner
+    from harness.ledger.events import append_verdict
+
+    from harness.ledger.query import find_events
+
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    lock = find_events(ledger, "experiment_locked")[0]
+    assert lock.get("rubric_sha256")  # lock committed a rubric hash
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    _seed_full_calibration(ledger, ctx)
+    prov = VerdictProvenance(
+        judge_model="fake/x", rubric_sha256="deadbeef" * 8, packet_sha256="p",
+        call_ids=["c1", "c2"], orders="both", temperature=0.0, ts="t",
+    )
+    v = Verdict(winner=Winner("A"), reason="r",
+                evidence=[Evidence(kind="diff", response="A", hunk="h")], provenance=prov,
+                source="judge", comparison_id="cmp-task0-r0", task_class="refactor")
+    append_verdict(ledger, ctx, verdict=v.model_dump(mode="json"))
+
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    with pytest.raises(RubricMismatchError):
+        render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+
+
+def test_dp7_6_legacy_lock_official_caveat(tmp_path):
+    """A legacy lock (no committed rubric hash) is not refused — the official
+    render carries a caveat that the rubric content is not pinned [D-P7-6]."""
+    from harness.corpus.commit import compute_commitment, load_task_dicts
+    from harness.ledger.events import record_experiment_locked
+    from harness.plan.lock import spec_sha256
+    from harness.plan.power import AssumedVariance, mde_check
+    from harness.schema.experiment import ExperimentSpec
+    from tests.fixtures.builders import write_experiment_yaml
+
+    ctx = fixed_ctx()
+    exp_dir = tmp_path / "e"
+    exp_dir.mkdir()
+    spec_path = write_experiment_yaml(exp_dir / "experiment.yaml")
+    ledger = exp_dir / "ledger.ndjson"
+    spec = ExperimentSpec.from_yaml(spec_path)
+    mde = mde_check(spec, AssumedVariance(), n_sim=8, n_boot=40, deltas=[0.2, 0.4])
+    # a LEGACY lock — no rubric_sha256 field
+    record_experiment_locked(
+        ledger, ctx, spec_sha256=spec_sha256(spec_path), spec_path=str(spec_path),
+        seed=spec.seed, mde=mde, attested_by="t", method="m",
+    )
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    _seed_full_calibration(ledger, ctx)
+    _seed_matching_selfcheck(ledger, ctx, spec)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    assert f.rubric_committed is False
+    md = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+    assert "CAVEAT" in md and "rubric" in md.lower()
 
 
 # --- AN-2: official fence bound to corpus identity --------------------------
@@ -685,6 +867,7 @@ def test_ac7_asymmetric_nulls_excluded(tmp_path):
                              telemetry={"cost": 1.0, "wall_time_s": 9.0},
                              provenance={"image_digest": "d"})
     _seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
+    _seed_matching_selfcheck(ledger, ctx, spec)
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     cf = f.comparisons[0]
     assert cf.excluded_from_official is True
@@ -725,8 +908,8 @@ def test_analyze_one_render_event(tmp_path):
     app = typer.Typer()
     register(app)
     before = len(find_events(ledger, "findings_rendered"))
-    # single-command Typer app ⇒ invoke without the command name
-    result = CliRunner().invoke(app, [str(tmp_path / "e"), "--exploratory"])
+    # register() now attaches both `analyze` and `selfcheck`, so name the command
+    result = CliRunner().invoke(app, ["analyze", str(tmp_path / "e"), "--exploratory"])
     assert result.exit_code == 0, result.output
     after = len(find_events(ledger, "findings_rendered"))
     assert after - before == 1

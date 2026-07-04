@@ -182,13 +182,15 @@ def reveal_comparison(
             "unblinded — run `review build` first [RV-2]"
         )
     arm_identities = built["response_map"]
-    # locate the advisory judge verdict for the same comparison (may be absent)
+    # locate the advisory judge verdict for the same comparison (may be absent).
+    # RV-9: last-wins on a duplicated ledger, matching both kappa joins
+    # (sample.py) — first-wins here would disclose one verdict while kappa scored
+    # another. With 7A-4 idempotency, duplicates can only be legacy.
     judge_id = None
     for ev in _of_type(ledger_path, events.JUDGE_VERDICT, evs):
         if ev["verdict"].get("comparison_id") == comparison_id:
-            judge_id = ev["verdict"]["provenance"].get("call_ids") or ["judge"]
-            judge_id = judge_id[0]
-            break
+            call_ids = ev["verdict"]["provenance"].get("call_ids") or ["judge"]
+            judge_id = call_ids[0]
     return events.record_reveal(
         ledger_path,
         ctx,

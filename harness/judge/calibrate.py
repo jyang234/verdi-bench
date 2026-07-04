@@ -51,6 +51,10 @@ class ClassCalibration:
     kappa: Optional[float]
     sufficient: bool
     escalate: bool  # below threshold with sufficient data
+    # D-P7-4: the floor-only sensitivity estimate beside the IPW headline kappa —
+    # rendered so the IPW reweighting's leverage is visible, not hidden. None when
+    # there are no floor items (or on a raw, non-IPW calibration path).
+    sensitivity: Optional[float] = None
 
 
 def kappa_by_class(

@@ -39,6 +39,30 @@ def test_ac2_assert_lock_passes_when_unchanged(tmp_path):
     assert ev["event"] == "experiment_locked"
 
 
+def test_plan_refuses_tampered_pre_existing_ledger(tmp_path):
+    """`bench plan` chain-verifies an existing ledger before appending (7A-3).
+
+    A pre-existing ledger whose chain is broken must refuse the lock rather
+    than chaining a genesis event onto tampered history — and append nothing.
+    """
+    from harness.ledger.events import EventContext, record_chain_anchor
+    from harness.ledger.query import ChainIntegrityError
+
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    ledger = tmp_path / "ledger.ndjson"
+    ctx = EventContext(experiment_id="e", clock=lambda: "t")
+    record_chain_anchor(ledger, ctx, head_hash="0" * 64, height=0)
+    record_chain_anchor(ledger, ctx, head_hash="0" * 64, height=1)
+    lines = ledger.read_text().splitlines()
+    lines[0] = lines[0].replace('"height":0', '"height":9')
+    ledger.write_text("\n".join(lines) + "\n")
+    before = ledger.read_bytes()
+
+    with pytest.raises(ChainIntegrityError):
+        lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    assert ledger.read_bytes() == before  # zero events appended
+
+
 def test_pl1_power_at_real_n(tmp_path):
     """PL-1 + D-P5-4: with a task source, power is computed at the corpus's real
     task-*cluster* count with ``repetitions`` correlated reps per task, not the

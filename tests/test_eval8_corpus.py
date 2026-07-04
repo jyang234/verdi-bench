@@ -28,9 +28,11 @@ from harness.ledger.events import record_curation_approval, record_flake_baselin
 from tests.fixtures.builders import fixed_ctx
 
 # A fixed test curator keypair + keyring (Ed25519; deterministic signing).
+# D-P7-3: the keyring binds approver id -> public key. The default approver
+# "curator" and the named "curator-alice" both hold the same fixed test key.
 _CURATOR_PRIV = "57d8af6bd26b16f1f558e600e70fb2a40a5349804c864b3513b12015dc155556"
 _CURATOR_PUB = "54f22d27057d6c0a336de3f2d0df143546f31591c169072e90f18f651e49e148"
-_KEYRING = {_CURATOR_PUB}
+_KEYRING = {"curator": _CURATOR_PUB, "curator-alice": _CURATOR_PUB}
 
 
 def _approve(ledger, ctx, candidate_id, task_sha, *, approver="curator", priv=_CURATOR_PRIV):
@@ -261,6 +263,41 @@ def test_dp4_3_off_keyring_signer_refused(tmp_path):
     with pytest.raises(UnauthorizedCuratorError):
         admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
                    baseline_ref="b1", keyring=_KEYRING)
+
+
+def test_co7_relabeled_self_approval_refused(tmp_path):
+    """CO-7 / D-P7-3 probe: the miner holds an authorized key (as approver 'bob')
+    and self-approves by RELABELING the approver to another registered curator
+    ('alice'), signing with his own key. Old admission (verify against the
+    self-attested key) accepted this; identity-bound admission refuses it because
+    bob's signature does not verify under alice's registered key."""
+    from harness.corpus.admit import AttestationError
+    from harness.corpus.attestation import sign_approval
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    manifest = _pending_manifest(miner="bob")
+    keyring = {"alice": _CURATOR_PUB, "bob": _OTHER_PUB}  # both authorized approvers
+    # bob signs an approval LABELED approver="alice" using his OWN key (_OTHER_PRIV)
+    sig, pk = sign_approval(_OTHER_PRIV, candidate_id="cand-1", task_sha="s" * 64,
+                            approver="alice")
+    assert pk == _OTHER_PUB  # signed with bob's key
+    record_curation_approval(ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+                             approver="alice", signature=sig, signer_public_key=pk)
+    _clean_baseline(ledger, ctx)
+    with pytest.raises(AttestationError):
+        admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+                   baseline_ref="b1", keyring=keyring)
+
+
+def test_dp7_3_legacy_list_keyring_refused(tmp_path):
+    """A pre-Phase-7 list-format keyring is refused with a migration error."""
+    from harness.corpus.attestation import KeyringFormatError, load_keyring
+
+    kr = tmp_path / "keyring.json"
+    kr.write_text(json.dumps([_CURATOR_PUB]), encoding="utf-8")
+    with pytest.raises(KeyringFormatError):
+        load_keyring(kr)
 
 
 def test_dp4_3_tampered_signature_refused(tmp_path):

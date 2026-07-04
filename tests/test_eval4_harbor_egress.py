@@ -1,10 +1,11 @@
 """EVAL-4 AC-3 — real metering-proxy attribution (JSONL, per-trial) and
 kill-on-timeout [RN-11, RN-10, D-10].
 
-Unit level: JSONL parsing, per-trial proxy-auth injection, the named container,
-the kill-on-timeout command, and network creation are all driven with a fake
-runner / monkeypatched subprocess (no daemon). The real proxy + real kill are
-docker-marked (2H, CI)."""
+This file is unit-level only: JSONL parsing, per-trial proxy-auth injection, the
+named container, the kill-on-timeout command, and network creation are all driven
+with a fake runner / monkeypatched subprocess (no daemon). The real, daemon-backed
+proxy and kill paths are exercised by the docker-marked tests in other files
+(``test_e2e_harbor.py``), not here."""
 
 from __future__ import annotations
 

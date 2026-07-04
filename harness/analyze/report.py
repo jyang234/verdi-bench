@@ -66,6 +66,15 @@ class CorpusMismatchError(AnalyzeError):
     one — a different id/semver, or one missing tasks the experiment ran [AN-2]."""
 
 
+class RubricMismatchError(AnalyzeError):
+    """Official render requested where a verdict's rubric hash disagrees with the
+    lock's committed rubric_sha256 — the rubric was swapped after lock [D-P7-6]."""
+
+
+class SelfcheckRequiredError(AnalyzeError):
+    """Official render requested without a passed ledgered selfcheck [EVAL-1-D008]."""
+
+
 class ProvenanceError(AnalyzeError):
     """A finding is missing provenance, or the head hash no longer verifies."""
 
@@ -82,17 +91,27 @@ class CantAnalyzeReason(str, Enum):
     unregistered_metric = "unregistered_metric"
     disclosure_missing = "disclosure_missing"
     provenance_invalid = "provenance_invalid"
+    rubric_mismatch = "rubric_mismatch"
+    selfcheck_required = "selfcheck_required"
     analyze_error = "analyze_error"
 
 
 def cant_analyze_reason(exc: AnalyzeError) -> CantAnalyzeReason:
-    """Map an ``AnalyzeError`` to its enumerated ``cant_analyze`` reason."""
+    """Map an ``AnalyzeError`` to its enumerated ``cant_analyze`` reason.
+
+    Every official-fence refusal must carry its own distinguishable reason in
+    this closed set [AN-3] — a generic ``analyze_error`` fallback would erase
+    which gate refused. The Phase-7 fence checks (rubric-swap, missing/failed
+    selfcheck) are mapped here alongside the calibration/corpus/disclosure ones.
+    """
     return {
         CalibrationIncompleteError: CantAnalyzeReason.calibration_incomplete,
         CorpusMismatchError: CantAnalyzeReason.corpus_mismatch,
         UnregisteredOfficialError: CantAnalyzeReason.unregistered_metric,
         DisclosureError: CantAnalyzeReason.disclosure_missing,
         ProvenanceError: CantAnalyzeReason.provenance_invalid,
+        RubricMismatchError: CantAnalyzeReason.rubric_mismatch,
+        SelfcheckRequiredError: CantAnalyzeReason.selfcheck_required,
     }.get(type(exc), CantAnalyzeReason.analyze_error)
 
 
@@ -150,6 +169,11 @@ class FindingsDocument(BaseModel):
     ledger_consistency: dict
     # AN-11: grade-trust tiers — local/fake results are ADVISORY, surfaced not stamped
     tier: dict
+    # D-P7-2: terminal-override disclosure — count of --retry-terminal re-attempts
+    overrides: dict = {}
+    # D-P7-6: whether the lock committed a rubric_sha256; a legacy lock (False)
+    # gets a caveat line in the official render instead of a refusal.
+    rubric_committed: bool = True
     process: Optional[dict] = None
     judge_calibration: Optional[dict] = None
     provenance: Provenance
@@ -204,16 +228,41 @@ def _tier_summary(ledger_path) -> dict:
     silently stamped on each record."""
     from ..adapters.base import ADVISORY
 
-    tiers = sorted(
-        {
-            # `... or {}` / `... or ADVISORY` (not `.get(default)`): a record whose
-            # provenance or tier serialized as JSON null must still read as the
-            # lowest-trust ADVISORY band, never crash sorted() on a None member.
-            (ev["trial_record"].get("provenance") or {}).get("tier") or ADVISORY
-            for ev in find_events(ledger_path, events.TRIAL)
-        }
-    )
+    tier_set = {
+        # `... or {}` / `... or ADVISORY` (not `.get(default)`): a record whose
+        # provenance or tier serialized as JSON null must still read as the
+        # lowest-trust ADVISORY band, never crash sorted() on a None member.
+        (ev["trial_record"].get("provenance") or {}).get("tier") or ADVISORY
+        for ev in find_events(ledger_path, events.TRIAL)
+    }
+    # 7B-3: the grade-level `grader` stamp is authoritative for grade trust, not
+    # only the trial's provenance tier. An explicit `--runner local` grade over
+    # trusted-tier trials (the write-only-stamp hole) must still banner ADVISORY.
+    # A grader field present and ≠ "docker" (i.e. "local" or "unknown") is
+    # advisory; an absent field (pre-stamp ledger) adds no new signal.
+    for ev in find_events(ledger_path, events.GRADE):
+        grader = ev.get("grader")
+        if grader is not None and grader != "docker":
+            tier_set.add(ADVISORY)
+    tiers = sorted(tier_set)
     return {"tiers": tiers, "advisory": ADVISORY in tiers}
+
+
+def _override_summary(ledger_path) -> dict:
+    """Terminal-override disclosure [D-P7-2].
+
+    Counts grade-family events (``grade`` / ``cant_grade``) carrying
+    ``override_of`` — the trials whose terminal ``cant_grade`` was re-attempted
+    via ``bench grade --retry-terminal``. The count is disclosed in both renders
+    so a manual override is never invisible in the findings."""
+    trials: set[str] = set()
+    n_events = 0
+    for kind in (events.GRADE, events.CANT_GRADE):
+        for ev in find_events(ledger_path, kind):
+            if "override_of" in ev:
+                trials.add(ev["trial_id"])
+                n_events += 1
+    return {"n_override_events": n_events, "override_trials": sorted(trials)}
 
 
 def _telemetry_values(ledger_path, field: str) -> dict[str, dict[str, list[float]]]:
@@ -378,7 +427,8 @@ def _judge_calibration(ledger_path, spec, seed) -> Optional[dict]:
         "min_human_verdicts": esc.min_human_verdicts,
         "single_order_verdicts": single_order,
         "by_class": {
-            c: {"kappa": v.kappa, "n": v.n, "sufficient": v.sufficient, "escalate": v.escalate}
+            c: {"kappa": v.kappa, "n": v.n, "sufficient": v.sufficient,
+                "escalate": v.escalate, "sensitivity": v.sensitivity}
             for c, v in sorted(cal.items())
         },
         "escalation_candidates": sorted(c for c, v in cal.items() if v.escalate),
@@ -641,6 +691,8 @@ def compute_findings(
         integrity=_integrity(ledger_path),
         ledger_consistency=_ledger_consistency(ledger_path),
         tier=_tier_summary(ledger_path),
+        overrides=_override_summary(ledger_path),
+        rubric_committed=_lock_event(ledger_path).get("rubric_sha256") is not None,
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
         provenance=provenance,
@@ -728,6 +780,13 @@ def _provenance_lines(findings: FindingsDocument) -> list[str]:
         f"- instrument: {p.instrument_version} @ {p.instrument_git_sha[:12]}",
         f"- ledger head: {p.ledger_head_hash[:16]}…  chain_ok={p.chain_ok}",
         f"- judge: {p.judge}",
+        # D002 [computed]: the judge is IDENTITY-blind, not outcome-blind — the
+        # packet includes per-response holdout results by design, so
+        # judge_preference is not independent of holdout_pass_rate. Disclosed so a
+        # reader never mistakes judge agreement for an independent signal.
+        "- [computed] judge is identity-blind, not outcome-blind: the packet "
+        "includes holdout results by design, so judge_preference is not "
+        "independent of holdout_pass_rate [EVAL-2 D002]",
     ]
     if p.corpus is not None:
         lines.append(
@@ -782,9 +841,9 @@ def _ledgered_calibration_status(ledger_path, corpus_id: str, semver: str) -> Op
 
 
 def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, ledger_path) -> None:
-    """Bind the official fence to corpus identity [AN-2, D-P5-2].
+    """Bind the official fence to corpus identity + integrity [AN-2, D-P5-2].
 
-    All three checks — a fence that trusts fewer is a hand-editable bypass:
+    All five checks — a fence that trusts fewer is a hand-editable bypass:
 
     1. the cited manifest is the **pre-registered** corpus (id + semver match
        ``spec.corpus``); a different corpus cannot be laundered into an official
@@ -792,7 +851,11 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
     2. every task the experiment **ran** is an admitted task in that manifest, so
        the manifest actually covers the data;
     3. the corpus is full-run-validated per the **ledgered** ``calibration_run``
-       events, not the mutable ``manifest.calibration.status`` [CO-4].
+       events, not the mutable ``manifest.calibration.status`` [CO-4];
+    4. every verdict's rubric hash agrees with the lock's committed
+       ``rubric_sha256`` (a post-lock rubric swap is refused) [D-P7-6];
+    5. a ledgered ``selfcheck`` with ``passed=true`` exists (the coverage
+       self-validation gate) [EVAL-1-D008].
 
     Note on check (2): D-P5-2 framed this as reconciling ``manifest.task_shas()``
     with the lock's ``task_commitment``, but those are different hash domains —
@@ -839,6 +902,63 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
             "through a ledgered calibration_run before the first official finding "
             "[EVAL-8 AC-2, CO-4]"
         )
+    # 4. rubric commitment [D-P7-6]: when the lock committed a rubric_sha256 and
+    # verdicts exist, every verdict's provenance rubric hash must equal it — a
+    # post-lock rubric swap must not reach an official finding. A legacy lock
+    # (no committed hash) is not refused here; the render adds a caveat instead.
+    locked_rubric_sha = _lock_event(ledger_path).get("rubric_sha256")
+    if locked_rubric_sha is not None:
+        verdict_shas = _judge_summary(ledger_path)["rubric_shas"]
+        disagreeing = sorted(s for s in verdict_shas if s != locked_rubric_sha)
+        if disagreeing:
+            raise RubricMismatchError(
+                f"official render refused: verdict rubric hash(es) {disagreeing} "
+                f"disagree with the locked rubric_sha256 {locked_rubric_sha}; the "
+                "judging rubric was swapped after the lock [D-P7-6]"
+            )
+    # 5. self-validation [EVAL-1-D008]: a ledgered `selfcheck` with passed=true
+    # must exist, must not be stale (no data appended after it — review #1), and
+    # must have validated the CI method the render deploys (review #2).
+    from .selfcheck import latest_selfcheck, selfcheck_status
+
+    status = selfcheck_status(ledger_path)
+    if status != "current":
+        detail = {
+            "missing": "no selfcheck has been run",
+            "failed": "the selfcheck failed",
+            "stale": "the selfcheck predates later trials/grades — it validated an "
+                     "older dataset than this render analyzes",
+        }[status]
+        raise SelfcheckRequiredError(
+            f"official render refused: {detail}. Run `bench selfcheck "
+            "<experiment-dir>` and pass it before the first official finding "
+            "[EVAL-1-D008]"
+        )
+    # The selfcheck validated a specific CI method; the render must deploy that
+    # same method, else the coverage the gate certified is not the coverage of
+    # the interval actually shown [review #2].
+    validated = (latest_selfcheck(ledger_path) or {}).get("selected_method")
+    deployed = findings.ci_selection.get("selected_method")
+    if validated != deployed:
+        raise SelfcheckRequiredError(
+            f"official render refused: the selfcheck validated CI method "
+            f"{validated!r} but the render deploys {deployed!r}; re-run `bench "
+            "selfcheck <experiment-dir>` so the validated and deployed methods "
+            "agree [EVAL-1-D008]"
+        )
+
+
+def _override_lines(findings: FindingsDocument) -> list[str]:
+    """Disclosure line for terminal-override re-grades [D-P7-2], or [] if none."""
+    ov = findings.overrides or {}
+    n = ov.get("n_override_events", 0)
+    if not n:
+        return []
+    trials = ov.get("override_trials", [])
+    return [
+        f"- {n} override-graded re-attempt(s) via `--retry-terminal` on "
+        f"{len(trials)} trial(s): {trials}"
+    ]
 
 
 def _render_official_md(findings: FindingsDocument) -> str:
@@ -868,6 +988,17 @@ def _render_official_md(findings: FindingsDocument) -> str:
     consistency = _ledger_consistency_lines(findings)
     if consistency:
         out += ["", "## Ledger consistency", *consistency]
+    override = _override_lines(findings)
+    if override:
+        out += ["", "## Terminal overrides", *override]
+    if not findings.rubric_committed:
+        out += [
+            "",
+            "## Rubric commitment",
+            "- ⚠ CAVEAT: this experiment was locked before rubric commitment "
+            "(D-P7-6); the judging rubric content is not pinned, so a post-lock "
+            "rubric change cannot be detected from the ledger",
+        ]
     # AN-12 / REVIEW-D-3: the process section is retained in the official render
     # under an explicit EXPLORATORY/advisory label with the unblinded disclosure —
     # never a primary metric, never stripped (findings.json already hashes it into
@@ -914,6 +1045,9 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
     consistency = _ledger_consistency_lines(findings)
     if consistency:
         out += section("Ledger consistency", consistency)
+    override = _override_lines(findings)
+    if override:
+        out += section("Terminal overrides", override)
     out += section("CI method selection (coverage)", [f"- {findings.ci_selection}"])
     out += section("Provenance", _provenance_lines(findings))
     return "\n".join(out) + "\n"
@@ -951,6 +1085,11 @@ def _judge_calibration_lines(findings: FindingsDocument) -> list[str]:
         else:
             flag = " ESCALATE" if c["escalate"] else ""
             lines.append(f"- {cls}: kappa={_fmt(c['kappa'], 3)} (n={c['n']}){flag}")
+            # D-P7-4: the floor-only sensitivity beside the IPW headline, so the
+            # reweighting's leverage on the headline is visible.
+            sens = c.get("sensitivity")
+            if sens is not None:
+                lines.append(f"  - sensitivity (floor-only): kappa={_fmt(sens, 3)}")
     if jc["escalation_candidates"]:
         lines.append(f"- escalation candidates: {jc['escalation_candidates']}")
     return lines

@@ -112,13 +112,21 @@ def grade_trial(
     *,
     container: Optional[GradingContainer] = None,
     fractional: bool = False,
+    override_of: Optional[str] = None,
 ) -> GradeOutcome:
-    """Grade one trial. Exactly one event appended (grade or cant_grade)."""
+    """Grade one trial. Exactly one event appended (grade or cant_grade).
+
+    ``override_of`` (a terminal ``cant_grade`` line hash) rides onto whichever
+    event this attempt produces — grade *or* cant_grade — so a
+    ``--retry-terminal`` override is self-describing and a re-failure is still
+    visible as a distinct attempt [D-P7-2]."""
     container = container or GradingContainer()
     workspace = Path(workspace)
 
     def _cant(reason: str) -> GradeOutcome:
-        ev = events.record_cant_grade(ledger_path, ctx, trial_id=trial_id, reason=reason)
+        ev = events.record_cant_grade(
+            ledger_path, ctx, trial_id=trial_id, reason=reason, override_of=override_of
+        )
         return GradeOutcome(event=ev, graded=False)
 
     if not workspace.exists():
@@ -163,6 +171,7 @@ def grade_trial(
         binary_score=binary,
         fractional_score=frac,
         grader=container.grader_name,
+        override_of=override_of,
     )
     return GradeOutcome(event=ev, graded=True)
 

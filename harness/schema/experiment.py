@@ -14,11 +14,18 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from .errors import (
-    AliasJudgeIdError,
     ArmModelError,
+    ArmNameError,
     CompositePrimaryMetricError,
     DecisionRuleError,
     MissingCostCeilingError,
@@ -65,12 +72,14 @@ class CostCeiling(BaseModel):
 _RULE_RE = re.compile(
     r"^\s*delta_(?P<metric>[a-z_]+)\s*(?P<op>>=|<=|>|<|==)\s*(?P<num>-?\d+(?:\.\d+)?)\s*$"
 )
+# PL-11: `==` stays in _RULE_RE so a rule that uses it is *named* in the refusal,
+# but it is deliberately absent from _OPS — equality on a bootstrap point
+# estimate is never decidable, so it is rejected at parse rather than evaluated.
 _OPS = {
     ">": lambda a, b: a > b,
     "<": lambda a, b: a < b,
     ">=": lambda a, b: a >= b,
     "<=": lambda a, b: a <= b,
-    "==": lambda a, b: a == b,
 }
 
 
@@ -96,6 +105,12 @@ class DecisionRule(BaseModel):
                 "'delta_<primary_metric> <op> <threshold>', e.g. "
                 "'delta_holdout_pass_rate > 0'"
             )
+        op = m.group("op")
+        if op == "==":
+            raise DecisionRuleError(
+                f"decision_rule {raw!r} uses '=='; equality on a bootstrap float "
+                "is never decidable — use >= or <="
+            )
         metric = m.group("metric")
         if metric != primary.value:
             raise DecisionRuleError(
@@ -105,7 +120,7 @@ class DecisionRule(BaseModel):
         return cls(
             raw=raw,
             metric=metric,
-            op=m.group("op"),
+            op=op,
             threshold=float(m.group("num")),
         )
 
@@ -145,6 +160,21 @@ class ExperimentSpec(BaseModel):
             )
         return data
 
+    @field_validator("arms")
+    @classmethod
+    def _unique_arm_names(cls, arms):
+        # PL-10: duplicate arm names are a live bug — run's arm_map is keyed by
+        # name and would silently collapse two arms into one, losing a whole
+        # arm's trials. Refuse at the schema (D-P7-1: unique-names-required).
+        names = [a.name for a in arms]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ArmNameError(
+                f"arm names must be unique; duplicated: {dupes}. Each arm's trials "
+                "are keyed by name, so duplicates would silently collapse [PL-10]"
+            )
+        return arms
+
     @field_validator("primary_metric", mode="before")
     @classmethod
     def _reject_composite_metric(cls, v):
@@ -165,53 +195,23 @@ class ExperimentSpec(BaseModel):
         return self
 
     # --- loaders -----------------------------------------------------------
-    @staticmethod
-    def _prevalidate(data: dict) -> None:
-        """Surface the three AC-1 named rejections before pydantic wraps them.
-
-        pydantic re-raises validator ValueErrors as ``ValidationError``; callers
-        and tests want the distinct named type, so we check these cases up front.
-        """
-        from .judge_config import is_alias_model_id
-
-        if "cost_ceiling" not in data:
-            raise MissingCostCeilingError(
-                "experiment must declare a cost_ceiling [EVAL-1-D007]; none found"
-            )
-        pm = data.get("primary_metric")
-        if pm is not None and not isinstance(pm, PrimaryMetric):
-            if pm not in PrimaryMetric.values():
-                raise CompositePrimaryMetricError(
-                    f"primary_metric {pm!r} is not one of {PrimaryMetric.values()}; "
-                    "composite and unknown metrics are banned [EVAL-3-D006]"
-                )
-        judge = data.get("judge")
-        if isinstance(judge, dict) and "model" in judge:
-            if is_alias_model_id(judge["model"]):
-                raise AliasJudgeIdError(
-                    f"judge.model {judge['model']!r} is not a fully-versioned id; "
-                    "alias ids are rejected at plan time [EVAL-2 AC-5]"
-                )
-        # JD-7: surface the named ArmModelError before pydantic wraps it, so a bare
-        # arm model id (no vendor prefix) is a distinct, assertable rejection.
-        arms = data.get("arms")
-        if isinstance(arms, list):
-            for arm in arms:
-                if isinstance(arm, dict) and "model" in arm:
-                    if model_vendor(str(arm["model"])) is None:
-                        raise ArmModelError(
-                            f"arm.model {arm['model']!r} must be '<provider>/<id>' so "
-                            "the judge/arm vendor overlap is well-defined [JD-7]"
-                        )
-        rule = data.get("decision_rule")
-        if pm in PrimaryMetric.values() and isinstance(rule, str):
-            DecisionRule.parse(rule, PrimaryMetric(pm))
-
     @classmethod
     def from_dict(cls, data: dict) -> "ExperimentSpec":
-        if isinstance(data, dict):
-            cls._prevalidate(data)
-        return cls.model_validate(data)
+        """Validate a spec dict, surfacing the distinct named ``SpecError``.
+
+        The pydantic validators are the single source of every spec rejection;
+        pydantic wraps a validator's ValueError in a ``ValidationError`` but
+        preserves the original in ``errors()[i]["ctx"]["error"]``. Re-raise the
+        first wrapped ``SpecError`` so callers and tests still see the named type
+        (PL-9: one validation source, no parallel prevalidation to drift)."""
+        try:
+            return cls.model_validate(data)
+        except ValidationError as e:
+            for err in e.errors():
+                wrapped = err.get("ctx", {}).get("error")
+                if isinstance(wrapped, SpecError):
+                    raise wrapped from e
+            raise
 
     @classmethod
     def from_yaml_text(cls, text: str, *, source: str = "<text>") -> "ExperimentSpec":

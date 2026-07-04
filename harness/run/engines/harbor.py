@@ -62,6 +62,13 @@ def _with_trial_auth(proxy_url: str, trial_id: str) -> str:
     return f"{scheme}://{trial_id}@{rest}"
 
 
+class TelemetryCorruptError(RuntimeError):
+    """The agent's native telemetry log was present but not valid JSON [RN-17].
+
+    Distinct from an absent log (legitimately no telemetry): corruption must
+    fail the trial closed, never silently become "no telemetry"."""
+
+
 @dataclass
 class RunOutput:
     exit_status: int
@@ -288,7 +295,16 @@ class HarborEngine:
             # non-completions, so a completed run is unconditionally `completed`.
             outcome = Outcome.completed
 
-        native_log = self._read_native_log(artifacts)
+        try:
+            native_log = self._read_native_log(artifacts)
+        except TelemetryCorruptError:
+            # RN-17: corrupt telemetry fails the trial closed rather than
+            # silently becoming "no telemetry". Only a completed trial is
+            # downgraded — a daemon/timeout failure keeps its more specific reason.
+            native_log = {}
+            if outcome == Outcome.completed:
+                outcome = Outcome.infra_failed
+                failure_reason = "telemetry_corrupt"
         egress_attempts, egress_violation, metered_cost = self._scan_proxy_log(request)
 
         return EngineResult(
@@ -313,13 +329,20 @@ class HarborEngine:
 
     @staticmethod
     def _read_native_log(artifacts: Path) -> dict:
+        """Parse the agent's native telemetry log.
+
+        An **absent** log is legitimate (the arm may emit none) and reads as
+        ``{}``. A **present but corrupt** log is not — silently mapping it to
+        ``{}`` would launder corrupt telemetry into "no telemetry", so raise
+        :class:`TelemetryCorruptError` and let the caller fail the trial closed
+        [RN-17]."""
         log = artifacts / "agent_log.json"
-        if log.exists():
-            try:
-                return json.loads(log.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                return {}
-        return {}
+        if not log.exists():
+            return {}
+        try:
+            return json.loads(log.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise TelemetryCorruptError(f"{log}: {e}") from e
 
     @staticmethod
     def _trial_request_payload(request: TrialRequest) -> dict:

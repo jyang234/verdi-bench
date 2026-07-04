@@ -114,6 +114,7 @@ def record_experiment_locked(
     method: str,
     task_commitment: Optional[dict] = None,
     acknowledged_underpowered: Optional[dict] = None,
+    rubric_sha256: Optional[str] = None,
 ) -> dict:
     """Genesis lock event [AC-2, D004, D008].
 
@@ -121,6 +122,11 @@ def record_experiment_locked(
     and a hash over the per-task content shas, so run/grade can refuse tasks
     that were swapped after lock [PL-7]. Optional for compatibility with
     task-less plan flows; required by run/grade when real tasks are present.
+
+    ``rubric_sha256`` (additive field, D-P7-6) commits the judging rubric's
+    content hash — the same normalized-text hash the verdict provenance carries
+    (``sha256(rubric.read_text("utf-8").encode("utf-8"))``) — so a post-lock
+    rubric swap is detectable. Absent on a pre-Phase-7 lock (warn, not refuse).
 
     ``acknowledged_underpowered`` (additive field, PL-14) carries the
     ``{mde, hypothesized_effect}`` acknowledgment inline **on the lock event**
@@ -140,6 +146,8 @@ def record_experiment_locked(
         payload["task_commitment"] = task_commitment
     if acknowledged_underpowered is not None:
         payload["acknowledged_underpowered"] = acknowledged_underpowered
+    if rubric_sha256 is not None:
+        payload["rubric_sha256"] = rubric_sha256
     return emit(ledger_path, ctx, EXPERIMENT_LOCKED, payload)
 
 
@@ -215,11 +223,16 @@ def record_grade(
     binary_score: bool,
     fractional_score: Optional[float] = None,
     grader: Optional[str] = None,
+    override_of: Optional[str] = None,
 ) -> dict:
     """``grader`` (additive field) records which grader produced the verdict —
     e.g. ``"docker"`` (a trusted network-less container) vs ``"local"`` (the
     no-daemon path that reads a pre-placed file, ADVISORY). It lets an audit
-    distinguish a trusted grade from an advisory/forgeable one."""
+    distinguish a trusted grade from an advisory/forgeable one.
+
+    ``override_of`` (additive) is the sha256 line hash of a terminal
+    ``cant_grade`` this grade re-attempts via ``bench grade --retry-terminal``,
+    so a manual override is visible in the event itself [D-P7-2]."""
     payload = {
         "trial_id": trial_id,
         "task_sha": task_sha,
@@ -230,13 +243,27 @@ def record_grade(
         payload["fractional_score"] = fractional_score
     if grader is not None:
         payload["grader"] = grader
+    if override_of is not None:
+        payload["override_of"] = override_of
     return emit(ledger_path, ctx, GRADE, payload)
 
 
 def record_cant_grade(
-    ledger_path, ctx: EventContext, *, trial_id: str, reason: str
+    ledger_path,
+    ctx: EventContext,
+    *,
+    trial_id: str,
+    reason: str,
+    override_of: Optional[str] = None,
 ) -> dict:
-    return emit(ledger_path, ctx, CANT_GRADE, {"trial_id": trial_id, "reason": reason})
+    """``override_of`` (additive) is the sha256 line hash of the terminal
+    ``cant_grade`` a ``--retry-terminal`` re-attempt overrode; present only on
+    an override re-attempt, so every attempt — even a re-failure — is visible
+    [D-P7-2]."""
+    payload = {"trial_id": trial_id, "reason": reason}
+    if override_of is not None:
+        payload["override_of"] = override_of
+    return emit(ledger_path, ctx, CANT_GRADE, payload)
 
 
 def record_flake_baseline(
@@ -308,6 +335,46 @@ def append_human_verdict(
 # ---------------------------------------------------------------------------
 FINDINGS_RENDERED = register_event("findings_rendered")
 CANT_ANALYZE = register_event("cant_analyze")
+SELFCHECK = register_event("selfcheck")
+
+
+def record_selfcheck(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    selected_method: str,
+    nominal: float,
+    coverage: Optional[float],
+    mc_interval: Optional[list],
+    n_sim: int,
+    n_boot: int,
+    n_tasks: int,
+    null_model: str,
+    passed: bool,
+) -> dict:
+    """Harness self-validation result [EVAL-1-D008; master plan §7.7].
+
+    Records the coverage self-check: the selected CI method's estimated coverage
+    under the recentered null at the realized N, its Monte-Carlo (Wilson 95%)
+    interval, and whether the nominal level lies within it (``passed``). A **new
+    additive event kind** — old ledgers simply lack it, so no existing hash chain
+    is invalidated. The official fence requires a ``passed=true`` selfcheck."""
+    return emit(
+        ledger_path,
+        ctx,
+        SELFCHECK,
+        {
+            "selected_method": selected_method,
+            "nominal": nominal,
+            "coverage": coverage,
+            "mc_interval": mc_interval,
+            "n_sim": n_sim,
+            "n_boot": n_boot,
+            "n_tasks": n_tasks,
+            "null_model": null_model,
+            "passed": passed,
+        },
+    )
 
 
 def record_cant_analyze(

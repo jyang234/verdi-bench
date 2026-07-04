@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import Provider, ProviderError
+from .base import Provider, ProviderContextOverflow, ProviderError
 from ._http import post_json, require_key
 
 
@@ -11,10 +11,15 @@ def _content(resp: dict) -> str:
 
     An error/unexpected body must raise ``ProviderError`` (→ provider_error) here
     rather than a bare ``KeyError``/``IndexError`` that escapes the judge client
-    with no verdict event.
-    """
+    with no verdict event. A context-window rejection (OpenAI's canonical
+    ``context_length_exceeded`` code) raises the more specific
+    ``ProviderContextOverflow`` so the process stage records context_overflow
+    [PR-9]."""
     if "error" in resp:
-        raise ProviderError(f"openai error response: {resp['error']}")
+        err = resp["error"]
+        if isinstance(err, dict) and err.get("code") == "context_length_exceeded":
+            raise ProviderContextOverflow(f"openai context overflow: {err}")
+        raise ProviderError(f"openai error response: {err}")
     try:
         return resp["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as e:

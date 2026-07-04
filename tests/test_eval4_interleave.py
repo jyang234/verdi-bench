@@ -43,6 +43,54 @@ def test_ac4_interleave_from_seed(tmp_path):
     assert len(res.records) == len(order)
 
 
+def test_rn15_unknown_arm_fails_cell_closed(tmp_path):
+    """RN-15: a scheduled arm absent from ``arms`` fails THAT cell closed —
+    trial_infra_failed(unknown_arm) — and the cell still lands in executed_order,
+    rather than crashing the run with a bare KeyError."""
+    from harness.plan.interleave import Trial
+
+    arms, tasks = _setup()
+    # a planned cell naming an arm that is not in the arms map
+    order = [Trial(task_id="t1", arm="GHOST", repetition=0)]
+    ledger = tmp_path / "l.ndjson"
+    res = schedule(
+        order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
+        ledger_path=ledger, ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()),
+        cost_ceiling=100.0,
+    )
+    failed = find_events(ledger, "trial_infra_failed")
+    assert len(failed) == 1 and failed[0]["reason"] == "unknown_arm"
+    assert find_events(ledger, "trial") == []  # no real trial ran
+    # the failed cell is still in the executed order (never skipped)
+    assert [(e["task_id"], e["arm"]) for e in res.executed_order] == [("t1", "GHOST")]
+
+
+def test_rn16_unwritable_secret_fails_cell_closed(tmp_path, monkeypatch):
+    """RN-16: a detected-but-unredactable secret raises RedactionError, which
+    fails the cell closed as trial_infra_failed(redaction_error) — a
+    detected-but-unredacted secret never persists silently."""
+    import harness.run.seam as seam_mod
+    from harness.plan.interleave import Trial
+    from harness.run.redact import RedactionError
+
+    def boom(workspace, extra_patterns):
+        raise RedactionError("found a secret but could not rewrite it")
+
+    monkeypatch.setattr(seam_mod, "redact_artifacts", boom)
+
+    arms, tasks = _setup()
+    order = [Trial(task_id="t1", arm="A", repetition=0)]
+    ledger = tmp_path / "l.ndjson"
+    schedule(
+        order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
+        ledger_path=ledger, ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()),
+        cost_ceiling=100.0,
+    )
+    failed = find_events(ledger, "trial_infra_failed")
+    assert failed and failed[-1]["reason"] == "redaction_error"
+    assert find_events(ledger, "trial") == []  # the cell never became a real trial
+
+
 def test_ac4_executed_order_ledgered(tmp_path):
     arms, tasks = _setup()
     order = _order(42, tasks, arms)

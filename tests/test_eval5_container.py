@@ -86,6 +86,44 @@ def test_docker_runner_exit_125_is_transient(tmp_path, monkeypatch):
         DockerGradeRunner().run_holdouts(["docker", "run"], ws, "")
 
 
+def test_docker_runner_preflight_daemon_down_is_transient(tmp_path, monkeypatch):
+    """7B-1/GR-8: a down daemon makes `docker run` exit 1 (terminal today). The
+    pre-flight `docker version` probe catches daemon-down up front and raises the
+    transient GraderUnavailableError, so a batch is not permanently quarantined."""
+    import subprocess
+
+    from harness.grade.container import DockerGradeRunner, GraderUnavailableError
+
+    # daemon down: `docker version` exits nonzero
+    def fake_run(*a, **k):
+        return subprocess.CompletedProcess(a[0] if a else k.get("args"), 1, "", "Cannot connect to the Docker daemon")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(GraderUnavailableError):
+        DockerGradeRunner().preflight()
+
+    # docker binary absent: OSError is likewise transient, never terminal
+    def boom(*a, **k):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(GraderUnavailableError):
+        DockerGradeRunner().preflight()
+
+
+def test_docker_runner_preflight_ok_when_daemon_up(tmp_path, monkeypatch):
+    """A healthy `docker version` (exit 0) passes the probe silently."""
+    import subprocess
+
+    from harness.grade.container import DockerGradeRunner
+
+    def fake_run(*a, **k):
+        return subprocess.CompletedProcess(a[0] if a else k.get("args"), 0, "Client: ...", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    DockerGradeRunner().preflight()  # no raise
+
+
 def test_docker_runner_malformed_output_fails_closed(tmp_path, monkeypatch):
     """GR-6: malformed holdout JSON on the docker path must not raise a bare
     ValueError that escapes grade_trial — it flows to cant_grade(malformed)."""

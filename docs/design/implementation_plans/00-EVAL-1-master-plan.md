@@ -8,7 +8,7 @@ Provenance tagging inside these plans: requirements cite their source (`[AC-n]`,
 
 ## 1. Program summary
 
-verdi-bench is a benchmark-grade A/B evaluation instrument for agent stacks, models, and configurations: pre-registered experiments, repeated paired trials in hermetic containers, insulated arms, deterministic-first grading, an outcome-blind advisory LLM judge, blinded human review as the closing authority, paired-bootstrap analysis behind a pre-registration fence, versioned task corpora, and an openly-unblinded process-diagnostic tier. Every layer of automation earns trust through measurement (order-consistency, kappa, integrity rate, flake baselines), and every operation is a hash-chained ledger event.
+verdi-bench is a benchmark-grade A/B evaluation instrument for agent stacks, models, and configurations: pre-registered experiments, repeated paired trials in hermetic containers, insulated arms, deterministic-first grading, an identity-blind advisory LLM judge (blind to arm identities, but by design *not* to per-response holdout outcomes, so `judge_preference` is deliberately not independent of `holdout_pass_rate` — disclosed in every render, EVAL-2 D002), blinded human review as the closing authority, paired-bootstrap analysis behind a pre-registration fence, versioned task corpora, and an openly-unblinded process-diagnostic tier. Every layer of automation earns trust through measurement (order-consistency, kappa, integrity rate, flake baselines), and every operation is a hash-chained ledger event.
 
 ## 2. Residence & runtime (binding, all resolved)
 

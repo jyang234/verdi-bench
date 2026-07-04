@@ -50,6 +50,22 @@ def test_ac2_baseline_quarantine(tmp_path):
     assert load_quarantine(ledger) == {("t1", "sha1")}
 
 
+def test_gr13_baseline_runs_carry_assertion_vector(tmp_path):
+    """GR-13: every *completed* baseline run records its full assertion vector,
+    not just {run, passed} — a quarantine verdict must be auditable from the
+    ledger alone. A revert to {run, passed} fails this."""
+    ws = write_workspace(tmp_path)
+    ledger = tmp_path / "l.ndjson"
+    container = GradingContainer(runner=SeqGradeRunner([PASS] * 5))
+    flake_baseline(GradeTask(id="t1", task_sha="sha1"), ledger, fixed_ctx(),
+                   workspace=ws, container=container)
+    ev = find_events(ledger, "flake_baseline")[0]
+    for r in ev["results"]:
+        assert "assertions" in r, "completed baseline run dropped its assertion vector"
+        assert r["assertions"] == [{"id": "h1", "source": "holdout_test",
+                                    "result": "pass", "detail": None}]
+
+
 def test_ac2_baseline_requires_k_at_least_one(tmp_path):
     """GR-10: k=0 must not ledger a 'clean' verdict from zero evidence."""
     ledger = tmp_path / "l.ndjson"

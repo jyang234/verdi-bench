@@ -98,3 +98,66 @@ def test_rv4_escalation_uses_ipw_not_raw_pooled(tmp_path):
     raw = estimate_kappa(items, KappaEstimator.raw_pooled)
     assert abs(cal["cls"].kappa - ipw) < 1e-9
     assert abs(ipw - raw) > 1e-6  # the bias correction actually changed the number
+
+
+def test_dp7_4_kappa_report_produces_floor_only_sensitivity():
+    """D-P7-4: kappa_report yields a defined floor-only sensitivity when the floor
+    items carry varied labels (the sensitivity analysis D003 specifies)."""
+    items = [
+        ReviewedItem("A", "B", "mandatory"),
+        ReviewedItem("A", "A", "floor"),
+        ReviewedItem("B", "B", "floor"),
+    ]
+    rep = kappa_report(items, floor_prob=0.5)
+    assert rep.headline is not None
+    assert rep.sensitivity is not None  # floor-only over [A/A, B/B] is defined
+
+
+def test_dp7_4_calibration_wires_sensitivity_from_kappa_report(tmp_path):
+    """D-P7-4: kappa_by_class_ipw carries exactly the floor-only sensitivity
+    kappa_report computes over the items the gate saw — proving the render's
+    sensitivity comes through the kappa_report seam, not a re-derivation."""
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    _seed_comparison(ledger, ctx, "d0", control_pass=False, treatment_pass=True,
+                     judge_winner="A", human_winner="B")
+    _seed_comparison(ledger, ctx, "d1", control_pass=True, treatment_pass=False,
+                     judge_winner="B", human_winner="A")
+    # mixed agreements (A/A and B/B) so a drawn floor can be non-degenerate
+    for i in range(4):
+        _seed_comparison(ledger, ctx, f"aa{i}", control_pass=True, treatment_pass=False,
+                         judge_winner="A", human_winner="A")
+    for i in range(4):
+        _seed_comparison(ledger, ctx, f"bb{i}", control_pass=False, treatment_pass=True,
+                         judge_winner="B", human_winner="B")
+
+    from harness.review.sample import comparisons_from_ledger
+
+    seed = 3
+    cal = kappa_by_class_ipw(ledger, arm_a="control", arm_b="treatment", seed=seed,
+                             min_human_verdicts=1)
+    records = comparisons_from_ledger(ledger, arm_a="control", arm_b="treatment")
+    selected = select_for_review(records, seed)
+    items = reviewed_kappa_items(ledger, selected)
+    fp = realized_floor_prob(records)
+    expected = kappa_report(items, floor_prob=fp)
+    assert cal["cls"].sensitivity == expected.sensitivity
+    assert cal["cls"].kappa == expected.headline
+
+
+def test_dp7_4_render_shows_ipw_and_floor_sensitivity():
+    """D-P7-4: the exploratory judge-calibration render shows the floor-only
+    sensitivity beside the IPW headline kappa."""
+    from harness.analyze.report import _judge_calibration_lines
+
+    class _F:
+        judge_calibration = {
+            "kappa_threshold": 0.6, "min_human_verdicts": 1, "single_order_verdicts": 0,
+            "by_class": {"cls": {"kappa": 0.4, "n": 8, "sufficient": True,
+                                 "escalate": True, "sensitivity": 0.2}},
+            "escalation_candidates": ["cls"],
+        }
+
+    text = "\n".join(_judge_calibration_lines(_F()))
+    assert "kappa=0.400" in text
+    assert "sensitivity (floor-only): kappa=0.200" in text

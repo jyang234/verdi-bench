@@ -53,4 +53,9 @@ jobs:
       - name: Sync
         run: uv sync --dev
       - name: Docker suite (real containers)
+        # VERDI_REQUIRE_DOCKER makes the docker fixture raise at import when the
+        # daemon is absent, so the job cannot pass green by skipping every test
+        # on a daemon-less runner (XC-1 residual, 7H-2).
+        env:
+          VERDI_REQUIRE_DOCKER: "1"
         run: uv run pytest -m docker -q

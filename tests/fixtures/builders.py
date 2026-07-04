@@ -118,5 +118,17 @@ def valid_experiment_dict(**overrides) -> dict:
 
 def write_experiment_yaml(path: Path, **overrides) -> Path:
     path = Path(path)
-    path.write_text(yaml.safe_dump(valid_experiment_dict(**overrides)), encoding="utf-8")
+    data = valid_experiment_dict(**overrides)
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    # D-P7-6: the rubric is part of the pre-registration — lock now commits its
+    # content hash and refuses to lock when the file is absent. Materialize the
+    # referenced rubric so a fixture-locked experiment has a committable rubric
+    # by default (tests that exercise the absent/swapped rubric remove or rewrite
+    # it explicitly).
+    rubric_rel = (data.get("judge") or {}).get("rubric")
+    if rubric_rel:
+        rubric_path = path.parent / rubric_rel
+        if not rubric_path.exists():
+            rubric_path.parent.mkdir(parents=True, exist_ok=True)
+            rubric_path.write_text("Judge on correctness.\n", encoding="utf-8")
     return path

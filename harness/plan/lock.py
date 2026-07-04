@@ -37,6 +37,14 @@ class AlreadyLockedError(LockError):
     """A lock already exists for this ledger; re-lock is refused [PL-3]."""
 
 
+class RubricCommitmentError(LockError):
+    """The spec names a judge rubric whose file is absent [D-P7-6].
+
+    The rubric is part of the pre-registration — the judging instrument — so a
+    spec cannot be locked without the rubric present to commit its content
+    hash. Refuse rather than lock a dangling reference."""
+
+
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -75,6 +83,13 @@ def lock_experiment(
         spec_bytes.decode("utf-8"), source=str(spec_path)
     )
     sha = _sha256_bytes(spec_bytes)
+
+    # 7A-3: before trusting anything the ledger already contains (the lock-count
+    # check below, or any later append onto it), verify its chain. An
+    # absent/empty ledger is the fresh-experiment path — assert_chain is silent
+    # there — but a pre-existing tampered or truncated ledger is refused rather
+    # than chained onto.
+    assert_chain(ledger_path)
 
     # PL-3: refuse a second lock. A re-lock would append a second
     # experiment_locked event while assert_lock keys the first, telling the
@@ -122,6 +137,22 @@ def lock_experiment(
         if "power_gate_skipped" not in mde["flags"]:
             mde["flags"].append("power_gate_skipped")
 
+    # D-P7-6: commit the judging rubric's content hash into the lock. The rubric
+    # is part of the pre-registration, so an absent rubric file refuses the lock;
+    # else the hash is the same normalized-text hash the verdict provenance
+    # carries (judge/packet.py), so lock ↔ verdict comparability is exact and
+    # CRLF-checkout drift is a non-event.
+    rubric_path = Path(spec_path).parent / spec.judge.rubric
+    if not rubric_path.is_file():
+        raise RubricCommitmentError(
+            f"judge rubric {spec.judge.rubric!r} not found at {rubric_path}; the "
+            "rubric is part of the pre-registration and must be present to lock "
+            "[D-P7-6]"
+        )
+    rubric_sha256 = _sha256_bytes(
+        rubric_path.read_text(encoding="utf-8").encode("utf-8")
+    )
+
     # PL-7 / D-6: pin the task-content commitment so run/grade can refuse a
     # post-lock swap of prompts, canaries, holdout scripts, or scoring.
     task_commitment = None
@@ -152,6 +183,7 @@ def lock_experiment(
         method=attestation_method,
         task_commitment=task_commitment,
         acknowledged_underpowered=ack_payload,
+        rubric_sha256=rubric_sha256,
     )
     return LockOutcome(spec=spec, spec_sha256=sha, mde=mde, event=event)
 

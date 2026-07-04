@@ -61,6 +61,30 @@ def test_jd9_bench_judge_verb_judges_graded_comparisons(tmp_path):
     assert runner.invoke(app, ["verify-chain", str(ledger)]).exit_code == 0
 
 
+def test_jd9_bench_judge_is_idempotent(tmp_path):
+    """Re-running `bench judge` appends zero new verdicts (7A-4).
+
+    Judging iterated every comparison unconditionally; a second run doubled
+    the verdict set, inflating calibration/preference statistics. One verdict
+    per comparison, per the verb's contract.
+    """
+    expdir = tmp_path / "exp"
+    ledger = _setup(expdir)
+    ctx = fixed_ctx(experiment_id="exp")
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-a", task_id="t1", arm="control", passed=True)
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-b", task_id="t1", arm="treatment", passed=False)
+
+    r1 = runner.invoke(app, ["judge", str(expdir)])
+    assert r1.exit_code == 0, r1.output
+    after_first = find_events(ledger, "judge_verdict")
+    assert len(after_first) == 1
+
+    r2 = runner.invoke(app, ["judge", str(expdir)])
+    assert r2.exit_code == 0, r2.output
+    after_second = find_events(ledger, "judge_verdict")
+    assert len(after_second) == 1  # zero new verdicts on re-run
+
+
 def _seed_trial_with_workspace(ledger, ctx, *, trial_id, task_id, arm, workspace, passed):
     """Seed one trial whose artifacts_path points at a real on-disk workspace, so
     the judge assembles a diff from actual files."""
@@ -122,7 +146,9 @@ def test_jd9_escalation_config_threaded(tmp_path):
     seed_trial_and_grade(ledger, ctx, trial_id="tr-a", task_id="t1", arm="control", passed=True)
     seed_trial_and_grade(ledger, ctx, trial_id="tr-b", task_id="t1", arm="treatment", passed=False)
     # a human verdict DISAGREEING with the judge (judge A, human B) — a defined,
-    # non-degenerate pair (kappa = 0), so the class is sufficient at min=1.
+    # non-degenerate pair (kappa = 0), so the class is sufficient at min=1. It
+    # carries an integrity block: RV-8(f) excludes integrity-less human verdicts
+    # from the reviewed-kappa set, so a reviewed verdict must have one.
     hv = Verdict(
         winner=Winner.B, reason="disagree",
         evidence=[{"kind": "diff", "response": "B", "hunk": "h"}],
@@ -131,7 +157,8 @@ def test_jd9_escalation_config_threaded(tmp_path):
             temperature=0.0, ts="t"),
         source="human", comparison_id="cmp-t1-r0", task_class="refactor",
     )
-    append_human_verdict(ledger, ctx, verdict=hv.model_dump(mode="json"))
+    append_human_verdict(ledger, ctx, verdict=hv.model_dump(mode="json"),
+                         arm_recognized=False)
 
     r = runner.invoke(app, ["judge", str(expdir)])
     assert r.exit_code == 0, r.output

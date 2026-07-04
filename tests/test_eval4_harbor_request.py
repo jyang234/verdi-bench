@@ -9,7 +9,6 @@ where no daemon is present and runs in a labelled/scheduled CI job.
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -48,6 +47,39 @@ class _CapturingRunner(FakeDockerRunner):
                 self.request_host_path = Path(host)
                 self.request_payload = json.loads(Path(host).read_text(encoding="utf-8"))
         return super().run_container(cmd, timeout_s, env)
+
+
+def test_rn17_corrupt_telemetry_fails_trial_closed(tmp_path):
+    """RN-17: a present-but-corrupt agent_log.json must fail the trial closed as
+    infra_failed(telemetry_corrupt), not silently become 'no telemetry'."""
+    from harness.adapters.base import Outcome
+
+    runner = FakeDockerRunner(corrupt_log=True)
+    rec = run_trial(_pinned_task(), _arm(), tmp_path / "ws",
+                    RunConfig(engine=HarborEngine(runner=runner)))
+    assert rec.outcome == Outcome.infra_failed
+    assert rec.flags.failure_reason == "telemetry_corrupt"
+
+
+def test_rn17_absent_telemetry_is_legitimate(tmp_path):
+    """An absent log is legitimate (the arm may emit none) — it reads as no
+    telemetry and the trial still completes; only corruption fails closed."""
+    from harness.adapters.base import Outcome
+
+    class _NoLogRunner(FakeDockerRunner):
+        def run_container(self, cmd, timeout_s, env=None):
+            out = super().run_container(cmd, timeout_s, env)
+            # remove the log the base fake wrote, simulating an arm that emits none
+            for i, tok in enumerate(cmd):
+                if tok == "--volume" and ":/workspace" in cmd[i + 1]:
+                    host = cmd[i + 1].split(":")[0]
+                    (Path(host) / "artifacts" / "agent_log.json").unlink(missing_ok=True)
+            return out
+
+    rec = run_trial(_pinned_task(), _arm(), tmp_path / "ws",
+                    RunConfig(engine=HarborEngine(runner=_NoLogRunner())))
+    assert rec.outcome == Outcome.completed
+    assert getattr(rec.flags, "failure_reason", None) is None
 
 
 def test_ac1_trial_request_delivered_readonly(tmp_path):

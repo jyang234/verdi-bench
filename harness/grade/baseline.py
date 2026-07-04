@@ -51,6 +51,10 @@ def flake_baseline(
         )
     container = container or GradingContainer()
     workspace = Path(workspace)
+    # 7B-1/GR-8: probe the grader before the batch. A down daemon must make the
+    # baseline inconclusive (GraderUnavailableError propagates, nothing ledgered)
+    # rather than quarantining a healthy task version from a docker outage.
+    container.preflight()
     results: list[dict] = []
     clean = True
     for i in range(k):
