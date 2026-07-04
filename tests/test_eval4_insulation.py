@@ -65,6 +65,21 @@ def test_ac9_leak_into_non_prompt_channel_refused(tmp_path):
         run_trial(task, _arm(), tmp_path / "ws", RunConfig(engine=FakeEngine()))
 
 
+def test_ac9_leak_into_arm_payload_refused(tmp_path):
+    """RN/7H-3: the third request-bound channel — a canary planted in
+    ``arm.payload`` must fail closed too. prompt and fake_behavior have owning
+    tests; the payload channel did not, so a regression narrowing the scan to
+    prompt+fake_behavior would slip through here."""
+    canary = "CANARY_PAYLOAD_1"
+    arm = Arm(name="A", platform="claude_code",
+              model="anthropic/claude-3-5-sonnet-20241022",
+              payload={"note": canary})
+    task = Task(id="t", prompt="a clean prompt", holdout_canaries=[canary],
+                fake_behavior={"native_log": {}})
+    with pytest.raises(HoldoutLeakError):
+        run_trial(task, arm, tmp_path / "ws", RunConfig(engine=FakeEngine()))
+
+
 def test_ac9_advisory_stamp(tmp_path):
     rec = run_trial(Task(id="t", prompt="p"), _arm(), tmp_path / "ws",
                     RunConfig(engine=FakeEngine()))

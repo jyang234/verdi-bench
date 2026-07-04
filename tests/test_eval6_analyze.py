@@ -275,6 +275,36 @@ def test_an1_judge_preference_filtered_by_arm_pair(tmp_path):
     assert by_label["control vs challenger"].effect["mean_paired_delta"] == -1.0
 
 
+def test_an1_attribution_follows_inverted_arm_map(tmp_path):
+    """AN-1 owning test: when the recorded arm_map INVERTS the frame
+    ({"A": treatment, "B": control} with treatment != arms[0]), the win is
+    attributed to the physical arm the map names (treatment), NOT to arms[0].
+    Every existing AN-1 test is frame-aligned, so a regression to arms[0] passes
+    the rest of the suite — this one catches it."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])  # control, treatment
+    inverted = {"A": "treatment", "B": "control"}  # response A is NOT arms[0]
+    for i in range(4):
+        _seed_pref_verdict(ledger, ctx, cid=f"iv-{i}", task_id=f"t{i}", winner="A", arm_map=inverted)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    by_label = {cf.label: cf for cf in f.comparisons}
+    # winner A → treatment (via arm_map), so treatment wins every task and the
+    # control-vs-treatment delta (control_rate - treatment_rate) is -1.0, not +1.0.
+    assert by_label["control vs treatment"].effect["mean_paired_delta"] == -1.0
+
+
+def test_an10_ci_selection_reports_deployed_n_boot(tmp_path):
+    """AN-10 owning test: the coverage selection recorded in the findings uses —
+    and reports — the SAME n_boot the deployed interval uses, so the disclosed
+    ci_selection cannot silently diverge from the bootstrap that produced the CI."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: i % 2 == 0)
+    n_boot = 321  # a non-default value
+    f = compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, n_boot=n_boot)
+    assert f.ci_selection["n_boot"] == n_boot
+
+
 def test_an1_cant_judge_and_tie_excluded_not_imputed(tmp_path):
     """AN-1: CANT_JUDGE and TIE are non-answers — excluded from the preference
     series, never imputed as 0.0. n reflects real A/B verdicts only."""
