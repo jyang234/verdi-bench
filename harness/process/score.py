@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from ..analyze.confounds import judge_vendor_overlap
 from ..judge.providers.base import (
     Provider,
+    ProviderContextOverflow,
     ProviderError,
     get_provider,
     provider_failure_reason,
@@ -178,7 +179,7 @@ def score_trial_process(
     scorer_id: str,
     provider: Optional[Provider] = None,
     provider_model: str = "anthropic/claude-3-5-sonnet-20241022",
-    spec=None,
+    spec,
     telemetry: Optional[dict] = None,
     token_counter: Callable[[str], int] = _heuristic_token_count,
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
@@ -191,7 +192,10 @@ def score_trial_process(
     Full-or-CANT_SCORE: no silent truncation; an over-context transcript fails
     closed to CANT_SCORE(context_overflow) with token counts recorded.
     """
-    overlap = bool(spec is not None and judge_vendor_overlap(spec).overlap)
+    # PR-9: spec is required (production always passes it), so judge/arm vendor
+    # overlap is honest again — it no longer silently degrades to False when the
+    # spec is unknown, which would under-report a real overlap confound.
+    overlap = bool(judge_vendor_overlap(spec).overlap)
     prov = ProcessScoreProvenance(
         unblinded=True,
         scorer=Scorer(kind="judge", id=scorer_id),
@@ -233,6 +237,11 @@ def score_trial_process(
     # uses, so the two stages cannot drift on the classification [carry-forward].
     try:
         text = provider.complete(provider_model, messages, 0.0)
+    except ProviderContextOverflow as e:
+        # PR-9: a provider-side context rejection is more specific than a generic
+        # provider_error — record context_overflow with the provider's token count
+        # when it reported one (else the pre-flight count is unavailable here).
+        return _score(_all_cant(rubric, CantScoreReason.context_overflow, tokens=e.prompt_tokens))
     except ProviderError as e:
         return _score(_all_cant(rubric, CantScoreReason(provider_failure_reason(e))))
     try:
@@ -351,14 +360,29 @@ def _process_entrypoint(ctx_dir: str) -> None:
     from pathlib import Path
 
     from ..judge.providers.fake import FakeProvider
+    from ..schema.experiment import ExperimentSpec
     from .rubric import default_rubric
 
     d = Path(ctx_dir)
     r = default_rubric()
     fp = FakeProvider([json.dumps({"scores": {dim: 3 for dim in r.dimension_ids}})])
+    spec = ExperimentSpec.from_dict({
+        "arms": [
+            {"name": "control", "platform": "claude_code", "model": "anthropic/claude-3-5-sonnet-20241022", "payload": {}},
+            {"name": "treatment", "platform": "codex", "model": "openai/gpt-4o-2024-08-06", "payload": {}},
+        ],
+        "corpus": {"id": "public-mini", "version": "1.0.0"},
+        "repetitions": 1,
+        "primary_metric": "holdout_pass_rate",
+        "decision_rule": "delta_holdout_pass_rate > 0",
+        "judge": {"model": "google/gemini-1.5-pro-002", "rubric": "r.md", "orders": "both", "temperature": 0},
+        "seed": 1,
+        "cost_ceiling": {"amount": 1.0, "currency": "USD"},
+    })
     score_trial_process(
         "trial-x", "clean transcript", r, ledger_path=d / "ledger.ndjson",
         ctx=EventContext(experiment_id="prop"), ts="t0", scorer_id="judge", provider=fp,
+        spec=spec,
     )
 
 

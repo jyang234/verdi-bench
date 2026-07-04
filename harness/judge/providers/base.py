@@ -23,6 +23,21 @@ class ProviderRefusal(ProviderError):
     """The model refused → CANT_JUDGE(refusal)."""
 
 
+class ProviderContextOverflow(ProviderError):
+    """The provider rejected the request as over its context window [PR-9].
+
+    Distinct from a generic provider error so the process stage can record
+    ``CANT_SCORE(context_overflow)`` (with the provider's own token counts when
+    it reports them) instead of a generic ``provider_error`` — the provider's
+    verdict on context size is more specific than our pre-flight chars/4 gate."""
+
+    def __init__(self, message: str, *, prompt_tokens: int | None = None,
+                 max_tokens: int | None = None) -> None:
+        super().__init__(message)
+        self.prompt_tokens = prompt_tokens
+        self.max_tokens = max_tokens
+
+
 class Provider(Protocol):
     def complete(self, model_id: str, messages: list[dict], temperature: float) -> str: ...
 
@@ -40,6 +55,8 @@ def provider_failure_reason(exc: ProviderError) -> str:
         return "timeout"
     if isinstance(exc, ProviderRefusal):
         return "refusal"
+    if isinstance(exc, ProviderContextOverflow):
+        return "context_overflow"
     return "provider_error"
 
 

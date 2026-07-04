@@ -36,6 +36,19 @@ def test_openai_empty_choices_raises_provider_error():
         openai_content({"choices": []})
 
 
+def test_openai_context_length_exceeded_is_context_overflow():
+    """PR-9: OpenAI's context_length_exceeded maps to the distinct
+    ProviderContextOverflow (→ context_overflow), not a generic provider_error."""
+    from harness.judge.providers.base import (
+        ProviderContextOverflow,
+        provider_failure_reason,
+    )
+
+    with pytest.raises(ProviderContextOverflow) as exc:
+        openai_content({"error": {"code": "context_length_exceeded", "message": "too long"}})
+    assert provider_failure_reason(exc.value) == "context_overflow"
+
+
 # --- google --------------------------------------------------------------
 def test_google_happy_path():
     resp = {"candidates": [{"content": {"parts": [{"text": "verdict text"}]}}]}
