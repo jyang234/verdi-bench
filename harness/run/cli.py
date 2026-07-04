@@ -56,6 +56,7 @@ def register(app: typer.Typer) -> None:
         from ..grade.baseline import load_quarantine
         from ..ledger.events import EventContext
         from ..plan.lock import assert_lock
+        from .heartbeat import HEARTBEAT_FILENAME
         from .interleave import QuarantinedTaskError, schedule
 
         experiment_dir = Path(experiment_dir)
@@ -138,6 +139,9 @@ def register(app: typer.Typer) -> None:
                 cost_ceiling=spec.cost_ceiling.amount,
                 quarantined_tasks=quarantine,
                 schedulable_tasks=schedulable,
+                # Liveness sidecar for live observers [EVAL-13 AC-1]: operational
+                # telemetry beside the ledger, never in it.
+                heartbeat_path=experiment_dir / HEARTBEAT_FILENAME,
             )
         except QuarantinedTaskError as e:
             typer.echo(str(e), err=True)

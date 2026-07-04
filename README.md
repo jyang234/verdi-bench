@@ -70,7 +70,7 @@ and EVAL-10 are built. The fast suite
 (`uv run pytest -m "not docker"`) is green — over 600 tests — plus a
 `docker`-marked suite of real-container tests (a real grade container and a real
 Harbor trial) run with `-m docker` in a dedicated CI job on Docker-capable
-runners; 5 import-linter contracts kept. AC-mapped tests are **enforced per
+runners; 6 import-linter contracts kept. AC-mapped tests are **enforced per
 story**: collection fails if any story's pre-registered acceptance criteria (from
 its `eval<N>.spec.md`) lack a `test_ac<N>_*` test, or if an AC test is duplicated
 or names an AC its story does not declare. `--ac-report` additionally prints the
@@ -142,6 +142,9 @@ uv run bench analyze <experiment-dir> --official --corpus m.json   # fenced offi
 uv run bench verify-chain ledger.ndjson [--against-anchor anchors.ndjson]
 uv run bench anchor ledger.ndjson --out anchors.ndjson       # refuses a tampered ledger
 
+uv run bench status <experiment-dir> [--json]          # lifecycle snapshot (read-only, ledgers nothing)
+uv run bench serve  <experiment-dir> [--port 8383]     # live operator view (read-only, loopback, unblinded — see banner)
+
 uv run bench corpus import <tasks-dir> --cache <dir>   # idempotent public import
 uv run bench corpus subset <manifest> --seed 1234      # stratified calibration subset
 uv run bench corpus mine <mr.json> --ticket t.txt --out cand.json
@@ -175,6 +178,13 @@ optional `run.config.yaml` + the environment — never the sha-locked
 
 `bench grade` defaults to `--runner docker` (the real network-less grading
 container), with `--runner local` for the no-daemon fake/test path.
+
+`bench run` also maintains `run.heartbeat.json` beside the ledger — operational
+liveness (state, in-flight cell, progress, spend) for `bench status` /
+`bench serve`, written atomically and never ledgered. Watching the live view
+shows arm identities: it is the openly-unblinded operator tier, and anyone who
+watches is disqualified from serving as that experiment's blinded (EVAL-7)
+reviewer — the page banner says exactly this.
 
 ## Learn more
 
