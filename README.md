@@ -88,6 +88,9 @@ uv run bench review record <experiment-dir> --comparison-id c1 --winner 1|2|TIE|
 uv run bench review reveal <experiment-dir> --comparison-id c1   # refuses pre-verdict
 uv run bench process score  <experiment-dir>          # isolated judge process scoring
 uv run bench process record <experiment-dir> --trial-id t1 --comparison-id c1 --scores s.json
+uv run bench forensics scan <experiment-dir> [--no-review]   # trajectory metrics + gaming detectors (+ blinded advisory review)
+uv run bench forensics record <experiment-dir> --trial-id t1 --labels labels.json --stratum mandatory|floor
+uv run bench forensics quarantine <experiment-dir> --trial-id t1 --reason "confirmed holdout tamper"   # ledgered operator exclusion, disclosed
 ```
 
 `bench run` defaults to the hermetic **fake** engine (fast, no Docker).

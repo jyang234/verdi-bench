@@ -19,6 +19,7 @@ from __future__ import annotations
 # Import every stage module so it self-registers its entrypoint(s).
 import harness.analyze.cli  # noqa: F401
 import harness.corpus.admit  # noqa: F401
+import harness.forensics.cli  # noqa: F401
 import harness.corpus.ledger_ops  # noqa: F401
 import harness.grade.deterministic  # noqa: F401
 import harness.judge.client  # noqa: F401
@@ -41,6 +42,7 @@ EXPECTED_ENTRYPOINTS = {
     "grade-trial",
     "judge",
     "process",
+    "forensics",
     "review-build",
     "review-record",
     "review-reveal",

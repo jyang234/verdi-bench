@@ -35,6 +35,7 @@ from .report import (
     ComparisonFinding,
     FindingsDocument,
     _fmt,
+    _forensics_lines,
     _integrity_line,
     _judge_calibration_lines,
     _ledger_consistency_lines,
@@ -419,6 +420,15 @@ def _disclosure_sections(findings: FindingsDocument) -> list[dict]:
             {
                 "title": f"Process diagnostics — {_WATERMARK} (advisory secondary)",
                 "body": _lines_html(_process_lines(findings)),
+            }
+        )
+    if findings.forensics is not None:
+        # EVAL-11 AC-5: one addition here rides every layer — same wording as
+        # the markdown render, disclosure-only [D004]
+        sections.append(
+            {
+                "title": "Forensic flags (disclosed, non-suppressing)",
+                "body": _lines_html(_forensics_lines(findings)),
             }
         )
     return sections
