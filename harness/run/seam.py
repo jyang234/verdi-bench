@@ -23,6 +23,7 @@ from ..adapters.generic import by_model_delta, normalize_generic_by_model
 from ..schema.experiment import Arm
 from .egress import undeclared_model_egress
 from .redact import redact_artifacts
+from .settings import MissingProviderKeyError
 from .trajectory import TrajectoryCorruptError, TrajectoryRecord, persist_trajectory
 from .types import RunConfig, Task, TrialRequest
 
@@ -100,6 +101,22 @@ def run_trial(
                 f"holdout canary {canary!r} present in request payload for {task.id}"
             )
 
+    # PRA-M2: with a per-arm key allowlist, this arm's container receives ONLY
+    # the keys named for it — never the other arm's provider key. Every arm must
+    # be listed when the allowlist is in use, so a typo'd/omitted arm fails loud
+    # rather than silently running unauthenticated. Without an allowlist, every
+    # arm gets every key (pre-M2 default).
+    arm_keys = config.provider_keys
+    if config.provider_key_names_by_arm is not None:
+        if arm.name not in config.provider_key_names_by_arm:
+            raise MissingProviderKeyError(
+                f"arm {arm.name!r} is not listed in provider_key_names_by_arm; "
+                "every arm must declare its provider keys when the per-arm "
+                "allowlist is in use [PRA-M2]"
+            )
+        allowed = set(config.provider_key_names_by_arm[arm.name])
+        arm_keys = {k: v for k, v in config.provider_keys.items() if k in allowed}
+
     request = TrialRequest(
         trial_id=trial_id,
         task_id=task.id,
@@ -114,7 +131,7 @@ def run_trial(
         ),
         ts=ts,
         proxy=config.proxy,
-        provider_keys=config.provider_keys,
+        provider_keys=arm_keys,
         fake_behavior=task.fake_behavior,
     )
 

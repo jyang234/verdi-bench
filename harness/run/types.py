@@ -119,3 +119,9 @@ class RunConfig:
     proxy: Optional[ProxyConfig] = None
     redact_extra_patterns: list[str] = field(default_factory=list)
     provider_keys: dict = field(default_factory=dict)
+    # PRA-M2: per-arm allowlist of provider-key NAMES. When set, an arm's
+    # container receives ONLY the keys named for it — arm A never sees arm B's
+    # provider key (a least-privilege fix for "insulated arms"; also keeps
+    # per-provider cost attributable). None = the pre-M2 behavior (every arm gets
+    # every key), preserved for the single-provider common case.
+    provider_key_names_by_arm: Optional[dict] = None

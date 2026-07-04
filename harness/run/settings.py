@@ -46,6 +46,9 @@ class RunSettings:
     proxy: Optional[ProxyConfig] = None
     quotas: Quotas = field(default_factory=lambda: Quotas(cpus=2.0, mem="4g"))
     provider_keys: dict = field(default_factory=dict)
+    # PRA-M2: optional per-arm provider-key NAME allowlist {arm: [names]}. None
+    # means every arm gets every key (pre-M2 behavior).
+    provider_key_names_by_arm: Optional[dict] = None
 
 
 def load_run_settings(
@@ -127,8 +130,28 @@ def load_run_settings(
     # The file lists key NAMES; the VALUES are read from the environment and are
     # never written to the file or the ledger [AC-8]. A named-but-absent key fails
     # the run loudly rather than silently dropping to an unauthenticated arm [D-P3-1].
+    # PRA-M2: keys may be declared flat (provider_key_names → every arm) and/or
+    # per-arm (provider_key_names_by_arm → only that arm). The VALUES for the
+    # UNION are read from the env (each named-but-absent key still fails loud);
+    # the per-arm NAME lists drive which arm's container receives which key.
+    by_arm_cfg = data.get("provider_key_names_by_arm")
+    by_arm: Optional[dict] = None
+    all_names: list[str] = list(data.get("provider_key_names") or [])
+    if by_arm_cfg is not None:
+        if not isinstance(by_arm_cfg, dict):
+            raise ValueError(
+                "run.config.yaml 'provider_key_names_by_arm' must be a mapping "
+                "{arm_name: [key_names]}"
+            )
+        by_arm = {}
+        for arm_name, names in by_arm_cfg.items():
+            by_arm[arm_name] = list(names or [])
+            all_names.extend(by_arm[arm_name])
+
     provider_keys = {}
-    for name in data.get("provider_key_names") or []:
+    for name in all_names:
+        if name in provider_keys:
+            continue  # union: read each value once
         if name not in env:
             raise MissingProviderKeyError(
                 f"provider key {name!r} is named in {RUN_CONFIG_FILENAME} but absent "
@@ -136,4 +159,7 @@ def load_run_settings(
                 f"{name} in the env or remove it from provider_key_names."
             )
         provider_keys[name] = env[name]
-    return RunSettings(proxy=proxy, quotas=quotas, provider_keys=provider_keys)
+    return RunSettings(
+        proxy=proxy, quotas=quotas, provider_keys=provider_keys,
+        provider_key_names_by_arm=by_arm,
+    )

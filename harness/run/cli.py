@@ -120,6 +120,7 @@ def register(app: typer.Typer) -> None:
             proxy=settings.proxy,
             quotas=settings.quotas,
             provider_keys=settings.provider_keys,
+            provider_key_names_by_arm=settings.provider_key_names_by_arm,  # PRA-M2
         )
         try:
             resolved_actor = resolve_actor(actor)
