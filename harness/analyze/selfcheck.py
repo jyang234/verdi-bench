@@ -21,7 +21,6 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from ..plan.seeds import sub_seed
 from ..schema.metrics import PrimaryMetric
 from .nullsim import NULL_INSUFFICIENT, coverage_from_deltas
 from .report import (
@@ -73,11 +72,16 @@ def run_selfcheck(
 ) -> dict:
     """Compute the selfcheck result dict (the ``selfcheck`` event payload).
 
-    Deterministic in ``spec.seed``: same ledger ⇒ byte-identical payload."""
+    Deterministic in ``spec.seed``: same ledger ⇒ byte-identical payload.
+
+    The selection is seeded with ``spec.seed`` — the **same** stream
+    ``compute_findings`` deploys — not a namespaced sub-seed, so the CI method the
+    selfcheck validates is exactly the method the render deploys [review #2].
+    (Amends the D008 detail that used ``sub_seed(spec.seed, 'selfcheck')``, which
+    could validate a method the render never deploys.)"""
     deltas, null_model = _primary_comparison_deltas(ledger_path, spec)
-    seed = sub_seed(spec.seed, "selfcheck")
     sel = coverage_from_deltas(
-        deltas, seed, null_model=null_model, ci_level=ci_level,
+        deltas, spec.seed, null_model=null_model, ci_level=ci_level,
         n_sim=n_sim, n_boot=n_boot,
     )
     if sel.null_model == NULL_INSUFFICIENT:
@@ -109,9 +113,51 @@ def _result(selected_method, nominal, coverage, mc_interval, n_sim, n_boot,
 def selfcheck_passed(ledger_path) -> Optional[bool]:
     """The latest ledgered selfcheck's ``passed`` (latest wins), or None if none.
 
-    Read-side helper the official fence uses [D008]."""
+    A convenience reader; the official fence uses :func:`selfcheck_status`, which
+    additionally enforces that the pass is not stale [D008]."""
     from ..ledger import events
     from ..ledger.query import find_events
 
     found = find_events(ledger_path, events.SELFCHECK)
     return found[-1]["passed"] if found else None
+
+
+def latest_selfcheck(ledger_path) -> Optional[dict]:
+    """The most recently ledgered ``selfcheck`` event, or None."""
+    from ..ledger import events
+    from ..ledger.query import find_events
+
+    found = find_events(ledger_path, events.SELFCHECK)
+    return found[-1] if found else None
+
+
+def selfcheck_status(ledger_path) -> str:
+    """Classify the D008 gate state: ``missing`` | ``failed`` | ``stale`` |
+    ``current`` [review #1].
+
+    A passing selfcheck validates the realized per-task deltas *at the moment it
+    ran*. If any data-bearing event (``trial`` / ``grade`` / ``cant_grade`` /
+    ``judge_verdict`` — the events feeding the analyzed deltas) was appended
+    **after** the latest selfcheck, that pass is **stale**: it certified a
+    different dataset than the render now analyzes. The append-only ledger makes
+    this a pure ordering test — the latest selfcheck must post-date the last
+    data-bearing event. (Non-data events — anchors, calibration runs, renders —
+    do not invalidate a pass.)"""
+    from ..ledger import events
+    from ..ledger.query import read_events
+
+    data_kinds = {events.TRIAL, events.GRADE, events.CANT_GRADE, events.JUDGE_VERDICT}
+    last_data_idx = -1
+    last_selfcheck: Optional[tuple[int, bool]] = None
+    for i, ev in enumerate(read_events(ledger_path)):
+        kind = ev.get("event")
+        if kind in data_kinds:
+            last_data_idx = i
+        elif kind == events.SELFCHECK:
+            last_selfcheck = (i, bool(ev.get("passed")))
+    if last_selfcheck is None:
+        return "missing"
+    idx, passed = last_selfcheck
+    if not passed:
+        return "failed"
+    return "current" if idx > last_data_idx else "stale"

@@ -916,18 +916,35 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
                 f"disagree with the locked rubric_sha256 {locked_rubric_sha}; the "
                 "judging rubric was swapped after the lock [D-P7-6]"
             )
-    # 5. self-validation [EVAL-1-D008]: a ledgered `selfcheck` event with
-    # passed=true must exist. Absent or failed ⇒ the experiment is
-    # exploratory-only; the official finding is refused.
-    from .selfcheck import selfcheck_passed
+    # 5. self-validation [EVAL-1-D008]: a ledgered `selfcheck` with passed=true
+    # must exist, must not be stale (no data appended after it — review #1), and
+    # must have validated the CI method the render deploys (review #2).
+    from .selfcheck import latest_selfcheck, selfcheck_status
 
-    passed = selfcheck_passed(ledger_path)
-    if passed is not True:
-        detail = "no selfcheck has been run" if passed is None else "the selfcheck failed"
+    status = selfcheck_status(ledger_path)
+    if status != "current":
+        detail = {
+            "missing": "no selfcheck has been run",
+            "failed": "the selfcheck failed",
+            "stale": "the selfcheck predates later trials/grades — it validated an "
+                     "older dataset than this render analyzes",
+        }[status]
         raise SelfcheckRequiredError(
             f"official render refused: {detail}. Run `bench selfcheck "
             "<experiment-dir>` and pass it before the first official finding "
             "[EVAL-1-D008]"
+        )
+    # The selfcheck validated a specific CI method; the render must deploy that
+    # same method, else the coverage the gate certified is not the coverage of
+    # the interval actually shown [review #2].
+    validated = (latest_selfcheck(ledger_path) or {}).get("selected_method")
+    deployed = findings.ci_selection.get("selected_method")
+    if validated != deployed:
+        raise SelfcheckRequiredError(
+            f"official render refused: the selfcheck validated CI method "
+            f"{validated!r} but the render deploys {deployed!r}; re-run `bench "
+            "selfcheck <experiment-dir>` so the validated and deployed methods "
+            "agree [EVAL-1-D008]"
         )
 
 

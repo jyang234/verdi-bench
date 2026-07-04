@@ -139,16 +139,80 @@ def test_official_fence_refused_with_failed_selfcheck(tmp_path):
         render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
 
 
+def _seed_matching_selfcheck(ledger, ctx, spec, *, n_sim=20, n_boot=200):
+    """Seed a passing, current selfcheck whose validated method matches the
+    deployed selection — via the real run_selfcheck (same seed + params), forced
+    to pass. Seed BEFORE compute_findings (findings are head-bound)."""
+    res = run_selfcheck(ledger, spec, n_sim=n_sim, n_boot=n_boot)
+    res["passed"] = True
+    record_selfcheck(ledger, ctx, **res)
+
+
 def test_official_fence_passes_with_passed_selfcheck(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, treatment_pass=lambda i: i % 2 == 0)
     _seed_full_calibration(ledger, ctx)
-    record_selfcheck(ledger, ctx, selected_method="bca", nominal=0.95, coverage=0.94,
-                     mc_interval=[0.9, 0.97], n_sim=200, n_boot=1000, n_tasks=5,
-                     null_model="paired_binary", passed=True)
+    _seed_matching_selfcheck(ledger, ctx, spec)  # current & matching, before compute
     assert selfcheck_passed(ledger) is True
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(),
                          coverage_n_sim=20, n_boot=200)
     md = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
     assert "Official findings" in md
+
+
+def test_official_fence_refuses_stale_selfcheck(tmp_path):
+    """review #1: a passing selfcheck that predates later trials/grades is stale —
+    the official render is refused until selfcheck is re-run on the current data.
+    Scenario: selfcheck(pass) → more grades → analyze (findings recomputed on the
+    new data, so the head-hash check passes, but the selfcheck is now stale)."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, treatment_pass=lambda i: i % 2 == 0)
+    _seed_full_calibration(ledger, ctx)
+    _seed_matching_selfcheck(ledger, ctx, spec)  # passes on the data so far
+    # append data AFTER the selfcheck, on an already-admitted task so checks 1-3
+    # still pass; then compute findings on the NEW head so the head-hash check is
+    # satisfied and the fence reaches the staleness check (5).
+    seed_trial_and_grade(ledger, ctx, trial_id="late-c", task_id="task0", arm="control", passed=True)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(),
+                         coverage_n_sim=20, n_boot=200)
+    with pytest.raises(SelfcheckRequiredError) as exc:
+        render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+    assert "predates" in str(exc.value)
+
+
+def test_official_fence_refuses_method_mismatch(tmp_path):
+    """review #2: a passing, current selfcheck that validated a DIFFERENT CI
+    method than the render deploys is refused — the certified coverage is not the
+    coverage of the interval shown."""
+    from harness.ledger.query import ledger_head_hash  # noqa: F401 (clarity)
+
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, treatment_pass=lambda i: i % 2 == 0)
+    _seed_full_calibration(ledger, ctx)
+    # peek at the method the render will deploy, then seed a current selfcheck
+    # claiming a DIFFERENT method (still before the real compute, so head-bound).
+    peek = compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, n_boot=200)
+    deployed = peek.ci_selection["selected_method"]
+    wrong = "bca" if deployed != "bca" else "percentile"
+    record_selfcheck(ledger, ctx, selected_method=wrong, nominal=0.95, coverage=0.95,
+                     mc_interval=[0.9, 1.0], n_sim=20, n_boot=200, n_tasks=5,
+                     null_model="paired_binary", passed=True)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(),
+                         coverage_n_sim=20, n_boot=200)
+    with pytest.raises(SelfcheckRequiredError) as exc:
+        render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+    assert "deploys" in str(exc.value)
+
+
+def test_selfcheck_validates_the_deployed_method(tmp_path):
+    """review #2 root: run_selfcheck seeds with spec.seed (not a sub-seed), so the
+    method it validates is exactly the method compute_findings deploys."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, treatment_pass=lambda i: i % 2 == 0)
+    res = run_selfcheck(ledger, spec, n_sim=40, n_boot=500)
+    f = compute_findings(ledger, spec, spec.seed, coverage_n_sim=40, n_boot=500)
+    assert res["selected_method"] == f.ci_selection["selected_method"]

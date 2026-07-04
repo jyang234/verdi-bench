@@ -62,19 +62,24 @@ def _seed_full_calibration(ledger, ctx, *, corpus_id="public-mini", semver="1.0.
         ledger, ctx, corpus_id=corpus_id, semver=semver, kind="full",
         run={"p": 0.5, "rho": 0.3, "n_tasks": 5}, status="full-run-validated",
     )
-    _seed_selfcheck_pass(ledger, ctx)
 
 
-def _seed_selfcheck_pass(ledger, ctx):
-    """A passing selfcheck event [EVAL-1-D008], hand-seeded for official tests
-    that are not exercising the selfcheck itself."""
+def _seed_matching_selfcheck(ledger, ctx, spec, *, n_sim=40, n_boot=500):
+    """Seed a passing, current selfcheck [EVAL-1-D008] whose validated CI method
+    matches the method ``compute_findings`` will deploy.
+
+    Runs the real selection (same ``spec.seed`` + params) so ``selected_method``
+    aligns with the render's, then forces ``passed=True``. Call BEFORE
+    ``compute_findings`` and after all data events — the findings are head-bound
+    (``_assert_head_hash``), so nothing may be appended between compute and
+    render, and the selfcheck event does not affect the delta selection. Pass the
+    same ``n_sim``/``n_boot`` the test's ``compute_findings`` uses."""
+    from harness.analyze.selfcheck import run_selfcheck
     from harness.ledger.events import record_selfcheck
 
-    record_selfcheck(
-        ledger, ctx, selected_method="percentile", nominal=0.95, coverage=0.95,
-        mc_interval=[0.9, 1.0], n_sim=200, n_boot=1000, n_tasks=5,
-        null_model="paired_binary", passed=True,
-    )
+    res = run_selfcheck(ledger, spec, n_sim=n_sim, n_boot=n_boot)
+    res["passed"] = True  # official tests here exercise OTHER gates, not pass/fail
+    record_selfcheck(ledger, ctx, **res)
 
 
 def _populate(ledger, ctx, *, control_pass, treatment_pass, tasks=5, reps=2,
@@ -648,6 +653,7 @@ def test_ac5_official_happy_path(tmp_path):
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     _seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
+    _seed_matching_selfcheck(ledger, ctx, spec)
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     md = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
     assert "Official findings" in md
@@ -663,6 +669,7 @@ def test_d002_identity_blind_disclosure_in_both_renders(tmp_path):
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     _seed_full_calibration(ledger, ctx)
+    _seed_matching_selfcheck(ledger, ctx, spec)
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     for md in (
         render_markdown(f, ledger, "exploratory"),
@@ -741,6 +748,7 @@ def test_dp7_6_legacy_lock_official_caveat(tmp_path):
     )
     _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
     _seed_full_calibration(ledger, ctx)
+    _seed_matching_selfcheck(ledger, ctx, spec)
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     assert f.rubric_committed is False
     md = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
@@ -859,6 +867,7 @@ def test_ac7_asymmetric_nulls_excluded(tmp_path):
                              telemetry={"cost": 1.0, "wall_time_s": 9.0},
                              provenance={"image_digest": "d"})
     _seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
+    _seed_matching_selfcheck(ledger, ctx, spec)
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
     cf = f.comparisons[0]
     assert cf.excluded_from_official is True
