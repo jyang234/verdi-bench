@@ -6,9 +6,16 @@ anything absent stays ``None`` and lands in ``telemetry_nulls`` — never estima
 
 from __future__ import annotations
 
+from typing import Optional
+
+from ..run.trajectory import TrajectoryStep
 from .base import Adapter, Telemetry
 from .base import coerce_float as _float
 from .base import coerce_int as _int
+
+# Closed tool-name table: tools whose invocation IS a file edit. A mechanical
+# lookup, not an inference — an unknown tool stays a generic tool_call.
+_FILE_EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 
 
 class ClaudeCodeAdapter(Adapter):
@@ -34,3 +41,36 @@ class ClaudeCodeAdapter(Adapter):
             wall_time_s=(_float(duration_ms) / 1000.0) if duration_ms is not None else None,
             tool_calls=_int(tool_calls),
         )
+
+    def normalize_trajectory(self, native_log: dict) -> Optional[list[TrajectoryStep]]:
+        """Message stream → steps [EVAL-12 AC-1].
+
+        claude-code's result log exposes ordered content blocks but no per-step
+        timings, token splits, costs, or exit codes — those stay null [D004].
+        A ``test_run`` is not natively labeled either, so it is never emitted
+        here (labeling one from command text would be estimation, not
+        measurement). No ``messages`` key at all ⇒ no trajectory (``None``),
+        the honest absent state [AC-2].
+        """
+        messages = native_log.get("messages")
+        if not isinstance(messages, list):
+            return None
+        steps: list[TrajectoryStep] = []
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            for c in m.get("content") or []:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "text":
+                    steps.append(TrajectoryStep(kind="message"))
+                elif c.get("type") == "tool_use":
+                    name = c.get("name")
+                    file_path = (c.get("input") or {}).get("file_path")
+                    steps.append(
+                        TrajectoryStep(
+                            kind="file_edit" if name in _FILE_EDIT_TOOLS else "tool_call",
+                            files_touched=[str(file_path)] if file_path else None,
+                        )
+                    )
+        return steps

@@ -31,6 +31,7 @@ from ..schema.experiment import Arm
 from .budget import CostGuard
 from .redact import RedactionError
 from .seam import HoldoutLeakError, new_trial_id, run_trial
+from .trajectory import TrajectoryCorruptError
 from .types import RunConfig, Task
 
 
@@ -47,6 +48,7 @@ _PER_TRIAL_REASONS: dict[type, str] = {
     HoldoutLeakError: "holdout_leak",
     UnknownPlatformError: "unknown_platform",
     RedactionError: "redaction_error",
+    TrajectoryCorruptError: "trajectory_corrupt",
 }
 
 

@@ -8,6 +8,9 @@ telemetry comparisons only run on fields both arms measured [EVAL-6 AC-7].
 
 from __future__ import annotations
 
+from typing import Optional
+
+from ..run.trajectory import TrajectoryStep
 from .base import Adapter, Telemetry
 from .base import coerce_float as _float
 from .base import coerce_int as _int
@@ -26,3 +29,46 @@ class CodexAdapter(Adapter):
             wall_time_s=_float(native_log.get("elapsed_seconds")),
             tool_calls=_int(native_log.get("tool_calls")),
         )
+
+    def normalize_trajectory(self, native_log: dict) -> Optional[list[TrajectoryStep]]:
+        """Event list → steps [EVAL-12 AC-1].
+
+        Codex's native log labels each event (``message`` / ``patch`` /
+        ``exec``) and — unlike claude-code — carries per-event elapsed offsets
+        and exit codes, so those are measured here; per-step tokens and cost it
+        does not report, so those stay null [D004] — the same per-field
+        asymmetry as its null telemetry cost. An ``exec`` event is a
+        ``test_run`` only when codex's own command classifier says so
+        (``parsed_cmd == "test"``); anything else is a generic ``tool_call`` —
+        the classification is read from the native log, never inferred here.
+        No ``events`` key at all ⇒ no trajectory (``None``) [AC-2].
+        """
+        events = native_log.get("events")
+        if not isinstance(events, list):
+            return None
+        steps: list[TrajectoryStep] = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            etype = ev.get("type")
+            rel = _float(ev.get("elapsed_s"))
+            if etype == "message":
+                steps.append(TrajectoryStep(kind="message", relative_ts=rel))
+            elif etype == "patch":
+                files = ev.get("files")
+                steps.append(
+                    TrajectoryStep(
+                        kind="file_edit",
+                        relative_ts=rel,
+                        files_touched=[str(f) for f in files] if files else None,
+                    )
+                )
+            elif etype == "exec":
+                steps.append(
+                    TrajectoryStep(
+                        kind="test_run" if ev.get("parsed_cmd") == "test" else "tool_call",
+                        relative_ts=rel,
+                        exit_code=_int(ev.get("exit_code")),
+                    )
+                )
+        return steps
