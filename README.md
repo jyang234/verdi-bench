@@ -29,7 +29,7 @@ All EVAL-1 child stories are built. The fast suite
 (`uv run pytest -m "not docker"`) is green — over 400 tests — plus a
 `docker`-marked suite of real-container tests (a real grade container and a real
 Harbor trial) run with `-m docker` in a dedicated CI job on Docker-capable
-runners; 3 import-linter contracts kept. AC-mapped tests are **enforced per
+runners; 4 import-linter contracts kept. AC-mapped tests are **enforced per
 story**: collection fails if any story's pre-registered acceptance criteria (from
 its `eval<N>.spec.md`) lack a `test_ac<N>_*` test, or if an AC test is duplicated
 or names an AC its story does not declare. `--ac-report` additionally prints the

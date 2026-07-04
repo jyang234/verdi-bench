@@ -42,6 +42,10 @@ class CodexAdapter(Adapter):
         (``parsed_cmd == "test"``); anything else is a generic ``tool_call`` —
         the classification is read from the native log, never inferred here.
         No ``events`` key at all ⇒ no trajectory (``None``) [AC-2].
+
+        ``command`` [EVAL-11-D005]: an ``exec`` event's raw ``cmd`` string when
+        present; non-exec steps are a measured ``""``; an exec without a string
+        ``cmd`` is null (unmeasurable).
         """
         events = native_log.get("events")
         if not isinstance(events, list):
@@ -53,7 +57,7 @@ class CodexAdapter(Adapter):
             etype = ev.get("type")
             rel = _float(ev.get("elapsed_s"))
             if etype == "message":
-                steps.append(TrajectoryStep(kind="message", relative_ts=rel))
+                steps.append(TrajectoryStep(kind="message", relative_ts=rel, command=""))
             elif etype == "patch":
                 files = ev.get("files")
                 steps.append(
@@ -67,14 +71,17 @@ class CodexAdapter(Adapter):
                         files_touched=(
                             [str(f) for f in files] if isinstance(files, list) else None
                         ),
+                        command="",
                     )
                 )
             elif etype == "exec":
+                raw_cmd = ev.get("cmd")
                 steps.append(
                     TrajectoryStep(
                         kind="test_run" if ev.get("parsed_cmd") == "test" else "tool_call",
                         relative_ts=rel,
                         exit_code=_int(ev.get("exit_code")),
+                        command=raw_cmd if isinstance(raw_cmd, str) else None,
                     )
                 )
         return steps

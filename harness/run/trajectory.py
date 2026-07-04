@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .redact import redact_text
 
-TRAJECTORY_SCHEMA_VERSION = 1
+TRAJECTORY_SCHEMA_VERSION = 2
 TRAJECTORY_FILENAME = "trajectory.json"
 
 
@@ -50,6 +50,10 @@ class TrajectoryStep(BaseModel):
     cost: Optional[float] = None
     files_touched: Optional[list[str]] = None
     exit_code: Optional[int] = None
+    # v2 additive field [EVAL-11-D005]: the shell command a step executed.
+    # "" = measured, the step is not a shell command (the codex files=[]
+    # precedent); null = unmeasurable — a v1 record reads back null throughout.
+    command: Optional[str] = None
 
 
 class TrajectoryRecord(BaseModel):
