@@ -173,17 +173,48 @@ directly in each trial's workspace — see §4.
 
 ---
 
-## 3. Author interactively (optional)
+## 3. Author interactively in the browser (optional)
 
-Instead of hand-editing YAML you can use the authoring surface, which validates
-and previews as pure reads — the **lock is its only ledgered operation**:
+Everything in §2 can also be done through the **authoring surface** — a
+browser app for building and locking a draft, instead of hand-editing files:
 
 ```bash
-uv run bench author <workspace-dir> --actor alice   # draft / validate / preview / lock
+uv run bench author <workspace-dir> --actor alice   # loopback, default port 8390
 ```
 
-Everything else in this guide works the same whether you authored by hand or via
-`bench author`.
+Open the printed URL and you get:
+
+- **Draft creation** — name a draft and it seeds an editable `experiment.yaml`,
+  `tasks.yaml`, and `rubrics/code-task-v1.md` template into a fresh directory
+  under the workspace root.
+- **Tabbed editor panes** — edit each pre-registration file (raw YAML/markdown)
+  in-browser, with *Save draft* and *Insert template into this pane*. Only the
+  three allowlisted files are writable; unsaved edits are tracked, and previews
+  always read the **last save** (byte fidelity is a property of the flow).
+- **A live preview panel** recomputed against the saved draft: **Validation**
+  (parsed arms/metric/decision-rule/rubric-present, or the typed schema error),
+  **Power** (an MDE estimate — quick, with the lock recomputing at full
+  fidelity), **Schedule** (the derived seeded paired-interleave order), and the
+  **spec sha256**.
+- **The lock ceremony** — an explicit `attested_by` and an
+  `acknowledge_underpowered` toggle, then *Lock*, which calls
+  `lock_experiment` verbatim.
+
+The surface is deliberately a raw-text editor with live feedback, not a
+field-by-field form — you edit the actual pre-registration bytes, so what you
+lock is what you reviewed. It mutates state, so it binds to **loopback only**
+and guards Host/Origin/Content-Type on its two POST endpoints (draft-write and
+lock). Critically, the **only ledgered operation the whole surface performs is
+the lock** — every preview is a pure read.
+
+> **`author` mutates; `serve` observes.** Interactive *configuration* is
+> `bench author`'s job. `bench serve` (§ below and in the deep dive) is the
+> read-only operator/observer view — live status, compare, workspace home, and a
+> static HTML bundle — and writes nothing. The mutating and read-only surfaces
+> are separate subsystems and separate verbs by design.
+
+Everything downstream in this guide works the same whether you authored by hand
+or via `bench author`.
 
 ---
 
