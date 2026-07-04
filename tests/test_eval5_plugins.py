@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from harness.grade.container import GradingContainer
 from harness.grade.deterministic import grade_trial
 from harness.grade.plugins import GraderPlugin, get_plugin, register_plugin
@@ -78,3 +80,15 @@ def test_ac4_unknown_plugin_fails_closed(tmp_path):
     )
     assert out.graded is False
     assert find_events(ledger, "cant_grade")[0]["reason"] == "plugin_error"
+
+
+def test_m6_plugin_isolation_asymmetry_is_disclosed():
+    """PRA-M6 (documented fallback): the plugin seam and the deep dive must state
+    that grader plugins run in-process on the host (not sandboxed like holdouts),
+    so the isolation asymmetry is never mistaken for a guarantee."""
+    import harness.grade.plugins as plugins_mod
+
+    assert "not sandboxed" in plugins_mod.__doc__.lower() or "NOT sandboxed" in plugins_mod.__doc__
+    assert "in-process" in plugins_mod.__doc__.lower()
+    deep = (Path(__file__).resolve().parents[1] / "docs" / "deep-dive.md").read_text()
+    assert "isolation asymmetry" in deep.lower() and "in-process" in deep.lower()
