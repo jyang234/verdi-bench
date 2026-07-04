@@ -141,6 +141,31 @@ def test_ac2_kappa_reviewed_only(tmp_path):
     assert items[0].a == "A" and items[0].b == "A"
 
 
+def test_rv7_review_order_is_seeded_shuffle_not_disagreements_first():
+    """RV-7: the reviewed set's order is a seeded shuffle of the id-sorted set —
+    the mandatory (disagreement) items are NOT a prefix, so the disagreement
+    boundary is not recoverable from packet order. Deleting the shuffle fails
+    both assertions."""
+    from harness.plan.seeds import seeded_shuffle, sub_seed
+
+    seed = 4242
+    records = (
+        [ComparisonRecord(f"d{i}", "cls", "A", False, "B") for i in range(6)]  # disagreements
+        + [ComparisonRecord(f"a{i}", "cls", "A", False, "A") for i in range(20)]  # agreements
+    )
+    result = select_for_review(records, seed)
+
+    # (1) the order equals seeded_shuffle(sorted-by-id, sub_seed(seed,"review_order"))
+    resorted = sorted(result, key=lambda s: s.comparison_id)
+    expected = seeded_shuffle(resorted, sub_seed(seed, "review_order"))
+    assert [s.comparison_id for s in result] == [s.comparison_id for s in expected]
+
+    # (2) the mandatory (disagreement) items are not a prefix of the order
+    mandatory_ids = {r.comparison_id for r in records if r.comparison_id.startswith("d")}
+    prefix = {s.comparison_id for s in result[: len(mandatory_ids)]}
+    assert prefix != mandatory_ids
+
+
 def test_rv9_reveal_and_kappa_agree_on_duplicate_verdict(tmp_path):
     """RV-9: on a duplicated ledger, the reveal join is now last-wins, matching
     the (already last-wins) kappa join — both resolve to the LAST judge verdict."""

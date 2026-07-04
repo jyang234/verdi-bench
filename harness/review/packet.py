@@ -1,11 +1,12 @@
 """Static, offline human review packet [EVAL-7 §M3, D001, AC-1, AC-3].
 
 A self-contained HTML bundle per experiment: side-by-side response diffs, holdout
-results, and the task prompt — ordered disagreements-first (without labeling
-*why* an item is mandatory, which would leak the judge's state). It deliberately
-**excludes** judge verdicts and arm identities: revealing the judge's opinion or
-the arm before the human's verdict is a partial unblind [derived from
-EVAL-2-D002 / blinding-measured].
+results, and the task prompt. This module does **no ordering** — it renders items
+in the order it receives them (``sample.select_for_review`` seed-shuffles the
+reviewed set so the mandatory/floor boundary is not recoverable from packet
+order, RV-7). It deliberately **excludes** judge verdicts and arm identities:
+revealing the judge's opinion or the arm before the human's verdict is a partial
+unblind [derived from EVAL-2-D002 / blinding-measured].
 
 Offline by construction: inline CSS only, no external requests, diffs
 pre-rendered server-side with :mod:`difflib`. Every text field passes through
@@ -69,9 +70,10 @@ def build_review_packet(
     """Render the offline HTML packet from already-ordered, blinded ``items``.
 
     ``canaries`` are the per-experiment identity literals (arm names, model ids)
-    to scrub in addition to the shared identity corpus. Items arrive in review
-    order (disagreements first); the packet does not disclose that ordering's
-    reason.
+    to scrub in addition to the shared identity corpus. Items arrive already in
+    the caller's chosen review order (a seeded shuffle, RV-7) and are rendered
+    in that order verbatim — this function imposes no ordering of its own and
+    discloses nothing about why any item was selected.
     """
     # Determinism: ``difflib.HtmlDiff`` numbers its table/anchor ids from a
     # *process-global* counter (``_default_prefix``) that increments on every
