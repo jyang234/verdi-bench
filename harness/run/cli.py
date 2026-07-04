@@ -152,3 +152,13 @@ def register(app: typer.Typer) -> None:
             f"(infra_failures={result.infra_failures}, "
             f"stopped_cost_ceiling={result.stopped_cost_ceiling})"
         )
+        if result.aborted_proxy_unavailable:
+            # PRA-M9: a dead/misconfigured metering proxy aborted the run; exit
+            # nonzero so the operator does not mistake a truncated run for a
+            # complete one.
+            typer.echo(
+                "RUN ABORTED: the metering proxy is dead or misconfigured "
+                "(proxy_log_missing); trials remaining were not run [PRA-M9]",
+                err=True,
+            )
+            raise typer.Exit(code=2)

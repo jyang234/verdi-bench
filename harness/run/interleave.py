@@ -68,12 +68,25 @@ def _reason_for(exc: BaseException) -> str:
     return f"trial_error:{type(exc).__name__}"
 
 
+# The harbor engine's reason for a configured-but-absent metering-proxy log — the
+# harness's actual signal that the proxy is dead or misconfigured [PRA-H4/M9].
+PROXY_UNAVAILABLE_REASON = "proxy_log_missing"
+
+
+class ProxyUnavailableError(RuntimeError):
+    """The metering proxy is dead/misconfigured (a trial came back
+    proxy_log_missing) [PRA-M9]. A run-level fault, not a per-trial one: every
+    remaining trial would fail identically, so the scheduler aborts the run
+    loudly instead of grinding through them and burning wall-clock."""
+
+
 @dataclass
 class ScheduleResult:
     records: list[TrialRecord] = field(default_factory=list)
     executed_order: list[dict] = field(default_factory=list)
     stopped_cost_ceiling: bool = False
     infra_failures: int = 0
+    aborted_proxy_unavailable: bool = False  # PRA-M9: run stopped, dead proxy
 
 
 def _enforcement_cost(
@@ -275,6 +288,12 @@ def schedule(
                     task, arm, planned, workspace_root, ledger_path, ctx, config,
                     max_infra_retries, out, guard, hb,
                 )
+            except ProxyUnavailableError:
+                # PRA-M9: run-level fault — the failing attempt is already ledgered
+                # inside the rerun loop; stop the whole run loudly instead of
+                # failing every remaining cell identically.
+                out.aborted_proxy_unavailable = True
+                break
             except Exception as exc:  # noqa: BLE001 — ANY per-trial fault fails THIS
                 # cell closed (ledgered, reason-tagged), never escapes to abort the
                 # whole run [RN-15]. Not swallowed: surfaced as trial_infra_failed.
@@ -354,13 +373,14 @@ def _run_with_infra_reruns(
         # infra failure: count its spend, ledger it, re-run as a NEW trial id.
         # The reason comes from the engine's result (RN-14), not a fake-only field.
         guard.add(_record_enforcement_cost(record))
+        reason = getattr(record.flags, "failure_reason", None) or "infra_failed"
         events.record_trial_infra_failed(
             ledger_path,
             ctx,
             trial_id=trial_id,
             task_id=task.id,
             arm=arm.name,
-            reason=getattr(record.flags, "failure_reason", None) or "infra_failed",
+            reason=reason,
         )
         out.infra_failures += 1
         if hb is not None:
@@ -374,6 +394,15 @@ def _run_with_infra_reruns(
                 "outcome": Outcome.infra_failed.value,
             }
         )
+        # PRA-M9: a dead/misconfigured metering proxy is a run-level fault — every
+        # remaining trial would fail identically. Abort the run after ledgering
+        # this attempt rather than retrying (the proxy won't recover mid-loop) or
+        # grinding through the rest of the schedule.
+        if reason == PROXY_UNAVAILABLE_REASON:
+            raise ProxyUnavailableError(
+                f"trial {trial_id} failed {reason}; the metering proxy is dead or "
+                "misconfigured — aborting the run [PRA-M9]"
+            )
         attempts += 1
         if attempts > max_infra_retries:
             return None

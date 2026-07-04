@@ -220,3 +220,23 @@ def test_m8_infra_spend_survives_resume(tmp_path):
     res2 = schedule([Trial(task_id="t", arm="A", repetition=1)], **kw)
     assert res2.stopped_cost_ceiling is True  # seeded 0.60 >= 0.50 ceiling
     assert res2.records == []  # the resumed attempt was refused, not re-run
+
+
+def test_m9_dead_proxy_aborts_run_fast(tmp_path):
+    """PRA-M9: a proxy_log_missing infra failure aborts the whole run after the
+    first trial (a dead proxy is a run-level fault) rather than grinding through
+    every remaining trial producing identical failures and burning wall-clock."""
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={
+        "native_log": {}, "outcome": "infra_failed", "infra_reason": "proxy_log_missing"})}
+    ledger = tmp_path / "l.ndjson"
+    order = [Trial(task_id="t", arm="A", repetition=r) for r in range(5)]
+    res = schedule(
+        order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
+        max_infra_retries=3,
+    )
+    assert res.aborted_proxy_unavailable is True
+    # exactly ONE attempt was ledgered (no retries, no remaining cells), proving
+    # the run aborted fast rather than failing all 5 (x retries) trials.
+    assert len(find_events(ledger, "trial_infra_failed")) == 1
