@@ -124,7 +124,7 @@ def coverage_from_deltas(
             samples.std(axis=1, ddof=1) / np.sqrt(n) if n > 1 else np.zeros(n_boot)
         )
         for m in methods:
-            lo, hi = resolve_ci_method(m).interval(sample, boot_means, boot_ses, ci_level)
+            lo, hi, _ = resolve_ci_method(m).interval(sample, boot_means, boot_ses, ci_level)
             if lo <= 0.0 <= hi:
                 hits[m] += 1
     coverage = {m: hits[m] / n_sim for m in methods}

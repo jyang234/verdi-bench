@@ -31,10 +31,11 @@ class BootstrapResult:
     mean_delta: float
     ci_low: float
     ci_high: float
-    ci_method: str
+    ci_method: str  # the method that ACTUALLY produced the interval [PRA-M14]
     ci_level: float
     n_boot: int
     n_tasks: int
+    ci_method_requested: str = ""  # the configured method; differs on a fallback
 
     def as_dict(self) -> dict:
         """Full-precision serialization — the findings doc renders at fixed dp."""
@@ -43,6 +44,12 @@ class BootstrapResult:
             "ci_low": self.ci_low,
             "ci_high": self.ci_high,
             "ci_method": self.ci_method,
+            "ci_method_requested": self.ci_method_requested or self.ci_method,
+            # PRA-M14: True when a degenerate input forced a documented fallback
+            # (e.g. bca -> percentile at small N), so the render can say so.
+            "ci_method_fell_back": bool(
+                self.ci_method_requested and self.ci_method_requested != self.ci_method
+            ),
             "ci_level": self.ci_level,
             "n_boot": self.n_boot,
             "n_tasks": self.n_tasks,
@@ -80,12 +87,13 @@ def paired_bootstrap(
         boot_ses = np.zeros(n_boot, dtype=np.float64)
 
     method = resolve_ci_method(ci_method)
-    lo, hi = method.interval(deltas, boot_means, boot_ses, ci_level)
+    lo, hi, realized = method.interval(deltas, boot_means, boot_ses, ci_level)
     return BootstrapResult(
         mean_delta=float(deltas.mean()),
         ci_low=float(lo),
         ci_high=float(hi),
-        ci_method=method.name,
+        ci_method=realized,  # PRA-M14: the method that actually produced the CI
+        ci_method_requested=method.name,
         ci_level=ci_level,
         n_boot=n_boot,
         n_tasks=n,

@@ -316,6 +316,49 @@ def test_an1_attribution_follows_inverted_arm_map(tmp_path):
     assert by_label["control vs treatment"].effect["mean_paired_delta"] == -1.0
 
 
+def test_m4_multi_arm_default_only_primary_pair_official(tmp_path):
+    """PRA-M4: in a 3-arm design, only the primary pair carries an official
+    decision by default; the extra pair is exploratory, and the >2-arm
+    disclosure is present in both the findings and the render."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS)
+    ct = {"A": "control", "B": "treatment"}
+    cc = {"A": "control", "B": "challenger"}
+    for i in range(4):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+        _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    by_label = {cf.label: cf for cf in f.comparisons}
+    assert by_label["control vs treatment"].official_decision is True
+    assert by_label["control vs challenger"].official_decision is False
+    assert f.multi_arm and f.multi_arm["correction"] == "none"
+    assert f.multi_arm["n_arms"] == 3
+    md = render_markdown(f, ledger, "exploratory")
+    assert "MULTI-ARM" in md and "Exploratory pair" in md
+
+
+def test_m4_multi_arm_holm_makes_every_pair_official(tmp_path):
+    """PRA-M4: --multi-arm-correction=holm makes every pair official under a
+    Holm-adjusted family, stamping each decision with its Holm p-value."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS)
+    ct = {"A": "control", "B": "treatment"}
+    cc = {"A": "control", "B": "challenger"}
+    for i in range(4):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+        _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
+    f = compute_findings(ledger, spec, spec.seed, multi_arm_correction="holm", **_FAST)
+    assert f.multi_arm["correction"] == "holm"
+    for cf in f.comparisons:
+        assert cf.official_decision is True
+        assert "holm_p" in cf.decision and cf.decision["correction"] == "holm"
+    # deterministic in seed: recomputing yields identical Holm p-values
+    f2 = compute_findings(ledger, spec, spec.seed, multi_arm_correction="holm", **_FAST)
+    assert [c.decision["holm_p"] for c in f.comparisons] == [
+        c.decision["holm_p"] for c in f2.comparisons
+    ]
+
+
 def test_an10_ci_selection_reports_deployed_n_boot(tmp_path):
     """AN-10 owning test: the coverage selection recorded in the findings uses —
     and reports — the SAME n_boot the deployed interval uses, so the disclosed

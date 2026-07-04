@@ -28,8 +28,31 @@ def test_bca_z0_midp_symmetric_ties_give_symmetric_interval():
     #   strict frac = 100/301 = 0.332 => z0 < 0 => both bounds skewed down
     boot_means = np.concatenate([np.linspace(-1.0, 1.0, 201), np.zeros(100)])
     boot_ses = np.ones_like(boot_means)
-    lo, hi = BCaCI().interval(deltas, boot_means, boot_ses, 0.95)
+    lo, hi, method = BCaCI().interval(deltas, boot_means, boot_ses, 0.95)
     assert lo == pytest.approx(-hi, abs=1e-9)
+    assert method == "bca"  # PRA-M14: realized method reported
+
+
+def test_m14_bca_reports_percentile_fallback_at_small_n():
+    """PRA-M14: BCa falls back to percentile at n<3; the realized method must be
+    reported as 'percentile', not mislabeled 'bca'."""
+    deltas = np.array([0.1, 0.2])  # n=2 < 3 => fallback
+    boot_means = np.linspace(-0.2, 0.4, 100)
+    boot_ses = np.ones_like(boot_means)
+    lo, hi, method = BCaCI().interval(deltas, boot_means, boot_ses, 0.95)
+    assert method == "percentile"
+
+
+def test_m14_bootstrap_result_surfaces_fallback():
+    """PRA-M14: the BootstrapResult records the realized method and a fell-back
+    flag so the render can name the interval that was actually computed."""
+    from harness.analyze.stats import paired_bootstrap
+
+    res = paired_bootstrap([0.1, 0.2], seed=1, ci_method="bca", n_boot=200)
+    d = res.as_dict()
+    assert d["ci_method"] == "percentile"
+    assert d["ci_method_requested"] == "bca"
+    assert d["ci_method_fell_back"] is True
 
 
 def test_bca_z0_midp_differs_from_strict_less_than():
