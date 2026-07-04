@@ -152,12 +152,19 @@ locked spec never registered is a contradiction the parser refuses,
 not data it stores.
 
 **Blinding** [AC-3, D003]. Agent labels are the one genuinely new
-identity surface. Recommended posture: free labels passed through the
-existing single scrub codepath (which already kills model ids, platform
-literals, and arm names wherever trajectories are published), rather
-than a pre-registered label roster (heavy for the benefit) or
-pseudonymization at capture (destroys the cross-trial legibility that
-motivates the field).
+identity surface, and the naive posture has a real hole: arm canaries
+are exact-match full-id literals, so a label embedding a model-name
+*fragment* ("llama-planner") matches neither the built-in patterns
+(which carry no llama/qwen/deepseek/mistral entries) nor the literals,
+and would leak on human-review and dossier surfaces. D003 is therefore
+a genuine fork between free-labels-through-scrub (simple, leaky at the
+fragments), a pre-registered roster (identity-scanned at lock; breaks
+dynamically-spawned agents), pseudonymization at capture (leak-proof,
+legibility-destroying), and raw-in-artifact with per-trial deterministic
+pseudonymization at publish (leak-proof on published surfaces, raw for
+forensics; the added mechanism lives in the blinding wrapper). AC-3 as
+written holds under any resolution; its test surface widens if a
+pseudonymizing option is chosen.
 
 **Consumer + substrate** [AC-5, AC-6]. The exploratory report section
 is the story's own consumer, applying per-model vendor-incomparability
@@ -213,9 +220,11 @@ codex adapters (their logs carry no such structure to parse honestly).
   (ContractChange; recommended: approve, `command` precedent).
 - EVAL-14-D002 — generic log format v2 (ContractChange; recommended:
   approve with v1-parses-forever compatibility).
-- EVAL-14-D003 — agent label posture (recommended:
-  free-labels-through-single-scrub; alternatives: pre-registered
-  roster, pseudonymize-at-capture).
+- EVAL-14-D003 — agent label posture (genuine fork, no strong
+  recommendation: free-labels-through-single-scrub leaks model-name
+  fragments; pre-registered roster breaks dynamic agents;
+  pseudonymize-at-capture kills legibility;
+  raw-artifact-pseudonymized-publish adds a blinding-wrapper mechanism).
 - EVAL-14-D004 — build gating (recommended: gate on EVAL-13 landing;
   AC-5's exploratory section is the named consumer that unblocks
   building).

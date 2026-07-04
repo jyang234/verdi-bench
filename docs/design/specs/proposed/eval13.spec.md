@@ -45,12 +45,12 @@ acceptance:
     tests:
       - "test_ac3_overlap_over_vendor_union"
   - id: "AC-4"
-    text: "Contamination honesty: an arm's effective training cutoff is the earliest declared cutoff across primary and aux models; any declared model missing a cutoff makes the arm's tri-state 'unknown', never 'clean' (the cross-vendor honesty rule extended); the contamination summary lists per-model tri-states so the aggregation is auditable, not a black box."
-    vc: "An arm whose aux cutoff predates its primary cutoff dates on the aux cutoff; an aux model with no cutoff yields arm-level 'unknown' even when the primary is dated; the summary shows the per-model breakdown."
+    text: "Contamination honesty: clean_by_date requires the task to postdate EVERY declared model's cutoff — the arm's effective cutoff is the latest declared cutoff (a task any sub-model could have memorized is not clean); any declared model missing a cutoff makes the arm's tri-state 'unknown', never 'clean' (the cross-vendor honesty rule extended); the contamination summary lists per-model tri-states so the aggregation is auditable, not a black box."
+    vc: "A task created after the primary's cutoff but before a later aux cutoff reads 'unknown', not clean; a task postdating all declared cutoffs reads clean; an aux model with no cutoff yields arm-level 'unknown' even when the primary is dated; the summary shows the per-model breakdown."
     touchpoints:
       - "harness/contamination/summary.py:contamination_summary"
     tests:
-      - "test_ac4_earliest_cutoff_wins"
+      - "test_ac4_latest_cutoff_bounds_clean"
       - "test_ac4_missing_aux_cutoff_is_unknown"
   - id: "AC-5"
     text: "Cross-vendor comparability: an arm whose declared models span vendors is itself vendor-mixed, so raw token fields are marked vendor-incomparable for any comparison involving it (the EVAL-6 constraint applied to vendor sets, not single ids); the report states which arm and why."
@@ -91,7 +91,7 @@ open_decisions:
 
 policy_proposals: []
 predicted_reach: null
-expected_verify: "AC suite green: schema round-trip, blinding completeness via the single canary source, overlap-over-union, earliest-cutoff/unknown honesty, mixed-vendor incomparability, advisory egress flag."
+expected_verify: "AC suite green: schema round-trip, blinding completeness via the single canary source, overlap-over-union, latest-cutoff/unknown honesty, mixed-vendor incomparability, advisory egress flag."
 ---
 
 # EVAL-13 — Pre-registered multi-model arms
@@ -143,18 +143,25 @@ architectural payoff of the single-codepath rule (§7.4).
 
 **Confound + contamination + comparability** [AC-3–AC-5]. Each consumer
 switches from "the arm's model" to "the arm's declared model set":
-overlap over the vendor union, dating over the earliest cutoff with
-absent-means-unknown, comparability over vendor-set homogeneity. The
-per-model tri-state breakdown in the summary [AC-4, D002] keeps the
-aggregate auditable.
+overlap over the vendor union, clean-by-date only past the *latest*
+declared cutoff (dating.py grants clean strictly after a cutoff, so the
+conservative bound over a set is its maximum) with absent-means-unknown,
+comparability over vendor-set homogeneity. The per-model tri-state
+breakdown in the summary [AC-4, D002] keeps the aggregate auditable.
 
 **Egress attestation** [AC-6, D003]. The metering proxy already logs
 every egress host per trial. Mapping allowed model-API hosts against
-declared vendors gives the instrument its only *independent* check on
-the declaration — the same trust pattern as proxy-metered cost [RN-2]:
-a cross-check surfaced as a flag, never reconciled, never gating. This
-is what makes pre-registration of models enforceable rather than
-honor-system.
+declared vendors gives the instrument an *independent* tripwire on the
+declaration — the same trust pattern as proxy-metered cost [RN-2]: a
+cross-check surfaced as a flag, never reconciled, never gating. Honest
+coverage statement: a vendor table catches direct first-party API hosts
+only; aggregator hosts (one host, many vendors) and self-hosted
+endpoints (no table entry possible a priori) are blind spots. The
+alternative shape — declaring egress hosts per model *in the spec*, so
+enforcement compares against a pre-registered per-arm allowlist rather
+than a maintained global table — is real enforcement but folds the
+(currently runtime-config) proxy allowlist into the pre-registration; a
+scope decision, deliberately left open in D003.
 
 ## Change surface
 
@@ -162,7 +169,7 @@ honor-system.
 flowchart LR
   SP[Arm.aux_models<br/>locked spec bytes] --> BC[arm_canaries<br/>judge+review+forensics scrub]
   SP --> VO[judge_vendor_overlap<br/>vendor union]
-  SP --> CD[contamination dating<br/>earliest cutoff / unknown]
+  SP --> CD[contamination dating<br/>latest cutoff bounds clean / unknown]
   SP --> CC[cross-vendor comparability<br/>vendor sets]
   PX[metering proxy host log] --> EA[egress attestation flag<br/>advisory, never gates]
   SP --> EA
@@ -201,10 +208,13 @@ model mix.
   recommended: approve — additive optional key, no chain migration,
   loud failure on older code).
 - EVAL-13-D002 — contamination aggregation (recommended:
-  earliest-cutoff-wins at arm level *plus* per-model tri-states in the
-  summary, so the aggregate stays auditable).
-- EVAL-13-D003 — egress attestation in v1 scope (recommended: in scope,
-  advisory flag only; it is the enforcement half of pre-registration).
+  latest-cutoff-bounds-clean at arm level *plus* per-model tri-states in
+  the summary, so the conservative aggregate stays auditable).
+- EVAL-13-D003 — egress attestation shape and scope (genuine fork, no
+  strong recommendation: vendor-table tripwire in v1 with documented
+  aggregator/self-hosted blind spots; per-model declared egress hosts in
+  the spec — real enforcement, folds the proxy allowlist into
+  pre-registration, materially more scope; or defer entirely).
 - EVAL-13-D004 — mixed-vendor arm comparability (recommended: treat the
   arm as cross-vendor, marking token fields incomparable; the
   alternative — excluding the arm from telemetry sections entirely —
