@@ -1010,7 +1010,9 @@ def compute_findings(
                 "note": (
                     f"{n_pairs} pairwise comparisons against {arm_a}; every pair's "
                     "decision is Holm-Bonferroni-adjusted to control the family-wise "
-                    "error rate at the pre-registered level."
+                    "error rate at the pre-registered level. Decisions use "
+                    "Holm-adjusted recentered-bootstrap p-values; displayed intervals "
+                    "remain unadjusted per-comparison CIs [F-H6]."
                 ),
             }
         else:
@@ -1123,7 +1125,11 @@ def _comparison_lines(cf: ComparisonFinding, mde: MDEBlock) -> list[str]:
         return lines
     s = cf.stats
     ci = f"[{_fmt(s['ci_low'])}, {_fmt(s['ci_high'])}]"
-    detected = s["ci_low"] > 0.0 or s["ci_high"] < 0.0
+    # F-H6: branch on the computed decision — the same field the dossier's
+    # verdict layer reads — never a local re-derivation from the raw CI, which
+    # diverges from a Holm-rewritten decision and lets one analyze invocation
+    # emit two artifacts that disagree.
+    detected = bool(cf.decision.get("detected"))
     lines.append(f"- mean paired delta: {_fmt(cf.effect['mean_paired_delta'])}")
     lines.append(f"- Cliff's delta: {_fmt(cf.effect['cliffs_delta'])}")
     # PRA-M14: name the method that ACTUALLY produced the interval; if the

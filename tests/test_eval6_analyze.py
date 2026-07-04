@@ -359,6 +359,81 @@ def test_m4_multi_arm_holm_makes_every_pair_official(tmp_path):
     ]
 
 
+def _holm_divergent_findings(tmp_path):
+    """A findings document where the primary pair's Holm decision and its raw
+    95% CI disagree: 21 wins / 9 losses puts the Holm p under the step-down
+    threshold (detected=True) while the deployed CI touches zero. The premise
+    is seed-pinned; if the bootstrap stream ever changes legitimately, the
+    premise asserts below fail loudly and the fixture needs re-tuning — the
+    parity assertion itself must hold for ANY configuration."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS)
+    ct = {"A": "control", "B": "treatment"}
+    cc = {"A": "control", "B": "challenger"}
+    for i in range(30):
+        _seed_pref_verdict(
+            ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}",
+            winner="A" if i < 21 else "B", arm_map=ct,
+        )
+        _seed_pref_verdict(  # secondary pair: mean-zero, Holm never rejects it
+            ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}",
+            winner="A" if i % 2 == 0 else "B", arm_map=cc,
+        )
+    f = compute_findings(ledger, spec, spec.seed, multi_arm_correction="holm", **_FAST)
+    return f, ledger
+
+
+def _md_block(md: str, label: str) -> str:
+    """The markdown lines for one comparison, up to the next comparison header."""
+    start = md.index(f"**Comparison: {label}**")
+    rest = md[start + 1:]
+    end = rest.find("**Comparison: ")
+    return md[start:] if end == -1 else md[start:start + 1 + end]
+
+
+def test_h6_markdown_verdict_follows_holm_decision(tmp_path):
+    """F-H6: markdown must branch on decision['detected'] (the Holm-rewritten,
+    dossier-visible decision), not re-derive detection from the unadjusted CI —
+    one analyze invocation must never emit two artifacts that disagree."""
+    f, ledger = _holm_divergent_findings(tmp_path)
+    cf = {c.label: c for c in f.comparisons}["control vs treatment"]
+    # premise: the divergence window (see _holm_divergent_findings docstring)
+    assert cf.decision["detected"] is True
+    assert cf.stats["ci_low"] <= 0.0  # raw CI does NOT exclude zero
+    md = render_markdown(f, ledger, "exploratory")
+    block = _md_block(md, "control vs treatment")
+    assert "Effect detected" in block
+    assert "No effect ≥ MDE detected" not in block
+
+
+def test_h6_dossier_verdict_layer_matches_markdown(tmp_path):
+    """F-H6 parity net: the dossier verdict layer and the markdown block state
+    the same detection verdict for every comparison under Holm."""
+    from harness.analyze.dossier import verdict_sentences
+
+    f, ledger = _holm_divergent_findings(tmp_path)
+    md = render_markdown(f, ledger, "exploratory")
+    for cf in f.comparisons:
+        block = _md_block(md, cf.label)
+        sentences = " ".join(verdict_sentences(f, cf))
+        md_detected = "Effect detected" in block
+        dossier_detected = "an effect was detected" in sentences
+        assert md_detected == dossier_detected, cf.label
+
+
+def test_h6_holm_estimator_split_disclosed_in_both_artifacts(tmp_path):
+    """F-H6: under Holm the decision (adjusted recentered-bootstrap p) and the
+    displayed interval (unadjusted per-comparison CI) use different procedures —
+    both artifacts must say so rather than imply one procedure."""
+    from harness.analyze.dossier import verdict_sentences
+
+    f, ledger = _holm_divergent_findings(tmp_path)
+    md = render_markdown(f, ledger, "exploratory")
+    assert "unadjusted per-comparison" in md
+    primary = f.comparisons[0]
+    assert any("unadjusted per-comparison" in s for s in verdict_sentences(f, primary))
+
+
 def test_an10_ci_selection_reports_deployed_n_boot(tmp_path):
     """AN-10 owning test: the coverage selection recorded in the findings uses —
     and reports — the SAME n_boot the deployed interval uses, so the disclosed

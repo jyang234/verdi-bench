@@ -93,6 +93,12 @@ VERDICT_TEMPLATES: dict[str, str] = {
     "caveat_assumption_mde": (
         "Caveat: the MDE is assumption-based — variance not yet calibrated."
     ),
+    # F-H6: under Holm the decision and the displayed interval use different
+    # procedures; the verdict layer says so instead of implying one estimator.
+    "caveat_holm": (
+        "Caveat: this decision is Holm-Bonferroni-adjusted (recentered-bootstrap "
+        "p-value); the interval above remains the unadjusted per-comparison CI."
+    ),
 }
 
 # The closed set of [computed] fields verdict sentences may interpolate; every
@@ -206,6 +212,8 @@ def verdict_sentences(findings: FindingsDocument, cf: ComparisonFinding) -> list
         names.append("uncertainty")
     else:
         names += ["outcome_null", "uncertainty"]
+    if cf.stats and cf.decision.get("correction") == "holm":
+        names.append("caveat_holm")
     if findings.mde.acknowledged_underpowered:
         names.append("caveat_underpowered")
     if findings.mde.assumption_based_mde:
