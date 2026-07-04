@@ -78,8 +78,18 @@ def register(app: typer.Typer) -> None:
         from ..ledger.query import find_events
         from ..plan.lock import assert_lock
         from ..schema.experiment import ExperimentSpec
-        from .container import DockerGradeRunner, GradingContainer, LocalGradeRunner
-        from .deterministic import REASON_ARTIFACTS_MISSING, REASON_UNKNOWN_TASK, grade_trial
+        from .container import (
+            DockerGradeRunner,
+            GraderUnavailableError,
+            GradingContainer,
+            LocalGradeRunner,
+        )
+        from .deterministic import (
+            REASON_ARTIFACTS_MISSING,
+            REASON_DAEMON,
+            REASON_UNKNOWN_TASK,
+            grade_trial,
+        )
 
         experiment_dir = Path(experiment_dir)
         spec_path = experiment_dir / "experiment.yaml"
@@ -107,6 +117,28 @@ def register(app: typer.Typer) -> None:
         ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
         runner_impl = LocalGradeRunner() if runner == "local" else DockerGradeRunner()
         container = GradingContainer(runner=runner_impl)
+
+        # 7B-1/GR-8: probe the grader once before the batch. A down docker daemon
+        # makes `docker run` exit 1, which the per-trial path would misclassify as
+        # terminal container_failure — permanently quarantining healthy trials. On
+        # probe failure, mark every pending trial cant_grade(grader_unavailable) —
+        # transient/regradeable — and exit nonzero naming the daemon.
+        try:
+            container.preflight()
+        except GraderUnavailableError as e:
+            pending = [
+                ev["trial_record"]["trial_id"]
+                for ev in find_events(ledger_path, "trial")
+                if ev["trial_record"]["trial_id"] not in already
+            ]
+            for tid in pending:
+                events.record_cant_grade(ledger_path, ctx, trial_id=tid, reason=REASON_DAEMON)
+            typer.echo(
+                f"grader unavailable: {e}; marked {len(pending)} trial(s) "
+                "grader_unavailable (transient, regradeable)",
+                err=True,
+            )
+            raise typer.Exit(code=1)
 
         graded = 0
         for ev in find_events(ledger_path, "trial"):

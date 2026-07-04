@@ -34,7 +34,13 @@ HOLDOUT_RESULTS = "holdout_results.json"
 
 class GradingContainerError(RuntimeError):
     """The grader ran but failed (nonzero exit, no results) → a **terminal**
-    cant_grade(container_failure): re-running won't change the outcome."""
+    cant_grade(container_failure): re-running won't change the outcome.
+
+    "The grader ran" is a real precondition, not a given: a *down* daemon makes
+    ``docker run`` exit 1 without the grader ever running, which would be
+    misclassified here as terminal. The pre-flight daemon probe (``preflight``)
+    catches that case up front and routes it to the transient
+    :class:`GraderUnavailableError` instead [GR-8/GR-11]."""
 
 
 class GraderUnavailableError(GradingContainerError):
@@ -63,6 +69,28 @@ class DockerGradeRunner:
     """
 
     grader_name = "docker"
+
+    def preflight(self) -> None:
+        """Probe the docker daemon before a grade batch [GR-8/GR-11].
+
+        A down daemon makes ``docker run`` exit 1 — indistinguishable from a
+        grader that ran and failed — so a single outage would otherwise
+        quarantine healthy task versions with *terminal* container_failure
+        events. Probing ``docker version`` up front classifies daemon-down as a
+        transient :class:`GraderUnavailableError` before any grading is
+        attempted. A daemon/OS/config error or nonzero exit fails the probe."""
+        try:
+            proc = subprocess.run(
+                ["docker", "version"], capture_output=True, text=True, timeout=30
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            raise GraderUnavailableError(f"docker daemon probe failed: {e}") from e
+        if proc.returncode != 0:
+            detail = proc.stderr.strip()
+            raise GraderUnavailableError(
+                f"docker daemon unavailable (docker version exit {proc.returncode})"
+                + (f": {detail}" if detail else "")
+            )
 
     def run_holdouts(self, cmd: list[str], workspace: Path, holdouts_dir: str) -> HoldoutRun:
         try:
@@ -111,6 +139,9 @@ class LocalGradeRunner:
     grades_in_place = True
     grader_name = "local"
 
+    def preflight(self) -> None:
+        """No daemon to probe — the no-daemon path is always available."""
+
     def run_holdouts(self, cmd: list[str], workspace: Path, holdouts_dir: str) -> HoldoutRun:
         results = Path(workspace) / HOLDOUT_RESULTS
         if not results.exists():
@@ -126,6 +157,15 @@ class GradingContainer:
     def __init__(self, runner: Optional[GradeRunner] = None, *, image: Optional[str] = None):
         self._runner = runner or DockerGradeRunner()
         self._image = image or os.environ.get("VERDI_GRADER_IMAGE", DEFAULT_GRADER_IMAGE)
+
+    def preflight(self) -> None:
+        """Delegate the daemon probe to the runner (no-op for daemon-less runners).
+
+        Called once at the start of a grade batch [GR-8/GR-11]. A runner without
+        a ``preflight`` is treated as always-available."""
+        probe = getattr(self._runner, "preflight", None)
+        if probe is not None:
+            probe()
 
     def build_grade_command(self, workspace: Path, holdouts_dir: str) -> list[str]:
         """Fresh, network-less container; holdouts read-only."""

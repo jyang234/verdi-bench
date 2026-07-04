@@ -191,6 +191,59 @@ def test_completed_trials_allows_transient_regrade(tmp_path):
     assert "transient" not in done  # only "could not run the grader" regrades
 
 
+def test_grade_batch_daemon_down_marks_trials_transient(tmp_path, monkeypatch):
+    """7B-1/GR-8: a down daemon at batch start marks every pending trial
+    cant_grade(grader_unavailable) — transient/regradeable — not terminal
+    container_failure, and the verb exits nonzero naming the daemon."""
+    import yaml
+    from typer.testing import CliRunner
+
+    from harness.adapters.base import Outcome, Provenance, Telemetry, TrialRecord
+    from harness.cli import app
+    from harness.grade.cli import _completed_trials
+    from harness.grade.container import DockerGradeRunner, GraderUnavailableError
+    from harness.ledger.events import record_trial
+    from tests.fixtures.builders import fixed_ctx, write_experiment_yaml
+
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    write_experiment_yaml(expdir / "experiment.yaml")
+    (expdir / "tasks.yaml").write_text(
+        yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "p", "task_class": "refactor"}]}),
+        encoding="utf-8",
+    )
+    ledger = expdir / "ledger.ndjson"
+    runner = CliRunner()
+    assert runner.invoke(
+        app, ["plan", str(expdir / "experiment.yaml"), "--ledger", str(ledger)]
+    ).exit_code == 0
+
+    ctx = fixed_ctx(experiment_id="exp")
+    for tid in ("tr-a", "tr-b"):
+        rec = TrialRecord.assemble(
+            trial_id=tid, task_id="t1", arm="control", repetition=0,
+            outcome=Outcome.completed, telemetry=Telemetry(), provenance=Provenance(),
+            artifacts_path=f"/tmp/{tid}/artifacts",
+        )
+        record_trial(ledger, ctx, trial_record=rec.model_dump(mode="json"))
+
+    def down(self):
+        raise GraderUnavailableError("docker daemon unavailable (docker version exit 1)")
+
+    monkeypatch.setattr(DockerGradeRunner, "preflight", down)
+
+    r = runner.invoke(app, ["grade", str(expdir)])
+    assert r.exit_code == 1, r.output
+    assert "grader unavailable" in r.output.lower() or "grader unavailable" in (r.stderr or "").lower()
+
+    cant = find_events(ledger, "cant_grade")
+    assert {c["trial_id"] for c in cant} == {"tr-a", "tr-b"}
+    assert all(c["reason"] == "grader_unavailable" for c in cant)
+    assert find_events(ledger, "grade") == []
+    # transient ⇒ still regradeable (no override needed)
+    assert _completed_trials(ledger) == set()
+
+
 class _FreshCopyRunner:
     """A runner that (like DockerGradeRunner) grades a fresh workspace copy and
     writes its *own* holdout output — records what it was handed. It does not set
