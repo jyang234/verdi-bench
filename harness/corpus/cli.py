@@ -10,18 +10,21 @@ curation real — solution-leakage in the prompt is caught here, not by a machin
 
 from __future__ import annotations
 
-import getpass
 import json
 from pathlib import Path
 
 import typer
 
+from ..ledger.actor import ActorResolutionError, resolve_actor
 
-def _actor() -> str:
+
+def _resolve_actor_or_exit(flag_value):
+    """Resolve the ledgered actor or exit 2 with the named refusal [GR-12]."""
     try:
-        return getpass.getuser()
-    except Exception:  # pragma: no cover - unusual environments
-        return "unknown"
+        return resolve_actor(flag_value)
+    except ActorResolutionError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=2)
 
 
 def register(app: typer.Typer) -> None:
@@ -56,6 +59,7 @@ def register(app: typer.Typer) -> None:
         ledger: Path = typer.Option(
             None, "--ledger", help="Ledger to record the subset_draw event [CO-9]"
         ),
+        actor: str = typer.Option(None, "--actor", help="Actor recorded on the draw [GR-12]"),
     ) -> None:
         """Select and record a stratified calibration subset."""
         from ..ledger.events import EventContext
@@ -71,7 +75,7 @@ def register(app: typer.Typer) -> None:
         # interrupted run cannot leave the manifest showing a draw the chain never
         # recorded (the ledger is the auditable, tamper-evident source of truth).
         if ledger is not None:
-            ctx = EventContext(experiment_id=manifest.corpus_id, actor=_actor())
+            ctx = EventContext(experiment_id=manifest.corpus_id, actor=_resolve_actor_or_exit(actor))
             ledger_subset_draw(ledger, ctx, manifest, subset)
         manifest.save(manifest_path)
         typer.echo(f"subset: {len(subset.task_ids)} task(s) over {len(subset.strata['sizes'])} strata")
@@ -91,7 +95,7 @@ def register(app: typer.Typer) -> None:
         from .mine import MergeRequest, MRFile, mine_mr
         from .registry import CorpusError, CorpusManifest, assert_outside_instrument
 
-        who = miner or _actor()
+        who = _resolve_actor_or_exit(miner)
         data = json.loads(mr_json.read_text(encoding="utf-8"))
         mr = MergeRequest(
             parent_sha=data["parent_sha"],
@@ -151,14 +155,20 @@ def register(app: typer.Typer) -> None:
         candidate_id: str = typer.Option(..., "--candidate-id"),
         task_sha: str = typer.Option(..., "--task-sha"),
         signing_key: Path = typer.Option(..., "--signing-key", help="Approver Ed25519 private key (hex)"),
-        approver: str = typer.Option(None, "--approver", help="Approver identity [default: current user]"),
+        approver: str = typer.Option(
+            ..., "--approver",
+            help="Approver identity (REQUIRED — never defaulted from the environment "
+                 "because approver identity is security-relevant) [D-P7-7]",
+        ),
         notes: str = typer.Option("", "--notes"),
     ) -> None:
         """Sign + record a curation_approval — the approver attests with their key."""
         from ..ledger.events import EventContext, record_curation_approval
         from .attestation import sign_approval
 
-        who = approver or _actor()
+        # D-P7-7: approver identity is security-relevant (D-P7-3 binds it to a key),
+        # so it must be given explicitly — never defaulted from the environment.
+        who = approver
         priv = signing_key.read_text(encoding="utf-8").strip()
         sig, pk = sign_approval(priv, candidate_id=candidate_id, task_sha=task_sha, approver=who)
         ledger_path = experiment_dir / "ledger.ndjson"
@@ -175,6 +185,7 @@ def register(app: typer.Typer) -> None:
         manifest_path: Path = typer.Option(..., "--manifest", help="manifest.json to advance"),
         kind: str = typer.Option("full", "--kind", help="subset | full"),
         rho: float = typer.Option(0.3, "--rho", help="within-task correlation [recorded assumption]"),
+        actor: str = typer.Option(None, "--actor", help="Actor recorded on the calibration run [GR-12]"),
     ) -> None:
         """Record a calibration run from a completed run's realized variance [CO-4].
 
@@ -213,7 +224,7 @@ def register(app: typer.Typer) -> None:
         n_tasks = len(by_task)
         run = {"p": round(p, 6), "rho": rho, "n_tasks": n_tasks, "kind": kind}
 
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
         ledger_calibration_run(ledger_path, ctx, manifest, run, kind=kind)
         manifest.save(manifest_path)
         typer.echo(f"calibration ({kind}): p={p:.3f} n_tasks={n_tasks} → {manifest.calibration.status}")
@@ -226,6 +237,7 @@ def register(app: typer.Typer) -> None:
         task_sha: str = typer.Option(..., "--task-sha"),
         baseline_ref: str = typer.Option(..., "--baseline-ref"),
         keyring: Path = typer.Option(..., "--keyring", help="Authorized curator public keys (JSON list)"),
+        actor: str = typer.Option(None, "--actor", help="Actor recorded on the admission [GR-12]"),
     ) -> None:
         """Admit a curated candidate — verifies the signed approval + clean baseline."""
         from ..ledger.events import EventContext
@@ -234,7 +246,7 @@ def register(app: typer.Typer) -> None:
         from .registry import CorpusError, CorpusManifest
 
         ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
         manifest = CorpusManifest.load(manifest_path)
         try:
             admit_task(

@@ -6,7 +6,6 @@ EVAL-5 adds ``grade`` (registered below as they are built).
 
 from __future__ import annotations
 
-import getpass
 from pathlib import Path
 from typing import Optional
 
@@ -19,14 +18,11 @@ app = typer.Typer(
 )
 
 
-def _default_ctx(experiment_id: str):
+def _default_ctx(experiment_id: str, actor_flag: Optional[str] = None):
+    from .ledger.actor import resolve_actor
     from .ledger.events import EventContext
 
-    try:
-        actor = getpass.getuser()
-    except Exception:  # pragma: no cover - unusual environments
-        actor = "unknown"
-    return EventContext(experiment_id=experiment_id, actor=actor)
+    return EventContext(experiment_id=experiment_id, actor=resolve_actor(actor_flag))
 
 
 @app.command()
@@ -40,9 +36,13 @@ def plan(
     corpus_manifest: Optional[Path] = typer.Option(
         None, "--corpus-manifest", help="Manifest whose calibration runs feed the power gate [PL-5]"
     ),
+    actor: Optional[str] = typer.Option(
+        None, "--actor", help="Actor recorded on the lock event [GR-12]"
+    ),
 ) -> None:
     """Validate, power-check, and write the genesis lock event."""
     from .corpus.commit import TaskCommitmentError, load_task_dicts
+    from .ledger.actor import ActorResolutionError
     from .ledger.query import ChainIntegrityError
     from .plan.lock import AlreadyLockedError, UnderpoweredError, lock_experiment
     from .plan.power import calibration_variance_from_runs
@@ -50,7 +50,11 @@ def plan(
     # PL-8: stamp the experiment *directory* name, exactly as run/grade do
     # (``experiment_dir.name``) — one ledger, one experiment_id. No stem fallback:
     # that diverged from run/grade for a bare path.
-    ctx = _default_ctx(experiment_id=experiment.parent.name)
+    try:
+        ctx = _default_ctx(experiment_id=experiment.parent.name, actor_flag=actor)
+    except ActorResolutionError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=2)
     # PL-5: feed the power gate real calibration variance when a corpus manifest
     # with calibration runs is supplied; otherwise the lock falls back to
     # AssumedVariance (flagged assumption_based_mde).
@@ -115,19 +119,27 @@ def verify_chain_cmd(
 def anchor(
     ledger: Path = typer.Argument(..., help="Ledger ndjson path"),
     out: Path = typer.Option(..., "--out", help="External anchor store path"),
+    actor: Optional[str] = typer.Option(
+        None, "--actor", help="Actor recorded on the chain_anchor event [GR-12]"
+    ),
 ) -> None:
     """Record the current chain head to an external anchor store [D008].
 
     Also ledgers a ``chain_anchor`` event so the act of anchoring is itself an
     auditable, chained record — not just an external-file side effect [PL-4].
     """
+    from .ledger.actor import ActorResolutionError
     from .ledger.anchors import AnchorIntegrityError, anchor_head
     from .ledger.events import record_chain_anchor
 
     # Route the timestamp through the EventContext clock seam rather than a bare
     # wall-clock read in the CLI [PL-4 / determinism]. Capture the pre-anchor
     # head externally, then ledger that same head.
-    ctx = _default_ctx(experiment_id=ledger.parent.name)
+    try:
+        ctx = _default_ctx(experiment_id=ledger.parent.name, actor_flag=actor)
+    except ActorResolutionError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=2)
     # 7A-2: anchor_head chain-verifies first and refuses tampered history before
     # writing anything; exit 1 and append neither the anchor line nor the event.
     try:

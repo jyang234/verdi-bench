@@ -11,11 +11,11 @@ Task resolution: EVAL-8 owns corpus import; until it lands, ``bench run`` reads 
 
 from __future__ import annotations
 
-import getpass
 from pathlib import Path
 
 import typer
 
+from ..ledger.actor import ActorResolutionError, resolve_actor
 from ..plan.interleave import derive_schedule, enumerate_trials
 from ..schema.experiment import ExperimentSpec
 from .types import RunConfig, Task
@@ -41,6 +41,9 @@ def register(app: typer.Typer) -> None:
         concurrency: int = typer.Option(1, "--concurrency", help=">1 stamps contention caveat"),
         corpus_manifest: Path = typer.Option(
             None, "--corpus-manifest", help="Manifest gating schedulability (is_schedulable) [CO-2]"
+        ),
+        actor: str = typer.Option(
+            None, "--actor", help="Actor recorded on the trial events [GR-12]"
         ),
     ) -> None:
         """Execute the locked experiment's interleaved trials."""
@@ -119,10 +122,11 @@ def register(app: typer.Typer) -> None:
             provider_keys=settings.provider_keys,
         )
         try:
-            actor = getpass.getuser()
-        except Exception:
-            actor = "unknown"
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
+            resolved_actor = resolve_actor(actor)
+        except ActorResolutionError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=resolved_actor)
 
         try:
             result = schedule(

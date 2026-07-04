@@ -7,18 +7,21 @@ comparison's EVAL-7 reveal (the CLI refuses earlier). ``score`` runs the isolate
 
 from __future__ import annotations
 
-import getpass
 import json
 from pathlib import Path
 
 import typer
 
+from ..ledger.actor import ActorResolutionError, resolve_actor
 
-def _actor() -> str:
+
+def _resolve_actor_or_exit(flag_value):
+    """Resolve the ledgered actor or exit 2 with the named refusal [GR-12]."""
     try:
-        return getpass.getuser()
-    except Exception:  # pragma: no cover
-        return "unknown"
+        return resolve_actor(flag_value)
+    except ActorResolutionError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=2)
 
 
 def _read_transcript(artifacts_path) -> str:
@@ -41,6 +44,7 @@ def register(app: typer.Typer) -> None:
     def process_score(
         experiment_dir: Path = typer.Argument(..., help="Dir with experiment.yaml"),
         rubric_path: Path = typer.Option(None, "--rubric", help="Rubric YAML (default: v1)"),
+        actor: str = typer.Option(None, "--actor", help="Actor recorded on the score events [GR-12]"),
     ) -> None:
         """Judge-score every unscored trial's process from its transcript [AC-4]."""
         from ..corpus.commit import (
@@ -73,7 +77,7 @@ def register(app: typer.Typer) -> None:
             raise typer.Exit(code=2)
 
         rubric = ProcessRubric.from_yaml(rubric_path) if rubric_path else default_rubric()
-        ctx = EventContext(experiment_id=experiment_dir.name)
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
         already = {ev["process_score"]["trial_id"] for ev in find_events(ledger_path, events.PROCESS_SCORE)}
 
         n = 0
@@ -99,6 +103,7 @@ def register(app: typer.Typer) -> None:
         comparison_id: str = typer.Option(..., "--comparison-id"),
         scores_json: Path = typer.Option(..., "--scores", help="JSON {dim_id: 1-5 | 'CANT_SCORE'}"),
         rubric_path: Path = typer.Option(None, "--rubric", help="Rubric YAML (default: v1)"),
+        actor: str = typer.Option(None, "--actor", help="Human scorer identity [GR-12]"),
     ) -> None:
         """Record a human process score — refused before the EVAL-7 reveal."""
         from ..ledger.events import EventContext
@@ -119,12 +124,13 @@ def register(app: typer.Typer) -> None:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
 
+        who = _resolve_actor_or_exit(actor)
         ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_actor())
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=who)
         try:
             record_human_process_score(
                 trial_id, rubric, dimension_scores, ledger_path=ledger_path, ctx=ctx,
-                ts=ctx.clock(), scorer_id=_actor(), comparison_id=comparison_id,
+                ts=ctx.clock(), scorer_id=who, comparison_id=comparison_id,
             )
         except ProcessSequencingError as e:
             typer.echo(str(e), err=True)

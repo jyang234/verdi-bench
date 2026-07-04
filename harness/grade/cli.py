@@ -12,7 +12,6 @@ config [AC-3].
 
 from __future__ import annotations
 
-import getpass
 from pathlib import Path
 
 import typer
@@ -114,6 +113,9 @@ def register(app: typer.Typer) -> None:
             help="Trial id with a terminal cant_grade to re-attempt (repeatable); "
                  "the resulting event records override_of [D-P7-2]",
         ),
+        actor: str = typer.Option(
+            None, "--actor", help="Actor recorded on the grade events [GR-12]"
+        ),
     ) -> None:
         """Grade every ungraded trial deterministically."""
         from ..corpus.commit import (
@@ -122,6 +124,7 @@ def register(app: typer.Typer) -> None:
             load_task_dicts,
         )
         from ..ledger import events
+        from ..ledger.actor import ActorResolutionError, resolve_actor
         from ..ledger.events import EventContext
         from ..ledger.query import find_events
         from ..plan.lock import assert_lock
@@ -170,10 +173,11 @@ def register(app: typer.Typer) -> None:
         already = already - set(overrides)
 
         try:
-            actor = getpass.getuser()
-        except Exception:
-            actor = "unknown"
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
+            resolved_actor = resolve_actor(actor)
+        except ActorResolutionError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=resolved_actor)
         runner_impl = LocalGradeRunner() if runner == "local" else DockerGradeRunner()
         container = GradingContainer(runner=runner_impl)
 

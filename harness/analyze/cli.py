@@ -9,18 +9,10 @@ renders carry the watermark on every section.
 
 from __future__ import annotations
 
-import getpass
 import hashlib
 from pathlib import Path
 
 import typer
-
-
-def _actor() -> str:
-    try:
-        return getpass.getuser()
-    except Exception:  # pragma: no cover
-        return "unknown"
 
 
 def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False, actor: str = "unknown"):
@@ -106,12 +98,22 @@ def register(app: typer.Typer) -> None:
             None, "--corpus", help="Corpus manifest.json for provenance + calibration gate"
         ),
         html: bool = typer.Option(False, "--html", help="Render HTML instead of markdown"),
+        actor: str = typer.Option(
+            None, "--actor", help="Actor recorded on the findings event [GR-12]"
+        ),
     ) -> None:
         """Render pre-registered official or exploratory findings."""
+        from ..ledger.actor import ActorResolutionError, resolve_actor
+
         if official and exploratory:
             raise typer.BadParameter("choose at most one of --official/--exploratory")
         mode = "official" if official else "exploratory"
-        out = run_analyze(experiment_dir, mode=mode, corpus=corpus, html=html, actor=_actor())
+        try:
+            resolved_actor = resolve_actor(actor)
+        except ActorResolutionError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        out = run_analyze(experiment_dir, mode=mode, corpus=corpus, html=html, actor=resolved_actor)
         if out is None:
             typer.echo(f"refused {mode} render; recorded cant_analyze", err=True)
             raise typer.Exit(code=2)
