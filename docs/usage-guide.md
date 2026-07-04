@@ -1,0 +1,492 @@
+# verdi-bench usage guide: authoring and running your first experiment
+
+A hands-on, follow-along guide to going from an empty directory to a defensible
+A/B finding. It is written for someone running the instrument for the first
+time; it complements the [deep dive](deep-dive.md) (the *why* and the trust
+mechanisms) and [adapters.md](adapters.md) (the telemetry/trajectory contract).
+
+Everything here uses only the public `bench` CLI and the on-disk file formats —
+no test-only seams. Commands and field names are current as of the post-Phase-8
+codebase.
+
+---
+
+## 0. Mental model in one paragraph
+
+An **experiment** is a directory. You write an `experiment.yaml` (the
+pre-registration: arms, corpus, metric, decision rule, seed, cost ceiling), a
+`tasks.yaml` (the tasks to run), a judge `rubric.md`, and — for real grading — a
+`holdouts/` directory per task. `bench plan` sha-locks all of that into a
+hash-chained `ledger.ndjson`; from then on every stage (`run`, `grade`, `judge`,
+`forensics`, `selfcheck`, `analyze`) appends typed events to that ledger and
+refuses to run against a spec that changed. You end with a self-contained
+`findings.*.dossier.html` and a ledger anyone can `verify-chain`.
+
+Two execution modes:
+
+- **fake engine** (default) — deterministic, no Docker. This is the path in the
+  walkthrough below; use it to learn the flow and to smoke-test a design.
+- **harbor engine** (`--engine harbor`) — real, digest-pinned containers with a
+  metering proxy. Covered in §6.
+
+Every local result is stamped `ADVISORY`. That is the honest tier; the trusted
+tier is a planned CI-tier cutover.
+
+---
+
+## 1. Prerequisites
+
+```bash
+uv sync                      # install the harness + dev tooling
+uv run bench --help          # sanity check: the verb list prints
+```
+
+Python 3.11+ locally (the spec binds 3.12; CI verifies 3.12 compatibility).
+Docker is only needed for the harbor run path and the real grading container —
+the fake-engine walkthrough needs neither.
+
+---
+
+## 2. The experiment directory
+
+Create a directory and populate four files. Here is the complete layout you will
+build in this section:
+
+```
+myexp/
+├── experiment.yaml     # the pre-registration (sha-locked)
+├── tasks.yaml          # the tasks to run
+├── rubric.md           # the judge rubric (content-hashed into the lock)
+├── holdouts/           # per-task grading assertions (real grade path)
+│   └── t1/ ...
+└── run.config.yaml     # OPTIONAL: operational wiring (harbor only, §6)
+```
+
+```bash
+mkdir myexp && cd myexp
+```
+
+### 2.1 `experiment.yaml` — the pre-registration
+
+This is the cryptographic commitment. The schema is strict (`extra="forbid"`):
+an unknown key is a rejection, not a silent no-op. A minimal, valid spec:
+
+```yaml
+arms:
+  - name: control
+    platform: claude_code
+    model: anthropic/claude-3-5-sonnet-20241022
+    payload: {}
+  - name: treatment
+    platform: codex
+    model: openai/gpt-4o-2024-08-06
+    payload: {}
+corpus: {id: public-mini, version: "1.0.0"}
+repetitions: 3
+primary_metric: holdout_pass_rate
+decision_rule: "delta_holdout_pass_rate > 0"
+judge:
+  model: google/gemini-1.5-pro-002
+  rubric: rubric.md
+  orders: both
+  temperature: 0
+seed: 1234
+cost_ceiling: {amount: 25.0, currency: USD}
+```
+
+Field-by-field, including the rules the schema will hold you to:
+
+| Field | Meaning / constraint |
+|---|---|
+| `arms` | **≥ 2**, **names unique**. Each arm: `name`, `platform` (must be a registered adapter — see §7), `model`, `payload` (free-form stack config). |
+| `arm.model` | Must be `<provider>/<id>` (e.g. `anthropic/…`) so the vendor set is well-defined — a bare id is refused. |
+| `corpus` | `{id, version}` — the corpus identity the official fence re-checks. |
+| `repetitions` | `> 0`. Each task runs this many times **per arm**, paired. |
+| `primary_metric` | One of `holdout_pass_rate`, `judge_preference`, `cost_per_task`, `wall_time`. Composites are unrepresentable. |
+| `decision_rule` | `delta_<primary_metric> <op> <threshold>`, e.g. `delta_holdout_pass_rate > 0`. `<op>` ∈ `>`, `<`, `>=`, `<=`. **`==` is rejected** (equality on a bootstrap point estimate is never decidable). The metric must be the primary metric. |
+| `judge.model` | Must be **fully versioned** — a date or build stamp (`gemini-1.5-pro-002`, `gpt-4.1-2025-04-14`). A bare family (`gemini-1.5-pro`, `gpt-5`) is an alias and refused at plan time. Any provider is legal. |
+| `judge.rubric` | Path to a rubric file **relative to the experiment dir**; its content is hashed into the lock, so it cannot be swapped post-registration. |
+| `judge.orders` | `both` (order-debiased, recommended) or `single`. |
+| `judge.escalation` | Optional `{kappa_threshold: 0.6, min_human_verdicts: 20}` — the calibration gate. |
+| `seed` | Integer. Seeds the paired interleave and every bootstrap. |
+| `cost_ceiling` | **Required.** `{amount > 0, currency}`. Hitting it stops the run and refuses new trials. |
+
+Optional, powerful fields:
+
+| Field | Meaning |
+|---|---|
+| `hypothesized_effect` | `(0, 1]`. The effect size the power/MDE gate checks against at plan time. |
+| `fractional_scoring` | `true` grades the fraction of passing assertions instead of all-or-nothing. |
+| `contamination.overlap_threshold` | `(0, 1]`. Pre-registers the fingerprint-overlap threshold for the contamination sentinel. |
+| `arm.training_cutoff` | RFC 3339. Feeds the contamination tri-state (`predates`/`postdates`/`unknown`); absent → honest `unknown`, never `clean`. |
+| `arm.aux_models` | Additional models the stack invokes (`[{model, training_cutoff}]`) — declared so blinding, vendor overlap, and contamination see the whole stack. |
+| `arm.model_hosts` / `infra_hosts` | Declared egress hosts per model / shared infra. If you declare **any**, you must declare for **every** arm (a partial declaration would silently deny one arm's APIs). These derive the harbor proxy allowlist (§6). |
+
+### 2.2 `rubric.md` — how the judge decides
+
+Plain prose describing what "better" means for these tasks. It is content-hashed
+into the lock, so write it before you plan.
+
+```markdown
+# Code task rubric v1
+Prefer the response that correctly and minimally solves the task.
+Penalize responses that leave tests failing or introduce unrelated churn.
+```
+
+### 2.3 `tasks.yaml` — the tasks
+
+```yaml
+tasks:
+  - id: t1
+    prompt: "Fix the failing test in calc.py so the suite passes."
+    holdouts_dir: holdouts/t1        # optional; omit for judge/telemetry-only tasks
+    plugin_ids: []                   # optional custom graders (§ deep-dive §7)
+    task_class: refactor             # optional label used in per-class calibration
+  - id: t2
+    prompt: "Add input validation to the parse() function."
+    holdouts_dir: holdouts/t2
+```
+
+Rules: **task ids unique**; every field is hashed into the lock, so a post-lock
+edit to a prompt / holdouts path / plugin list is refused by `run`/`grade`. Note
+the commitment covers the `holdouts_dir` **path**, not the bytes of the holdout
+scripts under it (an honest boundary documented in `harness/corpus/commit.py`).
+
+### 2.4 Holdouts — the deterministic grade
+
+A holdout is an assertion your grader runs against the trial's final workspace.
+On the real (`--runner docker`) path, `holdouts_dir` is bind-mounted **read-only**
+at `/holdouts` inside a fresh, **network-less** container that runs over a copy
+of the workspace and writes `holdout_results.json`:
+
+```json
+{"assertions": [{"id": "h1", "result": "pass"},
+                {"id": "h2", "result": "fail"}]}
+```
+
+`result` is `pass` / `fail` / `abstain` (abstain does not count as a pass). The
+binary score is "all holdout assertions pass"; with `fractional_scoring` it is
+the fraction of non-abstaining assertions that pass.
+
+For the fake/learning path (`--runner local`) you place `holdout_results.json`
+directly in each trial's workspace — see §4.
+
+---
+
+## 3. Author interactively (optional)
+
+Instead of hand-editing YAML you can use the authoring surface, which validates
+and previews as pure reads — the **lock is its only ledgered operation**:
+
+```bash
+uv run bench author <workspace-dir> --actor alice   # draft / validate / preview / lock
+```
+
+Everything else in this guide works the same whether you authored by hand or via
+`bench author`.
+
+---
+
+## 4. The full pipeline (fake engine, end to end)
+
+This is the complete flow the e2e test `tests/test_eval_e2e_phase4.py` exercises,
+runnable by hand. From inside `myexp/`:
+
+```bash
+LEDGER=ledger.ndjson
+
+# 1. Pre-register: validate, power-check, sha-lock. Writes experiment_locked.
+uv run bench plan experiment.yaml --ledger $LEDGER --actor alice
+
+# 2. Run the paired, interleaved trials on the fake engine.
+uv run bench run . --actor alice
+```
+
+For the fake path, stand in for the grader by writing each trial's
+`holdout_results.json` into its workspace (the real path skips this — the
+container produces it). Each `trial` event carries the `artifacts_path`; the
+workspace is its parent directory. Then:
+
+```bash
+# 3. Deterministic grades. --runner local reads pre-placed holdout_results.json.
+uv run bench grade . --runner local --actor alice
+
+# 4. Identity-blind advisory judge verdicts (idempotent).
+uv run bench judge . --actor alice
+
+# 5. Trajectory metrics + gaming detectors (advisory).
+uv run bench forensics scan . --actor alice
+
+# 6. A/A coverage selfcheck — REQUIRED before an official render.
+uv run bench selfcheck . --actor alice
+
+# 7. Findings. Exploratory is watermarked; official passes the fence.
+uv run bench analyze . --exploratory
+#   or, when you have a passing selfcheck and want the fenced render:
+# uv run bench analyze . --official --corpus manifest.json
+
+# 8. Audit the ledger end to end.
+uv run bench verify-chain $LEDGER
+```
+
+Each `analyze` writes both `findings.<mode>.md` and a single self-contained
+`findings.<mode>.dossier.html` (no network, no external assets, byte-identical
+for a fixed ledger + seed) with three layers: a template-generated **verdict**, an
+**analyst** layer (paired deltas, calibration, flags), and an **auditor** layer
+(provenance, ledger head, chain status).
+
+### Human review and process scoring (optional, between steps 4 and 7)
+
+```bash
+uv run bench review build .                                   # blinded review packet
+uv run bench review record . --comparison-id c1 --winner 1    # capture a verdict
+uv run bench review reveal . --comparison-id c1               # refuses pre-verdict
+uv run bench process score .                                  # isolated process rubric
+```
+
+Judge↔human agreement (IPW-corrected kappa) then appears in the findings.
+
+### Multi-arm experiments (> 2 arms)
+
+With more than two arms the spec still pre-registers exactly one decision rule,
+so only the **primary pair** carries an official decision by default; the other
+pairs render CI + effect size but no decision. To keep every pair official under
+a family-wise correction:
+
+```bash
+uv run bench analyze . --multi-arm-correction holm      # default: none
+```
+
+---
+
+## 5. Exploratory vs official — the fence
+
+- `--exploratory`: always available, watermarked on every layer. Use it while
+  iterating.
+- `--official`: passes the **pre-registration fence** or refuses with a named
+  `cant_analyze` reason. The fence requires: the spec is locked and unchanged,
+  the corpus identity and rubric hash agree, a **current passing selfcheck**
+  exists, and there is no *asymmetric* flagged contamination (one arm
+  contaminated but not the other refuses; symmetric contamination discloses).
+
+You cannot p-hack your way past this: the question was fixed before the data
+existed, and the render re-checks that at render time.
+
+---
+
+## 6. Running for real: the harbor engine
+
+`--engine harbor` swaps the fake engine for real containers:
+
+- digest-pinned images (`--pull=never`) — the task image is `image: <ref>@sha256:…`
+  in your task/adapter wiring;
+- the prompt + arm delivered read-only at `/verdi/request.json` **outside** the
+  graded workspace;
+- provider keys env-injected and redacted at capture;
+- egress confined to a **metering proxy** on an internal docker network with
+  per-trial JSONL attribution;
+- containers **killed on timeout**, confirmed via `docker inspect` — a container
+  that survives the kill fails the trial closed rather than being graded;
+- capability-dropped, no-new-privileges, pids/memory-capped.
+
+Operational wiring lives in an **optional `run.config.yaml`** in the experiment
+directory — never in the sha-locked `experiment.yaml`, never on the ledger:
+
+```yaml
+proxy:
+  url: http://proxy:3128
+  # allowlist: [...]        # OMIT if the spec declares model_hosts/infra_hosts —
+  #                         # the allowlist then derives from the locked bytes
+  log_path: /var/log/verdi/proxy.jsonl
+quotas:
+  cpus: 2.0
+  mem: 4g
+provider_key_names: [ANTHROPIC_API_KEY]          # values read from the ENV by name
+provider_key_names_by_arm:                        # OR scope keys per arm (PRA-M2)
+  control:   [ANTHROPIC_API_KEY]
+  treatment: [OPENAI_API_KEY]
+```
+
+Notes that will save you a failed run:
+
+- A key **named here but absent from the environment fails the run loudly** — an
+  unauthenticated arm would bias the A/B. Values are never invented and never
+  written to disk or the ledger.
+- Per-arm keys (`provider_key_names_by_arm`) hand each arm only its own
+  credentials, so one arm's key never enters another arm's container.
+- **The metering proxy is an external operational component you supply.** A
+  reference Squid config ships in `deploy/metering-proxy/`; a
+  configured-but-missing proxy log now **fails loud** rather than silently
+  reporting zero egress/cost. See §6 of the deep dive for the honest boundary:
+  `--internal` blocks the outside world but not the host gateway, so strong
+  confinement also wants deployment-level firewall rules the harness does not
+  install.
+
+Grading has the same split: `bench grade` defaults to `--runner docker` (the real
+network-less grading container); `--runner local` is the no-daemon fake/test path.
+
+```bash
+uv run bench run . --engine harbor --actor alice
+uv run bench grade . --runner docker --actor alice
+```
+
+---
+
+## 7. Extending the generic base adapter for a custom stack
+
+An **adapter** maps your test subject's log onto verdi's two measurement
+surfaces — per-trial **telemetry** and the ordered **trajectory** — so the
+grader, forensics, and analysis can consume any stack uniformly. The full
+contract (the normalized log format, every field, and the failure semantics) is
+`docs/adapters.md`; this section is the practical extension recipe.
+
+The non-negotiable honesty rules apply at every tier: a field you cannot measure
+is `None` (recorded in `telemetry_nulls`, **never** imputed); a trajectory with
+no content is `None` (honest absence, distinct from `[]`); a *present but
+corrupt* log fails the trial closed, never silently becomes "no telemetry".
+
+Plan-time validation refuses to lock an arm whose `platform` has no registered
+adapter, so a typo fails **before any spend**, not mid-run. The registered
+platforms today are `claude_code`, `codex`, and `generic`.
+
+### Tier 1 — zero code: emit the normalized format (`platform: generic`)
+
+If your stack can write its own log, write it directly in the verdi normalized
+log format to `artifacts/agent_log.json` in the workspace and set
+`platform: generic`. No harness code, no registration — the `generic` adapter
+ships with the instrument. This is the baseline path for custom harnesses,
+wrapped open-source models, and agentic workflows.
+
+```json
+{
+  "verdi_log_version": 1,
+  "telemetry": {"tokens_in": 1200, "tokens_out": 340, "cost": 0.42,
+                "wall_time_s": 61.5, "tool_calls": 7},
+  "trajectory": [
+    {"kind": "message", "command": ""},
+    {"kind": "tool_call", "relative_ts": 1.5, "command": "ls"},
+    {"kind": "file_edit", "files_touched": ["a.py"], "command": ""},
+    {"kind": "test_run", "exit_code": 0, "command": "pytest -q"}
+  ]
+}
+```
+
+`verdi_log_version` is the engage switch: absent → all telemetry null and
+trajectory absent (safe even if you emit some other log); `1` → the parser
+engages and the document is a self-attestation, where an **unknown key is refused
+loudly** so a typo'd `token_in` cannot launder into "unmeasured". Omit any field
+you cannot measure.
+
+### Tier 2 — subclass `Adapter`, override only what differs
+
+`Adapter` (`harness/adapters/base.py`) is a working adapter out of the box: its
+default `normalize` / `normalize_trajectory` parse the normalized format.
+Subclass it, set `platform`, and override only the method whose parsing differs —
+e.g. keep the default telemetry parsing but derive trajectory steps from your
+native event stream. Then register the instance.
+
+```python
+# harness/adapters/mystack.py
+from __future__ import annotations
+from typing import Optional
+from .base import Adapter, Telemetry
+
+class MyStackAdapter(Adapter):
+    platform = "mystack"          # this is what arm.platform names
+
+    def normalize_trajectory(self, native_log: dict) -> Optional[list]:
+        # parse your stack's native events into shared-schema TrajectoryStep;
+        # return None if the log honestly carries no trajectory.
+        ...
+    # normalize() inherited → still parses the normalized telemetry block
+```
+
+```python
+# harness/adapters/__init__.py — add to the registry
+_ADAPTERS: dict[str, Adapter] = {
+    a.platform: a for a in (ClaudeCodeAdapter(), CodexAdapter(),
+                            GenericAdapter(), MyStackAdapter())
+}
+```
+
+### Tier 3 — full native adapter
+
+For a platform with its own log format (the `claude_code` and `codex` adapters
+are the ~100-line templates), override **both** methods to parse the native log,
+and set `speaks_generic_format = False` so the run seam never applies
+verdi-format semantics (the loud version/strictness rules, `telemetry_by_model`)
+to a log your platform never claimed — an agent-controlled native log that
+happens to contain a `verdi_log_version` key must not be able to fail a trial.
+Let every unmeasurable field stay `None`; the null-honesty tests will hold you to
+it.
+
+Whatever the tier, ship the adapter with tests that assert your null honesty
+(an unmeasured field lands in `telemetry_nulls`, an absent trajectory is `None`,
+a corrupt log fails closed).
+
+---
+
+## 8. Does it support multi-agent workflows? Yes — with explicit limits
+
+A multi-agent harness (planner + workers, an orchestrator routing subagents,
+etc.) plugs in as a **single arm**: one container, one prompt in, one workspace
+of artifacts out. You report it through the same normalized log, using the v2
+attribution features (`docs/adapters.md` §"Format v2").
+
+**How to report a fleet honestly:**
+
+- **Telemetry is whole-trial.** Sum tokens / cost / tool calls across *all*
+  agents into the top-level `telemetry` block — it remains the sole
+  authoritative stream. If your orchestrator cannot attribute a field across
+  agents, leave it `null` rather than reporting a partial sum as a total.
+- **Per-model splits** go in `telemetry_by_model` (v2), keyed **strictly** by the
+  models the locked spec declared (the arm's `model` plus its `aux_models`). A
+  key naming an undeclared model is refused loudly. When by-model blocks sum
+  differently from the totals, the mismatch surfaces as a `by_model_delta` flag —
+  never silently reconciled.
+- **Trajectory is one ordered list.** Serialize concurrent agents' steps into a
+  single timeline (by `relative_ts`), tagging each step with a closed-vocabulary
+  `agent` role: `planner`, `executor`, `orchestrator`, `router`, `critic`,
+  `reviewer`, `tester`, `researcher`, `worker`, optionally ordinal-suffixed
+  (`worker-1`, `worker-2`). Anything else (free text, a model name) is refused at
+  parse — so **identity leakage is unrepresentable, not scrubbed**. Spawning a
+  subagent is a `tool_call` step.
+
+**The limitations — read these before trusting multi-agent numbers:**
+
+1. **Attribution is self-reported testimony, and exploratory only.** The
+   instrument runs the fleet in a hermetic container and cannot see inside it, so
+   per-agent / per-model attribution is the arm's *own claim*. It rides the trial
+   record's flags as cross-check data — it **never** feeds the authoritative
+   telemetry stream, and **no official gate reads it**. Your primary metric and
+   decision still rest on whole-trial telemetry and deterministic holdouts.
+2. **One trial = one quota, one timeout, one proxy.** The whole fleet shares the
+   trial's pinned CPU/memory quota, its single wall-clock timeout, and the
+   metering proxy. Egress from *any* agent is attributed to the trial; there is
+   no per-agent budget or per-agent kill.
+3. **Concurrency is flattened.** Genuinely parallel agents must be serialized
+   into one ordered trajectory via `relative_ts`. The forensic detectors read
+   that single timeline; true wall-clock concurrency is not modeled.
+4. **The role vocabulary is closed.** You attribute to a fixed set of roles;
+   extending it (a new role, a new per-step field) is a `verdi_log_version` bump
+   with a compatibility story, not a free-text field.
+5. **Still two first-class native adapters.** `claude_code` and `codex` ship
+   native; every other stack (including most multi-agent frameworks) integrates
+   through the `generic` normalized log or a custom adapter (§7). That is a
+   deliberate scope choice, not a gap you have to wait on — Tier 1 needs no
+   harness code.
+
+In short: verdi-bench treats a multi-agent stack as a black-box arm and will
+faithfully A/B it, disclose its self-reported internal breakdown as exploratory
+color, and refuse to let that testimony masquerade as measured ground truth.
+
+---
+
+## 9. Where to go next
+
+- **[deep-dive.md](deep-dive.md)** — what each stage writes to the ledger, the
+  trust mechanism behind every claim, and the test that owns it.
+- **[adapters.md](adapters.md)** — the complete normalized-log contract (v1 and
+  v2), field tables, and failure semantics.
+- **`deploy/metering-proxy/`** — the reference proxy for the harbor egress path.
+- **`README.md`** — the command reference and the provisional-decisions register.

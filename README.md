@@ -217,6 +217,13 @@ reviewer — the page banner says exactly this.
 
 ## Learn more
 
+- **[Usage guide](docs/usage-guide.md)** — follow-along from an empty directory
+  to a defensible finding: authoring `experiment.yaml`/`tasks.yaml`/holdouts, the
+  full `plan → run → grade → judge → forensics → selfcheck → analyze` pipeline,
+  the harbor real-container path, extending the base adapter for a custom stack,
+  and how multi-agent workflows plug in (with their limits).
+- **[Adapters](docs/adapters.md)** — the normalized telemetry/trajectory log
+  contract (v1 and v2) any test subject integrates through.
 - **[Deep dive](docs/deep-dive.md)** — the full architecture walkthrough:
   what each stage writes to the ledger, the trust mechanism behind every
   claim above (and the test that owns it), design principles, honest
