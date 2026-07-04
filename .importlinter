@@ -27,6 +27,7 @@ source_modules =
     harness.review
     harness.process
     harness.corpus
+    harness.contamination
     harness.blind
     harness.run.seam
     harness.run.interleave
@@ -45,6 +46,22 @@ name = Deterministic grading imports no LLM client [EVAL-5 constraint]
 type = forbidden
 source_modules =
     harness.grade
+forbidden_modules =
+    harness.judge.providers
+    harness.judge.client
+
+[importlinter:contract:contamination-detectors-have-no-llm-clients]
+name = Deterministic contamination detectors import no LLM client [EVAL-10 AC-6]
+# The probe module (and the CLI that drives it) is the story's ONLY LLM-touching
+# surface — it is deliberately absent from this source list, exactly as
+# harness.process legitimately uses the provider seam. The detectors (dating,
+# canary derivation, overlap, summary) must stay deterministic.
+type = forbidden
+source_modules =
+    harness.contamination.dating
+    harness.contamination.canary
+    harness.contamination.overlap
+    harness.contamination.summary
 forbidden_modules =
     harness.judge.providers
     harness.judge.client
@@ -69,6 +86,7 @@ source_modules =
     harness.review
     harness.process
     harness.corpus
+    harness.contamination
     harness.blind
 forbidden_modules =
     harness.ledger.chain

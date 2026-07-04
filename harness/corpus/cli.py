@@ -115,7 +115,12 @@ def register(app: typer.Typer) -> None:
         if manifest_path is not None:
             manifest = CorpusManifest.load(manifest_path)
             try:
-                manifest.stage_candidate(task_id or out.stem, sha=sha, miner=who)
+                # EVAL-10 AC-1: created_at comes from the MR's merged_at — input
+                # data, not a wall-clock read; absent stays an honest unknown.
+                manifest.stage_candidate(
+                    task_id or out.stem, sha=sha, miner=who,
+                    created_at=data.get("merged_at"),
+                )
             except CorpusError as e:
                 typer.echo(str(e), err=True)
                 raise typer.Exit(code=2)
@@ -240,13 +245,20 @@ def register(app: typer.Typer) -> None:
             ..., "--keyring",
             help="Authorized curators (JSON object: approver id -> public-key hex) [D-P7-3]",
         ),
+        candidate_json: Path = typer.Option(
+            None, "--candidate-json",
+            help="Stored candidate content to embed the contamination canary into "
+                 "on admission (the manifest sha stays the reviewed, pre-embed "
+                 "identity; the canary is re-derivable from it) [EVAL-10 AC-2]",
+        ),
         actor: str = typer.Option(None, "--actor", help="Actor recorded on the admission [GR-12]"),
     ) -> None:
         """Admit a curated candidate — verifies the signed approval + clean baseline."""
+        from ..contamination.canary import CanaryError, derive_canary, embed_canary
         from ..ledger.events import EventContext
         from .admit import admit_task
         from .attestation import KeyringFormatError, load_keyring
-        from .registry import CorpusError, CorpusManifest
+        from .registry import CorpusError, CorpusManifest, assert_outside_instrument
 
         ledger_path = experiment_dir / "ledger.ndjson"
         ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
@@ -268,6 +280,21 @@ def register(app: typer.Typer) -> None:
         except CorpusError as e:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
+        # EVAL-10 AC-2: embed the derived canary into the stored candidate
+        # content BEFORE the manifest write, so a failed embed leaves neither
+        # side admitted-but-unmarked. Candidate content is internal-corpus data:
+        # the rewrite target must stay outside the instrument repo.
+        if candidate_json is not None:
+            try:
+                assert_outside_instrument(candidate_json)
+                content = json.loads(candidate_json.read_text(encoding="utf-8"))
+                embedded = embed_canary(content, derive_canary(task_sha))
+            except (CorpusError, CanaryError, ValueError) as e:
+                typer.echo(str(e), err=True)
+                raise typer.Exit(code=2)
+            candidate_json.write_text(
+                json.dumps(embedded, sort_keys=True, indent=2), encoding="utf-8"
+            )
         manifest.save(manifest_path)
         typer.echo(f"admitted {candidate_id} (sha={task_sha[:12]}…)")
 

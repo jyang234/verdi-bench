@@ -13,6 +13,7 @@ refuses quarantined tasks; a pending candidate is excluded by
 
 from __future__ import annotations
 
+from ..contamination.canary import derive_canary, hash_canary
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import assert_chain, find_events
@@ -158,6 +159,10 @@ def admit_task(
         )
     task.status = "admitted"
     task.baseline_ref = baseline_ref
+    # EVAL-10 AC-2: an admitted internal task gains a deterministic canary,
+    # recorded here by HASH only — the value never enters the manifest (it is
+    # re-derivable from task_sha wherever the content is materialized).
+    task.canary_sha256 = hash_canary(derive_canary(task_sha))
     events.record_task_admitted(
         ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
         baseline_ref=baseline_ref,

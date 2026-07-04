@@ -1,8 +1,7 @@
 ---
 # MACHINE CONTRACT — see template header for consumers and YAML style rules.
-# STATUS: PROPOSED (2026-07-04). Lives under specs/proposed/ so the AC-coverage
-# hook does not enforce it before build; graduates to specs/ in the same commit
-# as the story's first AC tests, once its open decisions resolve.
+# Graduated from specs/proposed/ 2026-07-04, in the same commit as the story's
+# first AC tests, with all four local decisions RESOLVED (see decisions ndjson).
 kind: "story"
 ticket: "EVAL-10"   # synthetic key — source: Phase-7 readiness assessment roadmap gap #2
 parent: "EVAL-1"
@@ -81,15 +80,11 @@ constraints:
     enforced_by: "test:test_ac1_unknown_never_clean"
 
 decisions:
-  - "EVAL-10-D001"  # asymmetric-contamination disposition (OPEN)
-  - "EVAL-10-D002"  # v1 probe technique set (OPEN)
-  - "EVAL-10-D003"  # overlap metric + threshold locking (OPEN)
-  - "EVAL-10-D004"  # flagged-task corpus lifecycle (OPEN)
-open_decisions:
-  - "EVAL-10-D001"
-  - "EVAL-10-D002"
-  - "EVAL-10-D003"
-  - "EVAL-10-D004"
+  - "EVAL-10-D001"  # asymmetric-contamination disposition (RESOLVED: refuse-official)
+  - "EVAL-10-D002"  # v1 probe technique set (RESOLVED: canary-plus-oracle-prefix)
+  - "EVAL-10-D003"  # overlap metric (RESOLVED: winnowing-fingerprints)
+  - "EVAL-10-D004"  # flagged-task lifecycle (RESOLVED: disclose-plus-operator-quarantine)
+open_decisions: []
 
 policy_proposals: []
 predicted_reach: null
@@ -197,14 +192,14 @@ Logprob/perplexity membership inference (vendor-gated, v2 — see D002);
 contamination *removal* or task rewriting; probing models not named as
 arms; dataset-level dedup against public benchmark dumps.
 
-## Open questions
+## Decisions (all resolved 2026-07-04)
 
-- EVAL-10-D001 — asymmetric-flag disposition (recommended: refuse
-  official).
-- EVAL-10-D002 — v1 probe set (recommended: canary regurgitation +
-  oracle-prefix continuation; no logprobs).
-- EVAL-10-D003 — overlap metric (recommended: winnowing fingerprints;
-  threshold locked at plan).
-- EVAL-10-D004 — flagged-task corpus lifecycle (recommended: disclose +
-  ledgered operator quarantine reusing flake-quarantine mechanics; no
-  auto-removal).
+- EVAL-10-D001 — asymmetric-flag disposition: **refuse-official**;
+  exploratory still renders, watermarked, with the summary.
+- EVAL-10-D002 — v1 probe set: **canary regurgitation + oracle-prefix
+  continuation**; logprob/perplexity inference deferred to v2.
+- EVAL-10-D003 — overlap metric: **winnowing fingerprints**; threshold
+  locked into the experiment spec at plan time.
+- EVAL-10-D004 — flagged-task corpus lifecycle: **disclose + ledgered
+  operator quarantine** reusing flake-quarantine mechanics; no
+  auto-removal.

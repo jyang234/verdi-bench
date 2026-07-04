@@ -41,6 +41,28 @@ class Arm(BaseModel):
     platform: str  # agent stack, e.g. "claude_code" / "codex"
     model: str
     payload: dict = Field(default_factory=dict)
+    # EVAL-10 AC-1: the arm model's training-data cutoff (RFC 3339), feeding the
+    # contamination tri-state. Optional — absent yields an honest `unknown`,
+    # never `clean` (the cross-vendor honesty rule, §7.8).
+    training_cutoff: Optional[str] = None
+
+    @field_validator("training_cutoff")
+    @classmethod
+    def _cutoff_parses(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        # Validated at the schema so a malformed cutoff is refused on every spec
+        # load, not first discovered mid-analysis. Absent stays legal (unknown).
+        from datetime import datetime
+
+        try:
+            datetime.fromisoformat(v)
+        except ValueError as e:
+            raise ValueError(
+                f"arm.training_cutoff {v!r} is not an RFC 3339 date/timestamp "
+                f"[EVAL-10 AC-1]: {e}"
+            ) from e
+        return v
 
     @field_validator("model")
     @classmethod
@@ -67,6 +89,19 @@ class CostCeiling(BaseModel):
     model_config = ConfigDict(extra="forbid")
     amount: float = Field(gt=0)
     currency: str = "USD"
+
+
+class ContaminationConfig(BaseModel):
+    """Pre-registered contamination parameters [EVAL-10, D003].
+
+    Living inside the locked spec bytes makes the overlap threshold part of the
+    cryptographic commitment — locked at plan, never tuned post-hoc against
+    observed trials. A threshold outside (0, 1] is nonsense (0 flags everything,
+    >1 flags nothing) and is refused at the schema.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    overlap_threshold: float = Field(gt=0, le=1)
 
 
 _RULE_RE = re.compile(
@@ -147,6 +182,10 @@ class ExperimentSpec(BaseModel):
     # in-flight experiment.
     hypothesized_effect: Optional[float] = Field(default=None, gt=0, le=1)
     fractional_scoring: bool = False
+    # EVAL-10 D003: contamination parameters ride the locked spec so they are
+    # pre-registered by construction. Absent block ⇒ the module default applies
+    # (itself a fixed constant, still not post-hoc tunable).
+    contamination: Optional[ContaminationConfig] = None
 
     # Parsed form of decision_rule; populated post-validation.
     parsed_rule: Optional[DecisionRule] = Field(default=None, exclude=True)
