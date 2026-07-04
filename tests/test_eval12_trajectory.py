@@ -285,8 +285,10 @@ def test_canonical_bytes_deterministic(tmp_path):
     )
     # literal pin, deliberately not the constant: bumping the versioned
     # contract must fail a test until a human approves it [EVAL-12-D001].
-    # v3 approved 2026-07-04: EVAL-14-D004 (additive per-step detail), built
-    # as EVAL-15 with v2-read-compat owned by test_ac1_v3_additive_and_v2_reads_null.
+    # v3 approved 2026-07-04, twice, by parallel stories over the same base:
+    # EVAL-14-D004 (additive per-step 'detail', built as EVAL-15; v2-read-compat
+    # owned by test_ac1_v3_additive_and_v2_reads_null) and EVAL-21-D001
+    # (additive 'agent'). One version, both additive fields.
     assert TrajectoryRecord.model_validate(json.loads(bytes_a)).schema_version == 3
 
 

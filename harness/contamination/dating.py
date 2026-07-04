@@ -20,7 +20,13 @@ from ..schema.dates import Rfc3339Error, parse_rfc3339
 # error; re-exported under the story-local name the tests and callers use.
 DatingError = Rfc3339Error
 
-__all__ = ["ContaminationStatus", "DatingError", "cutoff_status", "parse_rfc3339"]
+__all__ = [
+    "ContaminationStatus",
+    "DatingError",
+    "cutoff_status",
+    "effective_cutoff",
+    "parse_rfc3339",
+]
 
 
 class ContaminationStatus(str, Enum):
@@ -29,6 +35,21 @@ class ContaminationStatus(str, Enum):
     CLEAN_BY_DATE = "clean_by_date"
     UNKNOWN = "unknown"
     FLAGGED = "flagged"
+
+
+def effective_cutoff(cutoffs: list[str | None]) -> str | None:
+    """A multi-model arm's effective cutoff [EVAL-20 AC-4, D002].
+
+    ``clean_by_date`` requires the task to postdate a cutoff strictly, so an
+    arm is clean only if the task postdates EVERY declared model's cutoff —
+    the conservative bound over a set is its **latest** member. Any absent
+    cutoff makes the whole set undatable (``None`` → ``unknown``): a task no
+    declared model could have memorized cannot be certified when one model's
+    cutoff is unknown, never laundered to clean [§7.8].
+    """
+    if not cutoffs or any(c is None for c in cutoffs):
+        return None
+    return max(cutoffs, key=lambda c: parse_rfc3339(c, field="training_cutoff"))
 
 
 def cutoff_status(

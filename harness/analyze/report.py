@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict
 from ..contamination.summary import contamination_summary, latest_probe, probe_asymmetries
 from ..ledger import events
 from ..ledger.query import find_events, ledger_head_hash, verify
+from ..run.trajectory import resolve_trajectory
 from ..schema.metrics import PrimaryMetric
 from ..version import instrument_identity
 from .confounds import asymmetric_null_fields, flag_confounds
@@ -562,13 +563,25 @@ def _secondary_metrics(ledger_path, spec) -> dict:
     """
     from .confounds import _vendor
 
-    arm_vendor = {a.name: _vendor(a.model) for a in spec.arms}
-    cross_vendor = len(set(arm_vendor.values())) > 1
+    # EVAL-20 AC-5: an arm's vendor identity is its full declared model set —
+    # a mixed-vendor arm (multi-model workflow) makes raw token counts
+    # vendor-incomparable for any comparison involving it, and its own token
+    # totals are sums over different tokenizers (mixed-tokenizer, named below).
+    arm_vendor_sets = {
+        a.name: sorted({_vendor(m) for m in a.declared_models()}) for a in spec.arms
+    }
+    all_vendors = set().union(*arm_vendor_sets.values()) if arm_vendor_sets else set()
+    mixed_vendor_arms = sorted(a for a, vs in arm_vendor_sets.items() if len(vs) > 1)
+    cross_vendor = len(all_vendors) > 1
     fields = ("tokens_in", "tokens_out", "tokens_cache", "cost", "wall_time_s", "tool_calls")
     per_arm: dict[str, dict[str, float]] = defaultdict(dict)
     raw: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     quarantined = _quarantined_trial_ids(ledger_path)
-    for ev in find_events(ledger_path, events.TRIAL):
+    # one ledger read serves both the means and the attribution aggregation —
+    # find_events re-parses the whole file per call, so a second scan doubles
+    # the dominant I/O of findings generation for zero new information
+    trial_events = list(find_events(ledger_path, events.TRIAL))
+    for ev in trial_events:
         rec = ev["trial_record"]
         if rec["trial_id"] in quarantined:
             # D007: a quarantined trial's data leaves EVERY rendered aggregate,
@@ -582,13 +595,69 @@ def _secondary_metrics(ledger_path, spec) -> dict:
         for f, xs in fvals.items():
             per_arm[arm][f] = _mean(xs)
     vendor_incomparable = [f for f in _RAW_TOKEN_FIELDS] if cross_vendor else []
+    per_model_means, per_agent_steps = _attribution_metrics(trial_events, quarantined)
     return {
         "exploratory": True,
         "per_arm_means": {a: dict(sorted(v.items())) for a, v in sorted(per_arm.items())},
         "cross_vendor": cross_vendor,
         "vendor_incomparable_fields": vendor_incomparable,
         "cross_vendor_allowed_fields": list(_CROSS_VENDOR_ALLOWED),
+        "arm_vendor_sets": arm_vendor_sets,
+        "mixed_vendor_arms": mixed_vendor_arms,
+        # EVAL-21 AC-5: self-reported attribution (trial-flag testimony), never
+        # an official input. Arms absent from these maps reported none —
+        # rendered "not attributed", never zero [D004 posture].
+        "per_model_means": per_model_means,
+        "per_agent_step_counts": per_agent_steps,
     }
+
+
+def _attribution_metrics(trial_events, quarantined) -> tuple[dict, dict]:
+    """Per-arm attribution aggregates [EVAL-21 AC-5], exploratory only.
+
+    Per-model telemetry means come from each trial's ``telemetry_by_model``
+    flag (v2 generic logs); per-agent step counts come from *verified*
+    trajectories only (``resolve_trajectory`` — an unverifiable artifact is a
+    coverage gap, not evidence), with null-agent steps in the explicit
+    ``unattributed`` bucket. Trials reporting no attribution contribute
+    nothing — absence stays absent, never zero — and an arm whose every step
+    is unattributed (single-agent platforms) is dropped here, at the source,
+    so a pre-EVAL-21 ledger renders byte-identically.
+    """
+    from ..run.trajectory import UNATTRIBUTED, slice_by_agent
+
+    model_raw: dict[str, dict[str, dict[str, list[float]]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(list))
+    )
+    agent_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for ev in trial_events:
+        rec = ev["trial_record"]
+        if rec["trial_id"] in quarantined:
+            continue
+        arm = rec["arm"]
+        for model, block in (rec.get("flags", {}).get("telemetry_by_model") or {}).items():
+            for f, val in block.items():
+                if val is not None:
+                    model_raw[arm][model][f].append(float(val))
+        status, traj = resolve_trajectory(
+            rec.get("artifacts_path"), ev.get("trajectory_sha")
+        )
+        if status == "verified" and traj is not None:
+            for label, steps in slice_by_agent(traj).items():
+                agent_counts[arm][label] += len(steps)
+    per_model_means = {
+        arm: {
+            model: {f: _mean(xs) for f, xs in sorted(fields.items())}
+            for model, fields in sorted(models.items())
+        }
+        for arm, models in sorted(model_raw.items())
+    }
+    per_agent = {
+        arm: dict(sorted(counts.items()))
+        for arm, counts in sorted(agent_counts.items())
+        if set(counts) != {UNATTRIBUTED}
+    }
+    return per_model_means, per_agent
 
 
 def _process_section(ledger_path, spec, seed) -> Optional[dict]:
@@ -1404,6 +1473,34 @@ def _secondary_lines(findings: FindingsDocument) -> list[str]:
             "vendor-incomparable and NOT compared across arms; cross-vendor "
             f"comparisons restricted to {sm['cross_vendor_allowed_fields']}"
         )
+    # EVAL-20 AC-5: a mixed-vendor arm is named, and its own token totals are
+    # additionally sums over different tokenizers.
+    if sm.get("mixed_vendor_arms"):
+        lines.append(
+            f"- mixed-vendor arm(s) {sm['mixed_vendor_arms']}: declared models span "
+            "vendors, so these arms' own token totals are mixed-tokenizer sums "
+            f"(vendor sets: {sm['arm_vendor_sets']})"
+        )
+    # EVAL-21 AC-5: attribution is self-reported testimony (EXPLORATORY, no
+    # official gate reads it); an arm that reported none renders "not
+    # attributed", never zero. Unattributed-only arms are already dropped at
+    # the source (_attribution_metrics), so a pre-EVAL-21 ledger renders
+    # byte-identically. The arm listing is the UNION of all sections' arms —
+    # an arm with all-null whole-trial telemetry but real attribution must
+    # still appear.
+    per_model = sm.get("per_model_means") or {}
+    per_agent = sm.get("per_agent_step_counts") or {}
+    if per_model or per_agent:
+        arms = sorted(set(sm["per_arm_means"]) | set(per_model) | set(per_agent))
+        lines.append(
+            "- per-model/per-agent attribution (self-reported by the arm; "
+            "exploratory cross-check only, per-model token counts remain "
+            "vendor-bound):"
+        )
+        for arm in arms:
+            models = per_model.get(arm) or "not attributed"
+            agents = per_agent.get(arm) or "not attributed"
+            lines.append(f"  - {arm}: models={models}; agent step counts={agents}")
     return lines
 
 

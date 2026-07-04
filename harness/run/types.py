@@ -37,17 +37,27 @@ class Task:
 class ProxyConfig:
     """Metering-proxy egress configuration [AC-3, D001].
 
-    ``allowlist`` = model-API hosts. Everything else attempted from inside a
+    ``allowlist`` = reachable hosts. Everything else attempted from inside a
     trial container is a logged violation, flagged on the record — tolerated as
-    data, never silently allowed.
+    data, never silently allowed. ``infra_hosts`` [EVAL-20 AC-6] is the
+    non-model subset of the allowlist (package registries, mirrors), carried
+    separately so per-trial egress attestation can tell "declared
+    infrastructure" from "should be attributable to a declared model".
     """
 
     allowlist: list[str] = field(default_factory=list)
     proxy_url: Optional[str] = None
     log_path: Optional[str] = None
+    infra_hosts: list[str] = field(default_factory=list)
+
+    @staticmethod
+    def host_matches(host: str, declared: list[str]) -> bool:
+        """Suffix-domain matching — the one definition both allowlisting and
+        egress attestation use, so 'allowed' and 'attributable' cannot drift."""
+        return any(host == a or host.endswith("." + a) for a in declared)
 
     def is_allowed(self, host: str) -> bool:
-        return any(host == a or host.endswith("." + a) for a in self.allowlist)
+        return self.host_matches(host, self.allowlist)
 
 
 @dataclass

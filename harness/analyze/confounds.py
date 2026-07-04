@@ -12,7 +12,7 @@ condition yields exactly that flag; a clean fixture yields none.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..ledger import events
 from ..ledger.query import find_events
@@ -39,6 +39,12 @@ class VendorOverlap:
     judge_vendor: str
     arm_vendors: dict[str, str]
     overlapping_arms: list[str]
+    # EVAL-20 AC-3 (additive): each arm's full declared vendor set, and exactly
+    # which declared model(s) share the judge vendor — so an aux-model overlap
+    # is named, not merely implied. `arm_vendors` keeps its primary-vendor
+    # semantics for existing readers.
+    arm_vendor_sets: dict[str, list[str]] = field(default_factory=dict)
+    overlapping_models: dict[str, list[str]] = field(default_factory=dict)
 
     def as_flag(self) -> dict:
         return {
@@ -47,19 +53,34 @@ class VendorOverlap:
             "judge_vendor": self.judge_vendor,
             "arm_vendors": self.arm_vendors,
             "overlapping_arms": self.overlapping_arms,
+            "arm_vendor_sets": self.arm_vendor_sets,
+            "overlapping_models": self.overlapping_models,
         }
 
 
 def judge_vendor_overlap(spec) -> VendorOverlap:
-    """Compute the judge/arm vendor overlap for an :class:`ExperimentSpec`."""
+    """Judge/arm vendor overlap over each arm's FULL declared model set
+    [EVAL-20 AC-3]: a workflow routing to a judge-vendor sub-model overlaps
+    exactly as a judge-vendor primary does, and the flag names which model."""
     judge_vendor = _vendor(spec.judge.model)
-    arm_vendors = {arm.name: _vendor(arm.model) for arm in spec.arms}
-    overlapping = [name for name, v in arm_vendors.items() if v == judge_vendor]
+    arm_vendors: dict[str, str] = {}
+    arm_vendor_sets: dict[str, list[str]] = {}
+    overlapping_models: dict[str, list[str]] = {}
+    for arm in spec.arms:
+        models = arm.declared_models()
+        arm_vendors[arm.name] = _vendor(arm.model)
+        arm_vendor_sets[arm.name] = sorted({_vendor(m) for m in models})
+        hits = [m for m in models if _vendor(m) == judge_vendor]
+        if hits:
+            overlapping_models[arm.name] = hits
+    overlapping = sorted(overlapping_models)
     return VendorOverlap(
         overlap=bool(overlapping),
         judge_vendor=judge_vendor,
         arm_vendors=arm_vendors,
         overlapping_arms=overlapping,
+        arm_vendor_sets=arm_vendor_sets,
+        overlapping_models=overlapping_models,
     )
 
 

@@ -144,6 +144,32 @@ def test_ac2_mutation_refused(tmp_path):
         assert_lock(spec, ledger)
 
 
+def test_lock_refuses_unregistered_arm_platform(tmp_path):
+    """An arm platform with no registered telemetry adapter refuses the lock.
+
+    run_trial resolves get_adapter(arm.platform) per trial, so an unregistered
+    platform would otherwise surface only mid-run — every cell of that arm a
+    trial_infra_failed(unknown_platform) after real spend [RN-15]. The refusal
+    must name the offending arm and the registered platforms, and append nothing.
+    """
+    from harness.plan.lock import UnknownArmPlatformError
+
+    arms = [
+        {"name": "control", "platform": "claude_code",
+         "model": "anthropic/claude-3-5-sonnet-20241022", "payload": {}},
+        {"name": "treatment", "platform": "my_custom_stack",
+         "model": "meta/llama-3-70b-instruct-20240620", "payload": {}},
+    ]
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml", arms=arms)
+    ledger = tmp_path / "ledger.ndjson"
+    with pytest.raises(UnknownArmPlatformError) as exc:
+        lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    msg = str(exc.value)
+    assert "treatment" in msg and "my_custom_stack" in msg
+    assert "claude_code" in msg and "codex" in msg  # names the runnable set
+    assert not ledger.exists()  # refused before genesis: zero events appended
+
+
 def test_ac4_mde_in_lock_event(tmp_path):
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"

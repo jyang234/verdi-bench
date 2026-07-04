@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from ..adapters import known_platforms
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import assert_chain, find_events
@@ -35,6 +36,15 @@ class LockMismatchError(LockError):
 
 class AlreadyLockedError(LockError):
     """A lock already exists for this ledger; re-lock is refused [PL-3]."""
+
+
+class UnknownArmPlatformError(LockError):
+    """An arm names a platform with no registered telemetry adapter.
+
+    ``run_trial`` resolves ``get_adapter(arm.platform)`` on every trial, so an
+    unregistered platform is unrunnable: each of that arm's cells would fail
+    closed mid-run as ``trial_infra_failed(unknown_platform)`` [RN-15], after
+    real spend on the other arm. Refuse at plan time instead."""
 
 
 class RubricCommitmentError(LockError):
@@ -83,6 +93,20 @@ def lock_experiment(
         spec_bytes.decode("utf-8"), source=str(spec_path)
     )
     sha = _sha256_bytes(spec_bytes)
+
+    # Every arm platform must have a registered telemetry adapter, or the arm
+    # is unrunnable (see UnknownArmPlatformError). The schema stays a pure
+    # shape contract; whether this environment can *run* a platform is a
+    # capability check, so it lives at lock — like the rubric-presence check.
+    registered = known_platforms()
+    unknown = [(a.name, a.platform) for a in spec.arms if a.platform not in registered]
+    if unknown:
+        listed = ", ".join(f"arm {n!r} has platform {p!r}" for n, p in unknown)
+        raise UnknownArmPlatformError(
+            f"{listed}: no registered telemetry adapter; registered platforms: "
+            f"{registered}. Add an adapter in harness/adapters/ "
+            "(docs/deep-dive.md §7) or use a registered platform."
+        )
 
     # 7A-3: before trusting anything the ledger already contains (the lock-count
     # check below, or any later append onto it), verify its chain. An

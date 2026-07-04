@@ -25,7 +25,7 @@ from typing import Mapping, Optional
 import yaml
 
 from ..adapters.base import Quotas
-from .egress import proxy_config
+from .egress import proxy_config, spec_allowlist
 from .types import ProxyConfig
 
 RUN_CONFIG_FILENAME = "run.config.yaml"
@@ -49,7 +49,7 @@ class RunSettings:
 
 
 def load_run_settings(
-    experiment_dir, env: Optional[Mapping[str, str]] = None
+    experiment_dir, env: Optional[Mapping[str, str]] = None, *, spec=None
 ) -> RunSettings:
     """Resolve run settings from ``<experiment_dir>/run.config.yaml`` + ``env``.
 
@@ -57,10 +57,28 @@ def load_run_settings(
     [AC-8]. A key *named* in the config but absent from the environment fails the
     run loudly (:class:`MissingProviderKeyError`, D-P3-1) — an unauthenticated arm
     would bias the A/B — rather than silently dropping to no key.
+
+    When ``spec`` declares egress hosts (``model_hosts``/``infra_hosts``,
+    EVAL-20 AC-6 [D003]), the proxy allowlist is DERIVED from those locked
+    bytes; a run.config.yaml that also carries an allowlist then conflicts with
+    the pre-registration and is refused loudly rather than silently overridden.
+    A spec declaring no hosts keeps the pre-EVAL-20 behavior exactly.
     """
     env = os.environ if env is None else env
+    declared = spec_allowlist(spec) if spec is not None else []
+    infra = sorted(spec.infra_hosts) if spec is not None else []
     path = Path(experiment_dir) / RUN_CONFIG_FILENAME
     if not path.exists():
+        if declared:
+            # A pre-registered egress declaration with nothing to enforce it is
+            # an inconsistent operational state — refuse loudly, never run with
+            # the locked contract silently void [EVAL-20 AC-6].
+            raise ValueError(
+                "the locked spec pre-registers egress hosts "
+                f"(model_hosts/infra_hosts) but {RUN_CONFIG_FILENAME} is absent; "
+                "the derived allowlist cannot be enforced — configure proxy.url "
+                "or remove the declared hosts before locking [EVAL-20 AC-6]"
+            )
         return RunSettings()
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
@@ -71,10 +89,25 @@ def load_run_settings(
             raise ValueError(
                 f"run.config.yaml 'proxy' must be a mapping, got {type(pcfg).__name__}"
             )
+        if declared and pcfg.get("allowlist") is not None:
+            raise ValueError(
+                "run.config.yaml declares a proxy allowlist but the locked spec "
+                "pre-registers egress hosts (model_hosts/infra_hosts); the "
+                "allowlist derives from the spec — remove it from "
+                f"{RUN_CONFIG_FILENAME} [EVAL-20 AC-6]"
+            )
         proxy = proxy_config(
-            pcfg.get("allowlist"),
+            declared if declared else pcfg.get("allowlist"),
             proxy_url=pcfg.get("url"),
             log_path=pcfg.get("log_path"),
+            infra_hosts=infra,
+        )
+    if declared and proxy is None:
+        raise ValueError(
+            "the locked spec pre-registers egress hosts (model_hosts/infra_hosts) "
+            f"but {RUN_CONFIG_FILENAME} configures no proxy; the derived allowlist "
+            "cannot be enforced — configure proxy.url or remove the declared hosts "
+            "before locking [EVAL-20 AC-6]"
         )
 
     qcfg = data.get("quotas")
