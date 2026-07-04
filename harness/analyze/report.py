@@ -206,15 +206,23 @@ def _tier_summary(ledger_path) -> dict:
     silently stamped on each record."""
     from ..adapters.base import ADVISORY
 
-    tiers = sorted(
-        {
-            # `... or {}` / `... or ADVISORY` (not `.get(default)`): a record whose
-            # provenance or tier serialized as JSON null must still read as the
-            # lowest-trust ADVISORY band, never crash sorted() on a None member.
-            (ev["trial_record"].get("provenance") or {}).get("tier") or ADVISORY
-            for ev in find_events(ledger_path, events.TRIAL)
-        }
-    )
+    tier_set = {
+        # `... or {}` / `... or ADVISORY` (not `.get(default)`): a record whose
+        # provenance or tier serialized as JSON null must still read as the
+        # lowest-trust ADVISORY band, never crash sorted() on a None member.
+        (ev["trial_record"].get("provenance") or {}).get("tier") or ADVISORY
+        for ev in find_events(ledger_path, events.TRIAL)
+    }
+    # 7B-3: the grade-level `grader` stamp is authoritative for grade trust, not
+    # only the trial's provenance tier. An explicit `--runner local` grade over
+    # trusted-tier trials (the write-only-stamp hole) must still banner ADVISORY.
+    # A grader field present and ≠ "docker" (i.e. "local" or "unknown") is
+    # advisory; an absent field (pre-stamp ledger) adds no new signal.
+    for ev in find_events(ledger_path, events.GRADE):
+        grader = ev.get("grader")
+        if grader is not None and grader != "docker":
+            tier_set.add(ADVISORY)
+    tiers = sorted(tier_set)
     return {"tiers": tiers, "advisory": ADVISORY in tiers}
 
 

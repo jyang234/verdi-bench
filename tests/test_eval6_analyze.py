@@ -420,6 +420,40 @@ def test_an11_advisory_tier_surfaced(tmp_path):
     assert "ADVISORY" in render_markdown(f, ledger, "exploratory")
 
 
+def test_7b3_grader_stamp_local_banners_over_trusted_trials(tmp_path):
+    """7B-3: an explicit --runner local grade over trusted-tier trials must
+    banner ADVISORY. _tier_summary read only trial provenance (the write-only
+    grader-stamp hole); the grade-level grader stamp is now authoritative."""
+    from harness.adapters.base import ADVISORY, Outcome, Provenance, Telemetry, TrialRecord
+    from harness.analyze.report import _tier_summary
+    from harness.ledger.events import record_grade, record_trial
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    rec = TrialRecord.assemble(
+        trial_id="tr", task_id="t0", arm="control", repetition=0,
+        outcome=Outcome.completed, telemetry=Telemetry(),
+        provenance=Provenance(tier="TRUSTED"), artifacts_path="/tmp/tr/artifacts",
+    )
+    record_trial(ledger, ctx, trial_record=rec.model_dump(mode="json"))
+    # trial provenance alone is trusted → no ADVISORY yet
+    assert _tier_summary(ledger)["advisory"] is False
+    # a local (advisory) grade over the trusted trial flips the banner on
+    record_grade(ledger, ctx, trial_id="tr", task_sha="s",
+                 assertions=[{"id": "h1", "source": "holdout_test", "result": "pass"}],
+                 binary_score=True, grader="local")
+    summary = _tier_summary(ledger)
+    assert summary["advisory"] is True
+    assert ADVISORY in summary["tiers"]
+    # an absent grader field (pre-stamp ledger) must add no new signal
+    ledger2 = tmp_path / "l2.ndjson"
+    record_trial(ledger2, ctx, trial_record=rec.model_dump(mode="json"))
+    record_grade(ledger2, ctx, trial_id="tr", task_sha="s",
+                 assertions=[{"id": "h1", "source": "holdout_test", "result": "pass"}],
+                 binary_score=True)  # no grader kwarg
+    assert _tier_summary(ledger2)["advisory"] is False
+
+
 def test_ac4_flags_emitted_egress(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "eg", ctx=ctx)
