@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Iterator, Optional
 
-from .chain import ChainResult, head_hash, verify_chain
+from .chain import ChainResult, canonical_line, hash_line, head_hash, verify_chain
 
 
 def ledger_head_hash(path) -> str:
@@ -27,6 +27,18 @@ def ledger_head_hash(path) -> str:
 def verify(path) -> ChainResult:
     """Read-side re-export of :func:`harness.ledger.chain.verify_chain`."""
     return verify_chain(path)
+
+
+def event_line_hash(event: dict) -> str:
+    """The sha256 line hash of a ledgered ``event`` — its ledger-native id.
+
+    Re-canonicalizes the parsed event (as :func:`iter_events` yields it,
+    ``prev_hash`` included) and hashes it exactly as ``append_event`` hashed
+    the line it wrote, so the value equals the chain's back-pointer to that
+    line. Used to reference a specific prior event (e.g. the ``cant_grade`` a
+    ``--retry-terminal`` grade overrides) without a separate id field [D-P7-2].
+    """
+    return hash_line(canonical_line(event))
 
 
 class ChainIntegrityError(RuntimeError):

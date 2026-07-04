@@ -150,6 +150,8 @@ class FindingsDocument(BaseModel):
     ledger_consistency: dict
     # AN-11: grade-trust tiers — local/fake results are ADVISORY, surfaced not stamped
     tier: dict
+    # D-P7-2: terminal-override disclosure — count of --retry-terminal re-attempts
+    overrides: dict = {}
     process: Optional[dict] = None
     judge_calibration: Optional[dict] = None
     provenance: Provenance
@@ -214,6 +216,23 @@ def _tier_summary(ledger_path) -> dict:
         }
     )
     return {"tiers": tiers, "advisory": ADVISORY in tiers}
+
+
+def _override_summary(ledger_path) -> dict:
+    """Terminal-override disclosure [D-P7-2].
+
+    Counts grade-family events (``grade`` / ``cant_grade``) carrying
+    ``override_of`` — the trials whose terminal ``cant_grade`` was re-attempted
+    via ``bench grade --retry-terminal``. The count is disclosed in both renders
+    so a manual override is never invisible in the findings."""
+    trials: set[str] = set()
+    n_events = 0
+    for kind in (events.GRADE, events.CANT_GRADE):
+        for ev in find_events(ledger_path, kind):
+            if "override_of" in ev:
+                trials.add(ev["trial_id"])
+                n_events += 1
+    return {"n_override_events": n_events, "override_trials": sorted(trials)}
 
 
 def _telemetry_values(ledger_path, field: str) -> dict[str, dict[str, list[float]]]:
@@ -641,6 +660,7 @@ def compute_findings(
         integrity=_integrity(ledger_path),
         ledger_consistency=_ledger_consistency(ledger_path),
         tier=_tier_summary(ledger_path),
+        overrides=_override_summary(ledger_path),
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
         provenance=provenance,
@@ -841,6 +861,19 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
         )
 
 
+def _override_lines(findings: FindingsDocument) -> list[str]:
+    """Disclosure line for terminal-override re-grades [D-P7-2], or [] if none."""
+    ov = findings.overrides or {}
+    n = ov.get("n_override_events", 0)
+    if not n:
+        return []
+    trials = ov.get("override_trials", [])
+    return [
+        f"- {n} override-graded re-attempt(s) via `--retry-terminal` on "
+        f"{len(trials)} trial(s): {trials}"
+    ]
+
+
 def _render_official_md(findings: FindingsDocument) -> str:
     out = [
         f"# Official findings — {findings.experiment_id}",
@@ -868,6 +901,9 @@ def _render_official_md(findings: FindingsDocument) -> str:
     consistency = _ledger_consistency_lines(findings)
     if consistency:
         out += ["", "## Ledger consistency", *consistency]
+    override = _override_lines(findings)
+    if override:
+        out += ["", "## Terminal overrides", *override]
     # AN-12 / REVIEW-D-3: the process section is retained in the official render
     # under an explicit EXPLORATORY/advisory label with the unblinded disclosure —
     # never a primary metric, never stripped (findings.json already hashes it into
@@ -914,6 +950,9 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
     consistency = _ledger_consistency_lines(findings)
     if consistency:
         out += section("Ledger consistency", consistency)
+    override = _override_lines(findings)
+    if override:
+        out += section("Terminal overrides", override)
     out += section("CI method selection (coverage)", [f"- {findings.ci_selection}"])
     out += section("Provenance", _provenance_lines(findings))
     return "\n".join(out) + "\n"

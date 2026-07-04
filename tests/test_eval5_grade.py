@@ -244,6 +244,65 @@ def test_grade_batch_daemon_down_marks_trials_transient(tmp_path, monkeypatch):
     assert _completed_trials(ledger) == set()
 
 
+def test_grade_trial_stamps_override_of_on_grade(tmp_path):
+    """7B-2/D-P7-2: a --retry-terminal re-attempt stamps override_of on the grade."""
+    outcome, ledger = _grade(
+        tmp_path, {"assertions": [{"id": "h1", "result": "pass"}]},
+    )
+    # regrade path: grade_trial called with override_of
+    ws = write_workspace(tmp_path, name="ws2")
+    container = GradingContainer(
+        runner=ScriptedGradeRunner({"assertions": [{"id": "h1", "result": "pass"}]})
+    )
+    ledger2 = tmp_path / "l2.ndjson"
+    grade_trial("t1", _task(), ws, ledger2, fixed_ctx(),
+                container=container, override_of="cafe" * 16)
+    g = find_events(ledger2, "grade")[0]
+    assert g["override_of"] == "cafe" * 16
+
+
+def test_grade_trial_stamps_override_of_on_cant_grade(tmp_path):
+    """A failed re-attempt still records the override on the resulting cant_grade,
+    so every override attempt is visible (D-P7-2)."""
+    ws = write_workspace(tmp_path)
+    container = GradingContainer(runner=ScriptedGradeRunner(container_error=True))
+    ledger = tmp_path / "l.ndjson"
+    grade_trial("t1", _task(), ws, ledger, fixed_ctx(),
+                container=container, override_of="beef" * 16)
+    c = find_events(ledger, "cant_grade")[0]
+    assert c["reason"] == REASON_CONTAINER
+    assert c["override_of"] == "beef" * 16
+
+
+def test_resolve_terminal_overrides_refusals_and_hash(tmp_path):
+    """--retry-terminal targets are validated: a graded, a transient-only, and a
+    missing trial are all refused; a terminal cant_grade resolves to its ledger
+    line hash (the ledger-native override reference)."""
+    import pytest
+
+    from harness.grade.cli import RetryTerminalError, _resolve_terminal_overrides
+    from harness.ledger import events
+    from harness.ledger.query import ledger_head_hash
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    events.record_grade(ledger, ctx, trial_id="graded", task_sha="s", assertions=[],
+                        binary_score=True)
+    events.record_cant_grade(ledger, ctx, trial_id="transient", reason="grader_unavailable")
+    events.record_cant_grade(ledger, ctx, trial_id="terminal", reason="container_failure")
+
+    with pytest.raises(RetryTerminalError):
+        _resolve_terminal_overrides(ledger, ["graded"])
+    with pytest.raises(RetryTerminalError):
+        _resolve_terminal_overrides(ledger, ["transient"])
+    with pytest.raises(RetryTerminalError):
+        _resolve_terminal_overrides(ledger, ["nope"])
+
+    ov = _resolve_terminal_overrides(ledger, ["terminal"])
+    # the terminal cant_grade is the last event ⇒ its line hash is the head hash
+    assert ov == {"terminal": ledger_head_hash(ledger)}
+
+
 class _FreshCopyRunner:
     """A runner that (like DockerGradeRunner) grades a fresh workspace copy and
     writes its *own* holdout output — records what it was handed. It does not set

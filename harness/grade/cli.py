@@ -42,6 +42,49 @@ def _grade_tasks_from_dicts(task_dicts: list) -> dict:
     return tasks
 
 
+class RetryTerminalError(RuntimeError):
+    """A ``--retry-terminal`` target is not an overridable terminal cant_grade."""
+
+
+def _resolve_terminal_overrides(ledger_path, trial_ids: list) -> dict:
+    """Validate each ``--retry-terminal`` target and map it to the line hash of
+    the terminal ``cant_grade`` it overrides [D-P7-2].
+
+    Each named trial must have a **terminal** ``cant_grade`` and no ``grade``;
+    otherwise refuse, naming what was found. The returned hash is the
+    ledger-native reference stamped as ``override_of`` on the re-attempt's
+    event."""
+    from ..ledger import events
+    from ..ledger.query import event_line_hash, find_events
+    from .deterministic import TRANSIENT_CANT_GRADE
+
+    graded = {e["trial_id"] for e in find_events(ledger_path, events.GRADE)}
+    cant_by_trial: dict = {}
+    for e in find_events(ledger_path, events.CANT_GRADE):
+        cant_by_trial.setdefault(e["trial_id"], []).append(e)
+
+    overrides: dict = {}
+    for tid in trial_ids:
+        if tid in graded:
+            raise RetryTerminalError(
+                f"--retry-terminal {tid!r}: trial already has a grade — override refused"
+            )
+        cants = cant_by_trial.get(tid, [])
+        terminal = [e for e in cants if e["reason"] not in TRANSIENT_CANT_GRADE]
+        if not terminal:
+            found = (
+                f"only transient cant_grade {[e['reason'] for e in cants]}"
+                if cants
+                else "no cant_grade at all"
+            )
+            raise RetryTerminalError(
+                f"--retry-terminal {tid!r}: expected a terminal cant_grade to "
+                f"override but found {found}"
+            )
+        overrides[tid] = event_line_hash(terminal[-1])
+    return overrides
+
+
 def _completed_trials(ledger_path) -> set:
     """Trials that must not be (re)graded: any with a grade, or a cant_grade
     whose reason is terminal. A transient cant_grade (e.g. a docker outage) is
@@ -65,6 +108,11 @@ def register(app: typer.Typer) -> None:
         experiment_dir: Path = typer.Argument(..., help="Directory with experiment.yaml"),
         runner: str = typer.Option(
             "docker", "--runner", help="docker (real container) | local (no-daemon fake/test)"
+        ),
+        retry_terminal: list[str] = typer.Option(
+            [], "--retry-terminal",
+            help="Trial id with a terminal cant_grade to re-attempt (repeatable); "
+                 "the resulting event records override_of [D-P7-2]",
         ),
     ) -> None:
         """Grade every ungraded trial deterministically."""
@@ -109,6 +157,17 @@ def register(app: typer.Typer) -> None:
             raise typer.Exit(code=2)
         grade_tasks = _grade_tasks_from_dicts(task_dicts)
         already = _completed_trials(ledger_path)
+
+        # D-P7-2: --retry-terminal re-attempts named trials whose grade was a
+        # terminal cant_grade. Validate each (must be terminal, not already
+        # graded), drop it from the skip set, and stamp the resulting event with
+        # override_of = the overridden cant_grade's line hash.
+        try:
+            overrides = _resolve_terminal_overrides(ledger_path, retry_terminal)
+        except RetryTerminalError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        already = already - set(overrides)
 
         try:
             actor = getpass.getuser()
@@ -161,6 +220,7 @@ def register(app: typer.Typer) -> None:
             grade_trial(
                 tid, task, workspace, ledger_path, ctx,
                 container=container, fractional=spec.fractional_scoring,
+                override_of=overrides.get(tid),
             )
             graded += 1
         typer.echo(f"graded {graded} trial(s)")

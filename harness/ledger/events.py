@@ -215,11 +215,16 @@ def record_grade(
     binary_score: bool,
     fractional_score: Optional[float] = None,
     grader: Optional[str] = None,
+    override_of: Optional[str] = None,
 ) -> dict:
     """``grader`` (additive field) records which grader produced the verdict —
     e.g. ``"docker"`` (a trusted network-less container) vs ``"local"`` (the
     no-daemon path that reads a pre-placed file, ADVISORY). It lets an audit
-    distinguish a trusted grade from an advisory/forgeable one."""
+    distinguish a trusted grade from an advisory/forgeable one.
+
+    ``override_of`` (additive) is the sha256 line hash of a terminal
+    ``cant_grade`` this grade re-attempts via ``bench grade --retry-terminal``,
+    so a manual override is visible in the event itself [D-P7-2]."""
     payload = {
         "trial_id": trial_id,
         "task_sha": task_sha,
@@ -230,13 +235,27 @@ def record_grade(
         payload["fractional_score"] = fractional_score
     if grader is not None:
         payload["grader"] = grader
+    if override_of is not None:
+        payload["override_of"] = override_of
     return emit(ledger_path, ctx, GRADE, payload)
 
 
 def record_cant_grade(
-    ledger_path, ctx: EventContext, *, trial_id: str, reason: str
+    ledger_path,
+    ctx: EventContext,
+    *,
+    trial_id: str,
+    reason: str,
+    override_of: Optional[str] = None,
 ) -> dict:
-    return emit(ledger_path, ctx, CANT_GRADE, {"trial_id": trial_id, "reason": reason})
+    """``override_of`` (additive) is the sha256 line hash of the terminal
+    ``cant_grade`` a ``--retry-terminal`` re-attempt overrode; present only on
+    an override re-attempt, so every attempt — even a re-failure — is visible
+    [D-P7-2]."""
+    payload = {"trial_id": trial_id, "reason": reason}
+    if override_of is not None:
+        payload["override_of"] = override_of
+    return emit(ledger_path, ctx, CANT_GRADE, payload)
 
 
 def record_flake_baseline(

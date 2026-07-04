@@ -70,6 +70,67 @@ def test_fake_pipeline_plan_run_grade(tmp_path):
     assert runner.invoke(app, ["verify-chain", str(ledger)]).exit_code == 0
 
 
+def test_retry_terminal_override_regrades_and_discloses(tmp_path):
+    """7B-2/D-P7-2: --retry-terminal re-attempts a terminal cant_grade, stamps
+    override_of on the resulting grade, and the findings disclose the override
+    count. A --retry-terminal on an already-graded trial is refused."""
+    from harness.analyze.report import compute_findings, render_markdown
+    from harness.ledger.query import ledger_head_hash
+    from harness.schema.experiment import ExperimentSpec
+
+    expdir = tmp_path / "exp"
+    expdir.mkdir(parents=True, exist_ok=True)
+    write_experiment_yaml(expdir / "experiment.yaml", repetitions=1)
+    (expdir / "tasks.yaml").write_text(
+        yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "solve",
+                                   "fake_behavior": {"native_log": {"total_cost_usd": 0.01}}}]}),
+        encoding="utf-8",
+    )
+    ledger = expdir / "ledger.ndjson"
+    assert runner.invoke(
+        app, ["plan", str(expdir / "experiment.yaml"), "--ledger", str(ledger)]
+    ).exit_code == 0
+    assert runner.invoke(app, ["run", str(expdir)]).exit_code == 0
+    trials = find_events(ledger, "trial")
+    assert trials
+
+    # First grade with NO holdout_results.json present ⇒ terminal container_failure.
+    r1 = runner.invoke(app, ["grade", str(expdir), "--runner", "local"])
+    assert r1.exit_code == 0, r1.output
+    cant = find_events(ledger, "cant_grade")
+    assert cant and all(c["reason"] == "container_failure" for c in cant)
+    target = cant[0]["trial_id"]
+
+    # Now place the results the local runner reads, and override the target only.
+    for ev in trials:
+        ws = Path(ev["trial_record"]["artifacts_path"]).parent
+        (ws / "holdout_results.json").write_text(
+            json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
+        )
+    r2 = runner.invoke(
+        app, ["grade", str(expdir), "--runner", "local", "--retry-terminal", target]
+    )
+    assert r2.exit_code == 0, r2.output
+
+    grades = find_events(ledger, "grade")
+    assert [g["trial_id"] for g in grades] == [target]
+    assert len(grades[0]["override_of"]) == 64  # sha256 line hash of the cant_grade
+
+    # Overriding a now-graded trial is refused.
+    r3 = runner.invoke(
+        app, ["grade", str(expdir), "--runner", "local", "--retry-terminal", target]
+    )
+    assert r3.exit_code == 2
+    assert "already has a grade" in (r3.output + (r3.stderr or ""))
+
+    # The findings disclose the override count in both renders.
+    spec = ExperimentSpec.from_yaml(expdir / "experiment.yaml")
+    findings = compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, n_boot=200)
+    assert findings.overrides["n_override_events"] == 1
+    md = render_markdown(findings, ledger, "exploratory")
+    assert "override-graded" in md and "Terminal overrides" in md
+
+
 def test_run_refuses_quarantined_task_version(tmp_path):
     """RN-5 + D-2: bench run loads the flake quarantine from the ledger and
     refuses to run a task version with a quarantining baseline — no trials run."""
