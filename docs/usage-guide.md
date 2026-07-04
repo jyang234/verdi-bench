@@ -641,7 +641,92 @@ declared treatment varies. The consequence:
 
 ---
 
-## 10. Where to go next
+## 10. Plugging into a standardized benchmark (SWE-bench worked example)
+
+verdi-bench is an **instrument, not a benchmark**: it *runs* a corpus, it does
+not ship one. So instead of hand-authoring `tasks.yaml`, you can point it at a
+recognized, citable task set — the same way `lm-eval-harness` and Inspect became
+part of the conversation as *harnesses for* public batteries rather than by
+authoring their own science. Running a named battery through verdi buys you the
+external validity of a community-scrutinized task set **and** verdi's internal
+validity (pre-registration, blinding, tamper-evidence, gaming/contamination
+forensics) layered on top.
+
+The best-fit batteries are **agentic and test-graded** — a per-task container
+image plus tests that must pass. That is exactly verdi's own model (`task.image`
++ deterministic holdout assertions), so the mapping is nearly one-to-one.
+SWE-bench is the reference importer.
+
+### The flow: export → import → materialize → run
+
+```bash
+# 1. Export the dataset ONCE (this is the only networked step; it's yours, not
+#    the harness's — keeping the import deterministic and offline).
+python -c "import datasets; datasets.load_dataset('princeton-nlp/SWE-bench_Verified', \
+  split='test').to_json('instances.jsonl')"
+
+# 2. Import → a cached corpus + a manifest with a citable content sha per task.
+uv run bench corpus import instances.jsonl --cache ./swe-cache --benchmark swebench
+
+# 3. Materialize → a runnable experiment: tasks.yaml (agent-visible) + a
+#    read-only holdouts/ dir (the grading tests, insulated).
+uv run bench corpus materialize ./swe-cache/manifest.json --cache ./swe-cache --out ./exp
+
+# 4. Add arms + a judge rubric to ./exp/experiment.yaml (§2.1), then the usual pipeline:
+uv run bench plan  ./exp/experiment.yaml --ledger ./exp/ledger.ndjson
+uv run bench run   ./exp --engine harbor
+uv run bench grade ./exp --runner docker
+uv run bench analyze ./exp --official --corpus ./swe-cache/manifest.json
+```
+
+### What the import actually does — and why it's honest
+
+- **Maps native → verdi.** Each SWE-bench instance's `problem_statement` becomes
+  the agent-visible `prompt`; its `test_patch` + `FAIL_TO_PASS` / `PASS_TO_PASS`
+  become the grading **holdout**; its per-instance image becomes the task
+  `image`. A record missing a field the mapping needs is **refused loudly**, not
+  imported as a half-task.
+- **Insulation by construction.** The benchmark ships its grading tests *next to*
+  the problem statement. Materialization routes them to different files — problem
+  → `tasks.yaml`, tests → `holdouts/<id>/holdout.json` — so a benchmark's own
+  tests can never leak to the agent it grades (an enforcing test asserts no
+  holdout content appears in `tasks.yaml`).
+- **Citable identity.** Each task gets a content sha over its *intrinsic* fields
+  (problem, tests, repo, base commit, version) — not the image ref, which is
+  deployment wiring you can re-pin without churning what a finding cites.
+- **Contamination-aware for free.** SWE-bench's `created_at` rides onto the
+  manifest entry, so the contamination sentinel's cutoff dating gets a real date
+  instead of an honest `unknown`.
+
+### The one environment-specific piece
+
+Materialization writes the grading **specification** (which tests to run).
+*Executing* those tests is the grading image's job — for SWE-bench, an image that
+applies the recorded `test_patch`, runs the tests, and emits the
+`holdout_results.json` the deterministic grader parses (§2.4). That image is the
+one benchmark-bound piece verdi does not synthesize; the holdout spec is the
+contract it consumes. This is the same honest boundary as the rest of the
+real-container path — the logic is built and tested offline; the live run needs
+the benchmark's own image.
+
+### Fit by benchmark type
+
+| Benchmark shape | Fit | Why |
+|---|---|---|
+| Agentic, container + test-graded (SWE-bench, Terminal-Bench, τ-bench-style) | **Natural** | Per-task image + tests-must-pass maps directly onto `task.image` + holdout assertions |
+| String-metric Q&A (classic MMLU / HELM scenarios) | Awkward | verdi grades by container holdout assertions, not output-string metrics; adaptable but a square peg, and the hermetic/forensic machinery doesn't add much |
+
+### Adding another battery
+
+Implement a `TaskSource` (see `harness/corpus/benchmarks.py`): a `fetch()` that
+reads the benchmark's exported records and yields `RawTask`s whose `content` is
+Harbor-format (agent-visible keys + a `holdout` key), then import it through
+`import_public_dataset`. You author the **importer** — a bounded, one-time shim —
+never the tasks.
+
+---
+
+## 11. Where to go next
 
 - **[deep-dive.md](deep-dive.md)** — what each stage writes to the ledger, the
   trust mechanism behind every claim, and the test that owns it.

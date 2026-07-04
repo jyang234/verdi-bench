@@ -164,7 +164,9 @@ uv run bench serve  --root <workspace-dir>             # workspace home: every e
 uv run bench serve  <experiment-dir> --bundle out.html # static self-contained snapshot of that view (no server, no event)
 uv run bench author <workspace-dir> [--actor <name>]   # draft/validate/preview experiments; the lock is its one ledgered op
 
-uv run bench corpus import <tasks-dir> --cache <dir>   # idempotent public import
+uv run bench corpus import <tasks-dir> --cache <dir>   # idempotent public import (harbor json dir)
+uv run bench corpus import <swe-bench.jsonl> --cache <dir> --benchmark swebench   # a standardized battery
+uv run bench corpus materialize <manifest> --cache <dir> --out <experiment-dir>   # → runnable tasks.yaml + holdouts
 uv run bench corpus subset <manifest> --seed 1234      # stratified calibration subset
 uv run bench corpus mine <mr.json> --ticket t.txt --out cand.json
 uv run bench corpus review <cand.json>                 # curation view

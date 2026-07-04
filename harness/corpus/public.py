@@ -71,19 +71,28 @@ class DirectorySource:
         return out
 
 
-def import_terminal_bench(
+def import_public_dataset(
     source: TaskSource,
     cache_dir,
     *,
-    corpus_id: str = TERMINAL_BENCH,
+    corpus_id: str,
     semver: str = "1.0.0",
+    dataset_name: str = TERMINAL_BENCH,
     dataset_version: str = "2.0",
 ) -> CorpusManifest:
-    """Import a public dataset into ``cache_dir`` and return its manifest.
+    """Import any public dataset ``source`` into ``cache_dir`` → its manifest.
+
+    The generic engine behind :func:`import_terminal_bench` and the recognized
+    benchmark importers in :mod:`harness.corpus.benchmarks` — a ``TaskSource``
+    yields Harbor-format tasks and this routes them through the idempotent cache
+    + manifest machinery regardless of which benchmark produced them.
 
     Idempotent for a fixed ``(source, dataset_version)``: tasks are keyed by id,
     shas compared, and unchanged content is written once. The task cache and the
-    manifest are both deterministic byte-for-byte across re-imports.
+    manifest are both deterministic byte-for-byte across re-imports. A record's
+    ``metadata['created_at']`` (RFC 3339, when the source supplies it) rides onto
+    the manifest entry so the contamination sentinel's cutoff dating has a real
+    date rather than an honest ``unknown`` [EVAL-10 AC-1].
     """
     cache_dir = Path(cache_dir)
     tasks_dir = cache_dir / "tasks"
@@ -107,6 +116,9 @@ def import_terminal_bench(
                 # go through the curation gate instead.
                 status="admitted",
                 metadata=raw.metadata,
+                # A source-supplied creation date feeds cutoff dating; absent
+                # stays None (honest `unknown`), never a wall-clock read.
+                created_at=raw.metadata.get("created_at"),
             )
         )
 
@@ -114,7 +126,7 @@ def import_terminal_bench(
         corpus_id=corpus_id,
         semver=semver,
         kind="public",
-        dataset=Dataset(name=TERMINAL_BENCH, version=dataset_version),
+        dataset=Dataset(name=dataset_name, version=dataset_version),
         tasks=entries,
     )
 
@@ -161,3 +173,23 @@ def import_terminal_bench(
             existing.unlink()
     manifest.save(prior_path)
     return manifest
+
+
+def import_terminal_bench(
+    source: TaskSource,
+    cache_dir,
+    *,
+    corpus_id: str = TERMINAL_BENCH,
+    semver: str = "1.0.0",
+    dataset_version: str = "2.0",
+) -> CorpusManifest:
+    """Import the terminal-bench public dataset — a thin, back-compatible alias
+    for :func:`import_public_dataset` with the terminal-bench dataset name."""
+    return import_public_dataset(
+        source,
+        cache_dir,
+        corpus_id=corpus_id,
+        semver=semver,
+        dataset_name=TERMINAL_BENCH,
+        dataset_version=dataset_version,
+    )
