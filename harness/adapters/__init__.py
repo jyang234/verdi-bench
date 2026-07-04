@@ -5,9 +5,10 @@ from __future__ import annotations
 from .base import Adapter, Outcome, Provenance, Quotas, Telemetry, TrialRecord
 from .claude_code import ClaudeCodeAdapter
 from .codex import CodexAdapter
+from .generic import GenericAdapter, GenericLogError
 
 _ADAPTERS: dict[str, Adapter] = {
-    a.platform: a for a in (ClaudeCodeAdapter(), CodexAdapter())
+    a.platform: a for a in (ClaudeCodeAdapter(), CodexAdapter(), GenericAdapter())
 }
 
 
@@ -36,6 +37,8 @@ __all__ = [
     "Adapter",
     "ClaudeCodeAdapter",
     "CodexAdapter",
+    "GenericAdapter",
+    "GenericLogError",
     "Outcome",
     "Provenance",
     "Quotas",

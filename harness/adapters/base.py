@@ -151,20 +151,29 @@ class TrialRecord(BaseModel):
 class Adapter:
     """Base adapter: agent-native logs → normalized :class:`Telemetry`.
 
-    Subclasses parse their agent's log format. Anything unparseable stays
-    ``None`` (→ ``telemetry_nulls``); never estimated [D004].
+    Ready out of the box: the default methods parse the verdi normalized log
+    format (:mod:`harness.adapters.generic`, spec in ``docs/adapters.md``), so
+    a bare subclass is a complete adapter for any test subject that emits that
+    format. Platform adapters override to parse their agent's *native* log
+    format instead. Either way, anything unparseable stays ``None``
+    (→ ``telemetry_nulls``); never estimated [D004].
     """
 
     platform: str = "base"
 
-    def normalize(self, native_log: dict) -> Telemetry:  # pragma: no cover - abstract
-        raise NotImplementedError
+    def normalize(self, native_log: dict) -> Telemetry:
+        """Default: parse the verdi normalized log format's ``telemetry``
+        block. Override to parse a platform's native log format."""
+        from .generic import normalize_generic  # runtime import stays lazy
 
-    def normalize_trajectory(
-        self, native_log: dict
-    ) -> Optional[list["TrajectoryStep"]]:  # pragma: no cover - abstract
-        """Map the platform's native log to ordered shared-schema steps
+        return normalize_generic(native_log)
+
+    def normalize_trajectory(self, native_log: dict) -> Optional[list["TrajectoryStep"]]:
+        """Map the log to ordered shared-schema steps
         (``list[harness.run.trajectory.TrajectoryStep]``) [EVAL-12 AC-1].
+
+        Default: parse the verdi normalized log format's ``trajectory`` list;
+        override for a platform's native format.
 
         Returns ``None`` when the log carries no trajectory content at all —
         the honest absent state, distinct from an empty step list [AC-2]. Step
@@ -172,4 +181,6 @@ class Adapter:
         [D004]; the null asymmetry between platforms is data, per field, the
         same way codex's null cost is.
         """
-        raise NotImplementedError
+        from .generic import normalize_generic_trajectory  # runtime import stays lazy
+
+        return normalize_generic_trajectory(native_log)
