@@ -19,6 +19,7 @@ from typing import Optional
 
 from ..adapters import get_adapter
 from ..adapters.base import Flags, Outcome, Provenance, TrialRecord
+from ..adapters.generic import by_model_delta, normalize_generic_by_model
 from ..schema.experiment import Arm
 from .redact import redact_artifacts
 from .trajectory import TrajectoryCorruptError, TrajectoryRecord, persist_trajectory
@@ -134,6 +135,16 @@ def run_trial(
     adapter = get_adapter(arm.platform)
     telemetry = adapter.normalize(result.native_log)
 
+    # Per-model attribution [EVAL-14 AC-2, AC-4]: a v2 generic log may split
+    # telemetry across the arm's DECLARED models. Self-reported testimony, so
+    # it rides flags (the advisory channel) — the authoritative whole-trial
+    # telemetry above is untouched, and a sum/total mismatch is surfaced as a
+    # delta, never reconciled (the proxy_cost_delta precedent). None for v1,
+    # non-verdi, and native-platform logs — honest absence.
+    telemetry_by_model = normalize_generic_by_model(
+        result.native_log, arm.declared_models()
+    )
+
     # Trajectory capture [EVAL-12 AC-1, AC-2] — strictly after redact_artifacts:
     # the input is the already-scrubbed on-disk agent_log.json (a trajectory is
     # a transcript, and transcripts leak secrets), and persist_trajectory runs
@@ -169,6 +180,13 @@ def run_trial(
             )
 
     flags = Flags(egress_violation=result.egress_violation)
+    if telemetry_by_model:
+        flags.telemetry_by_model = {
+            m: t.model_dump(mode="json") for m, t in telemetry_by_model.items()
+        }
+        delta = by_model_delta(telemetry_by_model, telemetry)
+        if delta:
+            flags.by_model_delta = delta
     if result.egress_attempts:
         flags.egress_attempts = result.egress_attempts
     # Egress attestation [EVAL-13 AC-6, D003]: an ALLOWED host attributable to

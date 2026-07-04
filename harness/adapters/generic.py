@@ -10,7 +10,7 @@ a new shape of test subject means emitting the record verdi-bench already
 speaks, not teaching verdi-bench a new one. The full format spec, integration
 tiers, and multi-agent guidance live in ``docs/adapters.md``.
 
-Format v1::
+Format v1 (v2 is a superset — see below)::
 
     {
       "verdi_log_version": 1,
@@ -20,6 +20,13 @@ Format v1::
                       "cost": …, "files_touched": […], "exit_code": …,
                       "command": …}, …]
     }
+
+Format v2 [EVAL-14] adds multi-agent attribution: an ``agent`` field on
+trajectory steps (closed role vocabulary — see
+``harness.run.trajectory.AGENT_ROLES``) and a top-level ``telemetry_by_model``
+object keyed strictly by the models the locked spec declared (EVAL-13's
+primary + aux set), each value a Telemetry-shaped block. v1 logs parse
+unchanged forever.
 
 Honesty rules split on declaration. A log with **no** ``verdi_log_version``
 never claimed the format: telemetry is all-null and the trajectory honestly
@@ -40,7 +47,8 @@ from pydantic import ValidationError
 from ..run.trajectory import TrajectoryStep
 from .base import Adapter, Telemetry
 
-GENERIC_LOG_VERSION = 1
+GENERIC_LOG_VERSION = 2
+SUPPORTED_LOG_VERSIONS = frozenset({1, 2})
 VERSION_KEY = "verdi_log_version"
 
 
@@ -62,10 +70,11 @@ def declared_version(native_log: dict) -> Optional[int]:
     if v is None:
         return None
     # bool is an int subclass: `True == 1` would silently pass as v1
-    if isinstance(v, bool) or v != GENERIC_LOG_VERSION:
+    if isinstance(v, bool) or v not in SUPPORTED_LOG_VERSIONS:
         raise GenericLogError(
-            f"{VERSION_KEY} {v!r} is not supported (this parser speaks version "
-            f"{GENERIC_LOG_VERSION}); refusing to guess at another version's semantics"
+            f"{VERSION_KEY} {v!r} is not supported (this parser speaks versions "
+            f"{sorted(SUPPORTED_LOG_VERSIONS)}); refusing to guess at another "
+            "version's semantics"
         )
     return v
 
@@ -117,6 +126,66 @@ def normalize_generic_trajectory(native_log: dict) -> Optional[list[TrajectorySt
         except ValidationError as e:
             raise GenericLogError(f"trajectory[{i}] is not a valid step: {e}") from e
     return steps
+
+
+def normalize_generic_by_model(
+    native_log: dict, declared_models: list[str]
+) -> Optional[dict[str, Telemetry]]:
+    """The v2 ``telemetry_by_model`` block → per-model :class:`Telemetry`
+    [EVAL-14 AC-2, D002].
+
+    Keys must name models the locked spec declared (EVAL-13's primary + aux
+    set) — attributing spend to a model the pre-registration never mentioned
+    is a contradiction, refused loudly, not data. Absent block (or a v1 /
+    non-verdi log) is honest ``None``. Self-reported attribution: exploratory
+    cross-check data only, never the authoritative telemetry stream [AC-4].
+    """
+    if declared_version(native_log) != 2:
+        return None
+    raw = native_log.get("telemetry_by_model")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise GenericLogError(
+            f"telemetry_by_model must be an object keyed by declared model ids, "
+            f"got {type(raw).__name__}"
+        )
+    undeclared = sorted(set(raw) - set(declared_models))
+    if undeclared:
+        raise GenericLogError(
+            f"telemetry_by_model keys {undeclared} name models the locked spec "
+            f"never declared (declared: {declared_models}); attribution to an "
+            "unregistered model is a contradiction, not data [EVAL-14 AC-2]"
+        )
+    out: dict[str, Telemetry] = {}
+    for model, block in raw.items():
+        try:
+            out[model] = Telemetry.model_validate(block)
+        except ValidationError as e:
+            raise GenericLogError(
+                f"telemetry_by_model[{model!r}] is not a valid Telemetry object: {e}"
+            ) from e
+    return out
+
+
+def by_model_delta(by_model: dict[str, Telemetry], totals: Telemetry) -> dict[str, float]:
+    """Per-field mismatch between by-model sums and the whole-trial totals
+    [EVAL-14 AC-4]. Surfaced as a flag, never reconciled in either direction
+    (the proxy_cost_delta precedent). A field is only comparable when the
+    total is measured AND at least one by-model block measured it; nulls stay
+    out of the arithmetic entirely."""
+    from .base import TELEMETRY_FIELDS
+
+    delta: dict[str, float] = {}
+    for f in TELEMETRY_FIELDS:
+        total = getattr(totals, f)
+        parts = [getattr(t, f) for t in by_model.values() if getattr(t, f) is not None]
+        if total is None or not parts:
+            continue
+        d = round(sum(parts) - total, 6)
+        if d != 0:
+            delta[f] = d
+    return delta
 
 
 class GenericAdapter(Adapter):

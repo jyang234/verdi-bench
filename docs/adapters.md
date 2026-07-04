@@ -127,6 +127,7 @@ schema (`harness/run/trajectory.py`, schema v2):
 | `files_touched` | list[str]   | files this step modified                         |
 | `exit_code`     | int         | exit status, when the step ran a command         |
 | `command`       | str         | the shell command; `""` = measured-not-a-command; `null` = unmeasurable |
+| `agent`         | str         | closed-vocabulary role label (see v2 below); `null` = unattributed |
 
 - Omit the `trajectory` key entirely for an honestly absent trajectory
   (`None`) — distinct from `[]`, an empty-but-measured one.
@@ -145,13 +146,62 @@ schema (`harness/run/trajectory.py`, schema v2):
 | declared version ≠ 1                             | `GenericLogError` → trial fails closed     |
 | declared, structural violation inside            | `GenericLogError` → trial fails closed     |
 
+## Format v2 — multi-agent attribution [EVAL-14]
+
+`verdi_log_version: 2` is a superset of v1 adding self-reported
+attribution. Attribution is the arm's *testimony* — the instrument cannot
+see inside the hermetic container — so it is exploratory cross-check data
+only: it rides the trial record's flags, never the authoritative telemetry
+stream, and no official gate reads it.
+
+### `agent` on trajectory steps
+
+A closed role vocabulary, so identity leakage is **unrepresentable**
+rather than scrubbed: labels match `role(-ordinal)?` where role is one of
+`planner`, `executor`, `orchestrator`, `router`, `critic`, `reviewer`,
+`tester`, `researcher`, `worker`, and the ordinal distinguishes instances
+(`worker-1`, `worker-2`). Anything else (`llama-planner`, free text) is
+refused loudly at parse. `null` = unattributed. Extending the vocabulary
+requires a schema-version bump.
+
+### `telemetry_by_model` (v2, optional object)
+
+Per-model telemetry blocks, keyed **strictly by the models the locked spec
+declared** (the arm's primary `model` plus its `aux_models`) — a key naming
+an undeclared model is refused loudly: attribution to a model the
+pre-registration never mentioned is a contradiction, not data. Each value
+is a Telemetry-shaped block with the usual null honesty.
+
+```json
+{
+  "verdi_log_version": 2,
+  "telemetry": {"cost": 0.42, "tokens_out": 340},
+  "telemetry_by_model": {
+    "meta/llama-3-70b-instruct-20240620": {"cost": 0.30, "tokens_out": 300},
+    "qwen/qwen2-coder-32b-20240901":      {"cost": 0.12, "tokens_out": 40}
+  },
+  "trajectory": [
+    {"kind": "message", "command": "", "agent": "planner"},
+    {"kind": "test_run", "exit_code": 0, "command": "pytest -q",
+     "agent": "worker-1"}
+  ]
+}
+```
+
+The whole-trial `telemetry` block remains the sole authoritative stream.
+When by-model blocks sum differently from the totals, the mismatch is
+surfaced on the record as a `by_model_delta` flag — never reconciled in
+either direction.
+
 ### Versioning
 
-This format is a public seam. v1 is frozen as specified here; any field
+This format is a public seam. v1 parses unchanged forever; any field
 addition or semantic change requires a `verdi_log_version` bump with a
 compatibility story, per the contract rules in `CLAUDE.md`. Note the
 trajectory table is coupled to `TRAJECTORY_SCHEMA_VERSION` — a new step
-field lands in both.
+field lands in both (in particular, `agent` validates by step schema, so
+it is accepted in any declared log once schema v3 exists; the v2 log
+version is load-bearing for `telemetry_by_model`).
 
 ## Multi-agent workflows as a test subject
 
@@ -160,11 +210,12 @@ workspace of artifacts out. Guidance for the normalized log:
 
 - **Telemetry is whole-trial**: sum tokens/cost/tool calls across all
   agents. If your orchestrator cannot attribute a field across agents,
-  leave it null rather than reporting a partial sum as a total.
+  leave it null rather than reporting a partial sum as a total. Per-model
+  splits go in `telemetry_by_model` (v2) — declared models only.
 - **Trajectory is one ordered list**: serialize concurrent agents' steps
-  into a single order (by timestamp, via `relative_ts`). The v2 step schema
-  has no per-agent attribution field — do not smuggle agent names into
-  `command`; they would also be identity-blinding targets.
+  into a single order (by timestamp, via `relative_ts`), attributing each
+  step with a closed-vocabulary `agent` role label (v2). Do not encode
+  agent identity anywhere else (e.g. `command`).
 - **Spawning a subagent** is a `tool_call` step.
 - The whole fleet shares the trial's pinned CPU/memory quotas, its single
   timeout, and the metering proxy — egress from any agent is attributed to

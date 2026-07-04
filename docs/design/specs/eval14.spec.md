@@ -1,9 +1,8 @@
 ---
 # MACHINE CONTRACT — see template header for consumers and YAML style rules.
-# PROPOSED — graduates to specs/ in the same commit as the story's first AC
-# tests. All four decisions resolved 2026-07-04 (see eval14.decisions.ndjson);
-# EVAL-13 has landed, so the D004 build gate is open — this spec is
-# build-ready.
+# Graduated from specs/proposed/ 2026-07-04 in the same commit as the story's
+# first AC tests, all four decisions resolved (see eval14.decisions.ndjson);
+# built after EVAL-13 per the D004 gate.
 kind: "story"
 ticket: "EVAL-14"   # synthetic key — source: 2026-07-04 multi-model workflow directive (session)
 parent: "EVAL-1"

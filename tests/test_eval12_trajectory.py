@@ -284,8 +284,9 @@ def test_canonical_bytes_deterministic(tmp_path):
         b.trial_id.encode(), b"TID"
     )
     # literal pin, deliberately not the constant: bumping the versioned
-    # contract must fail a test until a human approves it [EVAL-12-D001]
-    assert TrajectoryRecord.model_validate(json.loads(bytes_a)).schema_version == 2
+    # contract must fail a test until a human approves it [EVAL-12-D001].
+    # v3 approved 2026-07-04 (EVAL-14-D001: additive 'agent' field).
+    assert TrajectoryRecord.model_validate(json.loads(bytes_a)).schema_version == 3
 
 
 def test_v1_record_loads_under_v2_model(tmp_path):

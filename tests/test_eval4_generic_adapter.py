@@ -76,7 +76,7 @@ def test_non_verdi_log_is_all_null_not_an_error():
 
 
 @pytest.mark.parametrize(
-    "bad", [{"verdi_log_version": 2}, {"verdi_log_version": "1"}, {"verdi_log_version": True}]
+    "bad", [{"verdi_log_version": 3}, {"verdi_log_version": "1"}, {"verdi_log_version": True}]
 )
 def test_unsupported_version_fails_loud(bad):
     with pytest.raises(GenericLogError):
