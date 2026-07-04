@@ -53,8 +53,10 @@ def load_run_settings(
 ) -> RunSettings:
     """Resolve run settings from ``<experiment_dir>/run.config.yaml`` + ``env``.
 
-    Provider-key VALUES come from ``env`` by name; a named key absent from the
-    environment is simply not injected (a value is never invented) [AC-8].
+    Provider-key VALUES come from ``env`` by name; a value is never invented
+    [AC-8]. A key *named* in the config but absent from the environment fails the
+    run loudly (:class:`MissingProviderKeyError`, D-P3-1) — an unauthenticated arm
+    would bias the A/B — rather than silently dropping to no key.
     """
     env = os.environ if env is None else env
     path = Path(experiment_dir) / RUN_CONFIG_FILENAME

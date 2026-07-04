@@ -9,7 +9,6 @@ where no daemon is present and runs in a labelled/scheduled CI job.
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 

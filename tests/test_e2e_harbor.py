@@ -16,7 +16,6 @@ real-proxy egress e2e is intentionally out of this test.
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 
 import pytest
