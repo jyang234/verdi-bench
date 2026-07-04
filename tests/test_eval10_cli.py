@@ -24,30 +24,44 @@ _FAKE_ARMS = [
 ]
 
 
+def _task_sha(content: dict) -> str:
+    """The real content sha admit now verifies against (PRA-M11)."""
+    from harness.corpus.public import content_sha
+
+    return content_sha({
+        "workspace_ref": content.get("workspace_ref"),
+        "prompt": content.get("prompt"),
+        "holdouts": content.get("holdouts", []),
+        "groundwork_rules": content.get("groundwork_rules"),
+    })
+
+
 def _admit_fixture(tmp_path, candidate: dict):
     """Experiment dir + ledgered approval/baseline + manifest/keyring/candidate
-    files, ready for `bench corpus admit`."""
+    files, ready for `bench corpus admit`. The task_sha is the candidate's real
+    content sha (PRA-M11 verifies the file against it)."""
     from harness.corpus.attestation import sign_approval
 
+    sha = _task_sha(candidate)
     exp = tmp_path / "exp"
     exp.mkdir()
     ledger = exp / "ledger.ndjson"
     ctx = fixed_ctx()
     sig, pk = sign_approval(
-        _CURATOR_PRIV, candidate_id="cand-1", task_sha=_SHA, approver="curator"
+        _CURATOR_PRIV, candidate_id="cand-1", task_sha=sha, approver="curator"
     )
     record_curation_approval(
-        ledger, ctx, candidate_id="cand-1", task_sha=_SHA, approver="curator",
+        ledger, ctx, candidate_id="cand-1", task_sha=sha, approver="curator",
         signature=sig, signer_public_key=pk,
     )
     record_flake_baseline(
-        ledger, ctx, task_id="cand-1", task_sha=_SHA, k=5,
+        ledger, ctx, task_id="cand-1", task_sha=sha, k=5,
         results=[{"run": i, "passed": True} for i in range(5)], verdict="clean",
     )
     manifest = CorpusManifest(
         corpus_id="internal-k", semver="1.0.0", kind="internal",
         boundary_path=str(tmp_path / "boundary"),
-        tasks=[TaskEntry(task_id="cand-1", sha=_SHA, status="pending-curation",
+        tasks=[TaskEntry(task_id="cand-1", sha=sha, status="pending-curation",
                          miner="miner-bob")],
     )
     manifest_path = tmp_path / "manifest.json"
@@ -58,13 +72,13 @@ def _admit_fixture(tmp_path, candidate: dict):
     candidate_path.write_text(
         json.dumps(candidate, sort_keys=True, indent=2), encoding="utf-8"
     )
-    return exp, manifest_path, keyring_path, candidate_path
+    return exp, manifest_path, keyring_path, candidate_path, sha
 
 
-def _admit_args(exp, manifest_path, keyring_path, candidate_path):
+def _admit_args(exp, manifest_path, keyring_path, candidate_path, sha):
     return [
         "corpus", "admit", str(exp), "--manifest", str(manifest_path),
-        "--candidate-id", "cand-1", "--task-sha", _SHA, "--baseline-ref", "b1",
+        "--candidate-id", "cand-1", "--task-sha", sha, "--baseline-ref", "b1",
         "--keyring", str(keyring_path), "--candidate-json", str(candidate_path),
         "--actor", "tester",
     ]
@@ -75,15 +89,15 @@ def test_admit_cli_embeds_alongside_reviewed_bytes(tmp_path):
     and leaves the reviewed file byte-identical — the approval sha stays
     verifiable against stored content [AC-2, review fix]."""
     candidate = {"prompt": "Fix the flaky retry loop.", "workspace_ref": "w" * 40}
-    exp, manifest_path, keyring_path, candidate_path = _admit_fixture(tmp_path, candidate)
+    exp, manifest_path, keyring_path, candidate_path, sha = _admit_fixture(tmp_path, candidate)
     original_bytes = candidate_path.read_bytes()
 
     result = CliRunner().invoke(
-        app, _admit_args(exp, manifest_path, keyring_path, candidate_path)
+        app, _admit_args(exp, manifest_path, keyring_path, candidate_path, sha)
     )
     assert result.exit_code == 0, result.output
 
-    canary = derive_canary(_SHA)
+    canary = derive_canary(sha)
     assert candidate_path.read_bytes() == original_bytes  # reviewed bytes intact
     embedded_path = candidate_path.with_suffix(".embedded.json")
     embedded = json.loads(embedded_path.read_text(encoding="utf-8"))
@@ -96,15 +110,35 @@ def test_admit_cli_embeds_alongside_reviewed_bytes(tmp_path):
 def test_admit_cli_bad_candidate_refuses_with_nothing_ledgered(tmp_path):
     """A candidate that cannot be embedded refuses admission BEFORE the
     task_admitted event: ledger and manifest stay consistent [review fix]."""
-    exp, manifest_path, keyring_path, candidate_path = _admit_fixture(
+    exp, manifest_path, keyring_path, candidate_path, sha = _admit_fixture(
         tmp_path, {"workspace_ref": "w" * 40}  # no prompt to embed into
     )
     result = CliRunner().invoke(
-        app, _admit_args(exp, manifest_path, keyring_path, candidate_path)
+        app, _admit_args(exp, manifest_path, keyring_path, candidate_path, sha)
     )
     assert result.exit_code == 2, result.output
     assert find_events(exp / "ledger.ndjson", "task_admitted") == []
     assert CorpusManifest.load(manifest_path).task("cand-1").status == "pending-curation"
+
+
+def test_m11_admit_refuses_tampered_candidate_file(tmp_path):
+    """PRA-M11: a candidate file whose content no longer hashes to the approved
+    task_sha is refused before ledgering — no canary embedded into unreviewed
+    bytes."""
+    exp, manifest_path, keyring_path, candidate_path, sha = _admit_fixture(
+        tmp_path, {"prompt": "Fix the reviewed bug.", "workspace_ref": "w" * 40}
+    )
+    # tamper the file AFTER approval: its content no longer matches task_sha
+    candidate_path.write_text(
+        json.dumps({"prompt": "malicious swap", "workspace_ref": "w" * 40}),
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(
+        app, _admit_args(exp, manifest_path, keyring_path, candidate_path, sha)
+    )
+    assert result.exit_code == 2, result.output
+    assert "content sha" in result.output
+    assert find_events(exp / "ledger.ndjson", "task_admitted") == []
 
 
 def _probe_experiment(tmp_path, *, tasks):
