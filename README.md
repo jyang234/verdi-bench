@@ -24,12 +24,13 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 | **EVAL-6** | Analyze: paired bootstrap, effect sizes, confound flags, pre-registration fence | ✅ |
 | **EVAL-7** | Human review packet (offline, blinded), capture-then-reveal, kappa estimator seam | ✅ |
 | **EVAL-9** | Process rubric: isolated judge scoring, firewalls, weighted-kappa calibration | ✅ |
+| **EVAL-10** | Contamination sentinel: cutoff dating, canaries, memory probes, overlap detector, asymmetry fence | ✅ |
 
 All EVAL-1 child stories are built. The fast suite
-(`uv run pytest -m "not docker"`) is green — over 400 tests — plus a
+(`uv run pytest -m "not docker"`) is green — over 500 tests — plus a
 `docker`-marked suite of real-container tests (a real grade container and a real
 Harbor trial) run with `-m docker` in a dedicated CI job on Docker-capable
-runners; 3 import-linter contracts kept. AC-mapped tests are **enforced per
+runners; 4 import-linter contracts kept. AC-mapped tests are **enforced per
 story**: collection fails if any story's pre-registered acceptance criteria (from
 its `eval<N>.spec.md`) lack a `test_ac<N>_*` test, or if an AC test is duplicated
 or names an AC its story does not declare. `--ac-report` additionally prints the
@@ -88,6 +89,8 @@ uv run bench review record <experiment-dir> --comparison-id c1 --winner 1|2|TIE|
 uv run bench review reveal <experiment-dir> --comparison-id c1   # refuses pre-verdict
 uv run bench process score  <experiment-dir>          # isolated judge process scoring
 uv run bench process record <experiment-dir> --trial-id t1 --comparison-id c1 --scores s.json
+
+uv run bench contamination probe <experiment-dir> --manifest m.json   # membership probes + overlap scan (one ledgered event)
 ```
 
 `bench run` defaults to the hermetic **fake** engine (fast, no Docker).

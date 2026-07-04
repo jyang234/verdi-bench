@@ -13,6 +13,9 @@ refuses quarantined tasks; a pending candidate is excluded by
 
 from __future__ import annotations
 
+from typing import Optional
+
+from ..contamination.canary import derive_canary, embed_canary, hash_canary
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import assert_chain, find_events
@@ -76,6 +79,7 @@ def admit_task(
     task_sha: str,
     baseline_ref: str,
     keyring: dict,
+    candidate_content: Optional[dict] = None,
 ) -> TaskEntry:
     """Admit a pending candidate into ``manifest`` iff every precondition holds.
 
@@ -87,6 +91,13 @@ def admit_task(
     authorized-curator ``keyring`` (``UnauthorizedCuratorError``), and whose
     approver is not the task's miner (``SelfApprovalError``) [D-P4-3]; plus a clean
     flake baseline. The task must already exist as a pending candidate.
+
+    ``candidate_content`` is the task's stored content [EVAL-10 AC-2]: when
+    given, the canary embed is *validated before any mutation or ledger write*
+    (a failing embed refuses admission outright — never a ledgered-but-unmarked
+    tear) and the manifest entry records ``sha256(canary)``. Without content no
+    canary hash is recorded: claiming a canary that was never embedded would
+    turn the probe's honest ``unprobed`` into a false ``negative``.
     """
     # Admission's preconditions are read from the ledger; verify the chain first
     # so a hand-forged ledger cannot manufacture them [CO-5/PL-6].
@@ -156,8 +167,19 @@ def admit_task(
             f"candidate {candidate_id!r} has no clean flake baseline for sha "
             f"{task_sha}; a clean baseline is an admission prerequisite [AC-4]"
         )
+    # EVAL-10 AC-2: derive + validate the embed BEFORE any mutation or ledger
+    # write, so an embed failure (no prompt, double embed) refuses admission
+    # with nothing torn. The hash is recorded only when content was actually
+    # embedded; the value never enters the manifest (re-derivable from
+    # task_sha wherever the content is materialized).
+    canary_sha256 = None
+    if candidate_content is not None:
+        canary = derive_canary(task_sha)
+        embed_canary(candidate_content, canary)  # pure; raises CanaryError pre-event
+        canary_sha256 = hash_canary(canary)
     task.status = "admitted"
     task.baseline_ref = baseline_ref
+    task.canary_sha256 = canary_sha256
     events.record_task_admitted(
         ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
         baseline_ref=baseline_ref,
