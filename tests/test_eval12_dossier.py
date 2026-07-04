@@ -116,7 +116,7 @@ def _layer_chunks(dossier: str) -> dict[str, str]:
 
 
 # --- AC-3: self-contained + byte-deterministic --------------------------------
-def test_self_contained_deterministic(tmp_path):
+def test_ac3_self_contained_deterministic(tmp_path):
     _, ledger, findings = _seeded_findings(tmp_path)
     one = render_dossier(findings, ledger, "exploratory")
     two = render_dossier(findings, ledger, "exploratory")
@@ -155,7 +155,7 @@ def test_arm_markup_lands_inert(tmp_path):
 
 
 # --- AC-4: fence parity + watermark on every layer -----------------------------
-def test_fence_parity(tmp_path):
+def test_ac4_fence_parity(tmp_path):
     """A fence-refusing ledger refuses the official dossier with the same
     AnalyzeError (⇒ the same cant_analyze reason) as the markdown render."""
     _, ledger, findings = _seeded_findings(tmp_path)
@@ -165,7 +165,7 @@ def test_fence_parity(tmp_path):
         render_dossier(findings, ledger, "official", corpus_manifest=None)
 
 
-def test_watermark_every_layer(tmp_path):
+def test_ac4_watermark_every_layer(tmp_path):
     _, ledger, findings = _seeded_findings(tmp_path)
     dossier = render_dossier(findings, ledger, "exploratory")
     chunks = _layer_chunks(dossier)
@@ -178,7 +178,7 @@ def test_watermark_every_layer(tmp_path):
 
 
 # --- AC-5: verdict layer is computed-only, uncertainty always present ----------
-def test_verdict_layer_computed_only(tmp_path):
+def test_ac5_verdict_layer_computed_only(tmp_path):
     # Template inventory: every verdict-layer sentence template interpolates
     # only fields from the closed [computed] findings-derived set [D003].
     env = Environment(autoescape=True)
@@ -207,7 +207,7 @@ def test_verdict_layer_computed_only(tmp_path):
         ), f"verdict sentence not template-derived: {s!r}"
 
 
-def test_uncertainty_always_present(tmp_path):
+def test_ac5_uncertainty_always_present(tmp_path):
     _, ledger, findings = _seeded_findings(tmp_path)
     verdict = _layer_chunks(render_dossier(findings, ledger, "exploratory"))["verdict"]
     assert "% CI" in verdict
@@ -231,7 +231,7 @@ def test_uncertainty_always_present(tmp_path):
 
 
 # --- AC-6: side-by-side timelines; nulls never zero ----------------------------
-def test_side_by_side_timelines(tmp_path):
+def test_ac6_side_by_side_timelines(tmp_path):
     _, ledger, findings = _run_experiment(tmp_path)
     timelines = trial_timeline(ledger)
     # both arms' trials for a task land in one task view, steps verified
@@ -249,7 +249,7 @@ def test_side_by_side_timelines(tmp_path):
     assert f"chain_ok={verify(ledger).ok}" in auditor
 
 
-def test_null_never_zero(tmp_path):
+def test_ac6_null_never_zero(tmp_path):
     """A trial whose telemetry is unmeasured renders 'not measured' — never 0."""
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
@@ -268,7 +268,7 @@ def test_null_never_zero(tmp_path):
 
 
 # --- AC-7: rides bench analyze, one findings_rendered event --------------------
-def test_rides_analyze_one_event(tmp_path):
+def test_ac7_rides_analyze_one_event(tmp_path):
     from typer.testing import CliRunner
 
     from harness.cli import app

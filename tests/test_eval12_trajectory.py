@@ -65,7 +65,7 @@ def _trajectory_path(record) -> Path:
 
 
 # --- AC-1: normalized, versioned record --------------------------------------
-def test_normalized_versioned_record(tmp_path):
+def test_ac1_normalized_versioned_record(tmp_path):
     """Both platforms normalize to the same step schema; what a platform cannot
     measure is null, never estimated; the persisted record stamps its version."""
     claude_steps = ClaudeCodeAdapter().normalize_trajectory(CLAUDE_NATIVE)
@@ -92,7 +92,7 @@ def test_normalized_versioned_record(tmp_path):
     assert [s.kind for s in stored.steps] == ["message", "file_edit", "tool_call"]
 
 
-def test_sha_ledgered_additive(tmp_path):
+def test_ac1_sha_ledgered_additive(tmp_path):
     """The trial event carries a top-level ``trajectory_sha`` matching the
     artifact bytes; the embedded trial_record keeps its pre-EVAL-12 shape; a
     trajectory-less trial's event has no such field at all [D001]."""
@@ -137,7 +137,7 @@ def test_record_trial_hoists_embedded_sha(tmp_path):
 # --- AC-2: post-redaction capture, fail-loud, honest absence ------------------
 @settings(max_examples=25, deadline=None)
 @given(suffix=st.text(alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", min_size=32, max_size=32))
-def test_capture_post_redaction(tmp_path_factory, suffix):
+def test_ac2_capture_post_redaction(tmp_path_factory, suffix):
     """Property: a secret canary planted in step content never reaches the
     persisted record — the trajectory passes the EVAL-4 scrub before persist."""
     secret = "sk-" + suffix
@@ -174,7 +174,7 @@ def test_injected_provider_key_scrubbed_from_record(tmp_path):
     assert "[REDACTED]" in raw
 
 
-def test_corrupt_fails_closed(tmp_path):
+def test_ac2_corrupt_fails_closed(tmp_path):
     """An unwritable trajectory fails the trial closed:
     ``trial_infra_failed(trajectory_corrupt)``, no trial event — the
     telemetry_corrupt precedent."""
@@ -203,7 +203,7 @@ def test_corrupt_fails_closed(tmp_path):
     assert [ev["reason"] for ev in failures] == ["trajectory_corrupt"]
 
 
-def test_absent_distinguishable_from_empty(tmp_path):
+def test_ac2_absent_distinguishable_from_empty(tmp_path):
     """An engine that cannot produce a trajectory records honest absence — no
     artifact, no sha — never a fabricated empty record; an explicitly empty
     trajectory persists as a real (empty-steps) record with a sha."""

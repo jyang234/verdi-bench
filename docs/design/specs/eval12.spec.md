@@ -1,8 +1,7 @@
 ---
 # MACHINE CONTRACT — see template header for consumers and YAML style rules.
-# STATUS: PROPOSED (2026-07-04). Lives under specs/proposed/ so the AC-coverage
-# hook does not enforce it before build; graduates to specs/ in the same commit
-# as the story's first AC tests, once its open decisions resolve.
+# Graduated from specs/proposed/ 2026-07-04 in the same commit as the story's
+# first AC tests, all four local decisions resolved (see eval12.decisions.ndjson).
 kind: "story"
 ticket: "EVAL-12"   # synthetic key — source: 2026-07-04 observability directive (session)
 parent: "EVAL-1"
@@ -87,15 +86,11 @@ constraints:
     enforced_by: "test:test_ac6_null_never_zero"
 
 decisions:
-  - "EVAL-12-D001"  # trajectory_sha additive contract change (OPEN — ContractChange)
-  - "EVAL-12-D002"  # dossier rendering technology (OPEN)
-  - "EVAL-12-D003"  # LLM narrative exclusion (OPEN)
-  - "EVAL-12-D004"  # verb surface (OPEN)
-open_decisions:
-  - "EVAL-12-D001"
-  - "EVAL-12-D002"
-  - "EVAL-12-D003"
-  - "EVAL-12-D004"
+  - "EVAL-12-D001"  # trajectory_sha additive contract change (RESOLVED: approve-additive-field)
+  - "EVAL-12-D002"  # dossier rendering technology (RESOLVED: jinja2-inline-svg)
+  - "EVAL-12-D003"  # LLM narrative exclusion (RESOLVED: excluded-v1)
+  - "EVAL-12-D004"  # verb surface (RESOLVED: artifact-of-analyze)
+open_decisions: []
 
 policy_proposals: []
 predicted_reach: null
