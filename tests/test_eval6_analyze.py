@@ -607,6 +607,65 @@ def test_ac5_official_happy_path(tmp_path):
     assert spec.primary_metric.value in md
 
 
+def test_dp7_6_official_fence_refuses_rubric_mismatch(tmp_path):
+    """D-P7-6: when the lock committed a rubric_sha256, a verdict whose provenance
+    rubric hash disagrees refuses the official render (post-lock rubric swap)."""
+    from harness.analyze.report import RubricMismatchError
+    from harness.judge.schema import Verdict, VerdictProvenance, Winner
+    from harness.ledger.events import append_verdict
+
+    from harness.ledger.query import find_events
+
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    lock = find_events(ledger, "experiment_locked")[0]
+    assert lock.get("rubric_sha256")  # lock committed a rubric hash
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    _seed_full_calibration(ledger, ctx)
+    prov = VerdictProvenance(
+        judge_model="fake/x", rubric_sha256="deadbeef" * 8, packet_sha256="p",
+        call_ids=["c1", "c2"], orders="both", temperature=0.0, ts="t",
+    )
+    v = Verdict(winner=Winner("A"), reason="r",
+                evidence=[Evidence(kind="diff", response="A", hunk="h")], provenance=prov,
+                source="judge", comparison_id="cmp-task0-r0", task_class="refactor")
+    append_verdict(ledger, ctx, verdict=v.model_dump(mode="json"))
+
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    with pytest.raises(RubricMismatchError):
+        render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+
+
+def test_dp7_6_legacy_lock_official_caveat(tmp_path):
+    """A legacy lock (no committed rubric hash) is not refused — the official
+    render carries a caveat that the rubric content is not pinned [D-P7-6]."""
+    from harness.corpus.commit import compute_commitment, load_task_dicts
+    from harness.ledger.events import record_experiment_locked
+    from harness.plan.lock import spec_sha256
+    from harness.plan.power import AssumedVariance, mde_check
+    from harness.schema.experiment import ExperimentSpec
+    from tests.fixtures.builders import write_experiment_yaml
+
+    ctx = fixed_ctx()
+    exp_dir = tmp_path / "e"
+    exp_dir.mkdir()
+    spec_path = write_experiment_yaml(exp_dir / "experiment.yaml")
+    ledger = exp_dir / "ledger.ndjson"
+    spec = ExperimentSpec.from_yaml(spec_path)
+    mde = mde_check(spec, AssumedVariance(), n_sim=8, n_boot=40, deltas=[0.2, 0.4])
+    # a LEGACY lock — no rubric_sha256 field
+    record_experiment_locked(
+        ledger, ctx, spec_sha256=spec_sha256(spec_path), spec_path=str(spec_path),
+        seed=spec.seed, mde=mde, attested_by="t", method="m",
+    )
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    _seed_full_calibration(ledger, ctx)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    assert f.rubric_committed is False
+    md = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+    assert "CAVEAT" in md and "rubric" in md.lower()
+
+
 # --- AN-2: official fence bound to corpus identity --------------------------
 def test_an2_official_fence_refuses_mismatched_corpus(tmp_path):
     """AN-2: a corpus that is not the pre-registered one is refused for official —

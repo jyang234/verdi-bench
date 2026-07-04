@@ -66,6 +66,28 @@ def register(app: typer.Typer) -> None:
             raise typer.Exit(code=2)
         rubric = rubric_path.read_text(encoding="utf-8")
 
+        # D-P7-6: refuse a rubric swapped after the lock. The on-disk rubric's
+        # normalized-text hash (the same one the verdict provenance carries) must
+        # equal the lock's committed rubric_sha256. A legacy lock (no field) warns
+        # instead of refusing — a pre-Phase-7 chain is never invalidated.
+        import hashlib
+
+        rubric_sha = hashlib.sha256(rubric.encode("utf-8")).hexdigest()
+        locked_rubric_sha = lock_event.get("rubric_sha256")
+        if locked_rubric_sha is None:
+            typer.echo(
+                "WARNING: lock predates rubric commitment (D-P7-6); the rubric "
+                "content is not pinned for this experiment", err=True,
+            )
+        elif rubric_sha != locked_rubric_sha:
+            typer.echo(
+                f"judge rubric {spec.judge.rubric!r} was swapped after the lock:\n"
+                f"  locked   rubric_sha256: {locked_rubric_sha}\n"
+                f"  on-disk  rubric_sha256: {rubric_sha}\n"
+                "the judging rubric is immutable post-lock [D-P7-6]", err=True,
+            )
+            raise typer.Exit(code=2)
+
         task_classes = {t["id"]: t.get("task_class", "default") for t in task_dicts}
         prompts = {t["id"]: t.get("prompt", "") for t in task_dicts}
         canaries = arm_canaries(spec.arms)

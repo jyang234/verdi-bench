@@ -114,6 +114,7 @@ def record_experiment_locked(
     method: str,
     task_commitment: Optional[dict] = None,
     acknowledged_underpowered: Optional[dict] = None,
+    rubric_sha256: Optional[str] = None,
 ) -> dict:
     """Genesis lock event [AC-2, D004, D008].
 
@@ -121,6 +122,11 @@ def record_experiment_locked(
     and a hash over the per-task content shas, so run/grade can refuse tasks
     that were swapped after lock [PL-7]. Optional for compatibility with
     task-less plan flows; required by run/grade when real tasks are present.
+
+    ``rubric_sha256`` (additive field, D-P7-6) commits the judging rubric's
+    content hash — the same normalized-text hash the verdict provenance carries
+    (``sha256(rubric.read_text("utf-8").encode("utf-8"))``) — so a post-lock
+    rubric swap is detectable. Absent on a pre-Phase-7 lock (warn, not refuse).
 
     ``acknowledged_underpowered`` (additive field, PL-14) carries the
     ``{mde, hypothesized_effect}`` acknowledgment inline **on the lock event**
@@ -140,6 +146,8 @@ def record_experiment_locked(
         payload["task_commitment"] = task_commitment
     if acknowledged_underpowered is not None:
         payload["acknowledged_underpowered"] = acknowledged_underpowered
+    if rubric_sha256 is not None:
+        payload["rubric_sha256"] = rubric_sha256
     return emit(ledger_path, ctx, EXPERIMENT_LOCKED, payload)
 
 

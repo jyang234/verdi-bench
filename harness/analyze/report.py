@@ -66,6 +66,11 @@ class CorpusMismatchError(AnalyzeError):
     one — a different id/semver, or one missing tasks the experiment ran [AN-2]."""
 
 
+class RubricMismatchError(AnalyzeError):
+    """Official render requested where a verdict's rubric hash disagrees with the
+    lock's committed rubric_sha256 — the rubric was swapped after lock [D-P7-6]."""
+
+
 class ProvenanceError(AnalyzeError):
     """A finding is missing provenance, or the head hash no longer verifies."""
 
@@ -152,6 +157,9 @@ class FindingsDocument(BaseModel):
     tier: dict
     # D-P7-2: terminal-override disclosure — count of --retry-terminal re-attempts
     overrides: dict = {}
+    # D-P7-6: whether the lock committed a rubric_sha256; a legacy lock (False)
+    # gets a caveat line in the official render instead of a refusal.
+    rubric_committed: bool = True
     process: Optional[dict] = None
     judge_calibration: Optional[dict] = None
     provenance: Provenance
@@ -669,6 +677,7 @@ def compute_findings(
         ledger_consistency=_ledger_consistency(ledger_path),
         tier=_tier_summary(ledger_path),
         overrides=_override_summary(ledger_path),
+        rubric_committed=_lock_event(ledger_path).get("rubric_sha256") is not None,
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
         provenance=provenance,
@@ -867,6 +876,20 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
             "through a ledgered calibration_run before the first official finding "
             "[EVAL-8 AC-2, CO-4]"
         )
+    # 4. rubric commitment [D-P7-6]: when the lock committed a rubric_sha256 and
+    # verdicts exist, every verdict's provenance rubric hash must equal it — a
+    # post-lock rubric swap must not reach an official finding. A legacy lock
+    # (no committed hash) is not refused here; the render adds a caveat instead.
+    locked_rubric_sha = _lock_event(ledger_path).get("rubric_sha256")
+    if locked_rubric_sha is not None:
+        verdict_shas = _judge_summary(ledger_path)["rubric_shas"]
+        disagreeing = sorted(s for s in verdict_shas if s != locked_rubric_sha)
+        if disagreeing:
+            raise RubricMismatchError(
+                f"official render refused: verdict rubric hash(es) {disagreeing} "
+                f"disagree with the locked rubric_sha256 {locked_rubric_sha}; the "
+                "judging rubric was swapped after the lock [D-P7-6]"
+            )
 
 
 def _override_lines(findings: FindingsDocument) -> list[str]:
@@ -912,6 +935,14 @@ def _render_official_md(findings: FindingsDocument) -> str:
     override = _override_lines(findings)
     if override:
         out += ["", "## Terminal overrides", *override]
+    if not findings.rubric_committed:
+        out += [
+            "",
+            "## Rubric commitment",
+            "- ⚠ CAVEAT: this experiment was locked before rubric commitment "
+            "(D-P7-6); the judging rubric content is not pinned, so a post-lock "
+            "rubric change cannot be detected from the ledger",
+        ]
     # AN-12 / REVIEW-D-3: the process section is retained in the official render
     # under an explicit EXPLORATORY/advisory label with the unblinded disclosure —
     # never a primary metric, never stripped (findings.json already hashes it into

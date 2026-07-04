@@ -44,7 +44,12 @@ def plan(
     from .corpus.commit import TaskCommitmentError, load_task_dicts
     from .ledger.actor import ActorResolutionError
     from .ledger.query import ChainIntegrityError
-    from .plan.lock import AlreadyLockedError, UnderpoweredError, lock_experiment
+    from .plan.lock import (
+        AlreadyLockedError,
+        RubricCommitmentError,
+        UnderpoweredError,
+        lock_experiment,
+    )
     from .plan.power import calibration_variance_from_runs
 
     # PL-8: stamp the experiment *directory* name, exactly as run/grade do
@@ -82,6 +87,7 @@ def plan(
         AlreadyLockedError,
         TaskCommitmentError,
         ChainIntegrityError,
+        RubricCommitmentError,
     ) as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(code=2)
