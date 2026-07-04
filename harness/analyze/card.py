@@ -24,10 +24,10 @@ from typing import Optional
 
 from ..corpus.commit import content_sha
 from ..ledger import events
-from ..ledger.query import find_events
+from ..ledger.query import find_events, read_events, verify
 from .report import compute_findings, per_arm_absolute_scores
 
-CARD_SCHEMA_VERSION = 1
+CARD_SCHEMA_VERSION = 2
 
 
 class CardError(RuntimeError):
@@ -43,15 +43,33 @@ def _lock_event(ledger_path) -> dict:
     return locks[0]
 
 
-def _rendered_mode(ledger_path) -> str:
-    """The mode of the most recent findings render. A card certifies what was
-    actually rendered, so `bench analyze` must have run first."""
+def _rendered_event(ledger_path) -> dict:
+    """The most recent findings render, verified fresh [F-H5].
+
+    A card certifies what was actually rendered, so `bench analyze` must have
+    run first — and nothing may have been appended since. Any post-render event
+    (a quarantine, a re-grade, another verb) means the numbers the card would
+    recompute match no fenced render; the honest answer is a refusal naming the
+    remedy, not an "official"-stamped card over drifted data. Deliberately
+    strict: there is no allowlist of "harmless" post-render event kinds — that
+    taxonomy does not exist and would be a silent-failure surface."""
     rendered = find_events(ledger_path, events.FINDINGS_RENDERED)
     if not rendered:
         raise CardError(
             "no findings_rendered event: run `bench analyze` before emitting a card"
         )
-    return rendered[-1]["mode"]
+    trailing = 0
+    for ev in reversed(read_events(ledger_path)):
+        if ev.get("event") == events.FINDINGS_RENDERED:
+            break
+        trailing += 1
+    if trailing:
+        raise CardError(
+            f"{trailing} event(s) appended since the last findings render — the "
+            "card certifies a rendered result; re-run `bench analyze` before "
+            "emitting a card [F-H5]"
+        )
+    return rendered[-1]
 
 
 def _battery(ledger_path, task_ids: list[str], corpus_manifest) -> dict:
@@ -112,7 +130,13 @@ def build_card(
     ``task_ids`` are the committed task ids (the CLI reads them from tasks.yaml).
     Requires a prior ``bench analyze`` (the card certifies a rendered result).
     """
-    mode = _rendered_mode(ledger_path)
+    chain = verify(ledger_path)
+    if not chain.ok:
+        raise CardError(
+            f"ledger chain does not verify at card emission: {chain.detail} [F-H5]"
+        )
+    rendered = _rendered_event(ledger_path)
+    mode = rendered["mode"]
     lock = _lock_event(ledger_path)
     findings = compute_findings(ledger_path, spec, spec.seed, corpus_manifest=corpus_manifest)
     prov = findings.provenance
@@ -187,6 +211,10 @@ def build_card(
             "ledger_head": prov.ledger_head_hash,
             "chain_ok": prov.chain_ok,
             "mode": mode,
+            # F-H5: the render this card certifies, checkable against the chain
+            # without recomputing.
+            "rendered_head_hash": rendered.get("rendered_head_hash"),
+            "findings_sha256": rendered.get("findings_sha256"),
             "selfcheck": selfcheck,
             "rubric_committed": findings.rubric_committed,
         },
