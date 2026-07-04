@@ -117,7 +117,8 @@ def rich_experiment(tmp_path: Path) -> dict:
         forensics_report={
             "vocabulary_version": 1,
             "metrics": {flagged: {"steps": 3}},
-            "flags": [{"trial_id": flagged, "detector": "suspicious_single_step",
+            "flags": [{"trial_id": flagged, "task_id": "t1", "arm": "control",
+                       "detector": "suspicious_single_step",
                        "reason": "planted for fixture"}],
             "coverage": {"trials": 4, "covered": 4, "gaps": []},
         },

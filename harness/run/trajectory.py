@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .redact import redact_text
 
-TRAJECTORY_SCHEMA_VERSION = 2
+TRAJECTORY_SCHEMA_VERSION = 3
 TRAJECTORY_FILENAME = "trajectory.json"
 
 
@@ -54,6 +54,15 @@ class TrajectoryStep(BaseModel):
     # "" = measured, the step is not a shell command (the codex files=[]
     # precedent); null = unmeasurable — a v1 record reads back null throughout.
     command: Optional[str] = None
+    # v3 additive field [EVAL-14-D004]: the step's content, kind-dependent —
+    # message text, a file_edit's patch material, a tool_call/test_run's
+    # output — read from the native log, never reconstructed. "" = measured
+    # empty; null = the platform did not expose it (the command precedent).
+    # Pre-v3 records read back null throughout; no reader may require it.
+    # Renderers that leave the operator tier (dossier, timeline) exclude it
+    # [EVAL-15 guardrails]; capture rides the same persist-time scrub as every
+    # other string field.
+    detail: Optional[str] = None
 
 
 class TrajectoryRecord(BaseModel):

@@ -55,11 +55,18 @@ class ClaudeCodeAdapter(Adapter):
         ``command`` [EVAL-11-D005]: a Bash tool_use carries its command string;
         every non-shell step is a measured ``""``; a malformed Bash input is
         null (unmeasurable), never guessed.
+
+        ``detail`` [EVAL-14-D004, v3]: read, never reconstructed — a text
+        block's own text for a ``message``; a file-edit tool's input rendered
+        verbatim by :func:`_edit_detail` for a ``file_edit``; the paired
+        ``tool_result`` content (matched by tool_use id, the log's own join)
+        for a ``tool_call``. A shape this table doesn't recognize stays null.
         """
         messages = native_log.get("messages")
         if not isinstance(messages, list):
             return None
         steps: list[TrajectoryStep] = []
+        step_by_tool_use: dict[str, int] = {}  # tool_use id → index into steps
         for m in messages:
             if not isinstance(m, dict):
                 continue
@@ -67,7 +74,14 @@ class ClaudeCodeAdapter(Adapter):
                 if not isinstance(c, dict):
                     continue
                 if c.get("type") == "text":
-                    steps.append(TrajectoryStep(kind="message", command=""))
+                    raw_text = c.get("text")
+                    steps.append(
+                        TrajectoryStep(
+                            kind="message",
+                            command="",
+                            detail=raw_text if isinstance(raw_text, str) else None,
+                        )
+                    )
                 elif c.get("type") == "tool_use":
                     name = c.get("name")
                     tool_input = c.get("input")
@@ -81,11 +95,64 @@ class ClaudeCodeAdapter(Adapter):
                         command = raw_cmd if isinstance(raw_cmd, str) else None
                     else:
                         command = ""
+                    is_edit = name in _FILE_EDIT_TOOLS
                     steps.append(
                         TrajectoryStep(
-                            kind="file_edit" if name in _FILE_EDIT_TOOLS else "tool_call",
+                            kind="file_edit" if is_edit else "tool_call",
                             files_touched=[str(file_path)] if file_path else None,
                             command=command,
+                            # an edit's detail is its input (the patch material);
+                            # a tool_call's arrives later via its tool_result
+                            detail=_edit_detail(name, tool_input) if is_edit else None,
                         )
                     )
+                    tool_id = c.get("id")
+                    if isinstance(tool_id, str):
+                        step_by_tool_use[tool_id] = len(steps) - 1
+                elif c.get("type") == "tool_result":
+                    idx = step_by_tool_use.get(c.get("tool_use_id"))
+                    if idx is not None and steps[idx].detail is None:
+                        steps[idx].detail = _result_text(c.get("content"))
         return steps
+
+
+def _edit_detail(name: Optional[str], tool_input) -> Optional[str]:
+    """A file-edit tool's patch material, rendered verbatim from its input.
+
+    Edit/MultiEdit expose old/new string pairs; Write and NotebookEdit expose
+    the content being written. The rendering only labels and joins what the
+    log carries — malformed input is null, never guessed [D004].
+    """
+    if not isinstance(tool_input, dict):
+        return None
+    if name in ("Write", "NotebookEdit"):
+        content = tool_input.get("content", tool_input.get("new_source"))
+        return content if isinstance(content, str) else None
+    edits = tool_input.get("edits") if name == "MultiEdit" else [tool_input]
+    if not isinstance(edits, list):
+        return None
+    blocks: list[str] = []
+    for e in edits:
+        if not isinstance(e, dict):
+            return None
+        old, new = e.get("old_string"), e.get("new_string")
+        if not (isinstance(old, str) and isinstance(new, str)):
+            return None
+        blocks.append(f"--- old_string\n{old}\n+++ new_string\n{new}")
+    return "\n".join(blocks)
+
+
+def _result_text(content) -> Optional[str]:
+    """A tool_result's textual content: a bare string, or the joined text
+    blocks of a content list. Anything else is unmeasurable (null)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = [
+            b.get("text")
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+        ]
+        if texts:
+            return "\n".join(texts)
+    return None

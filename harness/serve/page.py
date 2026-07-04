@@ -558,13 +558,22 @@ function renderTrial(app) {
     else {
       const ul = h("ul", { class: "steps" });
       for (const s of steps) {
-        const detail = s.command ? s.command : (s.files_touched || []).join(", ");
-        ul.append(h("li", {},
+        const headline = s.command ? s.command : (s.files_touched || []).join(", ");
+        const li = h("li", {},
           h("span", { class: "t", text: s.relative_ts === null || s.relative_ts === undefined ? "\\u2014" : fmt(s.relative_ts, 0) + "s" }),
-          h("span", { class: "ico", text: s.kind }),
-          h("span", { class: "mono dim", text: detail || "(not captured in this record version)" }),
+          h("span", { class: "ico", text: s.kind }));
+        // v3 step content [EVAL-14-D004]: shown when captured; a null detail
+        // on a contentless step is the honest pre-v3 / not-exposed state
+        const body = h("div", { style: "min-width:0; flex:1" });
+        if (headline) body.append(h("div", { class: "mono dim", text: headline }));
+        if (s.detail !== null && s.detail !== undefined && s.detail !== "" && s.detail !== headline)
+          body.append(h("pre", { class: "code", style: "margin-top:2px", text: s.detail }));
+        if (!headline && (s.detail === null || s.detail === undefined))
+          body.append(h("div", { class: "mono dim3", text: "(not captured in this record version)" }));
+        li.append(body,
           h("span", { class: "dim3", text: (s.exit_code === null || s.exit_code === undefined ? "" : " exit " + s.exit_code) +
-            (s.tokens === null || s.tokens === undefined ? "" : " \\u00b7 " + fmt(s.tokens, 0) + " tok") })));
+            (s.tokens === null || s.tokens === undefined ? "" : " \\u00b7 " + fmt(s.tokens, 0) + " tok") }));
+        ul.append(li);
       }
       card.append(ul);
     }
