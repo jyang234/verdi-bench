@@ -1,5 +1,17 @@
 # verdi-bench — Phase 8 plan: close the production-readiness register
 
+> **Implementation status (2026-07-04).** Slices 8A, 8C, 8B, 8D, 8F, 8H, 8G, 8I,
+> 8J and the code half of 8E are implemented, tested, and committed on this
+> branch; `make verify` is green. Closed: **PRA-H1, H2, H3** (all three
+> ship-blockers) and **M1–M5, M7, M9–M16, L1–L10** with owning tests. **Deferred
+> to a Docker-capable session** (no daemon in the implementation environment to
+> validate): PRA-**H5** browser CI job, PRA-**M6** full plugin containerization
+> (documented-as-trusted fallback shipped instead, per D-P8-2), PRA-**M8**
+> exception-path cost field, PRA-**M2** per-arm provider keys, and the
+> real-container/real-proxy assertions for 8E (the reference proxy config +
+> fail-loud code shipped; the e2e is docker-gated). See the updated Completeness
+> map below.
+
 **Date:** 2026-07-04 · **Follows:** the production-readiness & competitive audit
 (`verdi-bench-production-readiness-audit.md`, this branch, `3f639f1`).
 **Source of record:** that audit's §5 (findings) and §7 (roadmap), with every
