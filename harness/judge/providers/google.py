@@ -29,6 +29,13 @@ class GoogleProvider(Provider):
             for m in messages
         ]
         key = require_key("GOOGLE_API_KEY")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-        resp = post_json(url, {"contents": contents, "generationConfig": {"temperature": temperature}}, {})
+        # JD-10: pass the key in a header, never in the URL query string — a key in
+        # the request line leaks through any proxy/access log. Mirrors the
+        # x-api-key / Authorization headers of the sibling providers.
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        resp = post_json(
+            url,
+            {"contents": contents, "generationConfig": {"temperature": temperature}},
+            {"x-goog-api-key": key},
+        )
         return _content(resp)

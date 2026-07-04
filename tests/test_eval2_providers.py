@@ -53,6 +53,28 @@ def test_google_error_shaped_body_raises_provider_error():
         google_content({"error": {"code": 400, "message": "bad request"}})
 
 
+def test_google_key_travels_in_header_not_url(monkeypatch):
+    """JD-10: the Google key must ride an x-goog-api-key header, never the URL
+    query string — a key in the request line leaks through any proxy/access log."""
+    import harness.judge.providers.google as google_mod
+
+    captured = {}
+
+    def fake_post_json(url, body, headers):
+        captured["url"] = url
+        captured["headers"] = headers
+        return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+    monkeypatch.setattr(google_mod, "require_key", lambda name: "SECRET-KEY")
+    monkeypatch.setattr(google_mod, "post_json", fake_post_json)
+
+    out = google_mod.GoogleProvider().complete("google/gemini-1.5-pro-002", [{"role": "user", "content": "hi"}], 0.0)
+    assert out == "ok"
+    assert "SECRET-KEY" not in captured["url"]
+    assert "key=" not in captured["url"]
+    assert captured["headers"]["x-goog-api-key"] == "SECRET-KEY"
+
+
 # --- anthropic -----------------------------------------------------------
 def test_anthropic_happy_path():
     resp = {"content": [{"type": "text", "text": "verdict text"}]}
