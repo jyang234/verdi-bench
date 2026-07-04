@@ -19,7 +19,9 @@ from typing import Optional
 
 from ..adapters import get_adapter
 from ..adapters.base import Flags, Outcome, Provenance, TrialRecord
+from ..adapters.generic import by_model_delta, normalize_generic_by_model
 from ..schema.experiment import Arm
+from .egress import undeclared_model_egress
 from .redact import redact_artifacts
 from .trajectory import TrajectoryCorruptError, TrajectoryRecord, persist_trajectory
 from .types import RunConfig, Task, TrialRequest
@@ -134,6 +136,22 @@ def run_trial(
     adapter = get_adapter(arm.platform)
     telemetry = adapter.normalize(result.native_log)
 
+    # Per-model attribution [EVAL-14 AC-2, AC-4]: a v2 generic log may split
+    # telemetry across the arm's DECLARED models. Self-reported testimony, so
+    # it rides flags (the advisory channel) — the authoritative whole-trial
+    # telemetry above is untouched, and a sum/total mismatch is surfaced as a
+    # delta, never reconciled (the proxy_cost_delta precedent). Parsed ONLY
+    # when the adapter speaks the verdi format — a native (claude_code/codex)
+    # log that happens to carry a colliding "verdi_log_version" key is
+    # agent-controlled content and must never gain verdi semantics or be able
+    # to fail the trial — and only for non-infra-failed outcomes, so a corrupt
+    # block can never mask the engine's more specific failure reason.
+    telemetry_by_model = None
+    if adapter.speaks_generic_format and result.outcome != Outcome.infra_failed:
+        telemetry_by_model = normalize_generic_by_model(
+            result.native_log, arm.declared_models()
+        )
+
     # Trajectory capture [EVAL-12 AC-1, AC-2] — strictly after redact_artifacts:
     # the input is the already-scrubbed on-disk agent_log.json (a trajectory is
     # a transcript, and transcripts leak secrets), and persist_trajectory runs
@@ -169,8 +187,24 @@ def run_trial(
             )
 
     flags = Flags(egress_violation=result.egress_violation)
+    if telemetry_by_model:
+        flags.telemetry_by_model = {
+            m: t.model_dump(mode="json") for m, t in telemetry_by_model.items()
+        }
+        delta = by_model_delta(telemetry_by_model, telemetry)
+        if delta:
+            flags.by_model_delta = delta
     if result.egress_attempts:
         flags.egress_attempts = result.egress_attempts
+    # Egress attestation [EVAL-13 AC-6, D003] — policy lives in run/egress.py;
+    # the seam only attaches the advisory flag (rides the record, never gates,
+    # never fails the trial; the proxy-metered-cost trust pattern).
+    if config.proxy is not None:
+        undeclared = undeclared_model_egress(
+            config.proxy, arm, result.egress_attempts
+        )
+        if undeclared:
+            flags.undeclared_model_egress = undeclared
     if result.proxy_metered_cost is not None:
         # Cross-check signal. Surfaced on the record so the cost guard can enforce
         # on it when the arm can't self-report cost (telemetry null) [RN-2] — but

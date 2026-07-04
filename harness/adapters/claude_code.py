@@ -20,6 +20,7 @@ _FILE_EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 
 class ClaudeCodeAdapter(Adapter):
     platform = "claude_code"
+    speaks_generic_format = False  # native log format; verdi-format keys are inert
 
     def normalize(self, native_log: dict) -> Telemetry:
         usage = native_log.get("usage") or {}

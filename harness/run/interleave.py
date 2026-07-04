@@ -23,6 +23,7 @@ from typing import Optional
 
 from ..adapters import UnknownPlatformError
 from ..adapters.base import Outcome, TrialRecord
+from ..adapters.generic import GenericLogError
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import find_events
@@ -47,6 +48,7 @@ class QuarantinedTaskError(RuntimeError):
 _PER_TRIAL_REASONS: dict[type, str] = {
     HoldoutLeakError: "holdout_leak",
     UnknownPlatformError: "unknown_platform",
+    GenericLogError: "generic_log_error",
     RedactionError: "redaction_error",
     TrajectoryCorruptError: "trajectory_corrupt",
 }

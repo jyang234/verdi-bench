@@ -17,6 +17,7 @@ wrappers over :func:`identity_pattern_list`; ``run/redact.py`` wraps
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 
@@ -94,16 +95,38 @@ _IDENTITY_NAME_PATTERNS = [
 
 def arm_canaries(arms) -> list[str]:
     """The per-experiment identity literals of the *contestants*: each arm's
-    name, platform, and model id. The one place judge and review packets derive
+    name, platform, and every declared model id — primary and aux [EVAL-13
+    AC-2], so a workflow's sub-model identities cannot pass the firewalls as
+    undeclared literals would. The one place judge and review packets derive
     their spec-scoped canary set, so both firewalls scrub the same identities.
-    Duck-typed on ``.name``/``.platform``/``.model`` (no schema import)."""
+    Duck-typed on ``.name``/``.platform``/``.model``/``.aux_models`` (no schema
+    import)."""
     out: list[str] = []
     seen: set = set()
+
+    def _add(lit) -> None:
+        if lit and lit not in seen:
+            seen.add(lit)
+            out.append(lit)
+
     for arm in arms:
         for lit in (arm.name, arm.platform, arm.model):
-            if lit and lit not in seen:
-                seen.add(lit)
-                out.append(lit)
+            _add(lit)
+        for aux in getattr(arm, "aux_models", None) or []:
+            # Duck-typed callers may carry aux entries as raw mappings; an
+            # entry with no readable model id fails LOUDLY — silently omitting
+            # an identity from the canary set would be a blinding breach.
+            model = (
+                aux.get("model") if isinstance(aux, Mapping)
+                else getattr(aux, "model", None)
+            )
+            if not model:
+                raise ValueError(
+                    f"aux_models entry {aux!r} on arm {arm.name!r} has no readable "
+                    "model id; refusing to silently omit an identity from the "
+                    "blinding canary set [EVAL-13 AC-2]"
+                )
+            _add(model)
     return out
 
 

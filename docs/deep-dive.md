@@ -386,10 +386,16 @@ itself, and so should its documentation:
 
 ## 7. Extending the instrument
 
-- **A new agent platform** = one adapter in `harness/adapters/` implementing
-  `normalize` (telemetry) and `normalize_trajectory` (steps; return `None`
-  honestly when the platform exposes no trajectory). Every field you cannot
-  measure stays `None` — the tests that own null-honesty will hold you to it.
+- **A new agent platform** = often zero code: have the trial emit
+  `artifacts/agent_log.json` in the verdi normalized log format and declare
+  `platform: generic` (full spec and multi-agent guidance in
+  `docs/adapters.md`). A platform with its own native log format = one
+  adapter in `harness/adapters/` implementing `normalize` (telemetry) and
+  `normalize_trajectory` (steps; return `None` honestly when the platform
+  exposes no trajectory) — the `Adapter` base already speaks the generic
+  format, so override only what your platform measures differently. Every
+  field you cannot measure stays `None` — the tests that own null-honesty
+  will hold you to it.
 - **A new grader** = a plugin in `harness/grade/plugins/` (see
   `groundwork.py`). It runs inside the no-LLM contract.
 - **A new gaming detector** = a detector in `harness/forensics/detectors.py`
