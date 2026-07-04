@@ -29,6 +29,7 @@ and each failure is a design input here:
 | **Cross-arm contamination** | One arm sees the other's output, or the grading rubric | Hermetic per-trial containers; holdouts and rubrics never enter the trial workspace, verified by canaries (§4.3) |
 | **Grader subjectivity** | "The LLM judge preferred A" as a primary result | Deterministic grading is primary; the judge is advisory, blinded, and calibrated (§4.4–4.6) |
 | **Benchmark gaming** | The agent deletes the tests, hardcodes expected values, and "passes" | Trajectory forensics: mechanical detectors owned by planted violations, plus a blinded advisory review (§4.9) |
+| **Training-set contamination** | A model "solves" tasks it memorized, and only one arm benefits | Contamination sentinel: cutoff dating, hash-only canaries, membership probes, overlap scan; *asymmetric* flagged contamination refuses the official render (§2.9) |
 | **Statistical overclaiming** | "A wins 6 of 10 tasks" with no uncertainty | Paired bootstrap CIs with a coverage-validated method, MDE always reported, pre-registered null phrasing (§4.7) |
 | **Flake laundering** | Flaky tasks silently convert noise into signal | A ledgered flake baseline is an admission prerequisite for corpus tasks (§4.4, §4.10) |
 
@@ -125,9 +126,9 @@ reason — never a silent skip. Repeated-run flake measurement appends
 **`flake_baseline`** events; a flake baseline is an admission prerequisite for
 corpus tasks (§2.8).
 
-The structural guarantee: `harness/grade/` cannot import an LLM client.
-That is import-linter contract #2 — the grade you see was computed by
-assertions, not vibes.
+The structural guarantee: `harness/grade/` cannot import an LLM client — an
+import-linter contract, not a review convention. The grade you see was
+computed by assertions, not vibes.
 
 ### 2.5 `bench judge` — the blinded advisory tier
 
@@ -209,7 +210,8 @@ trajectory. Three parts, one **`forensics_report`** event per scan:
   (**`forensic_spotcheck`**) with the same IPW kappa machinery as every
   other judge in the instrument.
 
-The deterministic tier imports no LLM client — import-linter contract #4.
+The deterministic tier imports no LLM client — enforced by its own
+import-linter contract, mirroring the grading constraint.
 
 Disposition is the part a skeptic should scrutinize: **flags are evidence,
 never verdicts**. No flag auto-fails a trial or moves a metric. Excluding a
@@ -220,6 +222,18 @@ selfcheck staleness gate so the official fence cannot certify pre-quarantine
 numbers. In v1 no forensic flag blocks an official render (EVAL-11 D004):
 a detector must prove its precision through calibration before it can gate
 findings. That is a deliberate epistemic choice, not a missing feature.
+
+A sibling integrity tier is the **contamination sentinel**
+(`harness/contamination/`, EVAL-10): deterministic cutoff dating of task
+content against each arm's model (an honest tri-state — `predates_cutoff`,
+`postdates_cutoff`, `unknown` — never a guess), canaries embedded at
+admission and carried as `sha256(canary)` only outside task content,
+membership probes ledgered as one **`contamination_probe`** event per run
+(`bench contamination probe`), and solution/holdout fingerprint-overlap
+scanning. Its fence coupling is deliberately asymmetric: flagged
+contamination affecting *one arm but not the other* refuses the official
+render (`cant_analyze: asymmetric_contamination`) because it biases the
+comparison; symmetric contamination discloses instead of blocking.
 
 ### 2.10 `bench selfcheck`, `bench analyze` — the fence and the findings
 
@@ -238,8 +252,8 @@ disclosure block. Two render modes:
 
 - `--exploratory`: watermarked on every layer.
 - `--official`: passes the **pre-registration fence** — locked spec, corpus
-  identity, rubric hash agreement, passing current selfcheck — or refuses
-  with a named **`cant_analyze`** reason.
+  identity, rubric hash agreement, passing current selfcheck, no asymmetric
+  flagged contamination — or refuses with a named **`cant_analyze`** reason.
 
 Every invocation appends exactly one **`findings_rendered`** and writes the
 markdown plus `findings.<mode>.dossier.html` — a single self-contained HTML
@@ -268,7 +282,7 @@ This section is the skeptic's index: claim → mechanism → owner.
 | No operation happened off the record | every verb routes through typed constructors in `events.py`; direct chain writes are contract-forbidden | one-event property sweep `test_ac7_one_event_per_operation` over the closed entrypoint registry |
 | The ledger you're shown is the ledger that was written | hash chain + optional external anchors | `test_eval3_chain.py`, `test_eval3_anchors.py` |
 | Arms never saw graders' answers | holdouts/rubrics outside trial workspaces; canary strings planted and asserted absent | `test_ac9_holdout_canaries_absent`, `test_ac1_holdouts_readonly` |
-| Grades are mechanical | no-LLM import contract on `harness/grade/` (and `harness/forensics/` deterministic tier) | import-linter contracts 2 & 4 |
+| Grades are mechanical | no-LLM import contracts on `harness/grade/`, the `harness/forensics/` deterministic tier, and the `harness/contamination/` detectors | three of the five import-linter contracts |
 | The judge can't favor a brand | identity scrub with per-experiment canaries; property tests plant canaries and assert absence from payloads | `test_ac1_scrub_canaries` and packet property tests |
 | Judge weight is earned, not assumed | order-consistency diagnostics; IPW kappa vs blinded humans; escalation gate at κ<0.6 | `test_eval2_calibrate.py`, `test_eval7_review.py` kappa suite |
 | Secrets don't leak into artifacts | capture-side redaction plus defense-in-depth rescans before any provider call; property tests with generated secrets | `test_ac2_capture_post_redaction`, redaction suites in eval4 |
@@ -278,8 +292,7 @@ This section is the skeptic's index: claim → mechanism → owner.
 | Docs match the binary | README verb coverage and contract count are tested; AC coverage is recomputed at collection | `test_readme_consistency.py`, `tests/ac_coverage.py` hook |
 
 Two structural contracts complete the set: Harbor is importable only through
-the engine seam (contract 1), and ledger appends flow only through the typed
-constructors (contract 3).
+the engine seam, and ledger appends flow only through the typed constructors.
 
 ---
 

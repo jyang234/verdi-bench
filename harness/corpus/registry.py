@@ -90,6 +90,13 @@ class TaskEntry(BaseModel):
     # the miner who staged this candidate — the approver must NOT be the miner
     # (self-approval bar, enforced at admission) [CO-7, D-P4-3].
     miner: Optional[str] = None
+    # EVAL-10 AC-1: when the task's source material entered the world (RFC 3339,
+    # from the merge request's merged_at — input data, never a wall-clock read).
+    # Absent ⇒ the dating channel yields an honest `unknown`, never clean.
+    created_at: Optional[str] = None
+    # EVAL-10 AC-2: sha256 of the derived contamination canary. The canary VALUE
+    # is a secret of the instrument and never enters the manifest — hash only.
+    canary_sha256: Optional[str] = None
     # ``format`` is a Literal ⇒ a non-harbor task fails schema by construction,
     # the strongest form of the D003 rule (master plan §7.4 / EVAL-1-D005).
 
@@ -97,6 +104,18 @@ class TaskEntry(BaseModel):
     @classmethod
     def _task_id_is_safe(cls, v: str) -> str:
         return _assert_safe_task_id(v)
+
+    @field_validator("created_at")
+    @classmethod
+    def _created_at_parses(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        # Same parser the dating channel runs, so load-time acceptance is
+        # analysis-time acceptance [EVAL-10 AC-1].
+        from ..schema.dates import parse_rfc3339
+
+        parse_rfc3339(v, field="task created_at")
+        return v
 
 
 class Dataset(BaseModel):
@@ -214,16 +233,28 @@ class CorpusManifest(BaseModel):
                 if t.status == "admitted":
                     t.status = "pending-curation"
 
-    def stage_candidate(self, task_id: str, *, sha: str, miner: Optional[str] = None) -> TaskEntry:
+    def stage_candidate(
+        self,
+        task_id: str,
+        *,
+        sha: str,
+        miner: Optional[str] = None,
+        created_at: Optional[str] = None,
+    ) -> TaskEntry:
         """Insert a mined candidate as a ``pending-curation`` task [CO-8].
 
         This is the missing mine→manifest link: ``admit_task`` requires the
         candidate to already be a manifest entry, so mining stages it here (with
-        its content sha + miner) before curation. A duplicate task_id is refused —
-        a silent overwrite would drop the prior candidate's provenance."""
+        its content sha + miner, and the source MR's ``merged_at`` as
+        ``created_at`` [EVAL-10 AC-1]) before curation. A duplicate task_id is
+        refused — a silent overwrite would drop the prior candidate's
+        provenance."""
         if self.task(task_id) is not None:
             raise CorpusError(f"task {task_id!r} already exists in manifest {self.corpus_id!r}")
-        entry = TaskEntry(task_id=task_id, sha=sha, status="pending-curation", miner=miner)
+        entry = TaskEntry(
+            task_id=task_id, sha=sha, status="pending-curation", miner=miner,
+            created_at=created_at,
+        )
         self.tasks.append(entry)
         return entry
 

@@ -63,14 +63,14 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 | **EVAL-9** | Process rubric: isolated judge scoring, firewalls, weighted-kappa calibration | ✅ |
 | **EVAL-12** | Trajectory capture (versioned per-trial record, sha-ledgered) + three-layer comparison dossier | ✅ |
 | **EVAL-11** | Transcript forensics: trajectory metrics, gaming detectors, blinded advisory review, quarantine path | ✅ |
+| **EVAL-10** | Contamination sentinel: cutoff dating, canaries, memory probes, overlap detector, asymmetry fence | ✅ |
 
-All EVAL-1 child stories plus the Phase-7 roadmap stories EVAL-12 and EVAL-11
-are built; EVAL-10 (contamination sentinel) is specced under
-`docs/design/specs/proposed/` and not yet started. The fast suite
-(`uv run pytest -m "not docker"`) is green — over 550 tests — plus a
+All EVAL-1 child stories plus the Phase-7 roadmap stories EVAL-12, EVAL-11,
+and EVAL-10 are built. The fast suite
+(`uv run pytest -m "not docker"`) is green — over 600 tests — plus a
 `docker`-marked suite of real-container tests (a real grade container and a real
 Harbor trial) run with `-m docker` in a dedicated CI job on Docker-capable
-runners; 4 import-linter contracts kept. AC-mapped tests are **enforced per
+runners; 5 import-linter contracts kept. AC-mapped tests are **enforced per
 story**: collection fails if any story's pre-registered acceptance criteria (from
 its `eval<N>.spec.md`) lack a `test_ac<N>_*` test, or if an AC test is duplicated
 or names an AC its story does not declare. `--ac-report` additionally prints the
@@ -158,6 +158,8 @@ uv run bench process record <experiment-dir> --trial-id t1 --comparison-id c1 --
 uv run bench forensics scan <experiment-dir> [--no-review]   # trajectory metrics + gaming detectors (+ blinded advisory review)
 uv run bench forensics record <experiment-dir> --trial-id t1 --labels labels.json --stratum mandatory|floor
 uv run bench forensics quarantine <experiment-dir> --trial-id t1 --reason "confirmed holdout tamper"   # ledgered operator exclusion, disclosed
+
+uv run bench contamination probe <experiment-dir> --manifest m.json   # membership probes + overlap scan (one ledgered event)
 ```
 
 `bench run` defaults to the hermetic **fake** engine (fast, no Docker).

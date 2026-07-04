@@ -1,0 +1,247 @@
+"""Memory probe: prefix-completion membership probes per arm model [EVAL-10 AC-3, D002].
+
+Two v1 techniques through the EVAL-2 provider client seam (the
+``harness.process`` precedent — import, don't fork): **canary regurgitation**
+(a model that completes the canary without it in context has seen the task in
+training) and **oracle-prefix continuation** (a continuation reproducing the
+oracle's remainder above the pre-registered overlap threshold). Probes never
+run inside trial containers and share no context with judge calls — each probe
+is a fresh, single-message model call from this module [constraint].
+
+Fail-closed: deterministic input problems (a canary already in a probe prompt,
+an oracle too short to compare) are refused **before any provider call**, and
+any provider failure yields one ``contamination_probe`` event with
+``status: cant_probe`` and a closed-set reason, carrying no per-task LLM
+outcomes — never a silent partial probe. The deterministic AC-4 overlap flags
+passed in by the caller ride *every* event, complete or not: an unrelated
+provider outage must not erase evidence already computed from disk. Canary
+values are unrepresentable in the event: hash-only [AC-2].
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Mapping, Optional, Sequence
+
+from ..judge.providers.base import (
+    Provider,
+    ProviderError,
+    get_provider,
+    provider_failure_reason,
+)
+from ..ledger.events import EventContext, record_contamination_probe
+from ..schema.experiment import Arm
+from .canary import derive_canary, hash_canary, strip_canary
+from .overlap import DEFAULT_OVERLAP_THRESHOLD, fingerprintable, solution_overlap
+
+
+class ProbeError(ValueError):
+    """A probe-input precondition failed [fail-loudly]."""
+
+
+@dataclass(frozen=True)
+class ProbeTask:
+    """One task's probe inputs. ``prompt`` is the task content as materialized
+    (an embedded canary marker is stripped before probing — the canary is what
+    the model must produce, never what we send); ``oracle`` is the reference
+    solution when the corpus carries one."""
+
+    task_id: str
+    task_sha: str
+    prompt: str
+    oracle: Optional[str] = None
+    has_canary: bool = False
+
+
+def _probe_messages(instruction: str, body: str) -> list[dict]:
+    return [{"role": "user", "content": f"{instruction}\n\n{body}"}]
+
+
+def _canary_probe_body(task: ProbeTask) -> str:
+    """The canary-probe prompt body: the task content without its marker."""
+    return strip_canary(task.prompt, derive_canary(task.task_sha))
+
+
+def _split_oracle(oracle: str) -> tuple[str, str]:
+    """Token-boundary prefix/remainder split — a character midpoint would
+    bisect a token and corrupt both halves' fingerprints."""
+    words = oracle.split()
+    mid = len(words) // 2
+    return " ".join(words[:mid]), " ".join(words[mid:])
+
+
+def _preflight(tasks: Sequence[ProbeTask]) -> Optional[dict]:
+    """Deterministic input validation before any provider call [fail-closed].
+
+    Returns the ``cant_probe`` payload core for the first unusable input, or
+    None when every task is probeable: a canary surviving outside its marker
+    would manufacture a false positive, and an oracle whose remainder cannot
+    be fingerprinted would crash mid-run after burning provider calls.
+    """
+    for task in tasks:
+        if task.has_canary:
+            canary = derive_canary(task.task_sha)
+            if canary in _canary_probe_body(task):
+                return {"reason": "canary_in_prompt", "task_id": task.task_id}
+        if task.oracle is not None:
+            prefix, remainder = _split_oracle(task.oracle)
+            if not prefix or not fingerprintable(remainder):
+                return {"reason": "oracle_unfingerprintable", "task_id": task.task_id}
+    return None
+
+
+def run_memory_probe(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    arms: Sequence[Arm],
+    tasks: Sequence[ProbeTask],
+    provider: Optional[Provider] = None,
+    threshold: Optional[float] = None,
+    overlap_flags: Optional[Mapping[str, Mapping[str, bool]]] = None,
+) -> dict:
+    """Probe every arm model for training-set membership of ``tasks`` [AC-3].
+
+    Ledgers exactly one ``contamination_probe`` event per run and returns it.
+    Per (arm, task) the outcome is a tri-state: ``flagged`` (a positive
+    detection on any channel), ``negative`` (probed/scanned, nothing detected),
+    or ``unprobed`` (no canary, no oracle, no overlap scan — nothing to
+    measure). ``overlap_flags`` merges the deterministic AC-4 channel's
+    per-(arm, task) scan results into the same event, so one record carries the
+    whole measurement; unknown arm/task keys are refused. Any
+    :class:`ProviderError` fails the whole run closed to ``cant_probe`` with
+    the shared closed-set reason — LLM outcomes from arms already probed are
+    discarded, never partially reported, while the deterministic
+    ``overlap_flags`` still ride the event.
+    """
+    if not arms:
+        raise ProbeError("no arms to probe; a probe run needs at least one arm")
+    if not tasks:
+        raise ProbeError("no tasks to probe; a probe run needs at least one task")
+    resolved_threshold = (
+        DEFAULT_OVERLAP_THRESHOLD if threshold is None else threshold
+    )
+    overlap_flags = {a: dict(m) for a, m in (overlap_flags or {}).items()}
+    arm_names = {a.name for a in arms}
+    task_ids = {t.task_id for t in tasks}
+    for arm_name, per_task in overlap_flags.items():
+        if arm_name not in arm_names:
+            raise ProbeError(f"overlap_flags names unknown arm {arm_name!r}")
+        unknown = sorted(set(per_task) - task_ids)
+        if unknown:
+            raise ProbeError(
+                f"overlap_flags for arm {arm_name!r} names unknown task(s) {unknown}"
+            )
+
+    base = {"threshold": resolved_threshold, "overlap_flags": overlap_flags}
+    refused = _preflight(tasks)
+    if refused is not None:
+        probe = {"status": "cant_probe", **refused, **base}
+        return record_contamination_probe(ledger_path, ctx, probe=probe)
+
+    try:
+        arms_out: dict[str, dict] = {}
+        for arm in arms:
+            prov = provider if provider is not None else get_provider(arm.model)
+            outcomes: dict[str, str] = {}
+            evidence: dict[str, list[str]] = {}
+            for task in tasks:
+                hits: list[str] = []
+                measured = False
+                if task.has_canary:
+                    canary = derive_canary(task.task_sha)
+                    completion = prov.complete(
+                        arm.model,
+                        _probe_messages(
+                            "Continue this task description exactly as it "
+                            "appears in your training data:",
+                            _canary_probe_body(task),
+                        ),
+                        0.0,
+                    )
+                    measured = True
+                    if canary in completion:
+                        hits.append("canary_regurgitation")
+                if task.oracle is not None:
+                    prefix, remainder = _split_oracle(task.oracle)
+                    completion = prov.complete(
+                        arm.model,
+                        _probe_messages(
+                            "Continue this solution exactly, byte for byte:",
+                            prefix,
+                        ),
+                        0.0,
+                    )
+                    measured = True
+                    continuation = solution_overlap(
+                        completion, oracle=remainder, threshold=resolved_threshold
+                    )
+                    if continuation.flagged:
+                        hits.append("oracle_prefix")
+                scanned = overlap_flags.get(arm.name, {})
+                if task.task_id in scanned:
+                    measured = True
+                    if scanned[task.task_id]:
+                        hits.append("solution_overlap")
+                if hits:
+                    outcomes[task.task_id] = "flagged"
+                elif measured:
+                    outcomes[task.task_id] = "negative"
+                else:
+                    outcomes[task.task_id] = "unprobed"
+                evidence[task.task_id] = hits
+            arms_out[arm.name] = {
+                "model": arm.model,
+                "outcomes": outcomes,
+                "evidence": evidence,
+            }
+    except ProviderError as e:
+        probe = {
+            "status": "cant_probe",
+            "reason": provider_failure_reason(e),
+            **base,
+        }
+        return record_contamination_probe(ledger_path, ctx, probe=probe)
+
+    probe = {
+        "status": "complete",
+        "reason": None,
+        **base,
+        "arms": arms_out,
+        # hash-only: the canary value is a secret of the instrument [AC-2]
+        "canary_sha256": {
+            t.task_id: hash_canary(derive_canary(t.task_sha))
+            for t in tasks
+            if t.has_canary
+        },
+    }
+    return record_contamination_probe(ledger_path, ctx, probe=probe)
+
+
+# --- one-event property registration [EVAL-3 §M7, XC-3] --------------------
+def _probe_entrypoint(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    from ..judge.providers.fake import FakeProvider
+
+    run_memory_probe(
+        Path(ctx_dir) / "ledger.ndjson",
+        EventContext(experiment_id="prop"),
+        arms=[Arm(name="prop-arm", platform="claude_code", model="fake/prop-model")],
+        tasks=[
+            ProbeTask(
+                task_id="t-prop", task_sha="c3" * 32,
+                prompt="refactor the widget loader carefully", has_canary=True,
+            )
+        ],
+        provider=FakeProvider(["nothing memorized here"]),
+    )
+
+
+def _register() -> None:
+    from ..entrypoints import register_entrypoint
+
+    register_entrypoint("contamination-probe", _probe_entrypoint)
+
+
+_register()

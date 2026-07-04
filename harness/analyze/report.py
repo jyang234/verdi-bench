@@ -29,6 +29,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
+from ..contamination.summary import contamination_summary, latest_probe, probe_asymmetries
 from ..ledger import events
 from ..ledger.query import find_events, ledger_head_hash, verify
 from ..schema.metrics import PrimaryMetric
@@ -83,6 +84,12 @@ class DisclosureError(AnalyzeError):
     """Process scores rendered without the unblinded disclosure block [EVAL-9 AC-2]."""
 
 
+class AsymmetricContaminationError(AnalyzeError):
+    """Official render requested with asymmetric flagged contamination — one
+    arm's model flagged on a task another arm is not, so the pairing itself is
+    invalid; exploratory still renders, watermarked [EVAL-10 AC-5, D001]."""
+
+
 class CantAnalyzeReason(str, Enum):
     """Closed set of fail-closed analyze-refusal reasons [AN-3]."""
 
@@ -93,6 +100,7 @@ class CantAnalyzeReason(str, Enum):
     provenance_invalid = "provenance_invalid"
     rubric_mismatch = "rubric_mismatch"
     selfcheck_required = "selfcheck_required"
+    asymmetric_contamination = "asymmetric_contamination"
     analyze_error = "analyze_error"
 
 
@@ -112,6 +120,7 @@ def cant_analyze_reason(exc: AnalyzeError) -> CantAnalyzeReason:
         ProvenanceError: CantAnalyzeReason.provenance_invalid,
         RubricMismatchError: CantAnalyzeReason.rubric_mismatch,
         SelfcheckRequiredError: CantAnalyzeReason.selfcheck_required,
+        AsymmetricContaminationError: CantAnalyzeReason.asymmetric_contamination,
     }.get(type(exc), CantAnalyzeReason.analyze_error)
 
 
@@ -174,6 +183,9 @@ class FindingsDocument(BaseModel):
     # D-P7-6: whether the lock committed a rubric_sha256; a legacy lock (False)
     # gets a caveat line in the official render instead of a refusal.
     rubric_committed: bool = True
+    # EVAL-10 AC-5: per-arm contamination summary (tri-state counts + flagged
+    # task ids + asymmetry) — disclosed in BOTH renders, fenced when asymmetric.
+    contamination: dict = {}
     process: Optional[dict] = None
     judge_calibration: Optional[dict] = None
     # EVAL-11: forensic flags/coverage/kappa + operator quarantines — additive,
@@ -839,6 +851,7 @@ def compute_findings(
         tier=_tier_summary(ledger_path),
         overrides=_override_summary(ledger_path),
         rubric_committed=_lock_event(ledger_path).get("rubric_sha256") is not None,
+        contamination=contamination_summary(ledger_path, spec, corpus_manifest),
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
         forensics=_forensics_section(ledger_path, spec),
@@ -1066,7 +1079,7 @@ def _ledgered_calibration_status(ledger_path, corpus_id: str, semver: str) -> Op
 def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, ledger_path) -> None:
     """Bind the official fence to corpus identity + integrity [AN-2, D-P5-2].
 
-    All five checks — a fence that trusts fewer is a hand-editable bypass:
+    All six checks — a fence that trusts fewer is a hand-editable bypass:
 
     1. the cited manifest is the **pre-registered** corpus (id + semver match
        ``spec.corpus``); a different corpus cannot be laundered into an official
@@ -1078,7 +1091,10 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
     4. every verdict's rubric hash agrees with the lock's committed
        ``rubric_sha256`` (a post-lock rubric swap is refused) [D-P7-6];
     5. a ledgered ``selfcheck`` with ``passed=true`` exists (the coverage
-       self-validation gate) [EVAL-1-D008].
+       self-validation gate) [EVAL-1-D008];
+    6. no *asymmetric flagged* contamination — a task flagged for one arm's
+       model but not another invalidates the pairing itself; symmetric or
+       unknown states are disclosed caveats, not refusals [EVAL-10 AC-5, D001].
 
     Note on check (2): D-P5-2 framed this as reconciling ``manifest.task_shas()``
     with the lock's ``task_commitment``, but those are different hash domains —
@@ -1169,6 +1185,24 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
             "selfcheck <experiment-dir>` so the validated and deployed methods "
             "agree [EVAL-1-D008]"
         )
+    # 6. asymmetric flagged contamination [EVAL-10 AC-5, D001]: the one
+    # contamination case A/B cannot disclose its way out of — a flag on one
+    # arm's model with the other arm not flagged breaks the pairing. Symmetric
+    # flags and unknowns stay disclosed caveats in the render, never refusals.
+    # Recomputed from the LEDGERED probe event, like the fence's other checks —
+    # the findings field is disclosure, not the thing the fence trusts; the
+    # findings-based list still counts (defense in depth for summary-only
+    # flags), but an empty findings dict cannot silence a ledgered asymmetry.
+    asymmetric = probe_asymmetries(latest_probe(ledger_path)) or (
+        findings.contamination or {}
+    ).get("asymmetric", [])
+    if asymmetric:
+        detail = "; ".join(_asymmetry_line(a) for a in asymmetric)
+        raise AsymmetricContaminationError(
+            f"official render refused: asymmetric flagged contamination — "
+            f"{detail}. The pairing is invalid for these tasks; exploratory "
+            "still renders, watermarked, with the full summary [EVAL-10 AC-5]"
+        )
 
 
 def _override_lines(findings: FindingsDocument) -> list[str]:
@@ -1182,6 +1216,49 @@ def _override_lines(findings: FindingsDocument) -> list[str]:
         f"- {n} override-graded re-attempt(s) via `--retry-terminal` on "
         f"{len(trials)} trial(s): {trials}"
     ]
+
+
+def _asymmetry_line(a: dict) -> str:
+    """One asymmetric-contamination entry, worded identically in the official
+    refusal and the exploratory disclosure so the two accounts reconcile."""
+    return (
+        f"task {a['task_id']!r} flagged for arm(s) {a['flagged_arms']}, "
+        f"not for {a['unflagged_arms']}"
+    )
+
+
+def _contamination_lines(findings: FindingsDocument) -> list[str]:
+    """The per-arm contamination disclosure both renders carry [EVAL-10 AC-5].
+
+    Disclosure over suppression: symmetric flags and unknowns are caveat lines
+    here; only asymmetry refuses (in the fence, before official rendering)."""
+    c = findings.contamination or {}
+    if not c:
+        return ["- not computed"]
+    lines = [f"- probe: {c['probe_status']}"]
+    per_arm = c.get("per_arm", {})
+    for arm in sorted(per_arm):
+        s = per_arm[arm]
+        lines.append(
+            f"- {arm}: clean_by_date={s['clean_by_date']} unknown={s['unknown']} "
+            f"flagged={s['flagged']} flagged_task_ids={s['flagged_task_ids']}"
+        )
+    flagged_anywhere = any(s["flagged"] for s in per_arm.values())
+    if flagged_anywhere and not c.get("asymmetric"):
+        lines.append(
+            "- ⚠ CAVEAT: symmetric flagged contamination — every flagged task is "
+            "flagged for all arms; both arms degrade together, so the finding is "
+            "disclosed rather than suppressed [EVAL-10 D001]"
+        )
+    if any(s["unknown"] for s in per_arm.values()):
+        lines.append(
+            "- ⚠ CAVEAT: contamination status is unknown for some (task, arm) "
+            "pairs (missing created_at/training_cutoff or no probe); unknown is "
+            "disclosed as unknown, never upgraded to clean [EVAL-10 AC-1]"
+        )
+    for a in c.get("asymmetric", []):
+        lines.append(f"- ⚠ ASYMMETRIC: {_asymmetry_line(a)} — pairing invalid")
+    return lines
 
 
 def _render_official_md(findings: FindingsDocument) -> str:
@@ -1206,6 +1283,8 @@ def _render_official_md(findings: FindingsDocument) -> str:
         out.extend(_forensic_flags_for_comparison(findings, cf))
     out += ["", "## Confounds (disclosed, non-suppressing)"]
     out += [f"- {c['flag']}" for c in findings.confounds] or ["- none"]
+    out += ["", "## Contamination (disclosed, non-suppressing)"]
+    out += _contamination_lines(findings)
     out += ["", f"## Blinding integrity", f"- {_integrity_line(findings)}"]
     tier = _tier_lines(findings)
     if tier:
@@ -1278,6 +1357,8 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
         out += section("Forensic flags (disclosed, non-suppressing)", _forensics_lines(findings))
     out += section("Confounds (disclosed, non-suppressing)",
                    [f"- {c['flag']}: {c}" for c in findings.confounds] or ["- none"])
+    out += section("Contamination (disclosed, non-suppressing)",
+                   _contamination_lines(findings))
     out += section("Blinding integrity", [f"- {_integrity_line(findings)}"])
     tier = _tier_lines(findings)
     if tier:

@@ -706,3 +706,20 @@ def record_forensic_quarantine(
         FORENSIC_QUARANTINE,
         {"forensic_quarantine": {"trial_id": trial_id, "reason": reason}},
     )
+
+
+# ---------------------------------------------------------------------------
+# EVAL-10 events
+# ---------------------------------------------------------------------------
+CONTAMINATION_PROBE = register_event("contamination_probe")
+
+
+def record_contamination_probe(
+    ledger_path, ctx: EventContext, *, probe: dict
+) -> dict:
+    """One contamination-probe run: per-(arm, task) tri-state outcomes, or a
+    fail-closed CANT_PROBE with a reason — never a silent partial probe
+    [EVAL-10 §4.4, AC-3]. Canary values are unrepresentable here: the payload
+    carries ``sha256(canary)`` only [AC-2]. Additive event type — old ledgers
+    simply lack it, no chain invalidated."""
+    return emit(ledger_path, ctx, CONTAMINATION_PROBE, {"probe": probe})
