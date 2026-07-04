@@ -141,6 +141,49 @@ def test_ac2_kappa_reviewed_only(tmp_path):
     assert items[0].a == "A" and items[0].b == "A"
 
 
+def test_rv9_reveal_and_kappa_agree_on_duplicate_verdict(tmp_path):
+    """RV-9: on a duplicated ledger, the reveal join is now last-wins, matching
+    the (already last-wins) kappa join — both resolve to the LAST judge verdict."""
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    cid = "c1"
+
+    def _jv(winner, call_ids):
+        prov = VerdictProvenance(
+            judge_model="google/gemini-1.5-pro-002", rubric_sha256="a", packet_sha256="b",
+            call_ids=call_ids, orders="both", temperature=0.0, ts="t",
+        )
+        return Verdict(winner=Winner(winner), reason="x",
+                       evidence=[Evidence(kind="diff", response=winner, hunk="h")],
+                       provenance=prov, comparison_id=cid, task_class="cls")
+
+    append_verdict(ledger, ctx, verdict=_jv("A", ["j1a", "j1b"]).model_dump(mode="json"))
+    append_verdict(ledger, ctx, verdict=_jv("B", ["j2a", "j2b"]).model_dump(mode="json"))
+    _seed_packet_built(ledger, ctx, cid)
+    append_human_verdict(ledger, ctx, verdict=_human("A", cid).model_dump(mode="json"),
+                         arm_recognized=False)
+
+    rec = reveal_comparison(ledger, ctx, comparison_id=cid)
+    assert rec["revealed"]["judge_verdict_id"] == "j2a"  # last judge verdict wins
+
+    selected = select_for_review([ComparisonRecord(cid, "cls", "B", False, "A")], seed=1)
+    items = reviewed_kappa_items(ledger, selected)
+    assert len(items) == 1
+    assert items[0].a == "B"  # kappa also scores the LAST judge winner
+
+
+def test_rv8f_integrity_less_human_excluded_from_kappa(tmp_path):
+    """RV-8(f): a human verdict with no integrity block is excluded from kappa
+    items — the same gate the reveal and the integrity-rate already apply."""
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    _seed_judge(ledger, ctx, "c1", winner="A")
+    # a human verdict recorded WITHOUT the integrity block (bare constructor path)
+    append_human_verdict(ledger, ctx, verdict=_human("A", "c1").model_dump(mode="json"))
+    selected = select_for_review([ComparisonRecord("c1", "cls", "A", False, "A")], seed=1)
+    assert reviewed_kappa_items(ledger, selected) == []
+
+
 # --- AC-3: packet is self-contained + leaks nothing -------------------------
 def _packet_html():
     item = ReviewPacketItem(

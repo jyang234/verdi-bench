@@ -165,6 +165,12 @@ def reviewed_kappa_items(ledger_path, selected: list[SelectedItem]) -> list[Revi
     }
     items: list[ReviewedItem] = []
     for ev in find_events(ledger_path, events.HUMAN_VERDICT):
+        # RV-8(f): a human verdict with no integrity block is excluded — the same
+        # gate the reveal (record.human_verdict_exists) and the integrity-rate
+        # (report.py) already apply, so all three call sites agree on what counts
+        # as a reviewed verdict.
+        if "integrity" not in ev:
+            continue
         v = ev["verdict"]
         cid = v.get("comparison_id")
         if cid not in strata or cid not in judge:

@@ -146,7 +146,9 @@ def test_jd9_escalation_config_threaded(tmp_path):
     seed_trial_and_grade(ledger, ctx, trial_id="tr-a", task_id="t1", arm="control", passed=True)
     seed_trial_and_grade(ledger, ctx, trial_id="tr-b", task_id="t1", arm="treatment", passed=False)
     # a human verdict DISAGREEING with the judge (judge A, human B) — a defined,
-    # non-degenerate pair (kappa = 0), so the class is sufficient at min=1.
+    # non-degenerate pair (kappa = 0), so the class is sufficient at min=1. It
+    # carries an integrity block: RV-8(f) excludes integrity-less human verdicts
+    # from the reviewed-kappa set, so a reviewed verdict must have one.
     hv = Verdict(
         winner=Winner.B, reason="disagree",
         evidence=[{"kind": "diff", "response": "B", "hunk": "h"}],
@@ -155,7 +157,8 @@ def test_jd9_escalation_config_threaded(tmp_path):
             temperature=0.0, ts="t"),
         source="human", comparison_id="cmp-t1-r0", task_class="refactor",
     )
-    append_human_verdict(ledger, ctx, verdict=hv.model_dump(mode="json"))
+    append_human_verdict(ledger, ctx, verdict=hv.model_dump(mode="json"),
+                         arm_recognized=False)
 
     r = runner.invoke(app, ["judge", str(expdir)])
     assert r.exit_code == 0, r.output
