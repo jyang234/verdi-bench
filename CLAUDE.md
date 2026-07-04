@@ -7,7 +7,7 @@ convenience or speed, the directives win.
 
 verdi-bench is a benchmark-grade A/B evaluation instrument for agent stacks:
 pre-registered experiments, paired trials in hermetic containers, insulated
-arms, deterministic-first grading, an outcome-blind advisory LLM judge, and a
+arms, deterministic-first grading, an identity-blind advisory LLM judge, and a
 hash-chained event ledger. Its credibility depends on its own correctness —
 treat every silent failure or gamed test as a defect in the instrument itself.
 
