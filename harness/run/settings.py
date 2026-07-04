@@ -59,10 +59,10 @@ def load_run_settings(
     would bias the A/B — rather than silently dropping to no key.
 
     When ``spec`` declares egress hosts (``model_hosts``/``infra_hosts``,
-    EVAL-13 AC-6 [D003]), the proxy allowlist is DERIVED from those locked
+    EVAL-20 AC-6 [D003]), the proxy allowlist is DERIVED from those locked
     bytes; a run.config.yaml that also carries an allowlist then conflicts with
     the pre-registration and is refused loudly rather than silently overridden.
-    A spec declaring no hosts keeps the pre-EVAL-13 behavior exactly.
+    A spec declaring no hosts keeps the pre-EVAL-20 behavior exactly.
     """
     env = os.environ if env is None else env
     declared = spec_allowlist(spec) if spec is not None else []
@@ -72,12 +72,12 @@ def load_run_settings(
         if declared:
             # A pre-registered egress declaration with nothing to enforce it is
             # an inconsistent operational state — refuse loudly, never run with
-            # the locked contract silently void [EVAL-13 AC-6].
+            # the locked contract silently void [EVAL-20 AC-6].
             raise ValueError(
                 "the locked spec pre-registers egress hosts "
                 f"(model_hosts/infra_hosts) but {RUN_CONFIG_FILENAME} is absent; "
                 "the derived allowlist cannot be enforced — configure proxy.url "
-                "or remove the declared hosts before locking [EVAL-13 AC-6]"
+                "or remove the declared hosts before locking [EVAL-20 AC-6]"
             )
         return RunSettings()
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -94,7 +94,7 @@ def load_run_settings(
                 "run.config.yaml declares a proxy allowlist but the locked spec "
                 "pre-registers egress hosts (model_hosts/infra_hosts); the "
                 "allowlist derives from the spec — remove it from "
-                f"{RUN_CONFIG_FILENAME} [EVAL-13 AC-6]"
+                f"{RUN_CONFIG_FILENAME} [EVAL-20 AC-6]"
             )
         proxy = proxy_config(
             declared if declared else pcfg.get("allowlist"),
@@ -107,7 +107,7 @@ def load_run_settings(
             "the locked spec pre-registers egress hosts (model_hosts/infra_hosts) "
             f"but {RUN_CONFIG_FILENAME} configures no proxy; the derived allowlist "
             "cannot be enforced — configure proxy.url or remove the declared hosts "
-            "before locking [EVAL-13 AC-6]"
+            "before locking [EVAL-20 AC-6]"
         )
 
     qcfg = data.get("quotas")

@@ -39,7 +39,7 @@ class VendorOverlap:
     judge_vendor: str
     arm_vendors: dict[str, str]
     overlapping_arms: list[str]
-    # EVAL-13 AC-3 (additive): each arm's full declared vendor set, and exactly
+    # EVAL-20 AC-3 (additive): each arm's full declared vendor set, and exactly
     # which declared model(s) share the judge vendor — so an aux-model overlap
     # is named, not merely implied. `arm_vendors` keeps its primary-vendor
     # semantics for existing readers.
@@ -60,7 +60,7 @@ class VendorOverlap:
 
 def judge_vendor_overlap(spec) -> VendorOverlap:
     """Judge/arm vendor overlap over each arm's FULL declared model set
-    [EVAL-13 AC-3]: a workflow routing to a judge-vendor sub-model overlaps
+    [EVAL-20 AC-3]: a workflow routing to a judge-vendor sub-model overlaps
     exactly as a judge-vendor primary does, and the flag names which model."""
     judge_vendor = _vendor(spec.judge.model)
     arm_vendors: dict[str, str] = {}

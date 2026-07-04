@@ -39,7 +39,7 @@ class ProxyConfig:
 
     ``allowlist`` = reachable hosts. Everything else attempted from inside a
     trial container is a logged violation, flagged on the record — tolerated as
-    data, never silently allowed. ``infra_hosts`` [EVAL-13 AC-6] is the
+    data, never silently allowed. ``infra_hosts`` [EVAL-20 AC-6] is the
     non-model subset of the allowlist (package registries, mirrors), carried
     separately so per-trial egress attestation can tell "declared
     infrastructure" from "should be attributable to a declared model".

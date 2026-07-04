@@ -13,6 +13,9 @@ Lifecycle guarantees:
 * Cost ceiling: before each trial start, refuse once past the ceiling and append
   ``run_stopped_cost_ceiling`` [AC-7].
 * The realized order is ledgered as ``executed_order`` [AC-4].
+* Liveness: when a ``heartbeat_path`` is supplied, every lifecycle transition
+  also rewrites the operational heartbeat sidecar — telemetry beside the
+  ledger, never in it [EVAL-13 AC-1].
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from ..ledger.query import find_events
 from ..plan.interleave import Trial
 from ..schema.experiment import Arm
 from .budget import CostGuard
+from .heartbeat import RunHeartbeat
 from .redact import RedactionError
 from .seam import HoldoutLeakError, new_trial_id, run_trial
 from .trajectory import TrajectoryCorruptError
@@ -160,7 +164,9 @@ def _assert_not_quarantined(derived_order, tasks, quarantined: set) -> None:
             )
 
 
-def _fail_cell(out, ledger_path, ctx, planned, *, reason: str) -> None:
+def _fail_cell(
+    out, ledger_path, ctx, planned, *, reason: str, hb: Optional[RunHeartbeat] = None
+) -> None:
     """Ledger a per-trial infra failure for a cell that could not run and record
     it in the executed order — a bad cell fails closed, never aborts the run and
     never skips the ``executed_order`` event [RN-15]."""
@@ -170,6 +176,8 @@ def _fail_cell(out, ledger_path, ctx, planned, *, reason: str) -> None:
         task_id=planned.task_id, arm=planned.arm, reason=reason,
     )
     out.infra_failures += 1
+    if hb is not None:
+        hb.infra_failed()
     out.executed_order.append(
         {
             "trial_id": trial_id,
@@ -194,6 +202,7 @@ def schedule(
     quarantined_tasks: Optional[set[tuple[str, str]]] = None,
     schedulable_tasks: Optional[set[str]] = None,
     max_infra_retries: int = 3,
+    heartbeat_path=None,
 ) -> ScheduleResult:
     workspace_root = Path(workspace_root)
     quarantined = quarantined_tasks or set()
@@ -209,6 +218,21 @@ def schedule(
     guard = CostGuard(ceiling=cost_ceiling, accumulated=accumulated)
     out = ScheduleResult()
     out.executed_order = list(prior_order)
+
+    # Liveness sidecar [EVAL-13 AC-1]: resume-aware from the same prior state
+    # the guard uses, so its counters agree with the ledger from the first write.
+    hb: Optional[RunHeartbeat] = None
+    if heartbeat_path is not None:
+        done_planned = sum(
+            1 for t in derived_order if (t.task_id, t.arm, t.repetition) in done_cells
+        )
+        hb = RunHeartbeat(
+            path=Path(heartbeat_path),
+            ctx=ctx,
+            planned=len(derived_order),
+            ceiling=cost_ceiling,
+        )
+        hb.start(cells_done=done_planned, accumulated=guard.accumulated)
 
     # The executed_order event (AC-4) must land even if a planned trial raises,
     # so the loop is wrapped: per-trial faults fail that cell closed [RN-15] and
@@ -227,16 +251,16 @@ def schedule(
             # An unknown task/arm id in the schedule fails that cell closed rather
             # than crashing the whole run with a bare KeyError [RN-15].
             if planned.task_id not in tasks:
-                _fail_cell(out, ledger_path, ctx, planned, reason="unknown_task")
+                _fail_cell(out, ledger_path, ctx, planned, reason="unknown_task", hb=hb)
                 continue
             if planned.arm not in arms:
-                _fail_cell(out, ledger_path, ctx, planned, reason="unknown_arm")
+                _fail_cell(out, ledger_path, ctx, planned, reason="unknown_arm", hb=hb)
                 continue
             # CO-2: a task that is not admitted in the corpus manifest (pending or
             # quarantined) must not run, grade, or feed findings. Fail the cell
             # closed so executed_order still lands [D-P4-2, RN-15 discipline].
             if schedulable_tasks is not None and planned.task_id not in schedulable_tasks:
-                _fail_cell(out, ledger_path, ctx, planned, reason="not_schedulable")
+                _fail_cell(out, ledger_path, ctx, planned, reason="not_schedulable", hb=hb)
                 continue
 
             task = tasks[planned.task_id]
@@ -245,12 +269,12 @@ def schedule(
             try:
                 record = _run_with_infra_reruns(
                     task, arm, planned, workspace_root, ledger_path, ctx, config,
-                    max_infra_retries, out, guard,
+                    max_infra_retries, out, guard, hb,
                 )
             except Exception as exc:  # noqa: BLE001 — ANY per-trial fault fails THIS
                 # cell closed (ledgered, reason-tagged), never escapes to abort the
                 # whole run [RN-15]. Not swallowed: surfaced as trial_infra_failed.
-                _fail_cell(out, ledger_path, ctx, planned, reason=_reason_for(exc))
+                _fail_cell(out, ledger_path, ctx, planned, reason=_reason_for(exc), hb=hb)
                 continue
             if out.stopped_cost_ceiling:
                 break  # budget exhausted inside the infra-rerun loop [RN-3]
@@ -260,6 +284,8 @@ def schedule(
             # completed or timeout ⇒ a real trial event
             events.record_trial(ledger_path, ctx, trial_record=record.model_dump(mode="json"))
             guard.add(_record_enforcement_cost(record))
+            if hb is not None:
+                hb.trial_completed(accumulated=guard.accumulated)
             out.records.append(record)
             out.executed_order.append(
                 {
@@ -272,11 +298,20 @@ def schedule(
             )
     finally:
         events.record_executed_order(ledger_path, ctx, order=out.executed_order)
+    # Terminal heartbeat only on a normal exit: a crash must leave the stale
+    # ``running`` document (the documented crash artifact), never a false
+    # ``finished`` [EVAL-13 AC-1].
+    if hb is not None:
+        hb.finish(
+            stopped_cost_ceiling=out.stopped_cost_ceiling,
+            accumulated=guard.accumulated,
+        )
     return out
 
 
 def _run_with_infra_reruns(
-    task, arm, planned, workspace_root, ledger_path, ctx, config, max_infra_retries, out, guard
+    task, arm, planned, workspace_root, ledger_path, ctx, config, max_infra_retries,
+    out, guard, hb: Optional[RunHeartbeat] = None,
 ) -> Optional[TrialRecord]:
     """Run a planned trial, re-running infra failures as brand-new trials.
 
@@ -292,6 +327,14 @@ def _run_with_infra_reruns(
             return None
         trial_id = new_trial_id()
         ws = Path(workspace_root) / trial_id
+        if hb is not None:
+            hb.trial_started(
+                task_id=task.id,
+                arm=arm.name,
+                repetition=planned.repetition,
+                trial_id=trial_id,
+                attempt=attempts + 1,
+            )
         record = run_trial(
             task, arm, ws, config, repetition=planned.repetition, trial_id=trial_id
         )
@@ -309,6 +352,8 @@ def _run_with_infra_reruns(
             reason=getattr(record.flags, "failure_reason", None) or "infra_failed",
         )
         out.infra_failures += 1
+        if hb is not None:
+            hb.infra_failed(accumulated=guard.accumulated)
         out.executed_order.append(
             {
                 "trial_id": trial_id,

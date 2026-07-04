@@ -53,7 +53,7 @@ def _validate_cutoff(v: Optional[str], *, field: str) -> Optional[str]:
 
 class AuxModel(BaseModel):
     """One additional model the arm's stack invokes beyond the primary
-    [EVAL-13 AC-1]. Same fields as the primary declaration because an aux
+    [EVAL-20 AC-1]. Same fields as the primary declaration because an aux
     model is subject to the same honesty machinery (blinding, vendor overlap,
     contamination)."""
 
@@ -74,7 +74,7 @@ class AuxModel(BaseModel):
         if model_vendor(v) is None:
             raise AuxModelError(
                 f"aux_models entry {v!r} must be '<provider>/<id>' so the arm's "
-                "vendor set is well-defined [JD-7, EVAL-13 AC-1]"
+                "vendor set is well-defined [JD-7, EVAL-20 AC-1]"
             )
         return v
 
@@ -89,11 +89,11 @@ class Arm(BaseModel):
     # contamination tri-state. Optional — absent yields an honest `unknown`,
     # never `clean` (the cross-vendor honesty rule, §7.8).
     training_cutoff: Optional[str] = None
-    # EVAL-13 AC-1: every additional model the arm's stack invokes, pre-registered
+    # EVAL-20 AC-1: every additional model the arm's stack invokes, pre-registered
     # so blinding, vendor overlap, contamination, and comparability see the whole
     # stack — a sub-model cannot be quietly swapped post-lock.
     aux_models: list[AuxModel] = Field(default_factory=list)
-    # EVAL-13 AC-6 [D003: declared-hosts-per-model]: egress hosts per declared
+    # EVAL-20 AC-6 [D003: declared-hosts-per-model]: egress hosts per declared
     # model. Keys must name declared models; feeds the spec-derived proxy
     # allowlist and per-trial egress attestation.
     model_hosts: dict[str, list[str]] = Field(default_factory=dict)
@@ -120,7 +120,7 @@ class Arm(BaseModel):
     def declared_models(self) -> list[str]:
         """Every model id the arm pre-registered: primary first, then aux in
         declaration order — the single source for blinding canaries, vendor
-        sets, and attestation [EVAL-13]."""
+        sets, and attestation [EVAL-20]."""
         return [self.model, *(a.model for a in self.aux_models)]
 
     @model_validator(mode="after")
@@ -132,14 +132,14 @@ class Arm(BaseModel):
         if dupes:
             raise AuxModelError(
                 f"arm {self.name!r} declares duplicate model id(s) {dupes}; the "
-                "declared model set must be unique [EVAL-13 AC-1]"
+                "declared model set must be unique [EVAL-20 AC-1]"
             )
         undeclared = sorted(set(self.model_hosts) - set(models))
         if undeclared:
             raise ModelHostsError(
                 f"arm {self.name!r} model_hosts names undeclared model(s) "
                 f"{undeclared}; declared: {models}. Egress attestation attributes "
-                "against declared models only [EVAL-13 AC-6]"
+                "against declared models only [EVAL-20 AC-6]"
             )
         empty = sorted(
             m for m, hosts in self.model_hosts.items()
@@ -148,7 +148,7 @@ class Arm(BaseModel):
         if empty:
             raise ModelHostsError(
                 f"arm {self.name!r} model_hosts entries {empty} carry an empty "
-                "host; declare real endpoints or omit the key [EVAL-13 AC-6]"
+                "host; declare real endpoints or omit the key [EVAL-20 AC-6]"
             )
         return self
 
@@ -260,7 +260,7 @@ class ExperimentSpec(BaseModel):
     # pre-registered by construction. Absent block ⇒ the module default applies
     # (itself a fixed constant, still not post-hoc tunable).
     contamination: Optional[ContaminationConfig] = None
-    # EVAL-13 AC-6 [D005: experiment-level-shared]: non-model egress hosts
+    # EVAL-20 AC-6 [D005: experiment-level-shared]: non-model egress hosts
     # (package registries, mirrors), declared once for ALL arms so both face
     # identical infrastructure — per-arm infra could masquerade as a treatment
     # effect. Feeds the spec-derived proxy allowlist with the arms' model_hosts.
@@ -277,19 +277,19 @@ class ExperimentSpec(BaseModel):
             raise InfraHostsError(
                 "infra_hosts contains empty/whitespace host(s); an empty entry "
                 "would suffix-match every trailing-dot hostname in the derived "
-                "allowlist [EVAL-13 AC-6]"
+                "allowlist [EVAL-20 AC-6]"
             )
         return v
 
     @model_validator(mode="after")
     def _hosts_fully_declared(self) -> "ExperimentSpec":
-        """A partial egress declaration is refused [EVAL-13 AC-6]: the derived
+        """A partial egress declaration is refused [EVAL-20 AC-6]: the derived
         allowlist REPLACES the runtime allowlist, so an arm that declares no
         model_hosts while the spec declares any hosts would have its model-API
         calls denied on every trial — a systematic per-arm bias, silently."""
         declaring = [a.name for a in self.arms if a.model_hosts]
         if not self.infra_hosts and not declaring:
-            return self  # nothing declared: pre-EVAL-13 semantics, runtime allowlist
+            return self  # nothing declared: pre-EVAL-20 semantics, runtime allowlist
         missing = [a.name for a in self.arms if not a.model_hosts]
         if missing:
             source = (
@@ -300,7 +300,7 @@ class ExperimentSpec(BaseModel):
                 f"egress hosts are partially declared: {source} but arm(s) "
                 f"{missing} declare no model_hosts. The derived allowlist would "
                 "deny the undeclared arm(s)' model APIs on every trial — declare "
-                "model_hosts for every arm, or for none [EVAL-13 AC-6]"
+                "model_hosts for every arm, or for none [EVAL-20 AC-6]"
             )
         return self
 

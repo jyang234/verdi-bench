@@ -40,7 +40,7 @@ class ArmNameError(SpecError):
 class AuxModelError(SpecError):
     """An aux_models entry was not vendor-prefixed, or duplicated another
     declared model — the declared model set must be well-defined for blinding,
-    vendor overlap, and contamination [EVAL-13 AC-1]."""
+    vendor overlap, and contamination [EVAL-20 AC-1]."""
 
 
 class ModelHostsError(SpecError):
@@ -48,10 +48,10 @@ class ModelHostsError(SpecError):
     host, or was declared for some arms but not all — egress attestation must
     attribute against the declared set only, and a partial declaration would
     make the derived allowlist deny the undeclared arms' model APIs
-    [EVAL-13 AC-6]."""
+    [EVAL-20 AC-6]."""
 
 
 class InfraHostsError(SpecError):
     """infra_hosts carried an empty/whitespace host — an empty entry would
     suffix-match every trailing-dot hostname in the derived allowlist
-    [EVAL-13 AC-6]."""
+    [EVAL-20 AC-6]."""

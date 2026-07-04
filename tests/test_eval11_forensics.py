@@ -249,7 +249,14 @@ def test_scan_emits_one_event_with_metrics_and_version(tmp_path):
     assert report["vocabulary_version"] == FORENSICS_VOCABULARY_VERSION
     (trial_metrics,) = report["metrics"].values()
     assert tuple(trial_metrics) == METRIC_IDS
-    assert report["coverage"] == {"trials": 1, "covered": 1, "gaps": []}
+    # EVAL-16 added the additive detail-coverage keys; the v1 keys are
+    # unchanged and old ledgers simply lack the new ones [EVAL-16 D002]
+    assert report["coverage"]["trials"] == 1
+    assert report["coverage"]["covered"] == 1
+    assert report["coverage"]["gaps"] == []
+    assert set(report["coverage"]) == {
+        "trials", "covered", "gaps", "detail_by_arm", "detail_gaps"
+    }
     assert report["flags"] == []  # honest trial: clean scan
 
 

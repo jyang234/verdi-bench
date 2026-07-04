@@ -136,7 +136,7 @@ def run_trial(
     adapter = get_adapter(arm.platform)
     telemetry = adapter.normalize(result.native_log)
 
-    # Per-model attribution [EVAL-14 AC-2, AC-4]: a v2 generic log may split
+    # Per-model attribution [EVAL-21 AC-2, AC-4]: a v2 generic log may split
     # telemetry across the arm's DECLARED models. Self-reported testimony, so
     # it rides flags (the advisory channel) — the authoritative whole-trial
     # telemetry above is untouched, and a sum/total mismatch is surfaced as a
@@ -196,7 +196,7 @@ def run_trial(
             flags.by_model_delta = delta
     if result.egress_attempts:
         flags.egress_attempts = result.egress_attempts
-    # Egress attestation [EVAL-13 AC-6, D003] — policy lives in run/egress.py;
+    # Egress attestation [EVAL-20 AC-6, D003] — policy lives in run/egress.py;
     # the seam only attaches the advisory flag (rides the record, never gates,
     # never fails the trial; the proxy-metered-cost trust pattern).
     if config.proxy is not None:

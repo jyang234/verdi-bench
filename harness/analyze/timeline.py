@@ -23,9 +23,18 @@ def _trajectory_for(rec: dict, ledgered_sha) -> tuple[str, list | None]:
     sha; an edited or unhashed trajectory is a coverage gap with a named
     reason, never silently treated as evidence. ``resolve_trajectory`` never
     raises, so a bad artifact can't crash the render out of the AN-3 envelope.
+
+    ``detail`` (v3 step content) is excluded here by contract [EVAL-15
+    guardrail 3]: the timeline feeds the dossier — an archivable, handed-around
+    artifact — and step content belongs only to the operator drill-down
+    (``status.trial``), never to a render that leaves the machine.
     """
     status, record = resolve_trajectory(rec.get("artifacts_path"), ledgered_sha)
-    steps = None if record is None else [s.model_dump(mode="json") for s in record.steps]
+    steps = (
+        None
+        if record is None
+        else [s.model_dump(mode="json", exclude={"detail"}) for s in record.steps]
+    )
     return status, steps
 
 

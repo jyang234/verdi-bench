@@ -38,7 +38,7 @@ class ContaminationStatus(str, Enum):
 
 
 def effective_cutoff(cutoffs: list[str | None]) -> str | None:
-    """A multi-model arm's effective cutoff [EVAL-13 AC-4, D002].
+    """A multi-model arm's effective cutoff [EVAL-20 AC-4, D002].
 
     ``clean_by_date`` requires the task to postdate a cutoff strictly, so an
     arm is clean only if the task postdates EVERY declared model's cutoff —

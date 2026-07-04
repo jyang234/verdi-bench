@@ -56,6 +56,7 @@ def register(app: typer.Typer) -> None:
         from ..grade.baseline import load_quarantine
         from ..ledger.events import EventContext
         from ..plan.lock import assert_lock
+        from .heartbeat import HEARTBEAT_FILENAME
         from .interleave import QuarantinedTaskError, schedule
 
         experiment_dir = Path(experiment_dir)
@@ -112,7 +113,7 @@ def register(app: typer.Typer) -> None:
         eng = get_engine(engine)
         # Operational config (proxy, quotas, provider keys) from run.config.yaml +
         # env — NOT from the sha-locked spec or the ledger [RN-13, D-9, AC-8].
-        # Exception [EVAL-13 AC-6]: a spec that pre-registers egress hosts
+        # Exception [EVAL-20 AC-6]: a spec that pre-registers egress hosts
         # derives the proxy allowlist from those locked bytes.
         settings = load_run_settings(experiment_dir, spec=spec)
         config = RunConfig(
@@ -140,6 +141,9 @@ def register(app: typer.Typer) -> None:
                 cost_ceiling=spec.cost_ceiling.amount,
                 quarantined_tasks=quarantine,
                 schedulable_tasks=schedulable,
+                # Liveness sidecar for live observers [EVAL-13 AC-1]: operational
+                # telemetry beside the ledger, never in it.
+                heartbeat_path=experiment_dir / HEARTBEAT_FILENAME,
             )
         except QuarantinedTaskError as e:
             typer.echo(str(e), err=True)

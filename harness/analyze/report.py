@@ -563,7 +563,7 @@ def _secondary_metrics(ledger_path, spec) -> dict:
     """
     from .confounds import _vendor
 
-    # EVAL-13 AC-5: an arm's vendor identity is its full declared model set —
+    # EVAL-20 AC-5: an arm's vendor identity is its full declared model set —
     # a mixed-vendor arm (multi-model workflow) makes raw token counts
     # vendor-incomparable for any comparison involving it, and its own token
     # totals are sums over different tokenizers (mixed-tokenizer, named below).
@@ -604,7 +604,7 @@ def _secondary_metrics(ledger_path, spec) -> dict:
         "cross_vendor_allowed_fields": list(_CROSS_VENDOR_ALLOWED),
         "arm_vendor_sets": arm_vendor_sets,
         "mixed_vendor_arms": mixed_vendor_arms,
-        # EVAL-14 AC-5: self-reported attribution (trial-flag testimony), never
+        # EVAL-21 AC-5: self-reported attribution (trial-flag testimony), never
         # an official input. Arms absent from these maps reported none —
         # rendered "not attributed", never zero [D004 posture].
         "per_model_means": per_model_means,
@@ -613,7 +613,7 @@ def _secondary_metrics(ledger_path, spec) -> dict:
 
 
 def _attribution_metrics(trial_events, quarantined) -> tuple[dict, dict]:
-    """Per-arm attribution aggregates [EVAL-14 AC-5], exploratory only.
+    """Per-arm attribution aggregates [EVAL-21 AC-5], exploratory only.
 
     Per-model telemetry means come from each trial's ``telemetry_by_model``
     flag (v2 generic logs); per-agent step counts come from *verified*
@@ -622,7 +622,7 @@ def _attribution_metrics(trial_events, quarantined) -> tuple[dict, dict]:
     ``unattributed`` bucket. Trials reporting no attribution contribute
     nothing — absence stays absent, never zero — and an arm whose every step
     is unattributed (single-agent platforms) is dropped here, at the source,
-    so a pre-EVAL-14 ledger renders byte-identically.
+    so a pre-EVAL-21 ledger renders byte-identically.
     """
     from ..run.trajectory import UNATTRIBUTED, slice_by_agent
 
@@ -1033,6 +1033,27 @@ def _forensics_lines(findings: FindingsDocument) -> list[str]:
         # renders no gap line at all
         for gap in cov["gaps"]:
             lines.append(f"  - coverage gap: trial {gap['trial_id']} — {gap['reason']}")
+        # EVAL-16 AC-5: where the step-content detectors could look, per arm —
+        # and an explicit asymmetry sentence when the arms differ, the
+        # telemetry-asymmetry precedent. Old reports simply lack the key.
+        detail_cov = cov.get("detail_by_arm") or {}
+        if detail_cov:
+            for arm in sorted(detail_cov):
+                d = detail_cov[arm]
+                lines.append(
+                    f"- step-content detector coverage [{arm}]: "
+                    f"{d['detail_evaluable']}/{d['trials']} trial(s) evaluable "
+                    f"({d['steps_with_detail']}/{d['steps_total']} steps carry detail)"
+                )
+            ratios = {
+                arm: (d["detail_evaluable"], d["trials"]) for arm, d in detail_cov.items()
+            }
+            if len({(n * 1000000) // t if t else 0 for n, t in ratios.values()}) > 1:
+                lines.append(
+                    "- ASYMMETRIC step-content coverage: the arms were not equally "
+                    "inspectable by the transient detectors — a disclosed "
+                    "measurement condition, not a correction [EVAL-16 AC-5]"
+                )
         if "reviews" in fx:
             rv = fx["reviews"]
             if rv is None:
@@ -1452,7 +1473,7 @@ def _secondary_lines(findings: FindingsDocument) -> list[str]:
             "vendor-incomparable and NOT compared across arms; cross-vendor "
             f"comparisons restricted to {sm['cross_vendor_allowed_fields']}"
         )
-    # EVAL-13 AC-5: a mixed-vendor arm is named, and its own token totals are
+    # EVAL-20 AC-5: a mixed-vendor arm is named, and its own token totals are
     # additionally sums over different tokenizers.
     if sm.get("mixed_vendor_arms"):
         lines.append(
@@ -1460,10 +1481,10 @@ def _secondary_lines(findings: FindingsDocument) -> list[str]:
             "vendors, so these arms' own token totals are mixed-tokenizer sums "
             f"(vendor sets: {sm['arm_vendor_sets']})"
         )
-    # EVAL-14 AC-5: attribution is self-reported testimony (EXPLORATORY, no
+    # EVAL-21 AC-5: attribution is self-reported testimony (EXPLORATORY, no
     # official gate reads it); an arm that reported none renders "not
     # attributed", never zero. Unattributed-only arms are already dropped at
-    # the source (_attribution_metrics), so a pre-EVAL-14 ledger renders
+    # the source (_attribution_metrics), so a pre-EVAL-21 ledger renders
     # byte-identically. The arm listing is the UNION of all sections' arms —
     # an arm with all-null whole-trial telemetry but real attribution must
     # still appear.

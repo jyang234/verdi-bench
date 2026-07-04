@@ -44,7 +44,9 @@ def test_ac1_versioned_vocabulary():
     the value stamped into every forensics_report [AC-1]."""
     payload = trajectory_metrics(_record([]))
     assert tuple(payload) == METRIC_IDS
-    assert FORENSICS_VOCABULARY_VERSION == 1
+    # v2 approved 2026-07-04: EVAL-16 added the step-content detectors —
+    # the bump this pin exists to force [EVAL-11 AC-1 mechanism]
+    assert FORENSICS_VOCABULARY_VERSION == 2
 
 
 def test_metric_values_on_rich_trajectory():

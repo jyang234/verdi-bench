@@ -70,7 +70,7 @@ and EVAL-10 are built. The fast suite
 (`uv run pytest -m "not docker"`) is green — over 600 tests — plus a
 `docker`-marked suite of real-container tests (a real grade container and a real
 Harbor trial) run with `-m docker` in a dedicated CI job on Docker-capable
-runners; 5 import-linter contracts kept. AC-mapped tests are **enforced per
+runners; 7 import-linter contracts kept. AC-mapped tests are **enforced per
 story**: collection fails if any story's pre-registered acceptance criteria (from
 its `eval<N>.spec.md`) lack a `test_ac<N>_*` test, or if an AC test is duplicated
 or names an AC its story does not declare. `--ac-report` additionally prints the
@@ -142,6 +142,12 @@ uv run bench analyze <experiment-dir> --official --corpus m.json   # fenced offi
 uv run bench verify-chain ledger.ndjson [--against-anchor anchors.ndjson]
 uv run bench anchor ledger.ndjson --out anchors.ndjson       # refuses a tampered ledger
 
+uv run bench status <experiment-dir> [--json]          # lifecycle snapshot (read-only, ledgers nothing)
+uv run bench serve  <experiment-dir> [--port 8383]     # live operator view (read-only, loopback, unblinded — see banner)
+uv run bench serve  --root <workspace-dir>             # workspace home: every experiment under the root, one dashboard
+uv run bench serve  <experiment-dir> --bundle out.html # static self-contained snapshot of that view (no server, no event)
+uv run bench author <workspace-dir> [--actor <name>]   # draft/validate/preview experiments; the lock is its one ledgered op
+
 uv run bench corpus import <tasks-dir> --cache <dir>   # idempotent public import
 uv run bench corpus subset <manifest> --seed 1234      # stratified calibration subset
 uv run bench corpus mine <mr.json> --ticket t.txt --out cand.json
@@ -151,6 +157,7 @@ uv run bench corpus calibrate <experiment-dir> --manifest m.json   # ledger a ca
 uv run bench corpus admit <experiment-dir> --manifest m.json --candidate-id c --task-sha s --baseline-ref b --keyring keyring.json
 
 uv run bench review build  <experiment-dir>            # blinded human-review packet (idempotent)
+uv run bench review serve  <experiment-dir> --reviewer alice   # blinded capture-then-reveal queue (never the operator view)
 uv run bench review record <experiment-dir> --comparison-id c1 --winner 1|2|TIE|CANT_JUDGE ...
 uv run bench review reveal <experiment-dir> --comparison-id c1   # refuses pre-verdict
 uv run bench process score  <experiment-dir>          # isolated judge process scoring
@@ -175,6 +182,13 @@ optional `run.config.yaml` + the environment — never the sha-locked
 
 `bench grade` defaults to `--runner docker` (the real network-less grading
 container), with `--runner local` for the no-daemon fake/test path.
+
+`bench run` also maintains `run.heartbeat.json` beside the ledger — operational
+liveness (state, in-flight cell, progress, spend) for `bench status` /
+`bench serve`, written atomically and never ledgered. Watching the live view
+shows arm identities: it is the openly-unblinded operator tier, and anyone who
+watches is disqualified from serving as that experiment's blinded (EVAL-7)
+reviewer — the page banner says exactly this.
 
 ## Learn more
 

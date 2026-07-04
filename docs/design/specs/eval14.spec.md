@@ -1,232 +1,160 @@
 ---
 # MACHINE CONTRACT — see template header for consumers and YAML style rules.
 # Graduated from specs/proposed/ 2026-07-04 in the same commit as the story's
-# first AC tests, all four decisions resolved (see eval14.decisions.ndjson);
-# built after EVAL-13 per the D004 gate.
+# first AC tests, all four local decisions resolved (see
+# eval14.decisions.ndjson). Drafted from the operator-UI wireframe record
+# (session artifact) after the 2026-07-04 directives: workspace home, local
+# single operator, interaction parity with the leading eval platforms.
 kind: "story"
-ticket: "EVAL-14"   # synthetic key — source: 2026-07-04 multi-model workflow directive (session)
+ticket: "EVAL-14"   # synthetic key — source: 2026-07-04 UI-parity directive (session)
 parent: "EVAL-1"
-title: "Per-agent trajectory attribution + per-model telemetry: exploratory observability inside multi-agent arms"
+title: "Operator UI v2: workspace home, trial drill-down, and leader-parity interaction ergonomics"
 services: []
 home: null          # inherited from EVAL-1 (verdi-bench)
 inherited_decisions:
   - "EVAL-1-D001"   # instrument residence + name (RESOLVED: verdi-bench)
-  - "EVAL-4-D004"   # nulls flagged, never imputed
-  - "EVAL-12-D001"  # trajectory_sha additive contract precedent
+  - "EVAL-13-D003"  # unblinded operator view with standing disclosure (carries to every screen)
+  - "EVAL-13-D004"  # client polling transport (carries; tail cursor reused)
 touchpoints:        # PLANNED symbols [judgment]
-  - "harness/run/trajectory.py:TrajectoryStep"
-  - "harness/adapters/generic.py:normalize_generic"
-  - "harness/adapters/generic.py:normalize_generic_trajectory"
-  - "harness/analyze/report.py:telemetry_means"
+  - "harness/serve/server.py:make_server"
+  - "harness/serve/workspace.py:scan_workspace"
+  - "harness/serve/trial.py:trial_detail"
+  - "harness/serve/compare.py:paired_comparisons"
+  - "harness/serve/page.py:OPERATOR_PAGE"
 
 graph_provenance: []
 
 acceptance:
   - id: "AC-1"
-    text: "TrajectoryStep gains an additive optional 'agent' field (schema v3): a closed-vocabulary role label (see AC-3) attributing the step to a sub-agent of the workflow. Null means unattributed — the honest state for single-agent platforms and v2 records, which read back with null agent throughout (the v1→v2 'command' precedent); no reader may require the field."
-    vc: "A v2 trajectory artifact reads back with null agent on every step; a v3 record round-trips its labels; every existing trajectory consumer runs unchanged on both."
+    text: "Workspace home: bench serve --root <dir> scans one level for directories containing ledger.ndjson and serves /api/experiments — per-experiment status summaries (state, cells, spend, grade/judge progress, fence state, last event ts, heartbeat liveness). A broken-chain experiment renders withheld (chain.ok=false, sections null), never zeros; scan tolerates non-experiment directories silently."
+    vc: "A root fixture with running/finished/tampered/empty experiment dirs yields exactly the expected summaries; the tampered one is withheld; a plain subdirectory is not listed."
     touchpoints:
-      - "harness/run/trajectory.py:TrajectoryStep"
+      - "harness/serve/workspace.py:scan_workspace"
     tests:
-      - "test_ac1_agent_field_additive_v3"
-      - "test_ac1_v2_reads_back_null_agent"
+      - "test_ac1_workspace_scan_summaries"
   - id: "AC-2"
-    text: "Generic normalized log v2: verdi_log_version 2 accepts 'agent' on trajectory steps and a 'telemetry_by_model' object keyed by declared model ids (EVAL-13's primary + aux set), each value validating through the Telemetry model with the usual null honesty. A v1 log parses exactly as before; a v2 log keyed by an undeclared model id fails loudly (the declared-format strictness rule) — attribution to a model the spec never registered is a contradiction, not data."
-    vc: "A v1 fixture log parses unchanged; a v2 log with declared keys yields per-model Telemetry blocks; an undeclared key raises GenericLogError naming it; per-model nulls land as nulls."
+    text: "Trial drill-down: /api/trial/<trial_id> aggregates, for one trial, the ledgered record, grade/cant_grade events with per-assertion detail, judge verdicts whose comparison includes it, forensic flags naming it, egress attempts, and the sha-verified trajectory with its status (verified|absent|missing_artifact|sha_mismatch|corrupt) — nulls stay null end-to-end. Unknown trial id is 404 with the id named."
+    vc: "A fixture trial with grade, verdict, flag, and verified trajectory returns every section with exact values; a null-telemetry trial returns nulls (never zeros); an unknown id 404s."
     touchpoints:
-      - "harness/adapters/generic.py:normalize_generic"
-      - "harness/adapters/generic.py:normalize_generic_trajectory"
+      - "harness/serve/trial.py:trial_detail"
     tests:
-      - "test_ac2_log_v2_by_model_declared_keys"
-      - "test_ac2_undeclared_model_key_fails_loud"
-      - "test_ac2_v1_logs_parse_unchanged"
+      - "test_ac2_trial_detail_aggregates"
   - id: "AC-3"
-    text: "Identity honesty by construction: agent attribution uses a closed role vocabulary published as part of the format standard — a label matches role(-ordinal)? where role is a closed enum (planner, executor, orchestrator, router, critic, reviewer, tester, researcher, worker) and ordinal is a small integer for multiple instances (worker-1, worker-2). Validated loudly at the generic-adapter parse: a non-conforming label ('llama-planner', free text) raises GenericLogError naming it. The value space cannot spell a model, vendor, platform, or arm identity, so no published surface needs a new scrub and the blind subsystem is untouched; extending the vocabulary is a format-version bump (the forensics detector-vocabulary precedent — a closed-enum test forces the bump)."
-    vc: "Every conforming label parses and round-trips; 'llama-planner' and free-text labels are refused at parse naming the label; the blind subsystem diff is empty; the vocabulary closed-enum test forces a version bump on extension."
+    text: "Deep links and routing: every view (home, experiment, trials with active filters, trial, compare with its toggles, findings) has a hash route that round-trips — load the URL, get the view with the same filter state; filters are URL-encoded, reload-safe, and shareable."
+    vc: "Driving the page headlessly: navigating to each route renders the view; setting facets rewrites the URL; reloading the rewritten URL restores the facet state."
     touchpoints:
-      - "harness/adapters/generic.py:normalize_generic_trajectory"
+      - "harness/serve/page.py:OPERATOR_PAGE"
     tests:
-      - "test_ac3_closed_role_vocabulary"
-      - "test_ac3_nonconforming_label_refused"
+      - "test_ac3_hash_routes_round_trip"
   - id: "AC-4"
-    text: "Aggregation honesty: whole-trial telemetry remains the sole authoritative stream — the primary metric, cost guard, and cross-arm comparisons never read telemetry_by_model. When both exist and the by-model blocks sum measurably different from the whole-trial totals, the delta is surfaced as a flag on the record (the proxy_cost_delta precedent) — never reconciled, never imputed in either direction."
-    vc: "A log whose by-model costs sum below its total cost yields a by_model_delta flag and untouched totals; the cost guard's enforcement value is identical with and without the by-model block; no analysis gate reads by-model fields."
+    text: "Trials table + detail panel: faceted filters (arm, task, outcome, graded-state, flagged) computed from ledger events plus free text; selecting a row opens a side panel preview keeping table context; enter promotes to the full trial route; j/k/enter/esc keyboard conventions work on every list view."
+    vc: "Facet combinations select exactly the matching trials against a scripted ledger; keyboard navigation drives selection and panel/page promotion headlessly."
     touchpoints:
-      - "harness/adapters/generic.py:normalize_generic"
+      - "harness/serve/page.py:OPERATOR_PAGE"
     tests:
-      - "test_ac4_by_model_delta_surfaced_never_reconciled"
-      - "test_ac4_authoritative_stream_unchanged"
+      - "test_ac4_facets_panel_keyboard"
   - id: "AC-5"
-    text: "The consumer (exploratory analysis): the report renders a per-model telemetry section — clearly EXPLORATORY, applying vendor-incomparability per model id — and a per-agent step-count/timeline slice of the trajectory; absent attribution renders 'not attributed', never zero and never redistributed."
-    vc: "A fixture with by-model blocks renders the section with per-model vendor rules applied; a trial without attribution renders 'not attributed'; the section carries the exploratory marking and feeds no official gate."
+    text: "Feed ergonomics on the incremental tail: kind facets, follow-newest with pause-on-hover, and an N-new-events pill when scrolled away; polling continues to use the EVAL-13 byte cursor (no full-ledger re-reads in the page's poll loop)."
+    vc: "Headless drive: appended events surface without a full refetch (offset advances monotonically); pausing holds the viewport; the pill count matches appended events while scrolled."
     touchpoints:
-      - "harness/analyze/report.py:telemetry_means"
+      - "harness/serve/page.py:OPERATOR_PAGE"
     tests:
-      - "test_ac5_per_model_section_exploratory"
-      - "test_ac5_unattributed_never_zero"
+      - "test_ac5_feed_tail_ergonomics"
   - id: "AC-6"
-    text: "Forensics substrate: a per-agent slicing helper over verified trajectories (resolve → group steps by agent) is available to detectors; v1 detectors are unchanged — the helper ships with fixture coverage so a future per-agent detector starts from tested ground, not a new parser."
-    vc: "The helper groups a v3 fixture's steps by agent with null-agent steps in an explicit unattributed bucket; the detector vocabulary and existing findings are byte-identical before/after."
+    text: "Paired compare: /api/compare pairs each task/repetition across the two locked arms — per-response workspace diff (the review-packet diff artifact), holdout outcomes, and advisory judge verdicts kept as separate lines (deterministic and advisory tiers never blended into one score); an only-disagreements filter; and the summary header watermarked EXPLORATORY unless the official fence (same code path as bench analyze) passes for this ledger."
+    vc: "A fixture with mixed agreements renders pairs with diffs and separate tier lines; the disagreements filter selects exactly the differing pairs; a fence-failing ledger shows the EXPLORATORY watermark and an official-fence-passing one does not."
     touchpoints:
-      - "harness/run/trajectory.py:TrajectoryStep"
+      - "harness/serve/compare.py:paired_comparisons"
     tests:
-      - "test_ac6_per_agent_slicing_helper"
+      - "test_ac6_compare_pairs_diff_and_watermark"
+  - id: "AC-7"
+    text: "Findings screen: the official-fence requirements render as a named checklist with per-item state (chain, selfcheck currency, calibration, contamination asymmetry), and existing render artifacts (findings.json, dossier HTML) are listed with the ledger head they were rendered against and served read-only; nothing is re-rendered by the UI."
+    vc: "Fence states from a scripted ledger map one-to-one to checklist items; the served dossier bytes equal the artifact on disk; no findings_rendered event is appended by serving."
+    touchpoints:
+      - "harness/serve/server.py:make_server"
+    tests:
+      - "test_ac7_fence_checklist_and_artifacts"
+  - id: "AC-8"
+    text: "Posture preserved under growth: every screen carries the unblinded-operator disclosure; the server remains GET-only with no mutating endpoint; served pages remain self-contained (no external URI schemes or fetched assets); any new serve/status modules are added to the EVAL-13 import-contract source lists; no new ledger event kind is introduced."
+    vc: "The EVAL-13 posture tests extend to every route: needle scan on all served HTML, non-GET refusal on all routes, experiment-dir byte-identity after arbitrary browsing, contract source-list membership asserted."
+    touchpoints:
+      - "harness/serve/server.py:make_server"
+    tests:
+      - "test_ac8_posture_all_routes"
 
 constraints:
-  - text: "Depends on EVAL-13: the declared model set is the validation universe for telemetry_by_model keys. This story must not land first — without declaration, by-model attribution would be unverifiable free text feeding analysis."
-    enforced_by: "test:test_ac2_undeclared_model_key_fails_loud"
-  - text: "Self-reported attribution is untrusted by construction: it may enrich exploratory analysis and future forensics, and must never feed the primary metric, the decision rule, the cost guard, or any official fence. The instrument cannot verify what happened inside the hermetic container; attribution is the arm's testimony, labeled as such."
-    enforced_by: "test:test_ac4_authoritative_stream_unchanged"
-  - text: "Both format changes are versioned-contract changes (TrajectoryStep v3, generic log v2) requiring explicit human approval with the additive/compatibility posture recorded in the decisions below — older records and logs parse unchanged forever."
-    enforced_by: "test:test_ac1_v2_reads_back_null_agent"
-  - text: "The blind subsystem is untouched (2026-07-04 constraint): agent identity leakage is unrepresentable by vocabulary construction, not scrubbed after the fact — no new patterns, no new scrub mechanism, no blinding-wrapper mapping."
-    enforced_by: "test:test_ac3_nonconforming_label_refused"
+  - text: "Parity is ergonomics, never trust model: no annotation/scoring affordances in the operator UI (blinded review is its own surface with capture-then-reveal gates), no editable history (the ledger is append-only; corrections are new ledgered events), no auto-declared winners (verdicts exist only through the pre-registered rule behind the fence; everything else is watermarked EXPLORATORY on every layer)."
+    enforced_by: "AC-6 and AC-8 tests on graduation"
+  - text: "Null honesty carries to every new surface: unmeasured telemetry renders as 'not measured', never zero, in tables, panels, tooltips, and step strips [EVAL-4-D004 inherited]."
+    enforced_by: "AC-2 tests on graduation"
+  - text: "The UI renders what the seams return and never re-derives statistics client-side; fence and watermark vocabulary comes from the same code paths bench analyze uses."
+    enforced_by: "AC-6/AC-7 tests on graduation"
 
 decisions:
-  - "EVAL-14-D001"  # TrajectoryStep v3 'agent' field (RESOLVED: approve-additive-field)
-  - "EVAL-14-D002"  # generic log format v2 (RESOLVED: approve-v2)
-  - "EVAL-14-D003"  # agent label posture (RESOLVED: closed-role-vocabulary)
-  - "EVAL-14-D004"  # build gating (RESOLVED: gate-on-eval13-plus-named-consumer)
+  - "EVAL-14-D004"  # per-step content (RESOLVED: trajectory-v3-additive-detail — capture-side slice behind P0, five guardrail ACs recorded in eval14.decisions.ndjson)
+  - "EVAL-14-D001"  # frontend form (RESOLVED: single-file-no-build)
+  - "EVAL-14-D002"  # trial detail default (RESOLVED: side-panel-then-page)
+  - "EVAL-14-D003"  # workspace discovery (RESOLVED: ledger-scan)
 open_decisions: []
 
 policy_proposals: []
 predicted_reach: null
-expected_verify: "AC suite green: v2→v3 read-back compatibility, v1 log parity, declared-key strictness, delta-surfaced-never-reconciled, exploratory-only consumption, per-agent slicing fixtures."
+expected_verify: "On graduation: AC suite green including headless page drives (routing, facets, keyboard, tail ergonomics), posture needle-scans on every route, and the fence-parity watermark test."
 ---
 
-# EVAL-14 — Per-agent trajectory attribution + per-model telemetry
+# EVAL-14 — Operator UI v2 (proposed)
 
 ## Problem & context
 
-EVAL-13 makes a multi-model workflow *declarable*; this story makes it
-*observable*. A workflow arm today reports whole-trial aggregates and a
-flat step timeline — correct, but blind to the questions a workflow
-comparison eventually asks: which sub-agent spent the budget, which
-model did the edits, did the router earn its overhead. The instrument's
-answer must stay inside its trust model: everything attributed inside
-the container is the arm's own testimony, unverifiable by construction
-(2026-07-04 multi-model workflow directive).
+EVAL-13 shipped the substrate (heartbeat, tail cursor, status seam, a minimal
+operator page) and the 2026-07-04 review set the bar: multiple experiments
+under one workspace home, local single operator for v1, and interaction
+ergonomics at parity with the leading eval platforms (Braintrust, LangSmith,
+W&B Weave, Langfuse, Inspect AI viewer). The wireframe record (session
+artifact, 2026-07-04) fixes six screens and a parity checklist; this spec is
+its buildable form.
 
 ## Goal
 
-Attribution as exploratory, versioned, honestly-null data: an `agent`
-label per trajectory step (schema v3) and a `telemetry_by_model` block
-in the generic log (format v2), keyed strictly by EVAL-13's declared
-model set, consumed only by exploratory analysis and available as a
-tested substrate for future forensics — with the authoritative
-whole-trial stream and every official gate untouched.
+An operator can open one URL, see every experiment live, drill from a running
+row to a single trial's sha-verified step timeline in two keystrokes, compare
+arms diff-first per task, and read the fence state as a checklist — with the
+ergonomics of the best commercial tools and none of their trust-model
+shortcuts (nothing mutable, nothing unwatermarked, nothing unblinded without
+saying so).
 
-## Residence & runtime
+## Design (mirrors the wireframe record)
 
-Inherited from EVAL-1. Gated behind EVAL-13 (D004): the declared model
-set is what makes by-model keys validatable. Build order inside the
-story: schema v3 → log format v2 → blinding coverage → the analysis
-consumer → the forensics helper. The consumer [AC-5] ships in the same
-story deliberately — attribution surface without a consumer would be
-speculative machinery, which the project's own discipline forbids.
+Screens: (1) workspace home — live experiments table with attention badges,
+withheld-on-tamper rows; (2) experiment live view — pipeline stage rail,
+in-flight card with attempt lineage, spend vs pre-registered ceiling, feed
+with follow/pause/new-pill; (3) trials — faceted table with side-panel
+preview; (4) trial detail — step strip on relative_ts, tier tabs
+(trajectory/grade/forensics/egress/raw); (5) compare — paired per-task diffs,
+separate deterministic/advisory summary lines, EXPLORATORY watermark unless
+the official fence passes; (6) findings — fence checklist + hosted dossier.
 
-## Design
+Deliberately not borrowed (constraints above): annotation queues, editable
+history, live token streaming, auto-declared winners.
 
-**Trust class first.** The container is hermetic; the instrument sees
-its boundary (proxy egress, workspace bytes) and nothing inside.
-Per-agent and per-model splits therefore can never be measurements —
-they are self-reports, useful the way self-reported cost is useful:
-cross-checkable at the boundary (totals vs. sums, AC-4), surfaced with
-deltas, never reconciled, and never load-bearing for a verdict. Every
-design choice below follows from fixing this trust class explicitly.
+## Build order
 
-**Schema v3** [AC-1, D001]. One additive optional field, following the
-v1→v2 `command` precedent exactly: older records read back null, no
-reader requires it, version stamped.
+P0: AC-1..AC-5 (workspace + drill-down + routing/feed ergonomics).
+P1: AC-6..AC-7 (compare + findings). AC-8 holds throughout.
+P2 polish (ETA estimate, saved views, sparklines) rides later stories.
 
-**Log format v2** [AC-2, D002]. The generic format keeps its
-declaration-splits-honesty rule: undeclared logs stay honest-null,
-declared logs are strict. Keying `telemetry_by_model` to the EVAL-13
-declared set extends that rule — attributing spend to a model the
-locked spec never registered is a contradiction the parser refuses,
-not data it stores.
-
-**Identity by vocabulary, not scrubbing** [AC-3, D003]. Agent labels
-are the one genuinely new identity surface, and free-text labels have a
-demonstrated leak: arm canaries are exact-match full-id literals, so a
-model-name *fragment* ("llama-planner") matches neither the built-in
-patterns (no llama/qwen/deepseek/mistral entries) nor the literals, and
-walks onto human-review and dossier surfaces. Per the 2026-07-04
-constraint (do not touch the blind subsystem), the resolution path is a
-*published standard*: a closed role vocabulary with ordinal instances,
-validated loudly where the format's other strictness rules already live
-(the generic-adapter parse). Leakage becomes unrepresentable instead of
-scrubbed — the same construction-over-inspection move as the
-holdout-free TrialRequest signature. Inference at intake was considered
-and rejected: the instrument cannot infer agent identity from log
-structure without the harness supplying it (circular), and labeling by
-inference is estimation — the same reason the claude_code adapter
-refuses to infer test_run from command text. Honest costs: bounded
-expressiveness (worker-N is the catch-all; the vocabulary extends only
-with a format-version bump), and step-structure remains a mild
-stylistic tell (a reviewer can see a fleet's size and shape — the same
-class of tell as transcript style, tolerable on advisory surfaces).
-
-**Consumer + substrate** [AC-5, AC-6]. The exploratory report section
-is the story's own consumer, applying per-model vendor-incomparability
-so the honesty rules deepen with the data rather than diluting. The
-forensics helper is substrate only: detectors change in a future story,
-when a per-agent detector has planted-violation fixtures of its own.
-
-## Change surface
-
-```mermaid
-flowchart LR
-  WF[workflow harness<br/>self-reported] --> LG[generic log v2<br/>agent + telemetry_by_model]
-  SP[EVAL-13 declared model set] --> LG
-  LG --> TS[TrajectoryStep v3<br/>additive agent]
-  LG --> XC[totals-vs-sums delta flag<br/>never reconciled]
-  TS --> BL[single blinding codepath]
-  TS --> FH[per-agent slicing helper<br/>future detectors]
-  LG --> EX[exploratory per-model section<br/>no official gate]
-```
-
-> Provenance: [judgment] hand-authored — greenfield.
-
-## Acceptance criteria mapping
-
-AC-1/AC-2 are the two versioned-contract changes with their
-compatibility postures. AC-3 keeps the new identity surface inside the
-one blind firewall. AC-4 pins the trust class mechanically. AC-5 ships
-the consumer that justifies the surface. AC-6 lays tested ground for
-future per-agent forensics without touching v1 detectors.
-
-## Expected post-state
-
-A fixture workflow arm emits a v2 log attributing steps to 'planner'
-and 'executor' and splitting telemetry across its two declared models;
-the trial record carries identical authoritative totals plus a by-model
-delta flag; the exploratory report renders the per-model section with
-vendor rules applied and 'not attributed' where data is absent; a v2-era
-trajectory from an earlier experiment reads back untouched with null
-agents.
+Trajectory v3 (D004, resolved): the per-step `detail` capture is a separate
+capture-side slice — schema_version 3, adapters, and the five guardrail ACs
+from eval14.decisions.ndjson — sequenced behind P0. Trial detail (AC-2)
+ships rendering the current step schema plus the whole-trial workspace diff;
+`detail` lights up where present, and absent detail renders "not captured in
+this record version" (old records never backfill). Per-step patch
+affordances are claude-code-mostly by data availability; codex steps show
+commands/timings.
 
 ## Out of scope
 
-Per-agent or per-model anything in the primary metric, decision rule,
-cost guard, or official fence; verifying attribution beyond the
-boundary cross-checks; multi-container orchestration; per-agent
-quotas/timeouts; new forensic detectors (future story, with their own
-planted-violation fixtures); attribution for the native claude_code /
-codex adapters (their logs carry no such structure to parse honestly).
-
-## Open questions
-
-- EVAL-14-D001 — TrajectoryStep v3 additive `agent` field
-  (ContractChange; recommended: approve, `command` precedent).
-- EVAL-14-D002 — generic log format v2 (ContractChange; recommended:
-  approve with v1-parses-forever compatibility).
-- EVAL-14-D003 — agent label posture (recommended:
-  closed-role-vocabulary, added after the 2026-07-04 constraint ruled
-  out blind-subsystem changes — leakage unrepresentable by
-  construction, validated at the parse layer that already owns the
-  format's strictness; the earlier four options remain recorded, each
-  failing the constraint or the leak test).
-- EVAL-14-D004 — build gating (recommended: gate on EVAL-13 landing;
-  AC-5's exploratory section is the named consumer that unblocks
-  building).
+Reviewer-safe blinded views and review capture (own story, blinding gates
+built in); any mutating endpoint (plan/run from the browser — needs actor
+plumbing and one-event obligations); auth/multi-user (platform work when
+demand exists); step-level live streaming (engine-seam story).

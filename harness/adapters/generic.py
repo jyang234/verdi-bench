@@ -21,10 +21,10 @@ Format v1 (v2 is a superset — see below)::
                       "command": …}, …]
     }
 
-Format v2 [EVAL-14] adds multi-agent attribution: an ``agent`` field on
+Format v2 [EVAL-21] adds multi-agent attribution: an ``agent`` field on
 trajectory steps (closed role vocabulary — see
 ``harness.run.trajectory.AGENT_ROLES``) and a top-level ``telemetry_by_model``
-object keyed strictly by the models the locked spec declared (EVAL-13's
+object keyed strictly by the models the locked spec declared (EVAL-20's
 primary + aux set), each value a Telemetry-shaped block. v1 logs parse
 unchanged forever.
 
@@ -148,9 +148,9 @@ def normalize_generic_by_model(
     native_log: dict, declared_models: list[str]
 ) -> Optional[dict[str, Telemetry]]:
     """The v2 ``telemetry_by_model`` block → per-model :class:`Telemetry`
-    [EVAL-14 AC-2, D002].
+    [EVAL-21 AC-2, D002].
 
-    Keys must name models the locked spec declared (EVAL-13's primary + aux
+    Keys must name models the locked spec declared (EVAL-20's primary + aux
     set) — attributing spend to a model the pre-registration never mentioned
     is a contradiction, refused loudly, not data. Absent block (or a v1 /
     non-verdi log) is honest ``None``. Self-reported attribution: exploratory
@@ -171,7 +171,7 @@ def normalize_generic_by_model(
         raise GenericLogError(
             f"telemetry_by_model keys {undeclared} name models the locked spec "
             f"never declared (declared: {declared_models}); attribution to an "
-            "unregistered model is a contradiction, not data [EVAL-14 AC-2]"
+            "unregistered model is a contradiction, not data [EVAL-21 AC-2]"
         )
     out: dict[str, Telemetry] = {}
     for model, block in raw.items():
@@ -186,7 +186,7 @@ def normalize_generic_by_model(
 
 def by_model_delta(by_model: dict[str, Telemetry], totals: Telemetry) -> dict[str, float]:
     """Per-field mismatch between by-model sums and the whole-trial totals
-    [EVAL-14 AC-4]. Surfaced as a flag, never reconciled in either direction
+    [EVAL-21 AC-4]. Surfaced as a flag, never reconciled in either direction
     (the proxy_cost_delta precedent). A field is only comparable when the
     total is measured AND at least one by-model block measured it; nulls stay
     out of the arithmetic entirely."""

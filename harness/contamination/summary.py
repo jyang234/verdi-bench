@@ -118,7 +118,7 @@ def contamination_summary(ledger_path, spec: ExperimentSpec, manifest=None) -> d
     per_arm: dict[str, dict] = {}
     flagged_by_arm: dict[str, set[str]] = {}
     for arm in spec.arms:
-        # EVAL-13 AC-4 [D002]: the arm dates on its effective cutoff — the
+        # EVAL-20 AC-4 [D002]: the arm dates on its effective cutoff — the
         # latest across every declared model (clean requires postdating them
         # all); any absent cutoff makes the arm undatable (unknown).
         cutoffs_by_model = {

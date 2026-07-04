@@ -147,7 +147,7 @@ schema (`harness/run/trajectory.py`, schema v2):
 | declared, unknown top-level key (incl. a typo'd block name or a v2 feature under a v1 declaration) | `GenericLogError` → trial fails closed |
 | declared, structural violation inside a block    | `GenericLogError` → trial fails closed     |
 
-## Format v2 — multi-agent attribution [EVAL-14]
+## Format v2 — multi-agent attribution [EVAL-21]
 
 `verdi_log_version: 2` is a superset of v1 adding self-reported
 attribution. Attribution is the arm's *testimony* — the instrument cannot

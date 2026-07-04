@@ -39,7 +39,11 @@ source_modules =
     harness.run.types
     harness.run.settings
     harness.run.trajectory
+    harness.run.heartbeat
     harness.run.engines.fake
+    harness.status
+    harness.serve
+    harness.author
 forbidden_modules =
     harness.run.engines.harbor
 
@@ -92,6 +96,9 @@ source_modules =
     harness.contamination
     harness.blind
     harness.forensics
+    harness.status
+    harness.serve
+    harness.author
 forbidden_modules =
     harness.ledger.chain
 
@@ -101,6 +108,35 @@ type = forbidden
 source_modules =
     harness.forensics.metrics
     harness.forensics.detectors
+forbidden_modules =
+    harness.judge.providers
+    harness.judge.client
+
+[importlinter:contract:reviewer-surface-isolated]
+name = The reviewer surface never imports the unblinded operator tier [EVAL-18 AC-1]
+# Strict (indirect chains included): a blinded capture surface that could
+# reach the operator observer's modules — plaintext arm identities, feeds,
+# comparisons — would make its isolation a discipline instead of a property.
+type = forbidden
+source_modules =
+    harness.review
+forbidden_modules =
+    harness.serve
+    harness.status
+    harness.author
+
+[importlinter:contract:observability-llm-free]
+name = Read-only observability imports no LLM client [EVAL-13 AC-7]
+type = forbidden
+# Only DIRECT imports are forbidden (the contracts-1/4 mode): status reuses the
+# EVAL-6 selfcheck classifier, whose analyze module reaches the provider seam
+# transitively through forensics' advisory review — a legitimate chain the
+# observer never executes. What this contract refuses is observability code
+# naming an LLM client itself.
+allow_indirect_imports = True
+source_modules =
+    harness.status
+    harness.serve
 forbidden_modules =
     harness.judge.providers
     harness.judge.client

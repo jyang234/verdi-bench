@@ -31,7 +31,7 @@ from .redact import redact_text
 TRAJECTORY_SCHEMA_VERSION = 3
 TRAJECTORY_FILENAME = "trajectory.json"
 
-# EVAL-14 AC-3 [D003: closed-role-vocabulary]: the ONLY values an agent label
+# EVAL-21 AC-3 [D003: closed-role-vocabulary]: the ONLY values an agent label
 # may take — role, optionally with a small ordinal (worker-1). The value space
 # cannot spell a model, vendor, platform, or arm identity, so attribution
 # needs no scrub and the blind subsystem stays untouched. Extending this set
@@ -45,7 +45,7 @@ _AGENT_LABEL_RE = re.compile(
     r"^(?:%s)(?:-\d{1,3})?$" % "|".join(sorted(AGENT_ROLES))
 )
 
-# The bucket ``slice_by_agent`` files null-agent steps under [EVAL-14 AC-6].
+# The bucket ``slice_by_agent`` files null-agent steps under [EVAL-21 AC-6].
 # Deliberately outside AGENT_ROLES, so no declared label can collide with it.
 UNATTRIBUTED = "unattributed"
 
@@ -73,10 +73,23 @@ class TrajectoryStep(BaseModel):
     # "" = measured, the step is not a shell command (the codex files=[]
     # precedent); null = unmeasurable — a v1 record reads back null throughout.
     command: Optional[str] = None
-    # v3 additive field [EVAL-14 AC-1, D001]: closed-vocabulary role label
-    # attributing the step to a sub-agent of a multi-agent workflow. Null =
-    # unattributed — the honest state for single-agent platforms and v1/v2
-    # records, which read back null throughout; no reader may require it.
+    # v3 carries TWO additive fields, approved the same day by two parallel
+    # stories over the same base: 'detail' (EVAL-14-D004, the observability
+    # lineage) and 'agent' (EVAL-21-D001, the multi-model lineage). Both are
+    # null-defaulted, so records written by either pre-merge branch read back
+    # under the merged model unchanged.
+    # The step's content, kind-dependent — message text, a file_edit's patch
+    # material, a tool_call/test_run's output — read from the native log,
+    # never reconstructed. "" = measured empty; null = the platform did not
+    # expose it (the command precedent). Pre-v3 records read back null
+    # throughout; no reader may require it. Renderers that leave the operator
+    # tier (dossier, timeline) exclude it [EVAL-15 guardrails]; capture rides
+    # the same persist-time scrub as every other string field.
+    detail: Optional[str] = None
+    # Closed-vocabulary role label [EVAL-21 AC-1, D001] attributing the step
+    # to a sub-agent of a multi-agent workflow. Null = unattributed — the
+    # honest state for single-agent platforms and v1/v2 records, which read
+    # back null throughout; no reader may require it.
     agent: Optional[str] = None
 
     @field_validator("agent")
@@ -91,7 +104,7 @@ class TrajectoryStep(BaseModel):
             raise ValueError(
                 f"agent label {v!r} is not in the closed role vocabulary "
                 f"{sorted(AGENT_ROLES)} (optionally '-<ordinal>', e.g. "
-                "'worker-2') [EVAL-14 AC-3]"
+                "'worker-2') [EVAL-21 AC-3]"
             )
         return v
 
@@ -191,7 +204,7 @@ def load_trajectory(path) -> TrajectoryRecord:
 
 
 def slice_by_agent(record: TrajectoryRecord) -> dict[str, list[TrajectoryStep]]:
-    """Group a trajectory's steps by agent label [EVAL-14 AC-6].
+    """Group a trajectory's steps by agent label [EVAL-21 AC-6].
 
     The forensics substrate: order is preserved within each group, and steps
     with a null ``agent`` (single-agent platforms, v1/v2 records) land in the

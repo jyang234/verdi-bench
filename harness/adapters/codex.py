@@ -47,7 +47,18 @@ class CodexAdapter(Adapter):
         ``command`` [EVAL-11-D005]: an ``exec`` event's raw ``cmd`` string when
         present; non-exec steps are a measured ``""``; an exec without a string
         ``cmd`` is null (unmeasurable).
+
+        ``detail`` [EVAL-14-D004, v3]: read, never reconstructed — a
+        ``message`` event's ``text``, a ``patch`` event's ``diff``, an ``exec``
+        event's ``output``, each only when the log carries it as a string;
+        everything else stays null. Codex's per-step content is sparser than
+        claude-code's — the same honest asymmetry as its null telemetry cost.
         """
+
+        def _text(ev: dict, key: str) -> Optional[str]:
+            v = ev.get(key)
+            return v if isinstance(v, str) else None
+
         events = native_log.get("events")
         if not isinstance(events, list):
             return None
@@ -58,7 +69,12 @@ class CodexAdapter(Adapter):
             etype = ev.get("type")
             rel = _float(ev.get("elapsed_s"))
             if etype == "message":
-                steps.append(TrajectoryStep(kind="message", relative_ts=rel, command=""))
+                steps.append(
+                    TrajectoryStep(
+                        kind="message", relative_ts=rel, command="",
+                        detail=_text(ev, "text"),
+                    )
+                )
             elif etype == "patch":
                 files = ev.get("files")
                 steps.append(
@@ -73,6 +89,7 @@ class CodexAdapter(Adapter):
                             [str(f) for f in files] if isinstance(files, list) else None
                         ),
                         command="",
+                        detail=_text(ev, "diff"),
                     )
                 )
             elif etype == "exec":
@@ -83,6 +100,7 @@ class CodexAdapter(Adapter):
                         relative_ts=rel,
                         exit_code=_int(ev.get("exit_code")),
                         command=raw_cmd if isinstance(raw_cmd, str) else None,
+                        detail=_text(ev, "output"),
                     )
                 )
         return steps

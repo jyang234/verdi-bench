@@ -1,4 +1,4 @@
-"""EVAL-13 — pre-registered multi-model arms.
+"""EVAL-20 — pre-registered multi-model arms.
 
 The declared model set (primary + aux_models) feeds the four guarantees that
 previously keyed off the single arm.model: blinding canaries [AC-2], judge
@@ -56,7 +56,7 @@ def test_ac1_aux_models_schema():
         "qwen/qwen2-coder-32b-20240901",
     ]
     assert treatment.aux_models[0].training_cutoff == "2024-09-01T00:00:00Z"
-    # pre-EVAL-13 arms (no aux_models key) validate unchanged
+    # pre-EVAL-20 arms (no aux_models key) validate unchanged
     assert _spec().arms[0].aux_models == []
 
 
@@ -293,7 +293,7 @@ def test_ac6_declared_hosts_require_proxy_config(tmp_path):
     (tmp_path / "run.config.yaml").write_text("quotas: {cpus: 1}\n", encoding="utf-8")
     with pytest.raises(ValueError):
         load_run_settings(tmp_path, env={}, spec=spec)
-    # a spec declaring NO hosts keeps the pre-EVAL-13 behavior exactly
+    # a spec declaring NO hosts keeps the pre-EVAL-20 behavior exactly
     plain = _spec()
     assert load_run_settings(tmp_path, env={}, spec=plain).proxy is None
 

@@ -1,4 +1,4 @@
-"""EVAL-14 — per-agent trajectory attribution + per-model telemetry.
+"""EVAL-21 — per-agent trajectory attribution + per-model telemetry.
 
 Attribution is the arm's self-reported testimony: it rides flags and
 exploratory analysis, never the authoritative telemetry stream or an official
