@@ -562,8 +562,16 @@ def _secondary_metrics(ledger_path, spec) -> dict:
     """
     from .confounds import _vendor
 
-    arm_vendor = {a.name: _vendor(a.model) for a in spec.arms}
-    cross_vendor = len(set(arm_vendor.values())) > 1
+    # EVAL-13 AC-5: an arm's vendor identity is its full declared model set —
+    # a mixed-vendor arm (multi-model workflow) makes raw token counts
+    # vendor-incomparable for any comparison involving it, and its own token
+    # totals are sums over different tokenizers (mixed-tokenizer, named below).
+    arm_vendor_sets = {
+        a.name: sorted({_vendor(m) for m in a.declared_models()}) for a in spec.arms
+    }
+    all_vendors = set().union(*arm_vendor_sets.values()) if arm_vendor_sets else set()
+    mixed_vendor_arms = sorted(a for a, vs in arm_vendor_sets.items() if len(vs) > 1)
+    cross_vendor = len(all_vendors) > 1
     fields = ("tokens_in", "tokens_out", "tokens_cache", "cost", "wall_time_s", "tool_calls")
     per_arm: dict[str, dict[str, float]] = defaultdict(dict)
     raw: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
@@ -588,6 +596,8 @@ def _secondary_metrics(ledger_path, spec) -> dict:
         "cross_vendor": cross_vendor,
         "vendor_incomparable_fields": vendor_incomparable,
         "cross_vendor_allowed_fields": list(_CROSS_VENDOR_ALLOWED),
+        "arm_vendor_sets": arm_vendor_sets,
+        "mixed_vendor_arms": mixed_vendor_arms,
     }
 
 
@@ -1382,6 +1392,14 @@ def _secondary_lines(findings: FindingsDocument) -> list[str]:
             f"- cross-vendor: raw token fields {sm['vendor_incomparable_fields']} are "
             "vendor-incomparable and NOT compared across arms; cross-vendor "
             f"comparisons restricted to {sm['cross_vendor_allowed_fields']}"
+        )
+    # EVAL-13 AC-5: a mixed-vendor arm is named, and its own token totals are
+    # additionally sums over different tokenizers.
+    if sm.get("mixed_vendor_arms"):
+        lines.append(
+            f"- mixed-vendor arm(s) {sm['mixed_vendor_arms']}: declared models span "
+            "vendors, so these arms' own token totals are mixed-tokenizer sums "
+            f"(vendor sets: {sm['arm_vendor_sets']})"
         )
     return lines
 

@@ -1,9 +1,9 @@
 ---
 # MACHINE CONTRACT — see template header for consumers and YAML style rules.
 # PROPOSED — graduates to specs/ in the same commit as the story's first AC
-# tests, once EVAL-13 has landed and the open decisions below are resolved by
-# a human. Build order is explicitly gated (D004): this story depends on the
-# declared model set EVAL-13 introduces.
+# tests. All four decisions resolved 2026-07-04 (see eval14.decisions.ndjson);
+# EVAL-13 has landed, so the D004 build gate is open — this spec is
+# build-ready.
 kind: "story"
 ticket: "EVAL-14"   # synthetic key — source: 2026-07-04 multi-model workflow directive (session)
 parent: "EVAL-1"
@@ -24,7 +24,7 @@ graph_provenance: []
 
 acceptance:
   - id: "AC-1"
-    text: "TrajectoryStep gains an additive optional 'agent' field (schema v3): a free-text label attributing the step to a sub-agent of the workflow. Null means unattributed — the honest state for single-agent platforms and v2 records, which read back with null agent throughout (the v1→v2 'command' precedent); no reader may require the field."
+    text: "TrajectoryStep gains an additive optional 'agent' field (schema v3): a closed-vocabulary role label (see AC-3) attributing the step to a sub-agent of the workflow. Null means unattributed — the honest state for single-agent platforms and v2 records, which read back with null agent throughout (the v1→v2 'command' precedent); no reader may require the field."
     vc: "A v2 trajectory artifact reads back with null agent on every step; a v3 record round-trips its labels; every existing trajectory consumer runs unchanged on both."
     touchpoints:
       - "harness/run/trajectory.py:TrajectoryStep"
@@ -84,15 +84,11 @@ constraints:
     enforced_by: "test:test_ac3_nonconforming_label_refused"
 
 decisions:
-  - "EVAL-14-D001"  # ContractChange: TrajectoryStep v3 'agent' field (OPEN)
-  - "EVAL-14-D002"  # ContractChange: generic log format v2 (OPEN)
-  - "EVAL-14-D003"  # agent label handling posture (OPEN)
-  - "EVAL-14-D004"  # build gating on EVAL-13 + named consumer (OPEN)
-open_decisions:
-  - "EVAL-14-D001"
-  - "EVAL-14-D002"
-  - "EVAL-14-D003"
-  - "EVAL-14-D004"
+  - "EVAL-14-D001"  # TrajectoryStep v3 'agent' field (RESOLVED: approve-additive-field)
+  - "EVAL-14-D002"  # generic log format v2 (RESOLVED: approve-v2)
+  - "EVAL-14-D003"  # agent label posture (RESOLVED: closed-role-vocabulary)
+  - "EVAL-14-D004"  # build gating (RESOLVED: gate-on-eval13-plus-named-consumer)
+open_decisions: []
 
 policy_proposals: []
 predicted_reach: null

@@ -1,7 +1,7 @@
 ---
 # MACHINE CONTRACT — see template header for consumers and YAML style rules.
-# PROPOSED — graduates to specs/ in the same commit as the story's first AC
-# tests, once the open ContractChange decisions below are resolved by a human.
+# Graduated from specs/proposed/ 2026-07-04 in the same commit as the story's
+# first AC tests, all five decisions resolved (see eval13.decisions.ndjson).
 kind: "story"
 ticket: "EVAL-13"   # synthetic key — source: 2026-07-04 multi-model workflow directive (session)
 parent: "EVAL-1"
@@ -81,16 +81,12 @@ constraints:
     enforced_by: "test:test_ac1_prefixless_aux_refused"
 
 decisions:
-  - "EVAL-13-D001"  # ContractChange: additive aux_models on Arm (OPEN)
-  - "EVAL-13-D002"  # contamination aggregation semantics (OPEN)
+  - "EVAL-13-D001"  # additive aux_models/model_hosts/infra_hosts (RESOLVED: approve-additive-key)
+  - "EVAL-13-D002"  # contamination aggregation (RESOLVED: latest-cutoff-plus-per-model-breakdown)
   - "EVAL-13-D003"  # egress attestation shape (RESOLVED: declared-hosts-per-model)
-  - "EVAL-13-D004"  # mixed-vendor arm comparability posture (OPEN)
-  - "EVAL-13-D005"  # infra_hosts scope: experiment-shared vs per-arm (OPEN)
-open_decisions:
-  - "EVAL-13-D001"
-  - "EVAL-13-D002"
-  - "EVAL-13-D004"
-  - "EVAL-13-D005"
+  - "EVAL-13-D004"  # mixed-vendor comparability (RESOLVED: treat-as-cross-vendor)
+  - "EVAL-13-D005"  # infra_hosts scope (RESOLVED: experiment-level-shared)
+open_decisions: []
 
 policy_proposals: []
 predicted_reach: null

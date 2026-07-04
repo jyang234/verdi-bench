@@ -94,16 +94,25 @@ _IDENTITY_NAME_PATTERNS = [
 
 def arm_canaries(arms) -> list[str]:
     """The per-experiment identity literals of the *contestants*: each arm's
-    name, platform, and model id. The one place judge and review packets derive
+    name, platform, and every declared model id — primary and aux [EVAL-13
+    AC-2], so a workflow's sub-model identities cannot pass the firewalls as
+    undeclared literals would. The one place judge and review packets derive
     their spec-scoped canary set, so both firewalls scrub the same identities.
-    Duck-typed on ``.name``/``.platform``/``.model`` (no schema import)."""
+    Duck-typed on ``.name``/``.platform``/``.model``/``.aux_models`` (no schema
+    import)."""
     out: list[str] = []
     seen: set = set()
+
+    def _add(lit) -> None:
+        if lit and lit not in seen:
+            seen.add(lit)
+            out.append(lit)
+
     for arm in arms:
         for lit in (arm.name, arm.platform, arm.model):
-            if lit and lit not in seen:
-                seen.add(lit)
-                out.append(lit)
+            _add(lit)
+        for aux in getattr(arm, "aux_models", None) or []:
+            _add(getattr(aux, "model", None))
     return out
 
 

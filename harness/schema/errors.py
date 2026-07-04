@@ -35,3 +35,15 @@ class DecisionRuleError(SpecError):
 class ArmNameError(SpecError):
     """Two arms share a name — the run's arm map would silently collapse them,
     losing a whole arm's trials [PL-10]."""
+
+
+class AuxModelError(SpecError):
+    """An aux_models entry was not vendor-prefixed, or duplicated another
+    declared model — the declared model set must be well-defined for blinding,
+    vendor overlap, and contamination [EVAL-13 AC-1]."""
+
+
+class ModelHostsError(SpecError):
+    """model_hosts named a model the arm never declared, or carried an empty
+    host — egress attestation must attribute against the declared set only
+    [EVAL-13 AC-6]."""

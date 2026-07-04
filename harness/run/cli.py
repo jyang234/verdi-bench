@@ -112,7 +112,9 @@ def register(app: typer.Typer) -> None:
         eng = get_engine(engine)
         # Operational config (proxy, quotas, provider keys) from run.config.yaml +
         # env — NOT from the sha-locked spec or the ledger [RN-13, D-9, AC-8].
-        settings = load_run_settings(experiment_dir)
+        # Exception [EVAL-13 AC-6]: a spec that pre-registers egress hosts
+        # derives the proxy allowlist from those locked bytes.
+        settings = load_run_settings(experiment_dir, spec=spec)
         config = RunConfig(
             engine=eng,
             proxy=settings.proxy,

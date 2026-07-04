@@ -171,6 +171,25 @@ def run_trial(
     flags = Flags(egress_violation=result.egress_violation)
     if result.egress_attempts:
         flags.egress_attempts = result.egress_attempts
+    # Egress attestation [EVAL-13 AC-6, D003]: an ALLOWED host attributable to
+    # neither this arm's declared model_hosts nor the shared infra_hosts is
+    # flagged (advisory — rides the record, never gates, never fails the trial;
+    # the proxy-metered-cost trust pattern). Engages only when this arm opted
+    # into declaration (non-empty model_hosts) — an undeclared arm has nothing
+    # to attest against, the honest absent state. Denied hosts are already
+    # egress_violation; this catches the allowed-but-unattributable case, e.g.
+    # an arm reaching the OTHER arm's declared model endpoint.
+    if config.proxy is not None and arm.model_hosts and result.egress_attempts:
+        attributable = list(config.proxy.infra_hosts)
+        for declared in arm.model_hosts.values():
+            attributable.extend(declared)
+        undeclared = sorted({
+            h for h in result.egress_attempts
+            if config.proxy.is_allowed(h)
+            and not config.proxy.host_matches(h, attributable)
+        })
+        if undeclared:
+            flags.undeclared_model_egress = undeclared
     if result.proxy_metered_cost is not None:
         # Cross-check signal. Surfaced on the record so the cost guard can enforce
         # on it when the arm can't self-report cost (telemetry null) [RN-2] — but
