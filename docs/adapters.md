@@ -143,8 +143,9 @@ schema (`harness/run/trajectory.py`, schema v2):
 | no `agent_log.json`                              | all-null telemetry, absent trajectory      |
 | `agent_log.json` is not valid JSON               | trial fails closed: `telemetry_corrupt` [RN-17] |
 | valid JSON, no `verdi_log_version`               | all-null telemetry, absent trajectory      |
-| declared version ≠ 1                             | `GenericLogError` → trial fails closed     |
-| declared, structural violation inside            | `GenericLogError` → trial fails closed     |
+| declared but unsupported version                 | `GenericLogError` → trial fails closed     |
+| declared, unknown top-level key (incl. a typo'd block name or a v2 feature under a v1 declaration) | `GenericLogError` → trial fails closed |
+| declared, structural violation inside a block    | `GenericLogError` → trial fails closed     |
 
 ## Format v2 — multi-agent attribution [EVAL-14]
 

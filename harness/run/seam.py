@@ -21,6 +21,7 @@ from ..adapters import get_adapter
 from ..adapters.base import Flags, Outcome, Provenance, TrialRecord
 from ..adapters.generic import by_model_delta, normalize_generic_by_model
 from ..schema.experiment import Arm
+from .egress import undeclared_model_egress
 from .redact import redact_artifacts
 from .trajectory import TrajectoryCorruptError, TrajectoryRecord, persist_trajectory
 from .types import RunConfig, Task, TrialRequest
@@ -139,11 +140,17 @@ def run_trial(
     # telemetry across the arm's DECLARED models. Self-reported testimony, so
     # it rides flags (the advisory channel) — the authoritative whole-trial
     # telemetry above is untouched, and a sum/total mismatch is surfaced as a
-    # delta, never reconciled (the proxy_cost_delta precedent). None for v1,
-    # non-verdi, and native-platform logs — honest absence.
-    telemetry_by_model = normalize_generic_by_model(
-        result.native_log, arm.declared_models()
-    )
+    # delta, never reconciled (the proxy_cost_delta precedent). Parsed ONLY
+    # when the adapter speaks the verdi format — a native (claude_code/codex)
+    # log that happens to carry a colliding "verdi_log_version" key is
+    # agent-controlled content and must never gain verdi semantics or be able
+    # to fail the trial — and only for non-infra-failed outcomes, so a corrupt
+    # block can never mask the engine's more specific failure reason.
+    telemetry_by_model = None
+    if adapter.speaks_generic_format and result.outcome != Outcome.infra_failed:
+        telemetry_by_model = normalize_generic_by_model(
+            result.native_log, arm.declared_models()
+        )
 
     # Trajectory capture [EVAL-12 AC-1, AC-2] — strictly after redact_artifacts:
     # the input is the already-scrubbed on-disk agent_log.json (a trajectory is
@@ -189,23 +196,13 @@ def run_trial(
             flags.by_model_delta = delta
     if result.egress_attempts:
         flags.egress_attempts = result.egress_attempts
-    # Egress attestation [EVAL-13 AC-6, D003]: an ALLOWED host attributable to
-    # neither this arm's declared model_hosts nor the shared infra_hosts is
-    # flagged (advisory — rides the record, never gates, never fails the trial;
-    # the proxy-metered-cost trust pattern). Engages only when this arm opted
-    # into declaration (non-empty model_hosts) — an undeclared arm has nothing
-    # to attest against, the honest absent state. Denied hosts are already
-    # egress_violation; this catches the allowed-but-unattributable case, e.g.
-    # an arm reaching the OTHER arm's declared model endpoint.
-    if config.proxy is not None and arm.model_hosts and result.egress_attempts:
-        attributable = list(config.proxy.infra_hosts)
-        for declared in arm.model_hosts.values():
-            attributable.extend(declared)
-        undeclared = sorted({
-            h for h in result.egress_attempts
-            if config.proxy.is_allowed(h)
-            and not config.proxy.host_matches(h, attributable)
-        })
+    # Egress attestation [EVAL-13 AC-6, D003] — policy lives in run/egress.py;
+    # the seam only attaches the advisory flag (rides the record, never gates,
+    # never fails the trial; the proxy-metered-cost trust pattern).
+    if config.proxy is not None:
+        undeclared = undeclared_model_egress(
+            config.proxy, arm, result.egress_attempts
+        )
         if undeclared:
             flags.undeclared_model_egress = undeclared
     if result.proxy_metered_cost is not None:

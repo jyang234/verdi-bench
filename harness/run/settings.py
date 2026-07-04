@@ -65,12 +65,22 @@ def load_run_settings(
     A spec declaring no hosts keeps the pre-EVAL-13 behavior exactly.
     """
     env = os.environ if env is None else env
-    path = Path(experiment_dir) / RUN_CONFIG_FILENAME
-    if not path.exists():
-        return RunSettings()
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     declared = spec_allowlist(spec) if spec is not None else []
     infra = sorted(spec.infra_hosts) if spec is not None else []
+    path = Path(experiment_dir) / RUN_CONFIG_FILENAME
+    if not path.exists():
+        if declared:
+            # A pre-registered egress declaration with nothing to enforce it is
+            # an inconsistent operational state — refuse loudly, never run with
+            # the locked contract silently void [EVAL-13 AC-6].
+            raise ValueError(
+                "the locked spec pre-registers egress hosts "
+                f"(model_hosts/infra_hosts) but {RUN_CONFIG_FILENAME} is absent; "
+                "the derived allowlist cannot be enforced — configure proxy.url "
+                "or remove the declared hosts before locking [EVAL-13 AC-6]"
+            )
+        return RunSettings()
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
     proxy = None
     pcfg = data.get("proxy")
@@ -91,6 +101,13 @@ def load_run_settings(
             proxy_url=pcfg.get("url"),
             log_path=pcfg.get("log_path"),
             infra_hosts=infra,
+        )
+    if declared and proxy is None:
+        raise ValueError(
+            "the locked spec pre-registers egress hosts (model_hosts/infra_hosts) "
+            f"but {RUN_CONFIG_FILENAME} configures no proxy; the derived allowlist "
+            "cannot be enforced — configure proxy.url or remove the declared hosts "
+            "before locking [EVAL-13 AC-6]"
         )
 
     qcfg = data.get("quotas")

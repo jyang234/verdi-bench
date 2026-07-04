@@ -160,6 +160,13 @@ class Adapter:
     """
 
     platform: str = "base"
+    # Adapters that inherit the default methods parse the verdi normalized log
+    # format. NATIVE-format adapters override this to False so the run seam
+    # never applies verdi-format semantics (telemetry_by_model, the loud
+    # version/strictness rules) to a log their platform never claimed — a
+    # colliding "verdi_log_version" key in agent-controlled native content
+    # must not be able to fail a trial.
+    speaks_generic_format: bool = True
 
     def normalize(self, native_log: dict) -> Telemetry:
         """Default: parse the verdi normalized log format's ``telemetry``

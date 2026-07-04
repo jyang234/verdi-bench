@@ -51,6 +51,15 @@ GENERIC_LOG_VERSION = 2
 SUPPORTED_LOG_VERSIONS = frozenset({1, 2})
 VERSION_KEY = "verdi_log_version"
 
+# The complete top-level key set of each format version. Declared logs are
+# strict at EVERY level: a typo'd block name ("telemetrie") or a v2 feature
+# under a v1 declaration must fail loudly, never launder into honest absence —
+# the same rule extra="forbid" enforces inside the blocks.
+_TOP_LEVEL_KEYS = {
+    1: frozenset({VERSION_KEY, "telemetry", "trajectory"}),
+    2: frozenset({VERSION_KEY, "telemetry", "trajectory", "telemetry_by_model"}),
+}
+
 
 class GenericLogError(ValueError):
     """A log that declared the verdi normalized format violates it.
@@ -75,6 +84,13 @@ def declared_version(native_log: dict) -> Optional[int]:
             f"{VERSION_KEY} {v!r} is not supported (this parser speaks versions "
             f"{sorted(SUPPORTED_LOG_VERSIONS)}); refusing to guess at another "
             "version's semantics"
+        )
+    unknown = sorted(set(native_log) - _TOP_LEVEL_KEYS[v])
+    if unknown:
+        raise GenericLogError(
+            f"unknown top-level key(s) {unknown} in a declared v{v} log (a v{v} "
+            f"log allows {sorted(_TOP_LEVEL_KEYS[v])}); a typo'd or "
+            "undeclared-version key must not launder into unmeasured"
         )
     return v
 

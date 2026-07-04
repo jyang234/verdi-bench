@@ -257,6 +257,69 @@ def test_ac6_runtime_allowlist_conflicts_with_spec_hosts(tmp_path):
     assert "pre-registers" in str(exc.value)
 
 
+def test_ac6_partial_host_declaration_refused():
+    # Mixed declaration: arm A declares hosts, arm B doesn't — the derived
+    # allowlist would deny B's model API on every trial, a systematic bias.
+    arms = [dict(HOSTED_ARMS[0]), dict(AUX_ARMS[1])]
+    with pytest.raises(ModelHostsError) as exc:
+        _spec(arms=arms)
+    assert "treatment" in str(exc.value)
+    # infra-only declaration: the derived allowlist would contain registries
+    # but no model-API host at all, denying BOTH arms' provider calls.
+    with pytest.raises(ModelHostsError):
+        _spec(arms=AUX_ARMS, infra_hosts=["pypi.org"])
+
+
+def test_ac6_infra_hosts_empty_entry_refused():
+    from harness.schema.errors import InfraHostsError
+
+    # an empty host suffix-matches every trailing-dot FQDN (endswith("."))
+    with pytest.raises(InfraHostsError):
+        _spec(arms=HOSTED_ARMS, infra_hosts=["", "pypi.org"])
+    with pytest.raises(InfraHostsError):
+        _spec(arms=HOSTED_ARMS, infra_hosts=["  "])
+
+
+def test_ac6_declared_hosts_require_proxy_config(tmp_path):
+    from harness.run.settings import load_run_settings
+
+    spec = _spec(arms=HOSTED_ARMS, infra_hosts=["pypi.org"])
+    # shape 1: no run.config.yaml at all — the pre-registered egress contract
+    # must refuse loudly, never silently run unenforced
+    with pytest.raises(ValueError) as exc:
+        load_run_settings(tmp_path, env={}, spec=spec)
+    assert "pre-registers" in str(exc.value)
+    # shape 2: run.config.yaml present but no proxy block
+    (tmp_path / "run.config.yaml").write_text("quotas: {cpus: 1}\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_run_settings(tmp_path, env={}, spec=spec)
+    # a spec declaring NO hosts keeps the pre-EVAL-13 behavior exactly
+    plain = _spec()
+    assert load_run_settings(tmp_path, env={}, spec=plain).proxy is None
+
+
+def test_ac2_duck_typed_aux_entries_still_canaried():
+    from types import SimpleNamespace
+
+    from harness.blind.core import arm_canaries
+
+    # the docstring invites duck-typing (no schema import): raw-dict aux
+    # entries must still contribute canaries, never silently vanish
+    arm = SimpleNamespace(
+        name="treatment", platform="generic",
+        model="meta/llama-3-70b-instruct-20240620",
+        aux_models=[{"model": "qwen/qwen2-coder-32b-20240901"}],
+    )
+    assert "qwen/qwen2-coder-32b-20240901" in arm_canaries([arm])
+    # an aux entry with no readable model id fails loudly — a silent skip
+    # would be a blinding breach
+    bad = SimpleNamespace(
+        name="t", platform="generic", model="a/b-1234", aux_models=[{"oops": "x"}]
+    )
+    with pytest.raises(ValueError):
+        arm_canaries([bad])
+
+
 def test_ac6_model_hosts_key_must_be_declared():
     arms = [
         dict(AUX_ARMS[0], model_hosts={"openai/gpt-4o-2024-08-06": ["api.openai.com"]}),

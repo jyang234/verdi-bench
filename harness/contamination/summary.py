@@ -121,13 +121,21 @@ def contamination_summary(ledger_path, spec: ExperimentSpec, manifest=None) -> d
         # EVAL-13 AC-4 [D002]: the arm dates on its effective cutoff — the
         # latest across every declared model (clean requires postdating them
         # all); any absent cutoff makes the arm undatable (unknown).
-        cutoffs_by_model = {arm.model: arm.training_cutoff}
-        cutoffs_by_model.update({a.model: a.training_cutoff for a in arm.aux_models})
+        cutoffs_by_model = {
+            arm.model: arm.training_cutoff,
+            **{a.model: a.training_cutoff for a in arm.aux_models},
+        }
         arm_cutoff = effective_cutoff(list(cutoffs_by_model.values()))
         counts = {s.value: 0 for s in ContaminationStatus}
-        per_model: dict[str, dict[str, int]] = {
-            m: {s.value: 0 for s in ContaminationStatus} for m in cutoffs_by_model
-        }
+        # per-model breakdown so the aggregation is auditable — which model
+        # dragged the arm to unknown is visible, not a black box [AC-4]. Only
+        # computed for multi-model arms: a single-model arm's breakdown would
+        # duplicate the arm-level counts, tasks×1 discarded computations.
+        per_model: Optional[dict[str, dict[str, int]]] = (
+            {m: {s.value: 0 for s in ContaminationStatus} for m in cutoffs_by_model}
+            if arm.aux_models
+            else None
+        )
         flagged_ids: list[str] = []
         for task_id in task_ids:
             flagged = _flagged_in_probe(probe, arm.name, task_id)
@@ -137,17 +145,16 @@ def contamination_summary(ledger_path, spec: ExperimentSpec, manifest=None) -> d
             counts[status.value] += 1
             if status is ContaminationStatus.FLAGGED:
                 flagged_ids.append(task_id)
-            # per-model breakdown so the aggregation is auditable — which model
-            # dragged the arm to unknown is visible, not a black box [AC-4].
-            # Probe flags overlay every model row: detection is arm-scoped.
-            for m, cutoff in cutoffs_by_model.items():
-                per_model[m][
-                    cutoff_status(
-                        created_at_by_id.get(task_id), cutoff, flagged=flagged
-                    ).value
-                ] += 1
+            if per_model is not None:
+                # probe flags overlay every model row: detection is arm-scoped
+                for m, cutoff in cutoffs_by_model.items():
+                    per_model[m][
+                        cutoff_status(
+                            created_at_by_id.get(task_id), cutoff, flagged=flagged
+                        ).value
+                    ] += 1
         per_arm[arm.name] = {**counts, "flagged_task_ids": flagged_ids}
-        if arm.aux_models:
+        if per_model is not None:
             per_arm[arm.name]["per_model"] = per_model
         flagged_by_arm[arm.name] = set(flagged_ids)
 

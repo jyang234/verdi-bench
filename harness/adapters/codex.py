@@ -18,6 +18,7 @@ from .base import coerce_int as _int
 
 class CodexAdapter(Adapter):
     platform = "codex"
+    speaks_generic_format = False  # native log format; verdi-format keys are inert
 
     def normalize(self, native_log: dict) -> Telemetry:
         usage = native_log.get("token_usage") or {}

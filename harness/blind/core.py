@@ -17,6 +17,7 @@ wrappers over :func:`identity_pattern_list`; ``run/redact.py`` wraps
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 
@@ -112,7 +113,20 @@ def arm_canaries(arms) -> list[str]:
         for lit in (arm.name, arm.platform, arm.model):
             _add(lit)
         for aux in getattr(arm, "aux_models", None) or []:
-            _add(getattr(aux, "model", None))
+            # Duck-typed callers may carry aux entries as raw mappings; an
+            # entry with no readable model id fails LOUDLY — silently omitting
+            # an identity from the canary set would be a blinding breach.
+            model = (
+                aux.get("model") if isinstance(aux, Mapping)
+                else getattr(aux, "model", None)
+            )
+            if not model:
+                raise ValueError(
+                    f"aux_models entry {aux!r} on arm {arm.name!r} has no readable "
+                    "model id; refusing to silently omit an identity from the "
+                    "blinding canary set [EVAL-13 AC-2]"
+                )
+            _add(model)
     return out
 
 

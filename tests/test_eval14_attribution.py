@@ -171,6 +171,59 @@ def test_ac4_authoritative_stream_unchanged(tmp_path):
     assert getattr(with_block.flags, "by_model_delta", None) is None
 
 
+def test_native_platform_log_with_verdi_key_never_fails_the_trial(tmp_path):
+    # agent-controlled content: a claude_code/codex agent_log.json that happens
+    # to carry verdi_log_version must NOT get verdi-format semantics — a
+    # colliding key must not be able to fail a native arm's trial.
+    from harness.run.engines.fake import FakeEngine
+    from harness.run.seam import run_trial
+    from harness.run.types import RunConfig, Task
+
+    native_arm = Arm.model_validate(
+        {"name": "control", "platform": "claude_code",
+         "model": "anthropic/claude-3-5-sonnet-20241022", "payload": {}}
+    )
+    for bad_log in (
+        {"verdi_log_version": 99},
+        {"verdi_log_version": 2,
+         "telemetry_by_model": {"undeclared/model-123": {"cost": 0.1}}},
+    ):
+        task = Task(id="t1", prompt="p", fake_behavior={"native_log": bad_log})
+        rec = run_trial(
+            task, native_arm, tmp_path / f"ws-{len(bad_log)}",
+            RunConfig(engine=FakeEngine()),
+        )
+        assert rec.outcome.value == "completed"
+        assert getattr(rec.flags, "telemetry_by_model", None) is None
+
+
+def test_generic_log_error_has_machine_readable_reason():
+    from harness.run.interleave import _reason_for
+
+    assert _reason_for(GenericLogError("x")) == "generic_log_error"
+
+
+def test_infra_failed_trial_keeps_engine_reason(tmp_path):
+    # the by-model parse must not run on an infra-failed trial: a corrupt v2
+    # block would mask the engine's more specific failure reason.
+    from harness.run.engines.fake import FakeEngine
+    from harness.run.seam import run_trial
+    from harness.run.types import RunConfig, Task
+
+    bad_log = {
+        "verdi_log_version": 2,
+        "telemetry_by_model": {"undeclared/model-123": {"cost": 0.1}},
+    }
+    task = Task(
+        id="t1", prompt="p",
+        fake_behavior={"outcome": "infra_failed", "infra_reason": "daemon_error",
+                       "native_log": bad_log},
+    )
+    rec = run_trial(task, WORKFLOW_ARM, tmp_path / "ws", RunConfig(engine=FakeEngine()))
+    assert rec.outcome.value == "infra_failed"
+    assert rec.flags.failure_reason == "daemon_error"
+
+
 # --- AC-5: the exploratory consumer ----------------------------------------------
 def _seed_workflow_experiment(tmp_path):
     from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
@@ -207,6 +260,38 @@ def test_ac5_per_model_section_exploratory(tmp_path):
     assert sm["per_model_means"]["treatment"][DECLARED[0]]["cost"] == 0.30
     lines = "\n".join(_secondary_lines(SimpleNamespace(secondary_metrics=sm)))
     assert "self-reported" in lines and "exploratory" in lines
+
+
+def test_ac5_attributing_arm_with_null_telemetry_still_renders(tmp_path):
+    # an arm with all-null whole-trial telemetry but real by-model attribution
+    # must appear in the render — it was silently dropped when the arm listing
+    # iterated per_arm_means only.
+    from types import SimpleNamespace
+
+    from harness.analyze.report import _secondary_lines, _secondary_metrics
+    from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
+
+    arms = [
+        {"name": "control", "platform": "claude_code",
+         "model": "anthropic/claude-3-5-sonnet-20241022", "payload": {}},
+        {"name": "treatment", "platform": "generic", "model": DECLARED[0],
+         "aux_models": [{"model": DECLARED[1]}], "payload": {}},
+    ]
+    spec, _, ledger = locked_experiment(tmp_path, arms=arms)
+    ctx = fixed_ctx()
+    seed_trial_and_grade(
+        ledger, ctx, trial_id="t-1", task_id="task-1", arm="control",
+        telemetry={"cost": 0.2},
+    )
+    seed_trial_and_grade(
+        ledger, ctx, trial_id="t-2", task_id="task-1", arm="treatment",
+        telemetry={},  # all-null whole-trial telemetry: absent from per_arm_means
+        flags={"telemetry_by_model": {DECLARED[0]: {"cost": 0.30}}},
+    )
+    sm = _secondary_metrics(ledger, spec)
+    assert "treatment" not in sm["per_arm_means"]  # the precondition of the bug
+    lines = "\n".join(_secondary_lines(SimpleNamespace(secondary_metrics=sm)))
+    assert "treatment" in lines and "0.3" in lines
 
 
 def test_ac5_unattributed_never_zero(tmp_path):

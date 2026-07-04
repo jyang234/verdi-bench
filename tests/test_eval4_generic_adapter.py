@@ -85,6 +85,24 @@ def test_unsupported_version_fails_loud(bad):
         get_adapter("generic").normalize_trajectory(bad)
 
 
+def test_declared_log_unknown_top_level_key_fails_loud():
+    # a typo'd BLOCK name must not launder the authoritative telemetry stream
+    # into all-null — declared logs are strict at every level
+    log = {"verdi_log_version": 1, "telemetrie": {"tokens_in": 500, "cost": 0.42}}
+    with pytest.raises(GenericLogError) as exc:
+        get_adapter("generic").normalize(log)
+    assert "telemetrie" in str(exc.value)
+
+
+def test_v2_key_on_v1_declaration_fails_loud():
+    # telemetry_by_model is a v2 feature: using it under a v1 declaration is a
+    # structural violation, not silently-ignored data
+    log = {"verdi_log_version": 1, "telemetry_by_model": {"a/b-123": {"cost": 0.1}}}
+    with pytest.raises(GenericLogError) as exc:
+        get_adapter("generic").normalize(log)
+    assert "telemetry_by_model" in str(exc.value)
+
+
 def test_unknown_telemetry_key_fails_loud_not_null():
     # a typo'd field in a self-declared log must not launder into "unmeasured"
     log = {"verdi_log_version": 1, "telemetry": {"token_in": 10}}

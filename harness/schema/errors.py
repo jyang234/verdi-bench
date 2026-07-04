@@ -44,6 +44,14 @@ class AuxModelError(SpecError):
 
 
 class ModelHostsError(SpecError):
-    """model_hosts named a model the arm never declared, or carried an empty
-    host — egress attestation must attribute against the declared set only
+    """model_hosts named a model the arm never declared, carried an empty
+    host, or was declared for some arms but not all — egress attestation must
+    attribute against the declared set only, and a partial declaration would
+    make the derived allowlist deny the undeclared arms' model APIs
+    [EVAL-13 AC-6]."""
+
+
+class InfraHostsError(SpecError):
+    """infra_hosts carried an empty/whitespace host — an empty entry would
+    suffix-match every trailing-dot hostname in the derived allowlist
     [EVAL-13 AC-6]."""

@@ -29,6 +29,7 @@ from .errors import (
     AuxModelError,
     CompositePrimaryMetricError,
     DecisionRuleError,
+    InfraHostsError,
     MissingCostCeilingError,
     ModelHostsError,
     SpecError,
@@ -264,6 +265,44 @@ class ExperimentSpec(BaseModel):
     # identical infrastructure — per-arm infra could masquerade as a treatment
     # effect. Feeds the spec-derived proxy allowlist with the arms' model_hosts.
     infra_hosts: list[str] = Field(default_factory=list)
+
+    @field_validator("infra_hosts")
+    @classmethod
+    def _infra_hosts_wellformed(cls, v: list[str]) -> list[str]:
+        # An empty entry would suffix-match every trailing-dot hostname
+        # (host_matches: host.endswith("." + "")) — a silent wildcard in the
+        # locked allowlist. Refuse at the schema, like model_hosts does.
+        bad = [h for h in v if not h or not h.strip()]
+        if bad:
+            raise InfraHostsError(
+                "infra_hosts contains empty/whitespace host(s); an empty entry "
+                "would suffix-match every trailing-dot hostname in the derived "
+                "allowlist [EVAL-13 AC-6]"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _hosts_fully_declared(self) -> "ExperimentSpec":
+        """A partial egress declaration is refused [EVAL-13 AC-6]: the derived
+        allowlist REPLACES the runtime allowlist, so an arm that declares no
+        model_hosts while the spec declares any hosts would have its model-API
+        calls denied on every trial — a systematic per-arm bias, silently."""
+        declaring = [a.name for a in self.arms if a.model_hosts]
+        if not self.infra_hosts and not declaring:
+            return self  # nothing declared: pre-EVAL-13 semantics, runtime allowlist
+        missing = [a.name for a in self.arms if not a.model_hosts]
+        if missing:
+            source = (
+                "infra_hosts is set" if not declaring
+                else f"arm(s) {declaring} declare model_hosts"
+            )
+            raise ModelHostsError(
+                f"egress hosts are partially declared: {source} but arm(s) "
+                f"{missing} declare no model_hosts. The derived allowlist would "
+                "deny the undeclared arm(s)' model APIs on every trial — declare "
+                "model_hosts for every arm, or for none [EVAL-13 AC-6]"
+            )
+        return self
 
     # Parsed form of decision_rule; populated post-validation.
     parsed_rule: Optional[DecisionRule] = Field(default=None, exclude=True)
