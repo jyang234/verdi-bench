@@ -82,6 +82,8 @@ def _as_test_list(value: object, field: str, instance: str) -> list[str]:
     """SWE-bench ships FAIL_TO_PASS / PASS_TO_PASS as either a JSON-encoded string
     (the HF dataset) or a real list. Normalize to a list of test ids; anything
     else is refused loudly."""
+    if value in (None, ""):
+        return []  # absent / empty is "no tests here", not a parse error
     if isinstance(value, str):
         try:
             value = json.loads(value)
@@ -106,7 +108,13 @@ def swebench_task_content(record: dict) -> dict:
     from the grading holdout so :func:`materialize_experiment` can route them to
     the workspace and the read-only holdouts dir respectively.
     """
-    instance = str(record.get("instance_id") or record.get("id") or "<unknown>")
+    raw_id = record.get("instance_id") or record.get("id")
+    if not raw_id or not str(raw_id).strip():
+        raise BenchmarkRecordError(
+            "SWE-bench record has no 'instance_id' (or 'id'); the task would have "
+            "no citable identity — refusing rather than importing it as '<unknown>'"
+        )
+    instance = str(raw_id)
     problem = _require(record, "problem_statement", instance)
     fail_to_pass = _as_test_list(_require(record, "FAIL_TO_PASS", instance), "FAIL_TO_PASS", instance)
     pass_to_pass = _as_test_list(record.get("PASS_TO_PASS", []), "PASS_TO_PASS", instance)
@@ -163,8 +171,15 @@ def swebench_task_metadata(record: dict, *, image_template: str) -> dict:
     """
     instance = str(record.get("instance_id") or record.get("id") or "<unknown>")
     repo = str(record.get("repo") or "")
+    try:
+        image = image_template.format(instance_id=instance, repo=repo.replace("/", "__"))
+    except (KeyError, IndexError) as e:
+        raise BenchmarkRecordError(
+            f"image template {image_template!r} references an unknown placeholder "
+            f"{e}; only {{instance_id}} and {{repo}} are available"
+        ) from e
     meta: dict = {
-        "image": image_template.format(instance_id=instance, repo=repo.replace("/", "__")),
+        "image": image,
         "repo": repo,
         "version": record.get("version"),
         # stratify by repo by default — a natural, dataset-provided stratum.
@@ -192,7 +207,12 @@ def _read_records(instances_path: Path) -> Iterator[dict]:
             raise BenchmarkRecordError(
                 f"{instances_path}: top-level JSON must be an array of records"
             )
-        yield from data
+        for i, rec in enumerate(data):
+            if not isinstance(rec, dict):
+                raise BenchmarkRecordError(
+                    f"{instances_path}: array element {i} is not a JSON object"
+                )
+            yield rec
         return
     for i, line in enumerate(text.splitlines()):
         line = line.strip()

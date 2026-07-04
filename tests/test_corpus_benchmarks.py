@@ -81,6 +81,20 @@ def test_mapping_refuses_malformed_test_list():
         swebench_task_content(bad)
 
 
+def test_mapping_refuses_record_without_instance_id():
+    """A record with no instance_id/id has no citable identity — refuse loudly
+    rather than import it as the literal '<unknown>'."""
+    bad = {k: v for k, v in _INSTANCE.items() if k != "instance_id"}
+    with pytest.raises(BenchmarkRecordError, match="instance_id"):
+        swebench_task_content(bad)
+
+
+def test_source_refuses_non_object_array_element(tmp_path):
+    p = _write_export(tmp_path / "arr.json", [_INSTANCE, 42], jsonl=False)
+    with pytest.raises(BenchmarkRecordError, match="not a JSON object"):
+        SweBenchSource(p).fetch()
+
+
 # --- the import (citable, admitted, dated) ----------------------------------
 def test_swebench_import_yields_citable_admitted_dated_tasks(tmp_path):
     export = _write_export(tmp_path / "instances.jsonl", [_INSTANCE])

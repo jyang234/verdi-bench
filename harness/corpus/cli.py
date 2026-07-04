@@ -43,7 +43,11 @@ def register(app: typer.Typer) -> None:
         ),
         corpus_id: str = typer.Option(None, "--corpus-id", help="Default: the benchmark name"),
         semver: str = typer.Option("1.0.0", "--semver"),
-        dataset_version: str = typer.Option("2.0", "--dataset-version"),
+        dataset_version: str = typer.Option(
+            None, "--dataset-version",
+            help="Dataset version label recorded on the manifest/card; "
+            "default is benchmark-specific",
+        ),
         image_template: str = typer.Option(
             None, "--image-template",
             help="swebench: per-instance image ref template ({instance_id}, {repo})",
@@ -61,11 +65,14 @@ def register(app: typer.Typer) -> None:
         if benchmark == "dir":
             task_source = DirectorySource(source)
             dataset_name = corpus_id or "terminal-bench"
+            resolved_version = dataset_version or "2.0"
         elif benchmark == "swebench":
             from .benchmarks import SWEBENCH, SweBenchSource
 
             task_source = SweBenchSource(source, image_template=image_template)
             dataset_name = SWEBENCH
+            # do NOT inherit terminal-bench's "2.0"; the user labels the export
+            resolved_version = dataset_version or "SWE-bench_Verified"
         else:
             typer.echo(f"unknown --benchmark {benchmark!r} (dir | swebench)", err=True)
             raise typer.Exit(code=2)
@@ -77,7 +84,7 @@ def register(app: typer.Typer) -> None:
                 corpus_id=corpus_id or dataset_name,
                 semver=semver,
                 dataset_name=dataset_name,
-                dataset_version=dataset_version,
+                dataset_version=resolved_version,
             )
         except Exception as e:  # noqa: BLE001 — a malformed export is a user error, named
             typer.echo(f"{type(e).__name__}: {e}", err=True)

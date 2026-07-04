@@ -99,6 +99,26 @@ def test_card_is_byte_deterministic(tmp_path):
     assert serialize_card(_card(expdir, spec)) == serialize_card(_card(expdir, spec))
 
 
+def test_exploratory_card_never_claims_official(tmp_path):
+    """An exploratory render must not present a fenced 'official' decision — the
+    card carries the multi-arm primary-pair flag, not a fence result, and the
+    renders qualify the decision as exploratory."""
+    expdir, spec = _graded_analyzed(tmp_path)  # exploratory
+    card = _card(expdir, spec)
+    assert "official_decision" not in card["comparison"]     # the misleading field is gone
+    assert card["comparison"]["is_primary_pair"] is True
+    md = render_card_markdown(card)
+    assert "official: True" not in md
+    assert "An official, fenced finding requires" in md      # the watermark note
+    assert "official True" not in render_card_html(card)
+
+
+def test_card_discloses_forensic_quarantines(tmp_path):
+    expdir, spec = _graded_analyzed(tmp_path)
+    d = _card(expdir, spec)["disclosures"]
+    assert d["forensic_quarantines"] == []                   # none here, but the key is present
+
+
 def test_card_requires_a_prior_analyze(tmp_path):
     expdir = tmp_path / "exp"
     expdir.mkdir()
@@ -135,6 +155,9 @@ def test_compare_matches_same_battery(tmp_path):
     assert result["comparable"] is True
     assert result["arms"]["a"]["treatment"]["absolute_score"] == 0.0
     assert result["arms"]["b"]["treatment"]["absolute_score"] == 1.0
+    # the side-by-side carries the model, so unlike models under a shared arm
+    # name are not silently compared
+    assert result["arms"]["a"]["control"]["model"] == "anthropic/claude-3-5-sonnet-20241022"
 
 
 def test_compare_refuses_different_battery(tmp_path):

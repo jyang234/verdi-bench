@@ -146,7 +146,12 @@ def build_card(
             "ci_method": st.get("ci_method"),
             "ci_level": st.get("ci_level"),
             "mde": findings.mde.value,
-            "official_decision": cf.official_decision,
+            # NB: this is the multi-arm "primary pair" flag [PRA-M4] — whether
+            # this pair carries the pre-registered decision — NOT whether the
+            # official fence passed. Authority (official vs exploratory) is
+            # `provenance.mode`; naming it official_decision would falsely read as
+            # a fenced result on an exploratory card.
+            "is_primary_pair": cf.official_decision,
             "detected": cf.decision.get("detected"),
             "decides_positive": cf.decision.get("decides_positive"),
             "excluded_from_official": cf.excluded_from_official,
@@ -159,6 +164,9 @@ def build_card(
     )
     excluded_metrics = [
         c.label for c in findings.comparisons if c.excluded_from_official
+    ]
+    forensic_quarantines = [
+        q["trial_id"] for q in (findings.forensics or {}).get("quarantined", [])
     ]
 
     return {
@@ -185,6 +193,7 @@ def build_card(
         "disclosures": {
             "confounds": [c.get("flag") for c in findings.confounds],
             "contamination": findings.contamination,
+            "forensic_quarantines": forensic_quarantines,
             "excluded_metrics": excluded_metrics,
         },
     }
@@ -202,6 +211,11 @@ def _fmt_score(v) -> str:
 
 def _fmt(v) -> str:
     return "n/a" if v is None else (f"{v:.4f}" if isinstance(v, float) else str(v))
+
+
+def _pct(v) -> str:
+    """CI level as a percent, matching the findings render (e.g. 0.95 → '95%')."""
+    return "n/a" if v is None else f"{int(round(v * 100))}%"
 
 
 def render_card_markdown(card: dict) -> str:
@@ -233,12 +247,18 @@ def render_card_markdown(card: dict) -> str:
     if comp:
         lines.append(
             f"`{comp['arm_a']}` vs `{comp['arm_b']}`: **delta = {_fmt(comp['delta'])}**, "
-            f"{_fmt(comp.get('ci_level'))} CI [{_fmt(comp['ci_low'])}, {_fmt(comp['ci_high'])}] "
+            f"{_pct(comp.get('ci_level'))} CI [{_fmt(comp['ci_low'])}, {_fmt(comp['ci_high'])}] "
             f"({comp.get('ci_method')}); detected: {comp.get('detected')}; "
-            f"official: {comp.get('official_decision')}."
+            f"decides_positive: {comp.get('decides_positive')}."
         )
         lines.append("")
         lines.append(f"Decision rule: `{card['decision_rule']}` · MDE: {_fmt(comp.get('mde'))}")
+        if prov["mode"] != "official":
+            lines.append("")
+            lines.append(
+                "> This decision is **exploratory** (watermarked). An official, "
+                "fenced finding requires `bench analyze --official`."
+            )
     else:
         lines.append("_no comparison available_")
     lines.append("")
@@ -275,6 +295,9 @@ def render_card_markdown(card: dict) -> str:
         f"- contamination: probe {contam.get('probe_status', 'n/a')}; "
         f"asymmetric: {', '.join(contam.get('asymmetric', [])) or 'none'}"
     )
+    lines.append(
+        f"- forensic quarantines: {', '.join(d.get('forensic_quarantines', [])) or 'none'}"
+    )
     lines.append(f"- excluded metrics: {', '.join(d['excluded_metrics']) or 'none'}")
     lines.append("")
     lines.append(
@@ -302,11 +325,16 @@ def render_card_html(card: dict) -> str:
         f"<td class=n>{esc(_fmt_score(a['absolute_score']))}</td><td class=n>{a['n']}</td></tr>"
         for a in card["arms"]
     )
+    exploratory_note = (
+        "" if prov["mode"] == "official"
+        else " &middot; <b>exploratory</b> (not a fenced finding)"
+    )
     delta_line = (
         f"<b>delta {esc(_fmt(comp.get('delta')))}</b>, "
-        f"{esc(_fmt(comp.get('ci_level')))} CI [{esc(_fmt(comp.get('ci_low')))}, "
+        f"{esc(_pct(comp.get('ci_level')))} CI [{esc(_fmt(comp.get('ci_low')))}, "
         f"{esc(_fmt(comp.get('ci_high')))}] ({esc(comp.get('ci_method'))}); "
-        f"detected {esc(comp.get('detected'))}; official {esc(comp.get('official_decision'))}"
+        f"detected {esc(comp.get('detected'))}; decides_positive "
+        f"{esc(comp.get('decides_positive'))}{exploratory_note}"
         if comp else "no comparison"
     )
     dataset = b.get("dataset")
@@ -364,7 +392,10 @@ def compare_cards(card_a: dict, card_b: dict) -> dict:
         raise CardError("cards are not comparable: " + "; ".join(reasons))
 
     def _scores(card: dict) -> dict:
-        return {a["name"]: {"absolute_score": a["absolute_score"], "n": a["n"]}
+        # carry the model: two comparable cards may reuse an arm NAME for
+        # different models, so a name-only side-by-side would silently compare
+        # unlike models.
+        return {a["name"]: {"model": a["model"], "absolute_score": a["absolute_score"], "n": a["n"]}
                 for a in card.get("arms", [])}
 
     def _delta(card: dict):

@@ -79,13 +79,13 @@ corpus)` like the dossier. Fields:
     "arm_a": "control", "arm_b": "treatment",
     "delta": -0.04, "ci_low": -0.11, "ci_high": 0.02,
     "ci_method": "percentile", "ci_level": 0.95,
-    "mde": 0.15, "official_decision": true, "decides_positive": false,
-    "detected": false
+    "mde": 0.15, "is_primary_pair": true, "decides_positive": false,
+    "detected": false, "excluded_from_official": false
   },
   "provenance": {
     "spec_sha256": "...", "lock_commitment_sha": "...",
-    "ledger_head": "...", "mode": "official|exploratory",
-    "selfcheck": "passed|absent", "rubric_committed": true
+    "ledger_head": "...", "chain_ok": true, "mode": "official|exploratory",
+    "selfcheck": "passed|failed|absent", "rubric_committed": true
   },
   "disclosures": {                        // honesty block, non-suppressing
     "confounds": [...], "contamination": {...},
@@ -105,6 +105,10 @@ Notes that keep it honest:
   and the card only projects.
 - `tier: ADVISORY` and `mode` travel on the card so a subset/advisory result can
   never be mistaken for an authoritative leaderboard entry.
+- The comparison's `is_primary_pair` is the multi-arm flag [PRA-M4] — whether
+  this pair carries the pre-registered decision — **not** whether the official
+  fence passed. Authority is `provenance.mode`; the renders qualify a non-official
+  decision as exploratory so a card can never read as a fenced result it is not.
 
 ## CLI surface
 
@@ -121,8 +125,9 @@ A `card` command group (the repo's idiom for multi-action verbs):
 
 - `harness/analyze/report.py`: add `per_arm_absolute_scores(...)` (a per-arm
   summary statistic — an analyze concern).
-- `harness/analyze/card.py` (new): `build_card`, `battery_sha`, `compare_cards`,
-  canonical serialization. Pure projection; recomputes nothing statistical.
+- `harness/analyze/card.py` (new): `build_card`, `_battery` (the battery_sha +
+  basis), `compare_cards`, canonical serialization, and the `render_card_*`
+  projections. Pure projection; recomputes nothing statistical.
 - `harness/analyze/cli.py`: register the `card` group.
 
 ## Slice plan
