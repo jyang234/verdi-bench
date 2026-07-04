@@ -132,21 +132,36 @@ class DockerCliRunner:
 
     @staticmethod
     def _kill(name: Optional[str]) -> bool:
-        """Kill and reap a container by name [RN-10]. Returns True iff both the
-        kill and the wait/reap were confirmed — the caller must treat a False as
-        "the container may still be live" and fail the trial closed rather than
-        redact a workspace still being written to [PRA-M7]."""
+        """Kill and reap a container by name [RN-10]. Returns True iff the
+        container is confirmed no longer running afterward; a False means it may
+        still be live, so the caller fails the trial closed rather than redact a
+        workspace still being written to [PRA-M7].
+
+        Correctness note: trial containers run with ``--rm``, so ``docker kill``
+        triggers auto-removal and a following ``docker kill``/``docker wait`` can
+        legitimately exit nonzero *because the container is already gone* — which
+        is SUCCESS, not failure. So we do not trust those exit codes; we send the
+        kill (best-effort, ``--rm`` may already be reaping), reap, then CONFIRM
+        the final state with ``docker inspect``: gone (nonzero) or present-but-
+        not-Running is a confirmed kill; present-and-Running is the only failure.
+        """
         if not name:
             return True  # no container to kill (never started)
-        ok = True
         for args in (["docker", "kill", name], ["docker", "wait", name]):
             try:
-                proc = subprocess.run(args, capture_output=True, timeout=30, check=False)
-                if proc.returncode != 0:
-                    ok = False
+                subprocess.run(args, capture_output=True, timeout=30, check=False)
             except (OSError, subprocess.SubprocessError):
-                ok = False
-        return ok
+                pass  # exit code is unreliable under --rm; the inspect below decides
+        try:
+            probe = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", name],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False  # cannot confirm the container is dead → fail closed
+        if probe.returncode != 0:
+            return True  # container is gone (--rm reaped it): confirmed not running
+        return probe.stdout.strip() == "false"  # present but not Running ⇒ killed
 
     def resolve_digest(self, image: str) -> Optional[str]:
         if "@sha256:" in image:

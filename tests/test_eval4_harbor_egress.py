@@ -63,15 +63,19 @@ def test_h4_missing_proxy_log_fails_loud(tmp_path):
 
 
 def test_m7_unconfirmed_kill_sets_kill_failed(monkeypatch):
-    """PRA-M7: if the timeout kill/reap cannot be confirmed, run_container reports
-    kill_failed so the caller fails the trial closed instead of trusting a
-    possibly-still-live container's (unredacted) workspace."""
+    """PRA-M7: if after the kill the container is STILL running (the kill did not
+    take), run_container reports kill_failed so the caller fails the trial closed
+    instead of trusting a possibly-still-live container's (unredacted) workspace.
+    Confirmation is via `docker inspect .State.Running`, not the kill/wait exit
+    codes (unreliable under --rm auto-removal)."""
     def fake_run(cmd, **kw):
         if cmd[:2] == ["docker", "run"]:
             raise sp.TimeoutExpired(cmd, kw.get("timeout"))
-        class _R:  # kill/wait "fail" (nonzero) — the container may still be live
-            returncode = 1
-            stdout = stderr = ""
+        class _R:
+            returncode = 0
+            stderr = ""
+            # inspect reports the container is STILL Running ⇒ kill did not take
+            stdout = "true" if "inspect" in cmd else ""
         return _R()
 
     monkeypatch.setattr(sp, "run", fake_run)
@@ -79,6 +83,25 @@ def test_m7_unconfirmed_kill_sets_kill_failed(monkeypatch):
         ["docker", "run", "--name", "verdi-trial-x", "img@sha256:a"], timeout_s=1
     )
     assert out.timed_out is True and out.kill_failed is True
+
+
+def test_m7_reaped_container_is_not_kill_failed(monkeypatch):
+    """PRA-M7: a --rm container that was killed and auto-removed makes `docker
+    inspect` exit nonzero (gone) — that is a CONFIRMED kill, not a failure."""
+    def fake_run(cmd, **kw):
+        if cmd[:2] == ["docker", "run"]:
+            raise sp.TimeoutExpired(cmd, kw.get("timeout"))
+        class _R:
+            # inspect on a removed container exits nonzero ("no such object")
+            returncode = 1 if "inspect" in cmd else 0
+            stdout = stderr = ""
+        return _R()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    out = DockerCliRunner().run_container(
+        ["docker", "run", "--rm", "--name", "verdi-trial-y", "img@sha256:a"], timeout_s=1
+    )
+    assert out.timed_out is True and out.kill_failed is False
 
 
 def test_scan_proxy_log_sums_metered_cost(tmp_path):
