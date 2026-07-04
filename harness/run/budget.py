@@ -13,6 +13,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+def enforcement_cost(
+    telemetry_cost: float | None, proxy_metered_cost: float | None
+) -> float | None:
+    """Cost figure the guard enforces on [RN-2, F-H4].
+
+    The proxy is the out-of-band meter; the telemetry figure is the arm's own
+    claim. When both exist, enforcement takes the LARGER — under-reporting must
+    not buy budget. When only one exists, it is used as-is; when neither does,
+    the spend is unmeasurable and contributes nothing (conservative by design).
+
+    Enforcement only: this never fills ``telemetry.cost`` in the record (D004
+    keeps nulls null, and the recorded self-report is never rewritten).
+    """
+    if telemetry_cost is not None and proxy_metered_cost is not None:
+        return max(telemetry_cost, proxy_metered_cost)
+    return telemetry_cost if telemetry_cost is not None else proxy_metered_cost
+
+
 @dataclass
 class CostGuard:
     ceiling: float

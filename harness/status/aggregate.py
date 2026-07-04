@@ -27,6 +27,7 @@ from ..grade.deterministic import TRANSIENT_CANT_GRADE
 from ..ledger import events
 from ..ledger.query import ledger_head_hash, read_events, verify
 from ..plan.interleave import enumerate_trials
+from ..run.budget import enforcement_cost
 from ..run.heartbeat import HEARTBEAT_FILENAME, read_heartbeat
 from ..schema.errors import SpecError
 from ..schema.experiment import ExperimentSpec
@@ -204,11 +205,11 @@ def _cells(
 
 
 def _enforcement_cost(rec: dict) -> Optional[float]:
-    """The RN-2 figure: self-reported telemetry cost, else proxy-metered."""
-    cost = (rec.get("telemetry") or {}).get("cost")
-    if cost is None:
-        cost = (rec.get("flags") or {}).get("proxy_metered_cost")
-    return cost
+    """The RN-2 figure — the same rule the cost guard enforces with [F-H4]."""
+    return enforcement_cost(
+        (rec.get("telemetry") or {}).get("cost"),
+        (rec.get("flags") or {}).get("proxy_metered_cost"),
+    )
 
 
 def _per_arm(trials: list[dict], by_kind: dict) -> dict:

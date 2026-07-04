@@ -32,7 +32,7 @@ from ..ledger.events import EventContext
 from ..ledger.query import find_events
 from ..plan.interleave import Trial
 from ..schema.experiment import Arm
-from .budget import CostGuard
+from .budget import CostGuard, enforcement_cost
 from .heartbeat import RunHeartbeat
 from .redact import RedactionError
 from .seam import HoldoutLeakError, new_trial_id, run_trial
@@ -89,20 +89,8 @@ class ScheduleResult:
     aborted_proxy_unavailable: bool = False  # PRA-M9: run stopped, dead proxy
 
 
-def _enforcement_cost(
-    telemetry_cost: Optional[float], proxy_metered_cost: Optional[float]
-) -> Optional[float]:
-    """Cost figure the guard enforces on: the self-reported telemetry cost, or —
-    when the arm can't self-report (null) — the proxy-metered figure [RN-2].
-
-    Enforcement only: this never fills ``telemetry.cost`` in the record (D004
-    keeps nulls null); it exists so a null-cost arm can't spend invisibly.
-    """
-    return telemetry_cost if telemetry_cost is not None else proxy_metered_cost
-
-
 def _record_enforcement_cost(record: TrialRecord) -> Optional[float]:
-    return _enforcement_cost(
+    return enforcement_cost(
         record.telemetry.cost, getattr(record.flags, "proxy_metered_cost", None)
     )
 
@@ -126,7 +114,7 @@ def _prior_run_state(ledger_path) -> tuple[float, set[tuple], list[dict]]:
     for ev in find_events(ledger_path, events.TRIAL):
         rec = ev.get("trial_record", {})
         done.add((rec.get("task_id"), rec.get("arm"), rec.get("repetition")))
-        cost = _enforcement_cost(
+        cost = enforcement_cost(
             (rec.get("telemetry") or {}).get("cost"),
             (rec.get("flags") or {}).get("proxy_metered_cost"),
         )
