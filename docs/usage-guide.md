@@ -735,7 +735,43 @@ never the tasks.
 
 ---
 
-## 11. Where to go next
+## 11. Making a run comparable and citable: the result card
+
+A finished run is a defensible *private* A/B. To put it in the same conversation
+as a public benchmark you need a result that is **citable** (tamper-evident
+provenance) and **comparable** (two runs of the same tasks can be set side by
+side). That is the **result card** — a read-only projection of an analyzed run:
+
+```bash
+uv run bench analyze <exp> --exploratory                     # a card certifies a rendered result
+uv run bench card emit <exp> --corpus manifest.json --out run-a.card.json
+uv run bench card compare run-a.card.json run-b.card.json    # side by side, or a loud refusal
+```
+
+The card is deliberately **co-equal**: it carries the per-arm **absolute score**
+(the leaderboard's language — e.g. "control resolved 62%") *and* verdi's paired
+**delta + CI + decision** (the rigor a bare leaderboard number lacks), under the
+honesty stamps (`ADVISORY` tier, render mode, subset `n`).
+
+**Comparability is verified, not claimed.** Each card carries a `battery_sha` —
+a fingerprint of the exact task set that ran. `card compare` sets two cards side
+by side only when their `battery_sha`, basis, and primary metric all match;
+otherwise it **refuses loudly** ("not comparable: different task set"). With
+`--corpus`, the fingerprint is the corpus's *intrinsic* task shas
+(image-insensitive, so two runs of the same SWE-bench subset compare across image
+mirrors); without it, the fingerprint is the lock's task commitment
+(image-sensitive but always present and tamper-evident).
+
+Everything on the card already exists in the hash-chained ledger — it computes no
+new statistic and appends no event; it is re-derivable, and it carries the
+`spec_sha256`, `lock_commitment_sha`, and `ledger_head` so a reader can verify it
+against the chain. What it does **not** do: turn verdi into a leaderboard or vouch
+that your corpus is representative — the `ADVISORY` tier and subset `n` stay on
+the card so a comparable number is never mistaken for an authoritative one.
+
+---
+
+## 12. Where to go next
 
 - **[deep-dive.md](deep-dive.md)** — what each stage writes to the ledger, the
   trust mechanism behind every claim, and the test that owns it.

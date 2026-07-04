@@ -184,6 +184,76 @@ def register(app: typer.Typer) -> None:
             raise typer.Exit(code=2)
         typer.echo(f"rendered {mode} findings → {out}")
 
+    card_app = typer.Typer(
+        help="Result cards: comparable, citable run summaries [read-only].",
+        no_args_is_help=True,
+    )
+
+    @card_app.command("emit")
+    def card_emit(
+        experiment_dir: Path = typer.Argument(..., help="Directory with experiment.yaml"),
+        corpus: Path = typer.Option(
+            None, "--corpus",
+            help="Corpus manifest.json → image-insensitive, cross-mirror battery_sha",
+        ),
+        out: Path = typer.Option(None, "--out", help="Write the card json here (default: stdout)"),
+    ) -> None:
+        """Emit a benchmark result card — a read-only projection of an analyzed run.
+
+        Requires a prior `bench analyze` (the card certifies a rendered result).
+        """
+        from ..corpus.commit import load_task_dicts
+        from ..plan.lock import assert_lock
+        from .card import CardError, build_card, serialize_card
+
+        spec = assert_lock(
+            experiment_dir / "experiment.yaml", experiment_dir / "ledger.ndjson"
+        ).spec
+        manifest = None
+        if corpus is not None:
+            from ..corpus.registry import CorpusManifest
+
+            manifest = CorpusManifest.load(corpus)
+        task_ids = [t["id"] for t in load_task_dicts(experiment_dir)]
+        try:
+            card = build_card(
+                experiment_dir / "ledger.ndjson", spec,
+                task_ids=task_ids, corpus_manifest=manifest,
+            )
+        except CardError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        text = serialize_card(card)
+        if out is not None:
+            Path(out).write_text(text + "\n", encoding="utf-8")
+            b = card["battery"]
+            typer.echo(
+                f"card → {out} (battery_sha={b['battery_sha'][:12]}…, basis={b['battery_basis']})"
+            )
+        else:
+            typer.echo(text)
+
+    @card_app.command("compare")
+    def card_compare(
+        card_a: Path = typer.Argument(..., help="First card json"),
+        card_b: Path = typer.Argument(..., help="Second card json"),
+    ) -> None:
+        """Compare two cards; refuse loudly if they graded different task sets/metrics."""
+        import json as _json
+
+        from .card import CardError, compare_cards
+
+        a = _json.loads(Path(card_a).read_text(encoding="utf-8"))
+        b = _json.loads(Path(card_b).read_text(encoding="utf-8"))
+        try:
+            result = compare_cards(a, b)
+        except CardError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        typer.echo(_json.dumps(result, indent=2, sort_keys=True))
+
+    app.add_typer(card_app, name="card")
+
 
 # --- one-event property registration [EVAL-3 §M7, XC-3] --------------------
 def _prepare_analyze(ctx_dir: str) -> None:

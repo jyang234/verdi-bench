@@ -445,6 +445,36 @@ def paired_task_rows(ledger_path, primary: str, arm_a: str, arm_b: str) -> list[
     return rows
 
 
+def per_arm_absolute_scores(ledger_path, primary: str, spec) -> dict:
+    """Per-arm absolute primary-metric score (mean over the arm's per-task
+    series) + task count — the 'leaderboard number' for the result card.
+
+    A pure function of the ledger that computes no new inferential statistic
+    beyond the per-arm mean. ``judge_preference`` is inherently pairwise (there is
+    no per-arm absolute), so its score is ``None`` — never faked into an absolute.
+    """
+    arm_names = [a.name for a in spec.arms]
+    out = {a: {"score": None, "n": 0} for a in arm_names}
+    if primary == PrimaryMetric.judge_preference.value:
+        return out  # pairwise-only; an absolute would be a fabrication
+    if primary == PrimaryMetric.holdout_pass_rate.value:
+        per_task = _holdout_values(ledger_path)
+    elif primary in _METRIC_TELEMETRY_FIELD:
+        per_task = _telemetry_values(ledger_path, _METRIC_TELEMETRY_FIELD[primary])
+    else:  # pragma: no cover - enum is closed
+        raise AnalyzeError(f"unsupported primary metric {primary!r}")
+    series: dict[str, list[float]] = {a: [] for a in arm_names}
+    for task_id in sorted(per_task):
+        arms = per_task[task_id]
+        for a in arm_names:
+            if a in arms and arms[a]:
+                series[a].append(_mean(arms[a]))
+    for a in arm_names:
+        vals = series[a]
+        out[a] = {"score": (_mean(vals) if vals else None), "n": len(vals)}
+    return out
+
+
 def _comparison_series(
     primary: str, per_task, ledger_path, arm_a: str, arm_b: str
 ) -> tuple[list[float], list[float], list[float]]:

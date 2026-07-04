@@ -156,6 +156,8 @@ uv run bench analyze <experiment-dir> --multi-arm-correction holm  # Holm-correc
 #   every analyze invocation also writes the self-contained comparison dossier
 #   (findings.<mode>.dossier.html) beside the markdown — same fence, same
 #   single findings_rendered event, no network references or external assets
+uv run bench card emit <experiment-dir> [--corpus m.json] [--out card.json]   # citable, comparable result card (read-only)
+uv run bench card compare <a.json> <b.json>                  # side-by-side; refuses across different task sets/metrics
 uv run bench verify-chain ledger.ndjson [--against-anchor anchors.ndjson]
 uv run bench anchor ledger.ndjson --out anchors.ndjson       # refuses a tampered ledger
 
