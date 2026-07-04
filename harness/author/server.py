@@ -28,6 +28,7 @@ from urllib.parse import parse_qs, urlparse
 import yaml
 
 from ..corpus.commit import TaskCommitmentError, load_task_dicts
+from ..http_guard import ForbiddenError, check_csrf, check_host
 from ..ledger.events import EventContext
 from ..ledger.query import ChainIntegrityError, find_events
 from ..plan.interleave import derive_schedule, enumerate_trials
@@ -77,6 +78,7 @@ class AuthorHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         q = parse_qs(parsed.query)
         try:
+            check_host(self.headers, self.server.server_address)  # PRA-M16
             if parsed.path == "/":
                 self._send(200, AUTHOR_PAGE.encode("utf-8"), "text/html; charset=utf-8")
             elif parsed.path == "/favicon.ico":
@@ -96,6 +98,8 @@ class AuthorHandler(BaseHTTPRequestHandler):
                 self._json(200, {"spec_sha256": _spec_sha(d)})
             else:
                 self._json(404, {"error": f"unknown path {parsed.path!r}"})
+        except ForbiddenError as e:
+            self._json(403, {"error": str(e)})
         except _NotFound as e:
             self._json(404, {"error": str(e)})
         except Exception as e:  # noqa: BLE001 — served as 500, never a dropped
@@ -106,6 +110,11 @@ class AuthorHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            # PRA-H2: the ceremony endpoints mutate state (draft writes, and the
+            # chain-anchored lock). Guard Host + Origin + Content-Type before
+            # reading the body so a cross-site page cannot forge a lock.
+            check_host(self.headers, self.server.server_address)
+            check_csrf(self.headers, self.server.server_address)
             body = self._body()
             if parsed.path == "/api/draft":
                 self._json(200, self._write_draft(body))
@@ -113,6 +122,8 @@ class AuthorHandler(BaseHTTPRequestHandler):
                 self._json(200, self._lock(body))
             else:
                 self._json(404, {"error": f"no such ceremony endpoint {parsed.path!r}"})
+        except ForbiddenError as e:
+            self._json(403, {"error": str(e)})
         except _NotFound as e:
             self._json(404, {"error": str(e)})
         except _Refused as e:

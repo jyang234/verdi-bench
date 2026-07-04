@@ -19,7 +19,7 @@ import pytest
 from typer.testing import CliRunner
 
 from harness.author.server import DEFAULT_HOST, make_author_server
-from harness.ledger.query import read_events
+from harness.ledger.query import find_events, read_events
 from harness.plan.interleave import derive_schedule, enumerate_trials
 from harness.plan.power import AssumedVariance, mde_check
 from harness.schema.experiment import ExperimentSpec
@@ -61,10 +61,15 @@ def _get(base: str, path: str):
         return json.loads(resp.read())
 
 
-def _post(base: str, path: str, body: dict):
+def _post(base: str, path: str, body: dict, *, headers: dict | None = None):
+    # A real same-origin browser fetch carries Origin + application/json; the
+    # CSRF guard (PRA-H2) requires both. Callers can override to exercise refusals.
+    hdrs = {"Content-Type": "application/json", "Origin": base}
+    hdrs.update(headers or {})
+    hdrs = {k: v for k, v in hdrs.items() if v is not None}  # None => omit header
     req = urllib.request.Request(
         base + path, data=json.dumps(body).encode("utf-8"), method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=hdrs,
     )
     try:
         with urllib.request.urlopen(req) as resp:
@@ -285,6 +290,38 @@ def test_ac4_posture_actor_needles_routes(tmp_path, monkeypatch):
         code, _ = _post(base, "/api/draft", {"name": "exp-a",
                                              "files": {"../escape.yaml": "x"}})
         assert code == 409  # draft files are allowlisted, never path-joined
+    finally:
+        _stop(srv, thread)
+
+
+def test_h2_csrf_guard_refuses_cross_site_lock(tmp_path):
+    """PRA-H2: a cross-site page must not be able to forge the lock ceremony.
+    A POST with a foreign/absent Origin, a foreign Host, or a text/plain body is
+    refused (403) and appends no experiment_locked event."""
+    srv, thread, base = _serve(tmp_path)
+    try:
+        _save_draft(base)
+        # foreign Origin (the cross-site attacker's page)
+        code, _ = _post(base, "/api/lock", {"name": "exp-a", "attested_by": "x"},
+                        headers={"Origin": "http://evil.example"})
+        assert code == 403
+        # missing Origin entirely
+        code, _ = _post(base, "/api/lock", {"name": "exp-a", "attested_by": "x"},
+                        headers={"Origin": None})
+        assert code == 403
+        # text/plain no-cors bypass
+        code, _ = _post(base, "/api/lock", {"name": "exp-a", "attested_by": "x"},
+                        headers={"Content-Type": "text/plain"})
+        assert code == 403
+        # foreign Host (DNS-rebinding)
+        code, _ = _post(base, "/api/lock", {"name": "exp-a", "attested_by": "x"},
+                        headers={"Host": "evil.example"})
+        assert code == 403
+        # nothing was locked by any of the refused requests
+        assert find_events(tmp_path / "exp-a" / "ledger.ndjson", "experiment_locked") == []
+        # the legitimate same-origin ceremony still works
+        code, locked = _post(base, "/api/lock", {"name": "exp-a", "attested_by": "jyang"})
+        assert code == 200 and locked["locked"] is True
     finally:
         _stop(srv, thread)
 

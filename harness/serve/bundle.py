@@ -66,6 +66,16 @@ def collect_bundle_data(experiment_dir, *, corpus_manifest=None) -> dict:
     """
     experiment_dir = Path(experiment_dir)
     ledger_path = experiment_dir / "ledger.ndjson"
+    # PRA-M10: a static bundle must not bake in tampered ledger content — fail
+    # closed on a broken chain, the same posture the live data routes now take.
+    from ..ledger.query import verify
+
+    result = verify(ledger_path)
+    if not result:
+        raise ValueError(
+            f"refusing to bundle a broken chain (line {result.line_number}: "
+            f"{result.detail}) [PRA-M10]"
+        )
     status = compute_status(experiment_dir)
     tail, next_offset = tail_events(ledger_path, 0)
     trial_ids = [

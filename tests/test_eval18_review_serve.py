@@ -85,9 +85,13 @@ def _get(base: str, path: str) -> tuple[int, bytes]:
         return resp.status, resp.read()
 
 
-def _post(base: str, path: str, body: dict):
+def _post(base: str, path: str, body: dict, *, headers: dict | None = None):
+    # A real same-origin browser fetch carries Origin + application/json; the
+    # CSRF guard (PRA-H2) requires both. Callers override to exercise refusals.
+    hdrs = {"Content-Type": "application/json", "Origin": base}
+    hdrs.update(headers or {})
     req = urllib.request.Request(base + path, data=json.dumps(body).encode("utf-8"),
-                                 method="POST", headers={"Content-Type": "application/json"})
+                                 method="POST", headers=hdrs)
     try:
         with urllib.request.urlopen(req) as resp:
             return resp.status, json.loads(resp.read())

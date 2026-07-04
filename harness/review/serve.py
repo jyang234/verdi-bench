@@ -25,6 +25,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from ..blind.core import arm_canaries
+from ..http_guard import ForbiddenError, check_csrf, check_host
 from ..judge.schema import Evidence, Verdict, VerdictProvenance, Winner
 from ..ledger.events import EventContext
 from ..ledger.query import find_events
@@ -68,6 +69,7 @@ class ReviewerHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
         path = urlparse(self.path).path
         try:
+            check_host(self.headers, self.server.server_address)  # PRA-M16
             if path == "/":
                 self._send(200, REVIEWER_PAGE.encode("utf-8"), "text/html; charset=utf-8")
             elif path == "/favicon.ico":
@@ -80,6 +82,8 @@ class ReviewerHandler(BaseHTTPRequestHandler):
                 # deliberately no status/events/timeline/compare/trial/artifact
                 # routes: the operator tier does not exist on this server
                 self._json(404, {"error": f"no such route {path!r} on the reviewer surface"})
+        except ForbiddenError as e:
+            self._json(403, {"error": str(e)})
         except _NotFound as e:
             self._json(404, {"error": str(e)})
         except _Refused as e:
@@ -91,6 +95,10 @@ class ReviewerHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         try:
+            # PRA-H2: verdict/reveal are ledgered mutations — guard against a
+            # cross-site POST forging a human_verdict or a premature reveal.
+            check_host(self.headers, self.server.server_address)
+            check_csrf(self.headers, self.server.server_address)
             body = self._body()
             if path == "/api/verdict":
                 self._json(200, self._verdict(body))
@@ -98,6 +106,8 @@ class ReviewerHandler(BaseHTTPRequestHandler):
                 self._json(200, self._reveal(body))
             else:
                 self._json(404, {"error": f"no such capture endpoint {path!r}"})
+        except ForbiddenError as e:
+            self._json(403, {"error": str(e)})
         except _NotFound as e:
             self._json(404, {"error": str(e)})
         except (_Refused, ReviewError, RevealError, ValueError) as e:
