@@ -18,7 +18,8 @@ from pathlib import Path
 import typer
 
 
-def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False, actor: str = "unknown"):
+def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False,
+                actor: str = "unknown", multi_arm_correction: str = "none"):
     """Render findings, ledgering exactly one event either way [EVAL-6 §M6, AN-3].
 
     Returns the render path on success (after emitting ``findings_rendered``), or
@@ -32,7 +33,6 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False, a
         record_findings_rendered,
     )
     from ..plan.lock import assert_lock
-    from ..schema.experiment import ExperimentSpec
     from .dossier import render_dossier
     from .report import (
         AnalyzeError,
@@ -45,8 +45,7 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False, a
     experiment_dir = Path(experiment_dir)
     spec_path = experiment_dir / "experiment.yaml"
     ledger_path = experiment_dir / "ledger.ndjson"
-    assert_lock(spec_path, ledger_path)
-    spec = ExperimentSpec.from_yaml(spec_path)
+    spec = assert_lock(spec_path, ledger_path).spec  # PRA-M1: no second spec read
     ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
 
     # AN-3: a refused render lands exactly one cant_analyze event, never escapes.
@@ -61,7 +60,10 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False, a
                 manifest = CorpusManifest.load(corpus)
             except Exception as e:  # bad path / malformed manifest JSON
                 raise AnalyzeError(f"could not load corpus manifest {corpus}: {e}") from e
-        findings = compute_findings(ledger_path, spec, spec.seed, corpus_manifest=manifest)
+        findings = compute_findings(
+            ledger_path, spec, spec.seed, corpus_manifest=manifest,
+            multi_arm_correction=multi_arm_correction,
+        )
         renderer = render_html if html else render_markdown
         rendered = renderer(findings, ledger_path, mode, corpus_manifest=manifest)
         # EVAL-12 AC-7/D004: the dossier rides the same invocation as a third
@@ -103,14 +105,12 @@ def run_selfcheck_cli(experiment_dir, *, actor: str = "unknown", n_sim: int = 20
     locked spec seed, so the check is deterministic and cannot be re-rolled."""
     from ..ledger.events import EventContext, record_selfcheck
     from ..plan.lock import assert_lock
-    from ..schema.experiment import ExperimentSpec
     from .selfcheck import run_selfcheck
 
     experiment_dir = Path(experiment_dir)
     spec_path = experiment_dir / "experiment.yaml"
     ledger_path = experiment_dir / "ledger.ndjson"
-    assert_lock(spec_path, ledger_path)
-    spec = ExperimentSpec.from_yaml(spec_path)
+    spec = assert_lock(spec_path, ledger_path).spec  # PRA-M1: no second spec read
     ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
     result = run_selfcheck(ledger_path, spec, n_sim=n_sim, n_boot=n_boot)
     record_selfcheck(ledger_path, ctx, **result)
@@ -155,6 +155,11 @@ def register(app: typer.Typer) -> None:
             None, "--corpus", help="Corpus manifest.json for provenance + calibration gate"
         ),
         html: bool = typer.Option(False, "--html", help="Render HTML instead of markdown"),
+        multi_arm_correction: str = typer.Option(
+            "none", "--multi-arm-correction",
+            help="Multi-arm (>2) decision policy: none (primary pair official) "
+            "or holm (Holm-Bonferroni family) [PRA-M4]",
+        ),
         actor: str = typer.Option(
             None, "--actor", help="Actor recorded on the findings event [GR-12]"
         ),
@@ -164,13 +169,16 @@ def register(app: typer.Typer) -> None:
 
         if official and exploratory:
             raise typer.BadParameter("choose at most one of --official/--exploratory")
+        if multi_arm_correction not in ("none", "holm"):
+            raise typer.BadParameter("--multi-arm-correction must be none or holm")
         mode = "official" if official else "exploratory"
         try:
             resolved_actor = resolve_actor(actor)
         except ActorResolutionError as e:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
-        out = run_analyze(experiment_dir, mode=mode, corpus=corpus, html=html, actor=resolved_actor)
+        out = run_analyze(experiment_dir, mode=mode, corpus=corpus, html=html,
+                          actor=resolved_actor, multi_arm_correction=multi_arm_correction)
         if out is None:
             typer.echo(f"refused {mode} render; recorded cant_analyze", err=True)
             raise typer.Exit(code=2)

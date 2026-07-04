@@ -13,29 +13,76 @@ fill; whatever lands in ``out`` comes back as the parsed result, plus
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-_PLAYWRIGHT = Path("/opt/node22/lib/node_modules/playwright")
-_CHROMIUM = Path("/opt/pw-browsers/chromium")
 _MARKER = "@@RESULT@@"
+
+
+class BrowserRequiredError(RuntimeError):
+    """VERDI_REQUIRE_BROWSER is set but the node/playwright/chromium stack is not
+    available [PRA-H5]. Mirrors DockerRequiredError: a browser-marked CI job must
+    not green-pass by skipping every UI acceptance test."""
+
+
+def _playwright_path() -> Path:
+    """The node playwright module. Env-configurable [PRA-H5] so CI (or any host)
+    can point at its own layout instead of this dev box's hardcoded paths — the
+    reason the UI AC tests silently skipped everywhere but here."""
+    env = os.environ.get("VERDI_PLAYWRIGHT_PATH")
+    if env:
+        return Path(env)
+    return Path("/opt/node22/lib/node_modules/playwright")
+
+
+def _chromium_path() -> Path:
+    """The Chromium binary/dir. Honors VERDI_CHROMIUM_PATH, then Playwright's own
+    PLAYWRIGHT_BROWSERS_PATH, then the dev-box default [PRA-H5]."""
+    env = os.environ.get("VERDI_CHROMIUM_PATH")
+    if env:
+        return Path(env)
+    browsers = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if browsers:
+        cand = Path(browsers) / "chromium"
+        if cand.exists():
+            return cand
+    return Path("/opt/pw-browsers/chromium")
 
 
 def browser_available() -> bool:
     return (
         shutil.which("node") is not None
-        and _PLAYWRIGHT.exists()
-        and _CHROMIUM.exists()
+        and _playwright_path().exists()
+        and _chromium_path().exists()
     )
+
+
+def _require_or_skip() -> None:
+    """Skip when the browser stack is absent — UNLESS VERDI_REQUIRE_BROWSER is set
+    (the CI browser job), in which case raise so the job cannot green-pass by
+    skipping every UI AC test [PRA-H5], mirroring VERDI_REQUIRE_DOCKER."""
+    if browser_available():
+        return
+    if os.environ.get("VERDI_REQUIRE_BROWSER"):
+        raise BrowserRequiredError(
+            "VERDI_REQUIRE_BROWSER is set but node/playwright/chromium is not "
+            "available; the browser-marked UI acceptance tests must not "
+            "green-pass by skipping. Provision the stack (node + the playwright "
+            "npm package + a Chromium build) or unset VERDI_REQUIRE_BROWSER, and "
+            "point VERDI_PLAYWRIGHT_PATH / VERDI_CHROMIUM_PATH at them [PRA-H5]."
+        )
+    pytest.skip("browser drive unavailable (node/playwright/chromium not present)")
 
 
 def drive(base_url: str, body_js: str, tmp_path: Path, *, timeout_s: int = 120) -> dict:
     """Run ``body_js`` against a live page; return the ``out`` object."""
-    if not browser_available():
-        pytest.skip("browser drive unavailable (node/playwright/chromium not present)")
+    _require_or_skip()
+    _PLAYWRIGHT = _playwright_path()
+    _CHROMIUM = _chromium_path()
     script = (
         "const { chromium } = require(" + json.dumps(str(_PLAYWRIGHT)) + ");\n"
         "(async () => {\n"

@@ -107,11 +107,41 @@ def admit_task(
         raise CorpusError(
             f"no candidate {candidate_id!r} in manifest {manifest.corpus_id!r}"
         )
+    # PRA-M11: refuse an already-admitted candidate. Without this, a re-run (e.g.
+    # after a torn late-save) appended a SECOND task_admitted event — one attempted
+    # operation must be one admission, not an unbounded re-ledgering.
+    if task.status == "admitted":
+        raise CorpusError(
+            f"candidate {candidate_id!r} is already admitted; re-admission is "
+            "refused [PRA-M11]"
+        )
     if task.sha != task_sha:
         raise CorpusError(
             f"candidate {candidate_id!r} sha {task.sha} != approved sha {task_sha}; "
             "admission binds to the reviewed version"
         )
+    # PRA-M11: verify the SUPPLIED candidate content actually hashes to the
+    # approved task_sha, so a stale/tampered candidate file cannot be admitted —
+    # and its canary embedded into unreviewed bytes — while the manifest entry's
+    # sha still matches. Uses the one canonical content-hash primitive (the same
+    # one Candidate.content_sha and the flake baseline bind to).
+    if candidate_content is not None:
+        from .public import content_sha
+
+        computed = content_sha(
+            {
+                "workspace_ref": candidate_content.get("workspace_ref"),
+                "prompt": candidate_content.get("prompt"),
+                "holdouts": candidate_content.get("holdouts", []),
+                "groundwork_rules": candidate_content.get("groundwork_rules"),
+            }
+        )
+        if computed != task_sha:
+            raise CorpusError(
+                f"candidate content sha {computed} != approved task_sha {task_sha}; "
+                "the supplied file is not the reviewed version — refusing to admit "
+                "and canary-embed unreviewed bytes [PRA-M11]"
+            )
     approval = curation_approval_for(ledger_path, candidate_id, task_sha)
     if approval is None:
         raise CurationRequiredError(

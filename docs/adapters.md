@@ -116,7 +116,7 @@ Validated through the `Telemetry` model itself — the schema every
 ### `trajectory` (optional array)
 
 Each element validates as a `TrajectoryStep` — the format *is* the shared
-schema (`harness/run/trajectory.py`, schema v2):
+schema (`harness/run/trajectory.py`, schema v3):
 
 | field           | type        | meaning                                          |
 |-----------------|-------------|--------------------------------------------------|
@@ -127,7 +127,8 @@ schema (`harness/run/trajectory.py`, schema v2):
 | `files_touched` | list[str]   | files this step modified                         |
 | `exit_code`     | int         | exit status, when the step ran a command         |
 | `command`       | str         | the shell command; `""` = measured-not-a-command; `null` = unmeasurable |
-| `agent`         | str         | closed-vocabulary role label (see v2 below); `null` = unattributed |
+| `agent`         | str         | closed-vocabulary role label (see below); `null` = unattributed |
+| `detail`        | str         | additive v3 field: per-step forensic content (e.g. an edit's before/after); `null` = unmeasurable |
 
 - Omit the `trajectory` key entirely for an honestly absent trajectory
   (`None`) — distinct from `[]`, an empty-but-measured one.

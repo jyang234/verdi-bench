@@ -72,7 +72,12 @@ class CIMethod(Protocol):
         boot_means: np.ndarray,
         boot_ses: np.ndarray,
         level: float,
-    ) -> tuple[float, float]: ...
+    ) -> tuple[float, float, str]:
+        """Return ``(lo, hi, realized_method)``. ``realized_method`` is the method
+        that ACTUALLY produced the interval — which differs from ``name`` when a
+        degenerate input forces a documented fallback to ``percentile`` [PRA-M14],
+        so the render never labels a percentile interval as ``bca``."""
+        ...
 
 
 def _tails(level: float) -> tuple[float, float]:
@@ -85,7 +90,11 @@ class PercentileCI:
 
     def interval(self, deltas, boot_means, boot_ses, level):
         lo_p, hi_p = _tails(level)
-        return float(np.percentile(boot_means, lo_p)), float(np.percentile(boot_means, hi_p))
+        return (
+            float(np.percentile(boot_means, lo_p)),
+            float(np.percentile(boot_means, hi_p)),
+            self.name,
+        )
 
 
 class ClusterRobustTCI:
@@ -129,7 +138,7 @@ class ClusterRobustTCI:
         q_lo = float(np.percentile(t_star, lo_p))
         q_hi = float(np.percentile(t_star, hi_p))
         # symmetric mapping: high t* quantile pushes the lower bound down
-        return m - q_hi * se, m - q_lo * se
+        return m - q_hi * se, m - q_lo * se, self.name
 
 
 class BCaCI:
@@ -167,7 +176,11 @@ class BCaCI:
 
         p_lo = adj(z_lo) * 100.0
         p_hi = adj(z_hi) * 100.0
-        return float(np.percentile(boot_means, p_lo)), float(np.percentile(boot_means, p_hi))
+        return (
+            float(np.percentile(boot_means, p_lo)),
+            float(np.percentile(boot_means, p_hi)),
+            self.name,
+        )
 
 
 _METHODS: dict[str, CIMethod] = {

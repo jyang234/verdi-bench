@@ -390,6 +390,49 @@ def test_ac5_serve_refuses_non_get_and_unknown_paths(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(base + "/api/events?offset=999999")
         assert excinfo.value.code == 409  # shrunken-ledger cursor: rewrite evidence
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(base + "/api/events?offset=-1")
+        assert excinfo.value.code == 400  # PRA-L10: negative offset is malformed (400)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=5)
+
+
+def test_m10_data_routes_fail_closed_on_broken_chain(tmp_path):
+    """PRA-M10: with a tampered ledger, every ledger-reading route withholds its
+    content (409), not just /api/status — the trials list, timeline, drill-down,
+    and compare no longer render tampered events."""
+    ledger = _fixture_experiment(tmp_path)
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(lines[1])
+    tampered["seed_of_doubt"] = True
+    lines[1] = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
+    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    srv, thread, base = _serve(tmp_path)
+    try:
+        for route in ("/api/events", "/api/timeline", "/api/compare"):
+            with pytest.raises(urllib.error.HTTPError) as excinfo:
+                urllib.request.urlopen(base + route)
+            assert excinfo.value.code == 409, route
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=5)
+
+
+def test_m16_serve_refuses_foreign_host(tmp_path):
+    """PRA-M16: a request with a foreign Host header (DNS-rebinding) is refused,
+    so a malicious page cannot read unblinded operator data from the browser."""
+    _fixture_experiment(tmp_path)
+    srv, thread, base = _serve(tmp_path)
+    try:
+        req = urllib.request.Request(base + "/api/status", headers={"Host": "evil.example"})
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(req)
+        assert excinfo.value.code == 403
     finally:
         srv.shutdown()
         srv.server_close()

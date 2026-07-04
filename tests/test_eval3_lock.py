@@ -35,8 +35,53 @@ def test_ac2_assert_lock_passes_when_unchanged(tmp_path):
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
     lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
-    ev = assert_lock(spec, ledger)
-    assert ev["event"] == "experiment_locked"
+    # PRA-M1: assert_lock now returns a LockView (event + spec parsed from the
+    # verified bytes) so consumers never re-read the file.
+    lv = assert_lock(spec, ledger)
+    assert lv.event["event"] == "experiment_locked"
+    assert lv.spec.seed is not None  # the spec came back parsed, not re-read
+
+
+def test_lock_attestation_defaults_to_resolved_actor_never_unknown(tmp_path):
+    """PRA-L2: an omitted attester defaults to the ctx actor (resolve_actor
+    refuses 'unknown'), and the method no longer claims crypto it lacks."""
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    ledger = tmp_path / "ledger.ndjson"
+    lock_experiment(spec, ledger, ctx=fixed_ctx(actor="alice"), **FAST)
+    att = find_events(ledger, events.EXPERIMENT_LOCKED)[0]["attestation"]
+    assert att["attested_by"] == "alice"
+    assert att["attested_by"] != "unknown"
+    assert "attestation-v1" not in att["method"]
+
+
+def test_assert_lock_refuses_more_than_one_lock(tmp_path):
+    """PRA-M3: a ledger carrying >1 experiment_locked event (the trace a
+    concurrent double-lock would leave) is refused loudly rather than silently
+    keying the first."""
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    ledger = tmp_path / "ledger.ndjson"
+    lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    # Force a second lock past lock_experiment's guard by appending the genesis
+    # constructor directly (the low level a racing process would reach).
+    recorded = find_events(ledger, events.EXPERIMENT_LOCKED)[0]
+    events.record_experiment_locked(
+        ledger, fixed_ctx(), spec_sha256=recorded["spec_sha256"],
+        spec_path=str(spec), seed=1, mde={"mde": None, "flags": []},
+        attested_by="tester", method="anchor-plus-actor-v1",
+    )
+    with pytest.raises(LockMismatchError, match="exactly one lock"):
+        assert_lock(spec, ledger)
+
+
+def test_lock_experiment_refuses_second_lock(tmp_path):
+    """PRA-M3: the check-then-append is guarded, so a second lock_experiment on
+    the same ledger refuses (AlreadyLockedError) rather than appending."""
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    ledger = tmp_path / "ledger.ndjson"
+    lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    with pytest.raises(AlreadyLockedError):
+        lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    assert len(find_events(ledger, events.EXPERIMENT_LOCKED)) == 1
 
 
 def test_plan_refuses_tampered_pre_existing_ledger(tmp_path):

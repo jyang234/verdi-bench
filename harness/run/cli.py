@@ -17,7 +17,6 @@ import typer
 
 from ..ledger.actor import ActorResolutionError, resolve_actor
 from ..plan.interleave import derive_schedule, enumerate_trials
-from ..schema.experiment import ExperimentSpec
 from .types import RunConfig, Task
 
 
@@ -62,8 +61,8 @@ def register(app: typer.Typer) -> None:
         experiment_dir = Path(experiment_dir)
         spec_path = experiment_dir / "experiment.yaml"
         ledger_path = experiment_dir / "ledger.ndjson"
-        lock_event = assert_lock(spec_path, ledger_path)
-        spec = ExperimentSpec.from_yaml(spec_path)
+        _lock = assert_lock(spec_path, ledger_path)
+        lock_event, spec = _lock.event, _lock.spec  # PRA-M1: no second spec read
 
         task_dicts = load_task_dicts(experiment_dir)
         if not task_dicts:
@@ -121,6 +120,7 @@ def register(app: typer.Typer) -> None:
             proxy=settings.proxy,
             quotas=settings.quotas,
             provider_keys=settings.provider_keys,
+            provider_key_names_by_arm=settings.provider_key_names_by_arm,  # PRA-M2
         )
         try:
             resolved_actor = resolve_actor(actor)
@@ -153,3 +153,13 @@ def register(app: typer.Typer) -> None:
             f"(infra_failures={result.infra_failures}, "
             f"stopped_cost_ceiling={result.stopped_cost_ceiling})"
         )
+        if result.aborted_proxy_unavailable:
+            # PRA-M9: a dead/misconfigured metering proxy aborted the run; exit
+            # nonzero so the operator does not mistake a truncated run for a
+            # complete one.
+            typer.echo(
+                "RUN ABORTED: the metering proxy is dead or misconfigured "
+                "(proxy_log_missing); trials remaining were not run [PRA-M9]",
+                err=True,
+            )
+            raise typer.Exit(code=2)

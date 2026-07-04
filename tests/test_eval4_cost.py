@@ -158,3 +158,85 @@ def test_ac4_resume_executed_order_is_complete(tmp_path):
     last = latest_event(ledger, "executed_order")
     reps = {e["repetition"] for e in last["order"] if e["outcome"] == "completed"}
     assert reps == {0, 1, 2, 3, 4, 5}  # all six cells present in the latest order
+
+
+def test_m8_post_engine_failure_spend_counts_against_ceiling(tmp_path):
+    """PRA-M8: a failure AFTER the engine ran (here trajectory_corrupt) must
+    ledger the spend already incurred on trial_infra_failed AND feed it to the
+    guard, so post-engine failures cannot burn budget invisibly past the ceiling."""
+    from harness.run.trajectory import TRAJECTORY_FILENAME
+
+    arms = {"A": _arm()}
+    # A native log with tool-use steps so a trajectory IS produced; a directory
+    # squatting on the trajectory path then makes persist_trajectory raise
+    # TrajectoryCorruptError post-engine, after the proxy metered 0.60. (No cost in
+    # the native log, so the enforcement figure falls to the proxy's 0.60.)
+    native = {"messages": [
+        {"content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "a.py"}}]},
+    ]}
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={
+        "native_log": native, "proxy_metered_cost": 0.60,
+        "workspace_files": {f"artifacts/{TRAJECTORY_FILENAME}/blocker.txt": "x"},
+    })}
+    ledger = tmp_path / "l.ndjson"
+    order = [Trial(task_id="t", arm="A", repetition=r) for r in range(3)]
+    res = schedule(
+        order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+        max_infra_retries=0,
+    )
+    failures = find_events(ledger, "trial_infra_failed")
+    assert failures, "expected post-engine infra failures"
+    assert all(ev["reason"] == "trajectory_corrupt" for ev in failures)
+    # the spend is ledgered on the infra event (previously dropped)...
+    assert all(ev.get("cost") == 0.60 for ev in failures)
+    # ...and it accumulated in the guard: 0.60*2 >= 1.00 stops before the 3rd rep.
+    assert res.stopped_cost_ceiling is True
+    assert len(failures) == 2
+
+
+def test_m8_infra_spend_survives_resume(tmp_path):
+    """PRA-M8: on resume, the cost carried by a prior post-engine infra failure is
+    seeded back into the guard so a resumed run cannot re-spend past the ceiling."""
+    from harness.run.trajectory import TRAJECTORY_FILENAME
+
+    arms = {"A": _arm()}
+    native = {"messages": [
+        {"content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "a.py"}}]},
+    ]}
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={
+        "native_log": native, "proxy_metered_cost": 0.60,
+        "workspace_files": {f"artifacts/{TRAJECTORY_FILENAME}/blocker.txt": "x"},
+    })}
+    ledger = tmp_path / "l.ndjson"
+    # ceiling below the 0.60 a single failed attempt spends, so on resume the
+    # seeded spend already exceeds it and the next attempt is REFUSED before it
+    # runs — proving the infra cost was made durable across resume.
+    kw = dict(tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+              ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=0.50,
+              max_infra_retries=0)
+    schedule([Trial(task_id="t", arm="A", repetition=0)], **kw)  # spends 0.60, fails
+    assert find_events(ledger, "trial_infra_failed")[0].get("cost") == 0.60
+    res2 = schedule([Trial(task_id="t", arm="A", repetition=1)], **kw)
+    assert res2.stopped_cost_ceiling is True  # seeded 0.60 >= 0.50 ceiling
+    assert res2.records == []  # the resumed attempt was refused, not re-run
+
+
+def test_m9_dead_proxy_aborts_run_fast(tmp_path):
+    """PRA-M9: a proxy_log_missing infra failure aborts the whole run after the
+    first trial (a dead proxy is a run-level fault) rather than grinding through
+    every remaining trial producing identical failures and burning wall-clock."""
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={
+        "native_log": {}, "outcome": "infra_failed", "infra_reason": "proxy_log_missing"})}
+    ledger = tmp_path / "l.ndjson"
+    order = [Trial(task_id="t", arm="A", repetition=r) for r in range(5)]
+    res = schedule(
+        order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
+        max_infra_retries=3,
+    )
+    assert res.aborted_proxy_unavailable is True
+    # exactly ONE attempt was ledgered (no retries, no remaining cells), proving
+    # the run aborted fast rather than failing all 5 (x retries) trials.
+    assert len(find_events(ledger, "trial_infra_failed")) == 1

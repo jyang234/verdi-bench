@@ -30,7 +30,8 @@ from urllib.parse import parse_qs, urlparse
 
 from ..analyze.fence import official_fence_report
 from ..analyze.timeline import trial_timeline
-from ..ledger.query import TailOffsetError, tail_events
+from ..http_guard import ForbiddenError, check_host
+from ..ledger.query import TailOffsetError, tail_events, verify
 from ..status.aggregate import compute_status
 from ..status.trial import trial_detail
 from .compare import paired_comparisons
@@ -60,12 +61,18 @@ class _NotFound(Exception):
     """Route-level 404 with a message the observer can act on."""
 
 
+class _ChainBroken(Exception):
+    """Route-level 409: the ledger's chain does not verify, so no ledger-reading
+    route may render its (tampered) content [PRA-M10]."""
+
+
 class ObserverHandler(BaseHTTPRequestHandler):
     """GET-only routes over one experiment dir or a workspace root."""
 
     experiment_dir: Optional[Path]  # single mode (bound by make_server)
     workspace_root: Optional[Path]  # root mode (bound by make_server)
     corpus_manifest = None  # optional CorpusManifest for the fence items
+    _verify_cache: dict = {}  # (path -> ((size, mtime_ns), ChainResult)) [PRA-M10]
 
     server_version = "verdi-bench-observer"
     sys_version = ""
@@ -76,6 +83,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         q = parse_qs(parsed.query)
         try:
+            check_host(self.headers, self.server.server_address)  # PRA-M16
             if parsed.path == "/":
                 self._send(200, OPERATOR_PAGE.encode("utf-8"), "text/html; charset=utf-8")
             elif parsed.path == "/favicon.ico":
@@ -89,13 +97,15 @@ class ObserverHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/events":
                 self._events(q)
             elif parsed.path == "/api/timeline":
-                self._json(200, trial_timeline(self._dir(q) / "ledger.ndjson"))
+                self._json(200, trial_timeline(self._verified_dir(q) / "ledger.ndjson"))
             elif parsed.path == "/api/trial":
                 self._trial(q)
             elif parsed.path == "/api/compare":
                 self._json(
                     200,
-                    paired_comparisons(self._dir(q), corpus_manifest=self.corpus_manifest),
+                    paired_comparisons(
+                        self._verified_dir(q), corpus_manifest=self.corpus_manifest
+                    ),
                 )
             elif parsed.path == "/api/fence":
                 self._json(
@@ -106,6 +116,10 @@ class ObserverHandler(BaseHTTPRequestHandler):
                 self._artifact(q)
             else:
                 self._json(404, {"error": f"unknown path {parsed.path!r}"})
+        except ForbiddenError as e:
+            self._json(403, {"error": str(e)})
+        except _ChainBroken as e:
+            self._json(409, {"error": str(e)})
         except _NotFound as e:
             self._json(404, {"error": str(e)})
         except Exception as e:  # noqa: BLE001 — surfaced as a served 500, so one
@@ -144,6 +158,31 @@ class ObserverHandler(BaseHTTPRequestHandler):
             raise _NotFound(f"unknown experiment {exp!r} (serving {self.experiment_dir.name!r})")
         return self.experiment_dir
 
+    def _verified_dir(self, q: dict) -> Path:
+        """Resolve the target dir AND fail closed on a broken chain, so no
+        ledger-reading route renders tampered events [PRA-M10]. The verify verdict
+        is cached by (size, mtime) so the hot path stays O(1)."""
+        d = self._dir(q)
+        self._require_verified(d / "ledger.ndjson")
+        return d
+
+    def _require_verified(self, ledger: Path) -> None:
+        if not ledger.exists():
+            return  # absent ledger: nothing to be fooled by (matches assert_chain)
+        st = ledger.stat()
+        sig = (st.st_size, st.st_mtime_ns)
+        key = str(ledger)
+        entry = ObserverHandler._verify_cache.get(key)
+        if entry is None or entry[0] != sig:
+            entry = (sig, verify(ledger))
+            ObserverHandler._verify_cache[key] = entry
+        result = entry[1]
+        if not result:
+            raise _ChainBroken(
+                f"chain BROKEN at line {result.line_number}: {result.detail} "
+                "— withholding ledger content [PRA-M10]"
+            )
+
     # -- endpoint bodies ----------------------------------------------------------
     def _events(self, q: dict) -> None:
         raw = q.get("offset", ["0"])[0]
@@ -152,8 +191,15 @@ class ObserverHandler(BaseHTTPRequestHandler):
         except ValueError:
             self._json(400, {"error": f"offset must be an integer, got {raw!r}"})
             return
+        if offset < 0:
+            # A negative cursor is malformed input (400), distinct from a cursor
+            # past EOF (409, rewrite evidence). The read seam refuses both, but the
+            # HTTP status must tell them apart [PRA-L10].
+            self._json(400, {"error": f"offset must be >= 0, got {offset}"})
+            return
+        d = self._verified_dir(q)
         try:
-            events, next_offset = tail_events(self._dir(q) / "ledger.ndjson", offset)
+            events, next_offset = tail_events(d / "ledger.ndjson", offset)
         except TailOffsetError as e:
             self._json(409, {"error": str(e)})  # cursor invalid: rewrite evidence
             return
@@ -164,7 +210,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
         if not trial_id:
             self._json(400, {"error": "pass id=<trial-id>"})
             return
-        detail = trial_detail(self._dir(q), trial_id)
+        detail = trial_detail(self._verified_dir(q), trial_id)
         if detail is None:
             self._json(404, {"error": f"no trial {trial_id!r} on this ledger"})
             return
@@ -194,6 +240,8 @@ class ObserverHandler(BaseHTTPRequestHandler):
     do_PUT = _method_not_allowed  # noqa: N815
     do_DELETE = _method_not_allowed  # noqa: N815
     do_PATCH = _method_not_allowed  # noqa: N815
+    do_HEAD = _method_not_allowed  # noqa: N815 - 405+Allow, not stdlib's 501 [PRA-L10]
+    do_OPTIONS = _method_not_allowed  # noqa: N815
 
     # -- plumbing ---------------------------------------------------------------
     def _send(self, status: int, body: bytes, content_type: str) -> None:

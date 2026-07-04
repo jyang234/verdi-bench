@@ -11,6 +11,7 @@ curation real — solution-leakage in the prompt is caught here, not by a machin
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import typer
@@ -291,6 +292,18 @@ def register(app: typer.Typer) -> None:
         except KeyringFormatError as e:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
+        # PRA-M11: validate the write destinations BEFORE ledgering, so a
+        # non-writable manifest/embedded-copy path fails closed with nothing torn
+        # rather than advancing the ledger and then tracebacking on save. The
+        # manifest already exists (we loaded it); check its dir, and the embedded
+        # sibling's dir, are writable up front.
+        for dest in (manifest_path, candidate_json):
+            if dest is not None and not os.access(dest.parent, os.W_OK):
+                typer.echo(
+                    f"admission destination {dest.parent} is not writable; refusing "
+                    "before ledgering [PRA-M11]", err=True,
+                )
+                raise typer.Exit(code=2)
         try:
             # admit_task validates the canary embed BEFORE ledgering, so an
             # embed refusal (no prompt, double embed) leaves nothing torn.
@@ -306,15 +319,24 @@ def register(app: typer.Typer) -> None:
         # never over it. The reviewed bytes are what the curation approval and
         # manifest sha are keyed to; destroying them would make every admitted
         # task look post-review-tampered. embed_canary is pure, so this repeats
-        # the exact call admit_task already validated.
-        if candidate_content is not None:
-            embedded = embed_canary(candidate_content, derive_canary(task_sha))
-            embedded_path = candidate_json.with_suffix(".embedded.json")
-            embedded_path.write_text(
-                json.dumps(embedded, sort_keys=True, indent=2), encoding="utf-8"
+        # the exact call admit_task already validated. A failure here (post-ledger)
+        # is reported loudly with the recovery hint, not swallowed [PRA-M11].
+        try:
+            if candidate_content is not None:
+                embedded = embed_canary(candidate_content, derive_canary(task_sha))
+                embedded_path = candidate_json.with_suffix(".embedded.json")
+                embedded_path.write_text(
+                    json.dumps(embedded, sort_keys=True, indent=2), encoding="utf-8"
+                )
+                typer.echo(f"canary-embedded content: {embedded_path}")
+            manifest.save(manifest_path)
+        except OSError as e:
+            typer.echo(
+                f"task_admitted was ledgered but persisting the manifest/embedded "
+                f"copy failed: {e}. The admission is on the chain; re-save the "
+                f"manifest to {manifest_path} to reconcile [PRA-M11]", err=True,
             )
-            typer.echo(f"canary-embedded content: {embedded_path}")
-        manifest.save(manifest_path)
+            raise typer.Exit(code=1)
         typer.echo(f"admitted {candidate_id} (sha={task_sha[:12]}…)")
 
     app.add_typer(corpus_app, name="corpus")

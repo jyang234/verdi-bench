@@ -57,15 +57,14 @@ def register(app: typer.Typer) -> None:
         from ..ledger.events import EventContext
         from ..ledger.query import find_events
         from ..plan.lock import assert_lock
-        from ..schema.experiment import ExperimentSpec
         from .rubric import ProcessRubric, default_rubric
         from .score import score_trial_process
 
         experiment_dir = Path(experiment_dir)
         spec_path = experiment_dir / "experiment.yaml"
         ledger_path = experiment_dir / "ledger.ndjson"
-        lock_event = assert_lock(spec_path, ledger_path)
-        spec = ExperimentSpec.from_yaml(spec_path)
+        _lock = assert_lock(spec_path, ledger_path)
+        lock_event, spec = _lock.event, _lock.spec  # PRA-M1: no second spec read
         task_dicts = load_task_dicts(experiment_dir)
         try:
             assert_task_commitment(
@@ -78,7 +77,26 @@ def register(app: typer.Typer) -> None:
 
         rubric = ProcessRubric.from_yaml(rubric_path) if rubric_path else default_rubric()
         ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
-        already = {ev["process_score"]["trial_id"] for ev in find_events(ledger_path, events.PROCESS_SCORE)}
+        # PRA-M13: a process score whose every dimension failed *transiently*
+        # (the scorer could not run — timeout / provider_error) is not counted as
+        # done, so a re-run re-attempts it. A score with any real dimension, or a
+        # terminal cant reason, stays skipped (re-running would only duplicate the
+        # good dimensions or reproduce the deterministic failure).
+        from .score import TRANSIENT_CANT_SCORE
+
+        def _fully_transient(ps: dict) -> bool:
+            scores = ps.get("scores") or []
+            return bool(scores) and all(
+                d.get("score") is None
+                and d.get("cant_score_reason") in TRANSIENT_CANT_SCORE
+                for d in scores
+            )
+
+        already = {
+            ev["process_score"]["trial_id"]
+            for ev in find_events(ledger_path, events.PROCESS_SCORE)
+            if not _fully_transient(ev["process_score"])
+        }
 
         n = 0
         for ev in find_events(ledger_path, events.TRIAL):

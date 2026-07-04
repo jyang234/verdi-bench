@@ -7,6 +7,16 @@ curator* (the public key is in a pinned keyring); and the approver is not the ta
 miner. Ed25519 signatures are deterministic (RFC 8032), so signing introduces no
 unseeded randomness — key *generation* is an out-of-band operational step, never on
 the pipeline path.
+
+Accepted limitation [PRA-L10]: the signed payload has no nonce, expiry, or
+ledger binding, so an approval is *content-bound* (it verifies only for its exact
+``{candidate_id, task_sha, approver}``) but not *revocable* — a once-valid
+approval can be re-ledgered on a fresh ledger forever, and there is no
+representation of a withdrawn approval. Because admission also requires a clean
+flake baseline and refuses an already-admitted candidate, the practical blast
+radius is small; a full revocation model (approval epochs / a revocation list) is
+deferred to the TRUSTED tier and is a deliberate v1 scope choice, not an
+oversight.
 """
 
 from __future__ import annotations

@@ -124,6 +124,18 @@ def test_ac8_fail_closed_provider_error(tmp_path):
     assert v.winner == Winner.CANT_JUDGE and v.reason == "provider_error"
 
 
+def test_ac8_fail_closed_context_overflow(tmp_path):
+    """PRA-H3: a ProviderContextOverflow (OpenAI context_length_exceeded on a
+    large packet) must record exactly one CANT_JUDGE(context_overflow), not
+    crash judge_pair with a ValueError (missing enum member) and write no event
+    — the regression that voided AC-8 for OpenAI judges."""
+    from harness.judge.providers.base import ProviderContextOverflow
+
+    v, ledger = _run(tmp_path, FakeProvider([ProviderContextOverflow("too big")]))
+    assert v.winner == Winner.CANT_JUDGE and v.reason == "context_overflow"
+    assert len(find_events(ledger, "judge_verdict")) == 1
+
+
 def test_ac8_fail_closed_parse(tmp_path):
     v, _ = _run(tmp_path, FakeProvider(["this is not json"]))
     assert v.winner == Winner.CANT_JUDGE and v.reason == "parse"

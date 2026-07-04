@@ -24,6 +24,7 @@ import harness.forensics.cli  # noqa: F401
 import harness.corpus.ledger_ops  # noqa: F401
 import harness.grade.deterministic  # noqa: F401
 import harness.judge.client  # noqa: F401
+import harness.ledger.anchors  # noqa: F401  (registers the `anchor` entrypoint)
 import harness.plan.lock  # noqa: F401
 import harness.process.score  # noqa: F401
 import harness.review.build  # noqa: F401
@@ -53,6 +54,7 @@ EXPECTED_ENTRYPOINTS = {
     "corpus-calibration-run",
     "corpus-subset-draw",
     "contamination-probe",
+    "anchor",  # PRA-L5: bench anchor appends exactly one chain_anchor event
 }
 
 

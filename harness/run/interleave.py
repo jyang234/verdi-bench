@@ -68,12 +68,25 @@ def _reason_for(exc: BaseException) -> str:
     return f"trial_error:{type(exc).__name__}"
 
 
+# The harbor engine's reason for a configured-but-absent metering-proxy log — the
+# harness's actual signal that the proxy is dead or misconfigured [PRA-H4/M9].
+PROXY_UNAVAILABLE_REASON = "proxy_log_missing"
+
+
+class ProxyUnavailableError(RuntimeError):
+    """The metering proxy is dead/misconfigured (a trial came back
+    proxy_log_missing) [PRA-M9]. A run-level fault, not a per-trial one: every
+    remaining trial would fail identically, so the scheduler aborts the run
+    loudly instead of grinding through them and burning wall-clock."""
+
+
 @dataclass
 class ScheduleResult:
     records: list[TrialRecord] = field(default_factory=list)
     executed_order: list[dict] = field(default_factory=list)
     stopped_cost_ceiling: bool = False
     infra_failures: int = 0
+    aborted_proxy_unavailable: bool = False  # PRA-M9: run stopped, dead proxy
 
 
 def _enforcement_cost(
@@ -102,14 +115,11 @@ def _prior_run_state(ledger_path) -> tuple[float, set[tuple], list[dict]]:
     produced a trial. Fresh ledgers have no such events, so this is a no-op on a
     first run.
 
-    Spend is summed from completed ``trial`` events; additionally, a prior
-    ``run_stopped_cost_ceiling`` snapshots the FULL guard spend at the stop
-    (completed trials AND infra-failed attempts, RN-3), so its ``accumulated_cost``
-    is taken as a lower bound — otherwise infra-attempt spend, which
-    ``trial_infra_failed`` does not carry, would be forgotten and a resumed run
-    could re-spend past the pre-registered ceiling. (A crash *before* a ceiling
-    stop still loses in-flight infra spend; making that durable needs a cost field
-    on the infra event — see the review note.)
+    Spend is summed from completed ``trial`` events AND from the ``cost`` a
+    post-engine ``trial_infra_failed`` now carries [PRA-M8], so a crash after real
+    spend no longer forgets it on resume. A prior ``run_stopped_cost_ceiling``
+    snapshots the FULL guard spend at the stop (RN-3) and is taken as a lower
+    bound, covering any infra spend not otherwise itemized.
     """
     accumulated = 0.0
     done: set[tuple] = set()
@@ -120,6 +130,11 @@ def _prior_run_state(ledger_path) -> tuple[float, set[tuple], list[dict]]:
             (rec.get("telemetry") or {}).get("cost"),
             (rec.get("flags") or {}).get("proxy_metered_cost"),
         )
+        if cost is not None:
+            accumulated += cost
+    # PRA-M8: post-engine infra failures carry their already-incurred spend.
+    for ev in find_events(ledger_path, events.TRIAL_INFRA_FAILED):
+        cost = ev.get("cost")
         if cost is not None:
             accumulated += cost
     for ev in find_events(ledger_path, events.RUN_STOPPED_COST_CEILING):
@@ -165,15 +180,17 @@ def _assert_not_quarantined(derived_order, tasks, quarantined: set) -> None:
 
 
 def _fail_cell(
-    out, ledger_path, ctx, planned, *, reason: str, hb: Optional[RunHeartbeat] = None
+    out, ledger_path, ctx, planned, *, reason: str,
+    hb: Optional[RunHeartbeat] = None, cost: Optional[float] = None
 ) -> None:
     """Ledger a per-trial infra failure for a cell that could not run and record
     it in the executed order — a bad cell fails closed, never aborts the run and
-    never skips the ``executed_order`` event [RN-15]."""
+    never skips the ``executed_order`` event [RN-15]. ``cost`` [PRA-M8] carries any
+    spend a post-engine failure already incurred."""
     trial_id = new_trial_id()
     events.record_trial_infra_failed(
         ledger_path, ctx, trial_id=trial_id,
-        task_id=planned.task_id, arm=planned.arm, reason=reason,
+        task_id=planned.task_id, arm=planned.arm, reason=reason, cost=cost,
     )
     out.infra_failures += 1
     if hb is not None:
@@ -271,10 +288,23 @@ def schedule(
                     task, arm, planned, workspace_root, ledger_path, ctx, config,
                     max_infra_retries, out, guard, hb,
                 )
+            except ProxyUnavailableError:
+                # PRA-M9: run-level fault — the failing attempt is already ledgered
+                # inside the rerun loop; stop the whole run loudly instead of
+                # failing every remaining cell identically.
+                out.aborted_proxy_unavailable = True
+                break
             except Exception as exc:  # noqa: BLE001 — ANY per-trial fault fails THIS
                 # cell closed (ledgered, reason-tagged), never escapes to abort the
                 # whole run [RN-15]. Not swallowed: surfaced as trial_infra_failed.
-                _fail_cell(out, ledger_path, ctx, planned, reason=_reason_for(exc), hb=hb)
+                # PRA-M8: a post-engine failure (redaction/trajectory) carries the
+                # spend already incurred on the exception; ledger it AND feed it to
+                # the guard so it counts against the ceiling and survives resume.
+                spend = getattr(exc, "enforcement_cost", None)
+                _fail_cell(out, ledger_path, ctx, planned, reason=_reason_for(exc),
+                           hb=hb, cost=spend)
+                if spend is not None:
+                    guard.add(spend)
                 continue
             if out.stopped_cost_ceiling:
                 break  # budget exhausted inside the infra-rerun loop [RN-3]
@@ -343,13 +373,14 @@ def _run_with_infra_reruns(
         # infra failure: count its spend, ledger it, re-run as a NEW trial id.
         # The reason comes from the engine's result (RN-14), not a fake-only field.
         guard.add(_record_enforcement_cost(record))
+        reason = getattr(record.flags, "failure_reason", None) or "infra_failed"
         events.record_trial_infra_failed(
             ledger_path,
             ctx,
             trial_id=trial_id,
             task_id=task.id,
             arm=arm.name,
-            reason=getattr(record.flags, "failure_reason", None) or "infra_failed",
+            reason=reason,
         )
         out.infra_failures += 1
         if hb is not None:
@@ -363,6 +394,15 @@ def _run_with_infra_reruns(
                 "outcome": Outcome.infra_failed.value,
             }
         )
+        # PRA-M9: a dead/misconfigured metering proxy is a run-level fault — every
+        # remaining trial would fail identically. Abort the run after ledgering
+        # this attempt rather than retrying (the proxy won't recover mid-loop) or
+        # grinding through the rest of the schedule.
+        if reason == PROXY_UNAVAILABLE_REASON:
+            raise ProxyUnavailableError(
+                f"trial {trial_id} failed {reason}; the metering proxy is dead or "
+                "misconfigured — aborting the run [PRA-M9]"
+            )
         attempts += 1
         if attempts > max_infra_retries:
             return None

@@ -3,6 +3,8 @@ pinning enforced [RN-13, RN-12, D-9]."""
 
 from __future__ import annotations
 
+import pytest
+
 from harness.run.engines.harbor import HarborEngine
 from harness.run.seam import run_trial
 from harness.run.types import RunConfig, Task
@@ -135,3 +137,47 @@ def test_ac3_harbor_command_carries_proxy_and_key_names(tmp_path):
     assert "ANTHROPIC_API_KEY" in cmd  # NAME on the argv
     assert "sk-secret" not in " ".join(cmd)  # VALUE never on the argv
     assert runner.last_env.get("ANTHROPIC_API_KEY") == "sk-secret"  # value via child env
+
+
+def test_m2_per_arm_keys_isolate_provider_credentials(tmp_path):
+    """PRA-M2: with a per-arm key allowlist, an arm's container receives ONLY its
+    own provider key — arm A never sees arm B's key (least-privilege insulation)."""
+    from harness.run.egress import proxy_config
+
+    arm_a = Arm(name="a", platform="claude_code", model="anthropic/claude-3-5-sonnet-20241022")
+    arm_b = Arm(name="b", platform="codex", model="openai/gpt-4o-2024-08-06")
+    base = dict(
+        engine=HarborEngine(runner=None),  # replaced per call below
+        proxy=proxy_config(["api.anthropic.com", "api.openai.com"], proxy_url="http://proxy:3128"),
+        provider_keys={"ANTHROPIC_API_KEY": "sk-ant", "OPENAI_API_KEY": "sk-oai"},
+        provider_key_names_by_arm={"a": ["ANTHROPIC_API_KEY"], "b": ["OPENAI_API_KEY"]},
+    )
+
+    runner_a = FakeDockerRunner(native_log={})
+    run_trial(Task(id="t", prompt="p"), arm_a, tmp_path / "wsa",
+              RunConfig(**{**base, "engine": HarborEngine(runner=runner_a)}))
+    assert "ANTHROPIC_API_KEY" in runner_a.last_cmd
+    assert "OPENAI_API_KEY" not in runner_a.last_cmd  # NOT the other arm's key
+    assert runner_a.last_env.get("ANTHROPIC_API_KEY") == "sk-ant"
+    assert "OPENAI_API_KEY" not in runner_a.last_env
+
+    runner_b = FakeDockerRunner(native_log={})
+    run_trial(Task(id="t", prompt="p"), arm_b, tmp_path / "wsb",
+              RunConfig(**{**base, "engine": HarborEngine(runner=runner_b)}))
+    assert "OPENAI_API_KEY" in runner_b.last_cmd
+    assert "ANTHROPIC_API_KEY" not in runner_b.last_cmd
+
+
+def test_m2_arm_missing_from_allowlist_fails_loud(tmp_path):
+    """PRA-M2: when the per-arm allowlist is in use, an arm not listed fails loud
+    rather than silently running unauthenticated."""
+    from harness.run.settings import MissingProviderKeyError
+
+    runner = FakeDockerRunner(native_log={})
+    cfg = RunConfig(
+        engine=HarborEngine(runner=runner),
+        provider_keys={"ANTHROPIC_API_KEY": "sk-ant"},
+        provider_key_names_by_arm={"other": ["ANTHROPIC_API_KEY"]},  # not arm "a"
+    )
+    with pytest.raises(MissingProviderKeyError):
+        run_trial(Task(id="t", prompt="p"), _arm(), tmp_path / "ws", cfg)

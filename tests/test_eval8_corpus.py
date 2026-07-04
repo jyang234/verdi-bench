@@ -96,6 +96,26 @@ def test_reimport_preserves_calibration(tmp_path):
     assert m2.calibration.status == "full-run-validated"
 
 
+def test_m12_reimport_preserves_quarantine(tmp_path):
+    """PRA-M12: a same-semver re-import must not silently revert a quarantined
+    task to `admitted` (which would re-enable the run scheduler + official fence
+    for it). Per-task recorded state is carried for unchanged shas."""
+    src = _write_dataset(tmp_path / "ds")
+    cache = tmp_path / "cache"
+    m1 = import_terminal_bench(DirectorySource(src), cache)
+    tid = m1.tasks[0].task_id
+    m1.tasks[0].status = "quarantined"
+    m1.tasks[0].baseline_ref = "b-pinned"
+    m1.save(cache / "manifest.json")
+    assert m1.is_schedulable(tid) is False
+
+    m2 = import_terminal_bench(DirectorySource(src), cache)  # same semver, same content
+    t2 = m2.task(tid)
+    assert t2.status == "quarantined"  # not silently re-admitted
+    assert t2.baseline_ref == "b-pinned"
+    assert m2.is_schedulable(tid) is False
+
+
 def test_reimport_same_semver_mutation_refused(tmp_path):
     """CO-3: mutating task content without a semver bump is refused, not a silent
     cache rewrite."""

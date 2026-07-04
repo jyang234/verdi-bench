@@ -9,7 +9,9 @@ refuses on mismatch, printing recorded vs computed hashes. A mutated
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -79,12 +81,21 @@ def lock_experiment(
     ctx: EventContext,
     variance_source: Optional[VarianceSource] = None,
     acknowledge_underpowered: bool = False,
-    attested_by: str = "unknown",
-    attestation_method: str = "anchor-plus-attestation-v1",
+    attested_by: Optional[str] = None,
+    attestation_method: str = "anchor-plus-actor-v1",
     task_dicts: Optional[list] = None,
     **mde_kwargs,
 ) -> LockOutcome:
-    """Validate, power-check, and write the genesis lock event."""
+    """Validate, power-check, and write the genesis lock event.
+
+    PRA-L2: ``attested_by`` defaults to the resolved actor on ``ctx`` (itself
+    produced by ``resolve_actor``, which refuses rather than record ``"unknown"``)
+    — never the literal ``"unknown"`` sentinel ``actor.py`` exists to ban. The
+    method is ``anchor-plus-actor-v1``; it does not claim a cryptographic
+    attestation the instrument does not yet provide (contrast the real Ed25519
+    curation-approval signatures).
+    """
+    attested_by = attested_by or ctx.actor
     # PL-2: read the spec bytes once, then parse *and* hash the same buffer, so
     # the recorded sha is provably the sha of the validated content — no window
     # for the file to change between the parse read and a second hash read.
@@ -196,40 +207,87 @@ def lock_experiment(
         if ack_underpowered
         else None
     )
-    event = events.record_experiment_locked(
-        ledger_path,
-        ctx,
-        spec_sha256=sha,
-        spec_path=str(spec_path),
-        seed=spec.seed,
-        mde=mde,
-        attested_by=attested_by,
-        method=attestation_method,
-        task_commitment=task_commitment,
-        acknowledged_underpowered=ack_payload,
-        rubric_sha256=rubric_sha256,
-    )
+    # PRA-M3: serialize concurrent `bench plan` on this ledger so the
+    # check-then-append is atomic. Without the guard two concurrent invocations
+    # both pass the earlier find_events check and both append experiment_locked;
+    # assert_lock now refuses the resulting >1-lock ledger, but preventing it here
+    # is cleaner. Use a separate lock file — flock on the ledger fd itself would
+    # deadlock against append_event's own flock inside record_experiment_locked.
+    guard = Path(str(ledger_path) + ".planlock")
+    guard.parent.mkdir(parents=True, exist_ok=True)
+    gfd = os.open(guard, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(gfd, fcntl.LOCK_EX)
+        if find_events(ledger_path, events.EXPERIMENT_LOCKED):
+            raise AlreadyLockedError(
+                f"{ledger_path} already has an experiment_locked event; re-lock "
+                "is refused. Start a fresh ledger to re-plan."
+            )
+        event = events.record_experiment_locked(
+            ledger_path,
+            ctx,
+            spec_sha256=sha,
+            spec_path=str(spec_path),
+            seed=spec.seed,
+            mde=mde,
+            attested_by=attested_by,
+            method=attestation_method,
+            task_commitment=task_commitment,
+            acknowledged_underpowered=ack_payload,
+            rubric_sha256=rubric_sha256,
+        )
+    finally:
+        try:
+            fcntl.flock(gfd, fcntl.LOCK_UN)
+        finally:
+            os.close(gfd)
     return LockOutcome(spec=spec, spec_sha256=sha, mde=mde, event=event)
 
 
-def assert_lock(spec_path, ledger_path) -> dict:
+@dataclass
+class LockView:
+    """The verified lock event plus the spec parsed from the very bytes whose sha
+    was checked — so a caller never re-reads the file [PRA-M1]."""
+
+    event: dict
+    spec: ExperimentSpec
+
+
+def assert_lock(spec_path, ledger_path) -> LockView:
     """Refuse to proceed unless the on-disk spec matches the locked sha [AC-2].
 
-    Returns the ``experiment_locked`` event on success. Every later stage
-    entrypoint calls this first, so a post-lock mutation of ``experiment.yaml``
-    fails every downstream operation closed.
+    Returns the ``experiment_locked`` event and the parsed spec. Every later
+    stage entrypoint calls this first, so a post-lock mutation of
+    ``experiment.yaml`` fails every downstream operation closed.
+
+    PRA-M1: the spec bytes are read *once*, then hashed and parsed from the same
+    buffer, and the parsed spec is returned. Consumers must use the returned spec
+    rather than a second independent ``ExperimentSpec.from_yaml(spec_path)`` — a
+    second read reopened a TOCTOU window where a spec swapped between the sha
+    check and the re-read would run under an unlocked spec while the ledger
+    attests the locked one. This mirrors ``lock_experiment``'s PL-2 discipline.
     """
     locks = find_events(ledger_path, events.EXPERIMENT_LOCKED)
     if not locks:
         raise LockMismatchError(
             f"no experiment_locked event in {ledger_path}; run `bench plan` first"
         )
+    # PRA-M3: exactly one lock per ledger. More than one means a concurrent
+    # double-lock slipped past lock_experiment's check-then-append window; keying
+    # locks[0] would silently attest one spec while another lock sits unnoticed.
+    # Refuse loudly rather than pick one.
+    if len(locks) > 1:
+        raise LockMismatchError(
+            f"{ledger_path} has {len(locks)} experiment_locked events; a ledger "
+            "must carry exactly one lock [PL-3]. Start a fresh ledger to re-plan."
+        )
     # An empty/absent ledger is "not planned yet" (handled above); once a lock
     # exists we verify the whole chain before trusting any recorded field, so a
     # rewritten lock line cannot pass this gate on a forged sha [PL-6].
     assert_chain(ledger_path)
+    spec_bytes = Path(spec_path).read_bytes()
     recorded = locks[0]["spec_sha256"]
-    computed = spec_sha256(spec_path)
+    computed = _sha256_bytes(spec_bytes)
     if recorded != computed:
         raise LockMismatchError(
             "experiment.yaml has changed since it was locked:\n"
@@ -237,7 +295,10 @@ def assert_lock(spec_path, ledger_path) -> dict:
             f"  computed sha256: {computed}\n"
             "the primary metric and decision rule are immutable post-lock"
         )
-    return locks[0]
+    spec = ExperimentSpec.from_yaml_text(
+        spec_bytes.decode("utf-8"), source=str(spec_path)
+    )
+    return LockView(event=locks[0], spec=spec)
 
 
 # --- one-event property registration [EVAL-3 §M7] --------------------------

@@ -31,6 +31,10 @@ DEFAULT_GRADER_IMAGE = "verdi-bench/grader:latest"
 # copy of this file removed [GR-1].
 HOLDOUT_RESULTS = "holdout_results.json"
 
+# Filename the containerized plugin runner writes its assertion list to [PRA-M6].
+# Same fresh-copy discipline: any agent-written copy is removed before the run.
+PLUGIN_RESULTS = "plugin_results.json"
+
 
 class GradingContainerError(RuntimeError):
     """The grader ran but failed (nonzero exit, no results) → a **terminal**
@@ -69,6 +73,7 @@ class DockerGradeRunner:
     """
 
     grader_name = "docker"
+    runs_plugins_in_container = True  # PRA-M6: plugins run network-less, not in-process
 
     def preflight(self) -> None:
         """Probe the docker daemon before a grade batch [GR-8/GR-11].
@@ -177,11 +182,103 @@ class GradingContainer:
         cmd += ["--workdir", "/workspace", self._image]
         return cmd
 
+    def build_plugin_command(
+        self, workspace: Path, plugin_ids: list, task_file: Optional[Path] = None
+    ) -> list[str]:
+        """Fresh, NETWORK-LESS container for grader plugins [PRA-M6].
+
+        Plugins previously ran in-process on the harness host — with full network
+        and filesystem access — against the agent-controlled workspace; a plugin
+        that shells out over malicious build/config files was a host-side
+        code-execution surface the holdout tier does not have. Running them under
+        the same ``--network none`` fresh-copy discipline as holdouts (plus
+        ``--cap-drop ALL`` and no-new-privileges) closes that asymmetry. The
+        grader image's plugin entrypoint (``python -m harness.grade.run_plugin``)
+        reads the ids and the read-only task mount, and writes PLUGIN_RESULTS."""
+        cmd = ["docker", "run", "--rm", "--network", "none"]
+        cmd += ["--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
+        cmd += ["--volume", f"{Path(workspace).resolve()}:/workspace"]
+        if task_file is not None:
+            cmd += ["--volume", f"{Path(task_file).resolve()}:/verdi/task.json:ro"]
+        cmd += ["--workdir", "/workspace", self._image]
+        cmd += ["python", "-m", "harness.grade.run_plugin", *[str(p) for p in plugin_ids]]
+        return cmd
+
     @property
     def grader_name(self) -> str:
         """Identity of the grader used, recorded in the grade event so a local
         (ADVISORY) grade is distinguishable from a trusted container grade [SEC]."""
         return getattr(self._runner, "grader_name", "unknown")
+
+    def run_plugins(self, workspace: Path, plugin_ids: list, task) -> list:
+        """Run declared grader plugins and return their assertions [PRA-M6].
+
+        Docker path: plugins run in a fresh-copy, ``--network none`` container
+        (the same isolation holdouts get), so a plugin cannot reach the network or
+        the host. No-daemon LocalGradeRunner path: plugins run in-process — an
+        explicit ADVISORY fallback with no sandbox, used only for the fake/test
+        path and distinguishable by ``grader_name = "local"``.
+        """
+        from .plugins import get_plugin
+        from .types import Assertion
+
+        if not plugin_ids:
+            return []
+        if getattr(self._runner, "runs_plugins_in_container", False):
+            # docker path: network-less container over a throwaway copy.
+            return self._run_plugins_in_container(Path(workspace), plugin_ids, task)
+        # no-daemon ADVISORY path (LocalGradeRunner / test fakes): in-process, no
+        # isolation — used only where there is no daemon; grades are stamped
+        # grader_name="local" so they are distinguishable from a trusted grade.
+        out: list = []
+        for pid in plugin_ids:
+            out.extend(get_plugin(pid).grade(Path(workspace), task))
+        return out
+
+    def _run_plugins_in_container(self, workspace: Path, plugin_ids: list, task) -> list:
+        from .types import Assertion
+
+        tmp = Path(tempfile.mkdtemp(prefix="verdi-plugin-"))
+        try:
+            copy = tmp / "workspace"
+            try:
+                shutil.copytree(workspace, copy, symlinks=True)
+                stale = copy / PLUGIN_RESULTS
+                if stale.is_symlink() or stale.is_file():
+                    stale.unlink()
+                elif stale.is_dir():
+                    shutil.rmtree(stale)
+            except OSError as e:
+                raise GradingContainerError(
+                    f"could not prepare a clean workspace copy for plugins: {e}"
+                ) from e
+            # the GradeTask travels into the container read-only at /verdi/task.json
+            task_file = tmp / "task.json"
+            task_file.write_text(json.dumps({
+                "id": getattr(task, "id", "t"),
+                "task_sha": getattr(task, "task_sha", ""),
+                "holdouts_dir": getattr(task, "holdouts_dir", ""),
+                "fake_plugin_output": getattr(task, "fake_plugin_output", {}) or {},
+            }), encoding="utf-8")
+            cmd = self.build_plugin_command(copy, plugin_ids, task_file)
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+            except (OSError, subprocess.SubprocessError) as e:
+                raise GraderUnavailableError(str(e)) from e
+            if proc.returncode == 125:
+                raise GraderUnavailableError("docker daemon/config error (exit 125)")
+            if proc.returncode != 0:
+                raise GradingContainerError(
+                    f"plugin container exited {proc.returncode}"
+                    + (f": {proc.stderr.strip()}" if proc.stderr.strip() else "")
+                )
+            results = copy / PLUGIN_RESULTS
+            if not results.exists():
+                raise GradingContainerError("plugin container produced no plugin_results.json")
+            raw = json.loads(results.read_text(encoding="utf-8"))
+            return [Assertion(**a) for a in raw]
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def run(self, workspace: Path, holdouts_dir: str) -> HoldoutRun:
         workspace = Path(workspace)

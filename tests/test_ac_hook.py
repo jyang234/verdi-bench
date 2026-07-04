@@ -47,6 +47,38 @@ def test_misnamed_ac_is_a_violation(tmp_path):
     assert any("eval3" in m and "[9]" in m and "not declared" in m for m in v), v
 
 
+def test_unconditionally_skipped_ac_test_is_a_violation(tmp_path):
+    """PRA-L7: a named AC test carrying @pytest.mark.skip never runs, so it must
+    not satisfy the presence gate — the checker flags it."""
+    specs, tests = tmp_path / "specs", tmp_path / "tests"
+    specs.mkdir(); tests.mkdir()
+    (specs / "eval3.spec.md").write_text(
+        'acceptance:\n  - id: "AC-1"\n    text: "x"\n', encoding="utf-8"
+    )
+    (tests / "test_eval3_story.py").write_text(
+        "import pytest\n\n@pytest.mark.skip\ndef test_ac1_covered():\n    assert True\n",
+        encoding="utf-8",
+    )
+    v = check_ac_coverage(specs, tests)
+    assert any("unconditional @pytest.mark.skip" in m for m in v), v
+
+
+def test_skipif_ac_test_is_not_flagged(tmp_path):
+    """PRA-L7: skipif (runtime-gated, e.g. docker/browser) is legitimate and must
+    NOT be flagged — only unconditional skip is."""
+    specs, tests = tmp_path / "specs", tmp_path / "tests"
+    specs.mkdir(); tests.mkdir()
+    (specs / "eval3.spec.md").write_text(
+        'acceptance:\n  - id: "AC-1"\n    text: "x"\n', encoding="utf-8"
+    )
+    (tests / "test_eval3_story.py").write_text(
+        "import pytest\n\n@pytest.mark.skipif(False, reason='r')\n"
+        "def test_ac1_covered():\n    assert True\n",
+        encoding="utf-8",
+    )
+    assert check_ac_coverage(specs, tests) == []
+
+
 def test_duplicate_ac_name_is_a_violation(tmp_path):
     specs, tests = tmp_path / "specs", tmp_path / "tests"
     specs.mkdir(); tests.mkdir()

@@ -96,6 +96,18 @@ with per-trial attribution, kill-on-timeout). The Harbor library is importable
 only by the engine seam — an import-linter contract plus an AST sweep
 (`tests/test_eval4_seam.py`) keep it that way.
 
+Three of those container guarantees fail *closed* rather than degrading
+silently. The metering proxy is an **external operational component** (a
+reference squid config ships in `deploy/metering-proxy/`); a
+configured-but-absent per-trial proxy log raises rather than being read as zero
+egress and zero cost [PRA-H4], and a proxy that is unreachable at preflight
+aborts the run instead of letting trials leak egress un-metered [PRA-M9].
+Kill-on-timeout is *confirmed*, not assumed: after the kill the engine checks
+`docker inspect .State.Running`, so a still-live container (whose unredacted
+workspace could otherwise be graded) is reported `kill_failed` and fails the
+trial closed [PRA-M7]. Trial containers also drop all capabilities, forbid
+privilege escalation, and cap pids/swap [PRA-L9].
+
 Each trial appends one **`trial`** event carrying normalized telemetry
 (adapter-specific; what a platform cannot measure is `null` and listed in
 `telemetry_nulls` — never estimated, owned by the `TrialRecord` model
@@ -105,9 +117,10 @@ vocabulary; hitting the pre-registered cost ceiling appends
 is ledgered as **`executed_order`**.
 
 Since EVAL-12, every trial also captures a **trajectory**: a versioned record
-of the agent's ordered steps (`harness/run/trajectory.py`, schema v2:
+of the agent's ordered steps (`harness/run/trajectory.py`, schema v3:
 `kind`, `relative_ts`, `tokens`, `cost`, `files_touched`, `exit_code`,
-`command`), normalized per adapter, scrubbed through the same redaction door
+`command`, and the additive `detail` field for per-step forensic content),
+normalized per adapter, scrubbed through the same redaction door
 as every artifact, persisted as canonical JSON, and bound to the chain by an
 additive `trajectory_sha` on the trial event. A corrupt trajectory fails the
 trial closed; an engine that honestly cannot produce one records *absence*,
@@ -138,7 +151,14 @@ task × repetition), scrubs them through the blind core
 canaries derived from the arms — names, platforms, models), and asks the
 configured provider for a preference, **in both presentation orders** when
 `orders: both`. Verdicts land as **`judge_verdict`** events; provider failures
-land as `CANT_JUDGE`-style refusals, never fabricated verdicts. Order
+land as `CANT_JUDGE`-style refusals, never fabricated verdicts, over a closed
+reason vocabulary (`CantJudgeReason`) that a `context_overflow` from an
+oversized packet lands in cleanly rather than escaping the handler with no event
+[PRA-H3]. Before any packet reaches the provider it is re-scanned for
+provider-key-shaped secrets as defense-in-depth behind capture-side redaction —
+a hit refuses as `secret_leak` rather than shipping the secret off-box [PRA-L4].
+Only genuinely transient reasons (timeout, provider error) are re-attempted on a
+re-run; deterministic refusals stay terminal. Order
 consistency and judge↔deterministic agreement are computed as calibration
 diagnostics (`harness/judge/calibrate.py`) and rendered with the findings.
 
@@ -199,9 +219,15 @@ trajectory. Three parts, one **`forensics_report`** event per scan:
   expected outputs (token-boundary-aware for numeric literals), test-skip
   insertion, suspicious single-step completion. Every detector is owned by a
   planted-violation fixture that must flag and a clean corpus that must not
-  (`test_ac2_planted_violations_flag`, `test_ac2_clean_corpus_silent`), and
-  each stays silent when evidence cannot attribute a change to the agent —
-  a missed flag is preferred to a fabricated accusation.
+  (`test_ac2_planted_violations_flag`, `test_ac2_clean_corpus_silent`). Every
+  flag carries an **attribution confidence** [PRA-M15]: a marker genuinely
+  absent before the trial and present after is `pristine-diff` (high
+  confidence); a marker in a file the agent *did* edit but for which no
+  pristine baseline exists is stamped `edited-file-only` and rendered
+  low-confidence — flagged, not silently dropped, so a pre-existing marker in a
+  legitimately-edited file cannot masquerade as an insertion; and a change the
+  evidence cannot attribute to the agent at all stays silent, because a missed
+  flag is preferred to a fabricated accusation.
 - **Advisory review** (`review.py`): a blinded, context-isolated LLM pass
   narrating whether a trajectory shows shortcut behavior a regex cannot
   name. It fails closed to `CANT_REVIEW(reason)` on any fault — including
@@ -245,10 +271,21 @@ requires a current, passing selfcheck.
 `bench analyze` computes findings (`harness/analyze/report.py`): paired
 per-task deltas, bootstrap CIs (method — `percentile`, `bca`, or
 `cluster_robust_t` — selected by empirical coverage under
-`harness/analyze/nullsim.py`), effect sizes, MDE, judge calibration,
+`harness/analyze/nullsim.py`, and each finding records the method that
+*realized* its interval, so a silent fallback to a wider method is visible
+rather than mislabeled [PRA-M14]), effect sizes, MDE, judge calibration,
 confound flags (`harness/analyze/confounds.py`: telemetry null asymmetries,
 cross-vendor token incomparability), process diagnostics, and the forensic
-disclosure block. Two render modes:
+disclosure block.
+
+With more than two arms the spec still pre-registers exactly one
+`decision_rule`, so the k−1 pairwise comparisons cannot all carry a
+simultaneous official decision without inflating the family-wise error rate
+[PRA-M4]. By default only the pre-registered primary pair carries a decision
+(`official_decision`); the remaining pairs render their CI and effect size but
+no decision, marked exploratory. `--multi-arm-correction=holm` instead keeps
+every pair official under a Holm-Bonferroni adjustment at the pre-registered
+level. Two render modes:
 
 - `--exploratory`: watermarked on every layer.
 - `--official`: passes the **pre-registration fence** — locked spec, corpus
@@ -282,17 +319,19 @@ This section is the skeptic's index: claim → mechanism → owner.
 | No operation happened off the record | every verb routes through typed constructors in `events.py`; direct chain writes are contract-forbidden | one-event property sweep `test_ac7_one_event_per_operation` over the closed entrypoint registry |
 | The ledger you're shown is the ledger that was written | hash chain + optional external anchors | `test_eval3_chain.py`, `test_eval3_anchors.py` |
 | Arms never saw graders' answers | holdouts/rubrics outside trial workspaces; canary strings planted and asserted absent | `test_ac9_holdout_canaries_absent`, `test_ac1_holdouts_readonly` |
-| Grades are mechanical | no-LLM import contracts on `harness/grade/`, the `harness/forensics/` deterministic tier, and the `harness/contamination/` detectors | three of the five import-linter contracts |
+| Grades are mechanical | no-LLM import contracts on `harness/grade/`, the `harness/forensics/` deterministic tier, and the `harness/contamination/` detectors | three of the seven import-linter contracts |
 | The judge can't favor a brand | identity scrub with per-experiment canaries; property tests plant canaries and assert absence from payloads | `test_ac1_scrub_canaries` and packet property tests |
 | Judge weight is earned, not assumed | order-consistency diagnostics; IPW kappa vs blinded humans; escalation gate at κ<0.6 | `test_eval2_calibrate.py`, `test_eval7_review.py` kappa suite |
 | Secrets don't leak into artifacts | capture-side redaction plus defense-in-depth rescans before any provider call; property tests with generated secrets | `test_ac2_capture_post_redaction`, redaction suites in eval4 |
 | The stats mean what they say | paired bootstrap; CI method chosen by simulated coverage at realized N; A/A selfcheck gates official renders; MDE always present | `test_eval6_analyze.py`, nullsim tests, selfcheck staleness tests |
 | Gaming is detected, not narrated | planted-violation-owned detectors; advisory LLM pass fails closed and calibrates per detector | `test_ac2_planted_violations_flag`, `test_ac4_cant_review_fail_closed` |
 | Nothing suppresses evidence | flags/confounds/quarantines render beside the comparison in *both* renders, non-suppressing | `test_ac5_flags_render_beside_comparison` |
-| Docs match the binary | README verb coverage and contract count are tested; AC coverage is recomputed at collection | `test_readme_consistency.py`, `tests/ac_coverage.py` hook |
+| Docs match the binary | README verb coverage and both this doc's and the README's spelled-out contract counts are tested; AC coverage is recomputed at collection | `test_readme_consistency.py`, `tests/ac_coverage.py` hook |
 
-Two structural contracts complete the set: Harbor is importable only through
-the engine seam, and ledger appends flow only through the typed constructors.
+Four structural contracts complete the set: Harbor is importable only through
+the engine seam, ledger appends flow only through the typed constructors, the
+blinded reviewer surface never imports the unblinded operator tier, and
+read-only observability imports no LLM client.
 
 ---
 
@@ -335,7 +374,7 @@ Reading any module goes faster once you know the house rules:
 
 ## 5. How the test suite keeps the instrument honest
 
-The suite (550+ fast tests, plus Docker-marked container tests) is not just
+The suite (700+ fast tests, plus Docker-marked container tests) is not just
 regression cover — parts of it are the instrument's *own* integrity
 mechanism:
 
@@ -381,6 +420,16 @@ itself, and so should its documentation:
 - **A/A selfcheck validates coverage, not ground truth.** The fence keeps a
   finding statistically honest relative to its pre-registration; it cannot
   make a badly designed experiment meaningful.
+- **Egress confinement is a shared responsibility with the deployment.** The
+  engine attaches trials to a `--internal` docker network (no external route)
+  and meters through a proxy, but the metering proxy itself is an external
+  component you supply and validate; and `--internal` blocks the outside world,
+  not the host gateway or a sibling container on the same network. Confining a
+  trial to *only* the allowlisted model APIs — and making per-trial attribution
+  unspoofable — depends on the proxy's allowlist and auth and, for the strongest
+  posture, deployment-level firewalling (`DOCKER-USER`/host-gateway rules) the
+  harness does not install. Treat `deploy/metering-proxy/` as a reference to
+  validate in your environment, not a turnkey guarantee.
 
 ---
 
@@ -397,7 +446,12 @@ itself, and so should its documentation:
   field you cannot measure stays `None` — the tests that own null-honesty
   will hold you to it.
 - **A new grader** = a plugin in `harness/grade/plugins/` (see
-  `groundwork.py`). It runs inside the no-LLM contract.
+  `groundwork.py`). It runs inside the no-LLM import contract and, on the real
+  (docker) grade path, inside the same fresh-copy, **network-less** grading
+  container as holdout assertions [PRA-M6] — so a plugin that shells out over the
+  agent-controlled workspace has no network and no host access. Only the
+  no-daemon `LocalGradeRunner` runs plugins in-process (an explicit ADVISORY
+  fallback, stamped `grader_name="local"`).
 - **A new gaming detector** = a detector in `harness/forensics/detectors.py`
   plus its planted-violation and clean fixtures, plus a vocabulary version
   bump — the closed-enum test forces the bump; findings across versions are

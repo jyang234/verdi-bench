@@ -12,8 +12,9 @@ hash-chained event ledger. Its credibility depends on its own correctness —
 treat every silent failure or gamed test as a defect in the instrument itself.
 
 - Code: `harness/` — one subsystem per concern (`plan`, `run`, `grade`,
-  `judge`, `ledger`, `schema`, `adapters`, `blind`; `analyze`/`review`/
-  `process`/`corpus` are scaffolded).
+  `judge`, `ledger`, `schema`, `adapters`, `blind`, `analyze`, `review`,
+  `process`, `corpus`, `forensics`, `contamination`, `status`, `serve`,
+  `author`). All are implemented.
 - Tests: `tests/test_eval<N>_*.py`; AC-mapped tests are named `test_ac<N>_*`
   (`uv run pytest --ac-report` recomputes coverage).
 - Tooling: `uv`, `pytest` + `hypothesis`, `import-linter`. Code must stay

@@ -18,11 +18,20 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 
-from ..blind.core import identity_pattern_list
+from ..blind.core import identity_pattern_list, secret_pattern_list
 
 
 class IdentityLeakError(RuntimeError):
     """A packet contained an identity canary — it must not be sent [AC-2]."""
+
+
+class SecretLeakError(RuntimeError):
+    """A packet contained a provider-key-shaped secret — it must not be sent.
+
+    Trial-time redaction is the primary barrier, but a symlink escape (PRA-M5)
+    or a missed capture-side scrub could still carry a secret into the packet;
+    this defense-in-depth re-scan fails closed rather than shipping it to the
+    provider, matching the process tier's RedactionLeakError [PRA-L4]."""
 
 
 @dataclass
@@ -192,4 +201,26 @@ def validate_identity_free(packet: Packet, canaries: list[str] | None = None) ->
         if hits:
             raise IdentityLeakError(
                 f"packet contains identity marker {hits[0].text!r}; not sent [AC-2]"
+            )
+
+
+def validate_secret_free(packet: Packet) -> None:
+    """Belt-and-suspenders: re-scan the packet for provider-key-shaped secrets
+    before any provider call, matching the process tier [PRA-L4].
+
+    Raises :class:`SecretLeakError` on any hit. Redaction at trial time is the
+    primary barrier; this catches a secret that slipped past it (or arrived via
+    a symlink escape) rather than shipping it to the judge provider.
+    """
+    patterns = secret_pattern_list()
+    blobs = [
+        packet.task_prompt,
+        packet.rubric,
+        packet.response_a.diff,
+        packet.response_b.diff,
+    ]
+    for blob in blobs:
+        if patterns.contains(blob):
+            raise SecretLeakError(
+                "packet contains a provider-key-shaped secret; not sent [PRA-L4]"
             )

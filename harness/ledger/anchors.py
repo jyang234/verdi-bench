@@ -15,7 +15,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .chain import hash_line, verify_chain
+from .chain import hash_line, split_ledger_lines, verify_chain
 
 
 def _ledger_lines(path: Path) -> list[str]:
@@ -24,10 +24,7 @@ def _ledger_lines(path: Path) -> list[str]:
     data = path.read_bytes()
     if not data:
         return []
-    parts = data.split(b"\n")
-    if parts and parts[-1] == b"":
-        parts = parts[:-1]
-    return [p.decode("utf-8") for p in parts]
+    return [p.decode("utf-8") for p in split_ledger_lines(data)]
 
 
 class AnchorIntegrityError(RuntimeError):
@@ -40,15 +37,15 @@ class AnchorIntegrityError(RuntimeError):
     """
 
 
-def anchor_head(ledger_path, anchor_path, *, ts: str) -> dict:
-    """Append ``{head_hash, height, ts}`` for the current ledger head to
-    ``anchor_path``. ``ts`` is injected (no wall-clock reads here).
+def anchor_record(ledger_path, *, ts: str) -> dict:
+    """Compute the ``{head_hash, height, ts}`` checkpoint for the current head —
+    a pure read, no external write. ``ts`` is injected (no wall-clock here).
 
-    Refuses (``AnchorIntegrityError``) before writing anything if the ledger's
-    hash chain does not verify — an anchor must checkpoint authentic history.
+    Refuses (``AnchorIntegrityError``) if the ledger's hash chain does not verify;
+    an anchor must checkpoint authentic history. Split out from the external write
+    so a caller can order the two writes deliberately [PRA-L5].
     """
     ledger_path = Path(ledger_path)
-    anchor_path = Path(anchor_path)
     result = verify_chain(ledger_path)
     if not result.ok:
         at = f" at line {result.line_number}" if result.line_number else ""
@@ -59,10 +56,27 @@ def anchor_head(ledger_path, anchor_path, *, ts: str) -> dict:
     lines = _ledger_lines(ledger_path)
     height = len(lines)
     head = hash_line(lines[-1]) if lines else "0" * 64
-    record = {"head_hash": head, "height": height, "ts": ts}
+    return {"head_hash": head, "height": height, "ts": ts}
+
+
+def write_anchor(anchor_path, record: dict) -> None:
+    """Append one checkpoint ``record`` to the external anchor store."""
+    anchor_path = Path(anchor_path)
     anchor_path.parent.mkdir(parents=True, exist_ok=True)
     with open(anchor_path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+
+
+def anchor_head(ledger_path, anchor_path, *, ts: str) -> dict:
+    """Compute and externally record the current head checkpoint in one call.
+
+    Convenience composition of :func:`anchor_record` + :func:`write_anchor`; the
+    CLI drives them separately so the ``chain_anchor`` ledger event lands *before*
+    the external file, leaving no un-ledgered external checkpoint on a crash
+    between the two [PRA-L5].
+    """
+    record = anchor_record(ledger_path, ts=ts)
+    write_anchor(anchor_path, record)
     return record
 
 
@@ -116,3 +130,39 @@ def verify_against_anchor(ledger_path, anchor_path) -> AnchorResult:
             )
         checked += 1
     return AnchorResult(True, f"{checked} anchor(s) verified")
+
+
+# --- one-event property coverage [PRA-L5] ----------------------------------
+# `bench anchor` appends exactly one `chain_anchor` event (plus an external,
+# non-ledger file). Register it so the AC-7 one-event sweep covers it like every
+# other ledgering verb. It needs a non-empty, verifying ledger, so the prepare
+# hook seeds a genesis anchor before the sweep snapshots the event count.
+def _anchor_entrypoint(ctx_dir: str) -> None:
+    from .events import EventContext, record_chain_anchor
+
+    d = Path(ctx_dir)
+    ledger, out = d / "ledger.ndjson", d / "anchors.ndjson"
+    seq = iter(range(100000))
+    ctx = EventContext(
+        experiment_id=d.name, actor="sweep", clock=lambda: f"t{next(seq)}"
+    )
+    rec = anchor_record(ledger, ts=ctx.clock())
+    record_chain_anchor(ledger, ctx, head_hash=rec["head_hash"], height=rec["height"])
+    write_anchor(out, rec)
+
+
+def _anchor_prepare(ctx_dir: str) -> None:
+    from .events import EventContext, record_chain_anchor
+
+    d = Path(ctx_dir)
+    ctx = EventContext(experiment_id=d.name, actor="seed", clock=lambda: "t-seed")
+    record_chain_anchor(d / "ledger.ndjson", ctx, head_hash="0" * 64, height=0)
+
+
+def _register(*_args) -> None:  # tolerate register(app)-style callers
+    from ..entrypoints import register_entrypoint
+
+    register_entrypoint("anchor", _anchor_entrypoint, prepare=_anchor_prepare)
+
+
+_register()

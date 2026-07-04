@@ -11,8 +11,12 @@ paired-bootstrap decision procedure EVAL-6 will use. The variance source is
 * :class:`CalibrationVariance` — reads real calibration-run variance once
   EVAL-8 slice A has produced one.
 
-[plan choice] The paired-bootstrap resampler is a local copy with a TODO to
-unify with EVAL-6's once it lands.
+[plan choice] The power sim's resampler is deliberately separate from EVAL-6's
+``analyze.stats.paired_bootstrap``: this one performs a recentered-null *reject*
+decision (does the design detect an effect at the swept size?), while the
+analysis path computes a *confidence interval* over observed deltas. They are
+different statistics over the same clustering model, not a duplicated CI, so they
+are not merged.
 """
 
 from __future__ import annotations
@@ -72,7 +76,6 @@ def calibration_variance_from_runs(runs) -> Optional["CalibrationVariance"]:
     )
 
 
-# TODO(EVAL-6): replace with the shared paired-bootstrap resampler.
 def _paired_bootstrap_rejects(
     diffs: np.ndarray, rng: np.random.Generator, n_boot: int, alpha: float
 ) -> bool:

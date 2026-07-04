@@ -39,6 +39,44 @@ jobs:
       - name: Compile under 3.12 (syntax/compat gate)
         run: uv run --no-project --python 3.12 python -m compileall -q harness tests conftest.py
 
+  # Browser UI acceptance suite [PRA-H5]. The EVAL-14/17/18/19 page-drive tests
+  # need node + the playwright package + a Chromium build; on the fast job they
+  # skip (no browser), so 10 acceptance criteria never executed in CI. This job
+  # provisions the stack, points the env-configurable paths at it, and runs with
+  # VERDI_REQUIRE_BROWSER=1 so it CANNOT green-pass by skipping (mirrors the
+  # docker job's VERDI_REQUIRE_DOCKER guard).
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Sync
+        run: uv sync --dev
+      - name: Install Playwright + Chromium
+        run: |
+          npm install -g playwright
+          npx --yes playwright install --with-deps chromium
+      - name: Resolve browser paths
+        run: |
+          GROOT="$(npm root -g)"
+          echo "VERDI_PLAYWRIGHT_PATH=${GROOT}/playwright" >> "$GITHUB_ENV"
+          echo "VERDI_CHROMIUM_PATH=$(node -e "console.log(require('${GROOT}/playwright').chromium.executablePath())")" >> "$GITHUB_ENV"
+      - name: Browser UI acceptance suite
+        # VERDI_REQUIRE_BROWSER makes a browser-less run fail at the first drive()
+        # instead of skipping every UI AC test green.
+        env:
+          VERDI_REQUIRE_BROWSER: "1"
+        run: >
+          uv run pytest -q
+          tests/test_eval14_page_drive.py
+          tests/test_eval17_author.py
+          tests/test_eval18_review_serve.py
+          tests/test_eval19_operator_p2.py
+
   # Real-container suite: the docker-marked tests that exercise the grade + Harbor
   # paths against a live daemon. GitHub-hosted ubuntu runners ship with Docker, so
   # these actually execute here (the fast job above deselects them).

@@ -38,7 +38,7 @@ from ..version import instrument_identity
 from .confounds import asymmetric_null_fields, flag_confounds
 from .effect import effect_sizes
 from .nullsim import NULL_BINARY, NULL_CONTINUOUS, coverage_from_deltas
-from .stats import BootstrapResult, paired_bootstrap
+from .stats import DEFAULT_CI_LEVEL, BootstrapResult, paired_bootstrap
 
 # Telemetry-derived primary metrics and the field each reads.
 _METRIC_TELEMETRY_FIELD = {
@@ -151,6 +151,13 @@ class ComparisonFinding(BaseModel):
     claim_tag: Literal["computed", "judgment"]
     excluded_from_official: bool = False
     exclusion_reason: Optional[str] = None
+    # PRA-M4: in a >2-arm design, only the pre-registered primary pair
+    # (arms[0] vs arms[1]) carries an official decision by default; additional
+    # pairs render their CI/effect but are exploratory (no decision), because the
+    # spec pre-registers exactly one decision_rule. With --multi-arm-correction
+    # =holm every pair is official under a Holm-adjusted family. Absent field on a
+    # 2-arm finding = the single official pair.
+    official_decision: bool = True
 
 
 class MDEBlock(BaseModel):
@@ -187,6 +194,10 @@ class FindingsDocument(BaseModel):
     # EVAL-10 AC-5: per-arm contamination summary (tri-state counts + flagged
     # task ids + asymmetry) — disclosed in BOTH renders, fenced when asymmetric.
     contamination: dict = {}
+    # PRA-M4: multi-arm disclosure — {n_arms, correction, note}. Non-empty and
+    # non-optional in the render whenever >2 arms were compared, so k-1
+    # simultaneous decisions can never be presented without saying so.
+    multi_arm: dict = {}
     process: Optional[dict] = None
     judge_calibration: Optional[dict] = None
     # EVAL-11: forensic flags/coverage/kappa + operator quarantines — additive,
@@ -774,6 +785,54 @@ def _forensics_section(ledger_path, spec) -> Optional[dict]:
     return section
 
 
+def _two_sided_bootstrap_p(deltas, seed: int, n_boot: int) -> float:
+    """A two-sided bootstrap p-value for H0: mean paired delta = 0 [PRA-M4].
+
+    Null-recenter the per-task deltas to mean zero, resample, and count how often
+    the resampled mean is at least as extreme as the observed mean. Add-one
+    smoothed so p is never exactly 0. Seeded — reproducible in ``seed``.
+    """
+    import numpy as np
+    from numpy.random import PCG64, Generator
+
+    from ..plan.seeds import sub_seed
+
+    d = np.asarray(list(deltas), dtype=np.float64)
+    n = d.shape[0]
+    observed = abs(float(d.mean()))
+    centered = d - d.mean()
+    rng = Generator(PCG64(sub_seed(seed, "holm_p")))
+    boot = centered[rng.integers(0, n, size=(n_boot, n))].mean(axis=1)
+    extreme = int(np.sum(np.abs(boot) >= observed))
+    return (extreme + 1) / (n_boot + 1)
+
+
+def _apply_holm(comparisons, deltas_by_pair, parsed_rule, seed: int, *, n_boot: int, alpha: float) -> None:
+    """Holm-Bonferroni step-down across the computable pairwise comparisons,
+    rewriting each pair's decision in place [PRA-M4]. Non-computable pairs
+    (excluded / no data) are skipped. Every adjusted pair stays official."""
+    idxs = [i for i, d in enumerate(deltas_by_pair) if d]
+    pvals = {i: _two_sided_bootstrap_p(deltas_by_pair[i], seed, n_boot) for i in idxs}
+    m = len(idxs)
+    order = sorted(idxs, key=lambda i: (pvals[i], comparisons[i].label))
+    reject: dict = {}
+    failed = False
+    for rank, i in enumerate(order):
+        if failed or pvals[i] > alpha / (m - rank):
+            reject[i] = False
+            failed = True  # step-down: once one holds, all remaining hold
+        else:
+            reject[i] = True
+    for i in idxs:
+        cf = comparisons[i]
+        detected = bool(reject.get(i, False))
+        observed = cf.decision["observed_delta"]
+        cf.decision["detected"] = detected
+        cf.decision["decides_positive"] = detected and parsed_rule.decides_positive(observed)
+        cf.decision["holm_p"] = pvals[i]
+        cf.decision["correction"] = "holm"
+
+
 def compute_findings(
     ledger_path,
     spec,
@@ -782,8 +841,19 @@ def compute_findings(
     corpus_manifest=None,
     coverage_n_sim: int = 200,
     n_boot: int = 10_000,
+    multi_arm_correction: str = "none",
 ) -> FindingsDocument:
-    """Compute the findings document — pure and reproducible in ``seed``."""
+    """Compute the findings document — pure and reproducible in ``seed``.
+
+    ``multi_arm_correction`` [PRA-M4]: ``"none"`` (default) makes only the
+    primary pair official in a >2-arm design; ``"holm"`` makes every pair
+    official under a Holm-Bonferroni-adjusted family. Either way the >2-arm
+    comparison is disclosed.
+    """
+    if multi_arm_correction not in ("none", "holm"):
+        raise AnalyzeError(
+            f"unknown multi_arm_correction {multi_arm_correction!r} (none|holm)"
+        )
     primary = spec.primary_metric.value
 
     # metric → per-task per-arm value series
@@ -807,6 +877,7 @@ def compute_findings(
     null_model = _null_model_for_metric(primary)
 
     comparisons: list[ComparisonFinding] = []
+    deltas_by_pair: list = []  # per-comparison deltas, lockstep with `comparisons` [PRA-M4]
     selection = None  # the primary (first) comparison's coverage selection → ci_selection
     for other in spec.arms[1:]:
         arm_b = other.name
@@ -843,6 +914,7 @@ def compute_findings(
                     ),
                 )
             )
+            deltas_by_pair.append(None)
             continue
         if not deltas:
             # no paired data — record an explicit empty finding rather than crash
@@ -856,6 +928,7 @@ def compute_findings(
                     exclusion_reason="no paired task data",
                 )
             )
+            deltas_by_pair.append(None)
             continue
 
         boot: BootstrapResult = paired_bootstrap(deltas, seed, ci_method, n_boot=n_boot)
@@ -889,6 +962,42 @@ def compute_findings(
                 ),
             )
         )
+        deltas_by_pair.append(deltas)
+
+    # PRA-M4: multi-arm decision policy. With >2 arms the loop above produced
+    # k-1 pairwise findings, each with its own detected/decides_positive. The spec
+    # pre-registers ONE decision_rule, so k-1 simultaneous official 95% decisions
+    # would inflate the family-wise error rate. Resolve per REVIEW-D-P8-1.
+    multi_arm: dict = {}
+    n_pairs = len(comparisons)
+    if n_pairs > 1:
+        if multi_arm_correction == "holm":
+            _apply_holm(comparisons, deltas_by_pair, parsed_rule, seed, n_boot=n_boot,
+                        alpha=1.0 - DEFAULT_CI_LEVEL)
+            multi_arm = {
+                "n_arms": len(spec.arms),
+                "correction": "holm",
+                "note": (
+                    f"{n_pairs} pairwise comparisons against {arm_a}; every pair's "
+                    "decision is Holm-Bonferroni-adjusted to control the family-wise "
+                    "error rate at the pre-registered level."
+                ),
+            }
+        else:
+            # default: only the primary (first) pair is official.
+            for cf in comparisons[1:]:
+                cf.official_decision = False
+            multi_arm = {
+                "n_arms": len(spec.arms),
+                "correction": "none",
+                "note": (
+                    f"{n_pairs} pairwise comparisons against {arm_a}; only the "
+                    f"pre-registered primary pair ({comparisons[0].label}) carries a "
+                    "decision. The remaining pairs are exploratory (CI/effect shown, "
+                    "no decision) — the spec pre-registers exactly one decision rule. "
+                    "Re-run with --multi-arm-correction=holm for a corrected family."
+                ),
+            }
 
     corpus_prov = corpus_manifest.provenance_ref() if corpus_manifest is not None else None
     chain_result = verify(ledger_path)
@@ -921,6 +1030,7 @@ def compute_findings(
         overrides=_override_summary(ledger_path),
         rubric_committed=_lock_event(ledger_path).get("rubric_sha256") is not None,
         contamination=contamination_summary(ledger_path, spec, corpus_manifest),
+        multi_arm=multi_arm,
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
         forensics=_forensics_section(ledger_path, spec),
@@ -966,6 +1076,16 @@ def _assert_head_hash(findings: FindingsDocument, ledger_path) -> None:
         )
 
 
+def _multi_arm_lines(findings: FindingsDocument) -> list[str]:
+    """PRA-M4: the non-optional >2-arm disclosure — rendered in BOTH modes
+    whenever more than one pairwise comparison exists, so k-1 comparisons are
+    never presented without saying how their decisions were (or were not) made."""
+    ma = findings.multi_arm
+    if not ma:
+        return []
+    return [f"- ⚠ MULTI-ARM ({ma['n_arms']} arms): {ma['note']}", ""]
+
+
 def _comparison_lines(cf: ComparisonFinding, mde: MDEBlock) -> list[str]:
     lines = [f"**Comparison: {cf.label}**  (n_tasks={cf.n_tasks}) [{cf.claim_tag}]"]
     if not cf.stats:
@@ -976,19 +1096,38 @@ def _comparison_lines(cf: ComparisonFinding, mde: MDEBlock) -> list[str]:
     detected = s["ci_low"] > 0.0 or s["ci_high"] < 0.0
     lines.append(f"- mean paired delta: {_fmt(cf.effect['mean_paired_delta'])}")
     lines.append(f"- Cliff's delta: {_fmt(cf.effect['cliffs_delta'])}")
+    # PRA-M14: name the method that ACTUALLY produced the interval; if the
+    # configured method fell back (e.g. bca -> percentile on a degenerate input),
+    # say so rather than mislabeling a percentile interval as bca.
+    method_label = s["ci_method"]
+    if s.get("ci_method_fell_back"):
+        method_label = f"{s['ci_method']} (fell back from {s['ci_method_requested']})"
     lines.append(
-        f"- {int(s['ci_level'] * 100)}% CI ({s['ci_method']}, {s['n_boot']} resamples): {ci}"
+        f"- {int(s['ci_level'] * 100)}% CI ({method_label}, {s['n_boot']} resamples): {ci}"
     )
     mde_val = _fmt(mde.value)
-    if detected:
+    if not cf.official_decision:
+        # PRA-M4: a non-primary pair in a multi-arm design — CI/effect shown, but
+        # no decision, because the spec pre-registers exactly one decision rule.
+        holm_p = cf.decision.get("holm_p")
+        extra = f" (Holm p={_fmt(holm_p, 3)})" if holm_p is not None else ""
+        lines.append(
+            f"- Exploratory pair (not the pre-registered primary): no decision"
+            f"{extra}."
+        )
+    elif detected:
         decides = cf.decision["decides_positive"]
+        holm_p = cf.decision.get("holm_p")
+        tag = f" [Holm-adjusted, p={_fmt(holm_p, 3)}]" if holm_p is not None else ""
         lines.append(
             f"- Effect detected. Decision rule `{cf.decision['rule']}` ⇒ "
-            f"{'MET' if decides else 'not met'}."
+            f"{'MET' if decides else 'not met'}{tag}."
         )
     else:
         # structural null phrasing [AC-3, D003]
-        lines.append(f"- No effect ≥ MDE detected (MDE={mde_val}).")
+        holm_p = cf.decision.get("holm_p")
+        tag = f" [Holm-adjusted, p={_fmt(holm_p, 3)}]" if holm_p is not None else ""
+        lines.append(f"- No effect ≥ MDE detected (MDE={mde_val}){tag}.")
     if cf.excluded_from_official:
         lines.append(f"- ⚠ EXCLUDED from official comparison: {cf.exclusion_reason}")
     return lines
@@ -1361,6 +1500,7 @@ def _render_official_md(findings: FindingsDocument) -> str:
         *_mde_lines(findings.mde),
         "",
         "## Primary metric",
+        *_multi_arm_lines(findings),
     ]
     for cf in findings.comparisons:
         if cf.excluded_from_official:
@@ -1431,6 +1571,8 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
         f"- decision rule: `{findings.decision_rule}`",
     ])
     out += section("Minimum detectable effect", _mde_lines(findings.mde))
+    if findings.multi_arm:
+        out += section("Multi-arm disclosure", _multi_arm_lines(findings))
     for cf in findings.comparisons:
         out += section(
             f"Primary metric — {cf.label}",

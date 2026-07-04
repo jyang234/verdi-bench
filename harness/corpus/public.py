@@ -128,6 +128,21 @@ def import_terminal_bench(
         manifest.assert_valid_successor(prior)
         if manifest.semver == prior.semver:
             manifest.calibration = prior.calibration
+            # PRA-M12: carry per-task recorded state for UNCHANGED tasks (same
+            # sha), so a same-semver re-import is genuinely idempotent. Rebuilding
+            # each entry as a fresh `admitted` silently reverted a quarantined
+            # task to schedulable — and is_schedulable gates both the run
+            # scheduler and the official fence. A changed sha is a new version of
+            # the task and correctly keeps the fresh state.
+            prior_by_id = {t.task_id: t for t in prior.tasks}
+            for entry in manifest.tasks:
+                pt = prior_by_id.get(entry.task_id)
+                if pt is not None and pt.sha == entry.sha:
+                    entry.status = pt.status
+                    entry.baseline_ref = pt.baseline_ref
+                    entry.canary_sha256 = pt.canary_sha256
+                    if getattr(pt, "created_at", None) is not None:
+                        entry.created_at = pt.created_at
         # A semver bump keeps calibration fresh: the new version must re-validate
         # before it can be cited officially.
 

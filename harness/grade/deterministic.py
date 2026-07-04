@@ -18,7 +18,6 @@ from typing import Optional
 from ..ledger import events
 from ..ledger.events import EventContext
 from .container import GradingContainer, GradingContainerError, GraderUnavailableError
-from .plugins import get_plugin
 from .types import Assertion, AssertionResult, GradeTask
 
 
@@ -150,12 +149,15 @@ def grade_trial(
     except MalformedHoldoutOutput:
         return _cant(REASON_MALFORMED)
 
-    # 3. Invoke declared plugins; any error ⇒ cant_grade(plugin_error). Fail
-    # closed by design (a broken plugin must not crash grading), but keep the
-    # reason machine-readable per the event contract.
+    # 3. Invoke declared plugins under the container's isolation discipline
+    # [PRA-M6]: the docker path runs them in a fresh-copy, network-less container
+    # (no host/network access); the no-daemon local path runs them in-process
+    # (ADVISORY, documented). Any error ⇒ cant_grade(plugin_error), fail-closed —
+    # a transient container outage is the retryable grader_unavailable.
     try:
-        for plugin_id in task.plugin_ids:
-            assertions.extend(get_plugin(plugin_id).grade(workspace, task))
+        assertions.extend(container.run_plugins(workspace, task.plugin_ids, task))
+    except GraderUnavailableError:
+        return _cant(REASON_DAEMON)
     except Exception:  # noqa: BLE001 - fail-closed by design
         return _cant(REASON_PLUGIN)
 

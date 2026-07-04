@@ -10,7 +10,14 @@ import json
 from pathlib import Path
 from typing import Iterator, Optional
 
-from .chain import ChainResult, canonical_line, hash_line, head_hash, verify_chain
+from .chain import (
+    ChainResult,
+    canonical_line,
+    hash_line,
+    head_hash,
+    split_ledger_lines,
+    verify_chain,
+)
 
 
 def ledger_head_hash(path) -> str:
@@ -80,8 +87,13 @@ def iter_events(path) -> Iterator[dict]:
     path = Path(path)
     if not path.exists():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+    # Split on b"\n" ONLY, exactly as verify_chain does — never str.splitlines(),
+    # which also breaks on U+0085/U+2028/U+2029. Those are legal, unescaped, inside
+    # a JSON string, so a single legitimate event carrying one (an infra-failure
+    # reason, a judge reason, agent output in a trial record) would otherwise be
+    # torn into fragments here while verify_chain still reports a clean chain — a
+    # reader/verifier split that bricks every downstream read gate [PRA-H1].
+    for line in split_ledger_lines(path.read_bytes()):
         if line:
             yield json.loads(line)
 
@@ -147,9 +159,8 @@ def tail_events(path, offset: int = 0) -> tuple[list[dict], int]:
     if end == -1:
         return [], offset  # no complete line yet; leave the partial tail alone
     complete = data[: end + 1]
+    # b"\n"-only split, parity with iter_events/verify_chain [PRA-H1].
     events = [
-        json.loads(line)
-        for line in complete.decode("utf-8").splitlines()
-        if line.strip()
+        json.loads(line) for line in split_ledger_lines(complete) if line
     ]
     return events, offset + len(complete)
