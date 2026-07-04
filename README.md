@@ -2,9 +2,12 @@
 
 A benchmark-grade A/B evaluation instrument for agent stacks, models, and
 configurations: pre-registered experiments, repeated paired trials in hermetic
-containers, insulated arms, deterministic-first grading, and an outcome-blind
-advisory LLM judge. Every operation is a hash-chained ledger event; every local
-record is stamped `ADVISORY`.
+containers, insulated arms, deterministic-first grading, and an **identity-blind**
+advisory LLM judge. *Identity-blind* (not outcome-blind): the judge never sees
+arm identities, but it does see per-response holdout outcomes by design, so
+`judge_preference` is deliberately not independent of `holdout_pass_rate`
+(disclosed in every render, EVAL-2 D002). Every operation is a hash-chained
+ledger event; every local record is stamped `ADVISORY`.
 
 ## Status
 
@@ -16,7 +19,7 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 | **EVAL-3** | Experiment schema, hash-chained ledger, plan lock, power/MDE, interleave | ✅ |
 | **EVAL-4** | Run seam, adapters, hermetic Harbor engine, cost guard, insulation | ✅ |
 | **EVAL-5** | Deterministic grading, flake baseline, grader plugins | ✅ |
-| **EVAL-2** | Outcome-blind configurable LLM judge, calibration | ✅ |
+| **EVAL-2** | Identity-blind configurable LLM judge, calibration | ✅ |
 | **EVAL-8** | Corpus import (idempotent), stratified calibration, mining, curation gate, boundary | ✅ |
 | **EVAL-6** | Analyze: paired bootstrap, effect sizes, confound flags, pre-registration fence | ✅ |
 | **EVAL-7** | Human review packet (offline, blinded), capture-then-reveal, kappa estimator seam | ✅ |

@@ -607,6 +607,24 @@ def test_ac5_official_happy_path(tmp_path):
     assert spec.primary_metric.value in md
 
 
+def test_d002_identity_blind_disclosure_in_both_renders(tmp_path):
+    """D-1/D002: both renders carry the [computed] disclosure that the judge is
+    identity-blind (not outcome-blind) — judge_preference is not independent of
+    holdout_pass_rate because the packet includes holdout results by design."""
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    _seed_full_calibration(ledger, ctx)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    for md in (
+        render_markdown(f, ledger, "exploratory"),
+        render_markdown(f, ledger, "official", corpus_manifest=_full_corpus()),
+    ):
+        assert "identity-blind" in md
+        assert "not independent of holdout_pass_rate" in md
+        assert "[computed]" in md
+
+
 def test_dp7_6_official_fence_refuses_rubric_mismatch(tmp_path):
     """D-P7-6: when the lock committed a rubric_sha256, a verdict whose provenance
     rubric hash disagrees refuses the official render (post-lock rubric swap)."""

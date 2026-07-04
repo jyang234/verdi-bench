@@ -766,6 +766,13 @@ def _provenance_lines(findings: FindingsDocument) -> list[str]:
         f"- instrument: {p.instrument_version} @ {p.instrument_git_sha[:12]}",
         f"- ledger head: {p.ledger_head_hash[:16]}…  chain_ok={p.chain_ok}",
         f"- judge: {p.judge}",
+        # D002 [computed]: the judge is IDENTITY-blind, not outcome-blind — the
+        # packet includes per-response holdout results by design, so
+        # judge_preference is not independent of holdout_pass_rate. Disclosed so a
+        # reader never mistakes judge agreement for an independent signal.
+        "- [computed] judge is identity-blind, not outcome-blind: the packet "
+        "includes holdout results by design, so judge_preference is not "
+        "independent of holdout_pass_rate [EVAL-2 D002]",
     ]
     if p.corpus is not None:
         lines.append(
