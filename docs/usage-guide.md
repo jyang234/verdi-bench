@@ -513,7 +513,135 @@ color, and refuse to let that testimony masquerade as measured ground truth.
 
 ---
 
-## 9. Where to go next
+## 9. Worked example: an asymmetric A/B (tool-armed Haiku vs Opus baseline)
+
+The instrument's headline use case: does a cheaper model, *armed with tools,
+skills, and a workflow*, match or beat a stronger baseline model? This section
+ties §2, §6, §7, and §8 together into one concrete design, and states honestly
+what is enforced versus audited so you can advertise the capability without
+overclaiming.
+
+### The design
+
+Two arms that **share the task environment** and differ only in the declared
+treatment — `model` plus the free-form `payload`:
+
+```yaml
+arms:
+  - name: control                                  # the baseline
+    platform: your_harness
+    model: anthropic/claude-opus-4-8-20260101      # fully-versioned ids required
+    payload: {}
+  - name: treatment                                # Haiku + tools + skills + workflow
+    platform: your_harness
+    model: anthropic/claude-haiku-4-5-20251001
+    payload:
+      tools:  [bash, file_edit, web_search]
+      skills: [my-custom-skill]
+      workflow: multi_agent_planner
+    aux_models:                                    # if the workflow routes to more models
+      - {model: anthropic/claude-haiku-4-5-20251001}
+judge:
+  model: openai/gpt-4.1-2025-04-14                 # a THIRD vendor — see below
+  rubric: rubric.md
+```
+
+At run time the harness delivers `/verdi/request.json` =
+`{prompt, arm, model, payload}` read-only into the container (outside the graded
+workspace). **Your agent image's entrypoint reads it** and configures itself:
+which model to call, which tools/skills to load, whether to run the workflow. The
+instrument delivers the asymmetric spec; your image realizes it. A multi-agent
+workflow (§8) is simply the `treatment` arm whose image runs the fleet.
+
+### Will there be enough evidence on who won and how it performed?
+
+Yes — and Haiku-vs-Opus is a *favorable* case because both are the same vendor
+(`anthropic`), so token / cost / wall-time are directly comparable (no
+cross-vendor incomparability exclusion fires).
+
+- **Who won (the decision).** Pre-register one `primary_metric`
+  (`holdout_pass_rate`, `cost_per_task`, `wall_time`, or `judge_preference`) and a
+  `decision_rule`. `analyze` returns paired per-task deltas, a coverage-validated
+  bootstrap CI, the MDE, and — for `--official` — a fenced decision. That is the
+  defensible "A beat B by X, CI [lo, hi]" answer.
+- **How it performed (the color).** Per-arm whole-trial telemetry
+  (`tokens_in/out/cache`, `cost`, `wall_time_s`, `tool_calls`); per-model splits
+  (`telemetry_by_model`, exploratory) when the workflow routes across models;
+  trajectory forensics (tool distribution, edit→test cadence, thrash,
+  time-to-first-test, error-recovery latency, destructive-command count); the
+  process rubric (planning quality, tool efficiency); and the identity-blind
+  judge's advisory preference.
+- **The honesty guardrail.** If a metric is null in one arm but present in the
+  other (e.g. only the tool-armed arm reports `tool_calls`), it is **excluded
+  from the official comparison and flagged** (`telemetry_null_asymmetry`) — never
+  silently turned into a bogus winner.
+- **Keep the judge clean.** Use a **third-vendor judge** (here `openai/…`) — an
+  Anthropic judge over two Anthropic arms trips the `judge_vendor_overlap` flag.
+
+### Can you ensure *only* the test arm has the tools / skills / harness?
+
+Three tiers of isolation — and it matters which is *enforced* versus *audited*:
+
+1. **Credentials — hard-enforced per arm** (PRA-M2). With
+   `provider_key_names_by_arm`, the treatment container receives an API key the
+   control never sees (and vice versa). Any tool or skill that needs a credential
+   is genuinely gated: the control *cannot* authenticate to it. Real isolation,
+   enforced by the harness, covered by a test.
+
+   ```yaml
+   # run.config.yaml
+   provider_key_names_by_arm:
+     control:   [ANTHROPIC_API_KEY]
+     treatment: [ANTHROPIC_API_KEY, TAVILY_API_KEY]   # only treatment gets the tool key
+   ```
+
+2. **Tool / skill / workflow availability — delivered asymmetrically, enforced by
+   your image, audited by the instrument.** The asymmetry lives in `payload`; your
+   image is what actually withholds the tools from the control. The instrument
+   does not sandbox tool *availability* itself — but it gives you the evidence to
+   confirm the asymmetry held: per-arm `tool_calls`, the full trajectory of what
+   each arm invoked, and per-trial egress attribution.
+
+3. **Network egress — blocked experiment-wide (union), attributed per arm.** The
+   proxy allowlist is the union of every arm's `model_hosts` plus shared
+   `infra_hosts`, so a tool-serving host allowed for the treatment is
+   network-*reachable* by the control too — but if the control reaches it, that is
+   flagged `undeclared_model_egress` for the control arm (and denied hosts are
+   hard-blocked for everyone). Combined with tier 1, a host that requires auth is
+   effectively test-only.
+
+### The one structural limitation to state plainly
+
+**The container image is per-task, shared across both arms** (`image` lives on the
+task, not the arm) — deliberate, so the environment is identical and only the
+declared treatment varies. The consequence:
+
+- ✅ **"Same harness / substrate, different model + tools + skills + config"** is
+  first-class — the sweet spot, and exactly what "tool-armed Haiku vs Opus" is.
+- ⚠️ **"A genuinely different base container image per arm"** is not a schema
+  field today. Express a different *harness* by baking both into the one shared
+  image and branching on `payload.workflow` (or by making the multi-agent
+  orchestrator the shared image that simply runs plainly for the control). Two
+  arms needing two different base images is a schema extension the instrument does
+  not yet have.
+
+### The honest capability statement
+
+> verdi-bench runs a paired, pre-registered A/B of two agent configurations that
+> share a task environment and differ by model and a declared config payload
+> (tools, skills, workflow). It hard-isolates per-arm credentials, delivers
+> asymmetric tool/skill config for your harness to enforce, and audits what each
+> arm actually did (telemetry, trajectory, per-trial egress). It decides a winner
+> on one pre-registered metric with a confidence interval and a pre-registration
+> fence, and surrounds it with comparable per-arm and per-model telemetry plus
+> trajectory forensics — excluding, not fudging, any metric that is not comparable
+> across the two arms. It does **not** yet support a different base container image
+> per arm, and per-agent attribution inside a multi-agent arm is self-reported and
+> exploratory, never authoritative.
+
+---
+
+## 10. Where to go next
 
 - **[deep-dive.md](deep-dive.md)** — what each stage writes to the ledger, the
   trust mechanism behind every claim, and the test that owns it.
