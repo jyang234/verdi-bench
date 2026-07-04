@@ -513,7 +513,304 @@ color, and refuse to let that testimony masquerade as measured ground truth.
 
 ---
 
-## 9. Where to go next
+## 9. Worked example: an asymmetric A/B (tool-armed Haiku vs Opus baseline)
+
+The instrument's headline use case: does a cheaper model, *armed with tools,
+skills, and a workflow*, match or beat a stronger baseline model? This section
+ties §2, §6, §7, and §8 together into one concrete design, and states honestly
+what is enforced versus audited so you can advertise the capability without
+overclaiming.
+
+### The design
+
+Two arms that **share the task environment** and differ only in the declared
+treatment — `model` plus the free-form `payload`:
+
+```yaml
+arms:
+  - name: control                                  # the baseline
+    platform: your_harness
+    model: anthropic/claude-opus-4-8-20260101      # fully-versioned ids required
+    payload: {}
+  - name: treatment                                # Haiku + tools + skills + workflow
+    platform: your_harness
+    model: anthropic/claude-haiku-4-5-20251001
+    payload:
+      tools:  [bash, file_edit, web_search]
+      skills: [my-custom-skill]
+      workflow: multi_agent_planner
+    aux_models:                                    # if the workflow routes to more models
+      - {model: anthropic/claude-haiku-4-5-20251001}
+judge:
+  model: openai/gpt-4.1-2025-04-14                 # a THIRD vendor — see below
+  rubric: rubric.md
+```
+
+At run time the harness delivers `/verdi/request.json` =
+`{prompt, arm, model, payload}` read-only into the container (outside the graded
+workspace). **Your agent image's entrypoint reads it** and configures itself:
+which model to call, which tools/skills to load, whether to run the workflow. The
+instrument delivers the asymmetric spec; your image realizes it. A multi-agent
+workflow (§8) is simply the `treatment` arm whose image runs the fleet.
+
+### Will there be enough evidence on who won and how it performed?
+
+Yes — and Haiku-vs-Opus is a *favorable* case because both are the same vendor
+(`anthropic`), so token / cost / wall-time are directly comparable (no
+cross-vendor incomparability exclusion fires).
+
+- **Who won (the decision).** Pre-register one `primary_metric`
+  (`holdout_pass_rate`, `cost_per_task`, `wall_time`, or `judge_preference`) and a
+  `decision_rule`. `analyze` returns paired per-task deltas, a coverage-validated
+  bootstrap CI, the MDE, and — for `--official` — a fenced decision. That is the
+  defensible "A beat B by X, CI [lo, hi]" answer.
+- **How it performed (the color).** Per-arm whole-trial telemetry
+  (`tokens_in/out/cache`, `cost`, `wall_time_s`, `tool_calls`); per-model splits
+  (`telemetry_by_model`, exploratory) when the workflow routes across models;
+  trajectory forensics (tool distribution, edit→test cadence, thrash,
+  time-to-first-test, error-recovery latency, destructive-command count); the
+  process rubric (planning quality, tool efficiency); and the identity-blind
+  judge's advisory preference.
+- **The honesty guardrail.** If a metric is null in one arm but present in the
+  other (e.g. only the tool-armed arm reports `tool_calls`), it is **excluded
+  from the official comparison and flagged** (`telemetry_null_asymmetry`) — never
+  silently turned into a bogus winner.
+- **Keep the judge clean.** Use a **third-vendor judge** (here `openai/…`) — an
+  Anthropic judge over two Anthropic arms trips the `judge_vendor_overlap` flag.
+
+### Can you ensure *only* the test arm has the tools / skills / harness?
+
+Three tiers of isolation — and it matters which is *enforced* versus *audited*:
+
+1. **Credentials — hard-enforced per arm** (PRA-M2). With
+   `provider_key_names_by_arm`, the treatment container receives an API key the
+   control never sees (and vice versa). Any tool or skill that needs a credential
+   is genuinely gated: the control *cannot* authenticate to it. Real isolation,
+   enforced by the harness, covered by a test.
+
+   ```yaml
+   # run.config.yaml
+   provider_key_names_by_arm:
+     control:   [ANTHROPIC_API_KEY]
+     treatment: [ANTHROPIC_API_KEY, TAVILY_API_KEY]   # only treatment gets the tool key
+   ```
+
+2. **Tool / skill / workflow availability — delivered asymmetrically, enforced by
+   your image, audited by the instrument.** The asymmetry lives in `payload`; your
+   image is what actually withholds the tools from the control. The instrument
+   does not sandbox tool *availability* itself — but it gives you the evidence to
+   confirm the asymmetry held: per-arm `tool_calls`, the full trajectory of what
+   each arm invoked, and per-trial egress attribution.
+
+3. **Network egress — blocked experiment-wide (union), attributed per arm.** The
+   proxy allowlist is the union of every arm's `model_hosts` plus shared
+   `infra_hosts`, so a tool-serving host allowed for the treatment is
+   network-*reachable* by the control too — but if the control reaches it, that is
+   flagged `undeclared_model_egress` for the control arm (and denied hosts are
+   hard-blocked for everyone). Combined with tier 1, a host that requires auth is
+   effectively test-only.
+
+### The one structural limitation to state plainly
+
+**The container image is per-task, shared across both arms** (`image` lives on the
+task, not the arm) — deliberate, so the environment is identical and only the
+declared treatment varies. The consequence:
+
+- ✅ **"Same harness / substrate, different model + tools + skills + config"** is
+  first-class — the sweet spot, and exactly what "tool-armed Haiku vs Opus" is.
+- ⚠️ **"A genuinely different base container image per arm"** is not a schema
+  field today. Express a different *harness* by baking both into the one shared
+  image and branching on `payload.workflow` (or by making the multi-agent
+  orchestrator the shared image that simply runs plainly for the control). Two
+  arms needing two different base images is a schema extension the instrument does
+  not yet have.
+
+### The honest capability statement
+
+> verdi-bench runs a paired, pre-registered A/B of two agent configurations that
+> share a task environment and differ by model and a declared config payload
+> (tools, skills, workflow). It hard-isolates per-arm credentials, delivers
+> asymmetric tool/skill config for your harness to enforce, and audits what each
+> arm actually did (telemetry, trajectory, per-trial egress). It decides a winner
+> on one pre-registered metric with a confidence interval and a pre-registration
+> fence, and surrounds it with comparable per-arm and per-model telemetry plus
+> trajectory forensics — excluding, not fudging, any metric that is not comparable
+> across the two arms. It does **not** yet support a different base container image
+> per arm, and per-agent attribution inside a multi-agent arm is self-reported and
+> exploratory, never authoritative.
+
+---
+
+## 10. Plugging into a standardized benchmark (SWE-bench worked example)
+
+verdi-bench is an **instrument, not a benchmark**: it *runs* a corpus, it does
+not ship one. So instead of hand-authoring `tasks.yaml`, you can point it at a
+recognized, citable task set — the same way `lm-eval-harness` and Inspect became
+part of the conversation as *harnesses for* public batteries rather than by
+authoring their own science. Running a named battery through verdi buys you the
+external validity of a community-scrutinized task set **and** verdi's internal
+validity (pre-registration, blinding, tamper-evidence, gaming/contamination
+forensics) layered on top.
+
+The best-fit batteries are **agentic and test-graded** — a per-task container
+image plus tests that must pass. That is exactly verdi's own model (`task.image`
++ deterministic holdout assertions), so the mapping is nearly one-to-one.
+SWE-bench is the reference importer.
+
+### The flow: export → import → materialize → run
+
+```bash
+# 1. Export the dataset ONCE (this is the only networked step; it's yours, not
+#    the harness's — keeping the import deterministic and offline).
+python -c "import datasets; datasets.load_dataset('princeton-nlp/SWE-bench_Verified', \
+  split='test').to_json('instances.jsonl')"
+
+# 2. Import → a cached corpus + a manifest with a citable content sha per task.
+uv run bench corpus import instances.jsonl --cache ./swe-cache --benchmark swebench
+
+# 3. Materialize → a runnable experiment: tasks.yaml (agent-visible) + a
+#    read-only holdouts/ dir (the grading tests, insulated).
+uv run bench corpus materialize ./swe-cache/manifest.json --cache ./swe-cache --out ./exp
+
+# 4. Add arms + a judge rubric to ./exp/experiment.yaml (§2.1), then the usual pipeline:
+uv run bench plan  ./exp/experiment.yaml --ledger ./exp/ledger.ndjson
+uv run bench run   ./exp --engine harbor
+uv run bench grade ./exp --runner docker
+uv run bench analyze ./exp --official --corpus ./swe-cache/manifest.json
+```
+
+### What the import actually does — and why it's honest
+
+- **Maps native → verdi.** Each SWE-bench instance's `problem_statement` becomes
+  the agent-visible `prompt`; its `test_patch` + `FAIL_TO_PASS` / `PASS_TO_PASS`
+  become the grading **holdout**; its per-instance image becomes the task
+  `image`. A record missing a field the mapping needs is **refused loudly**, not
+  imported as a half-task.
+- **Insulation by construction.** The benchmark ships its grading tests *next to*
+  the problem statement. Materialization routes them to different files — problem
+  → `tasks.yaml`, tests → `holdouts/<id>/holdout.json` — so a benchmark's own
+  tests can never leak to the agent it grades (an enforcing test asserts no
+  holdout content appears in `tasks.yaml`).
+- **Citable identity.** Each task gets a content sha over its *intrinsic* fields
+  (problem, tests, repo, base commit, version) — not the image ref, which is
+  deployment wiring you can re-pin without churning what a finding cites.
+- **Contamination-aware for free.** SWE-bench's `created_at` rides onto the
+  manifest entry, so the contamination sentinel's cutoff dating gets a real date
+  instead of an honest `unknown`.
+
+### The one environment-specific piece
+
+Materialization writes the grading **specification** (which tests to run).
+*Executing* those tests is the grading image's job — for SWE-bench, an image that
+applies the recorded `test_patch`, runs the tests, and emits the
+`holdout_results.json` the deterministic grader parses (§2.4). That image is the
+one benchmark-bound piece verdi does not synthesize; the holdout spec is the
+contract it consumes. This is the same honest boundary as the rest of the
+real-container path — the logic is built and tested offline; the live run needs
+the benchmark's own image.
+
+The compatibility is proven, not asserted: offline tests drive a materialized
+SWE-bench corpus through the whole real pipeline (`plan → run → grade → analyze →
+verify-chain`) and through the actual deterministic grader, and a
+`docker`-marked test grades a materialized SWE-bench task in a real network-less
+container at the trusted (`grader=docker`) tier — the grading image required the
+mounted holdout spec before emitting results. The only simulated step is the
+SWE-bench test *execution* itself (its own per-instance image), which a real
+`swebench/sweb.eval.*` image drops into.
+
+### Fit by benchmark type
+
+| Benchmark shape | Fit | Why |
+|---|---|---|
+| Agentic, container + test-graded (SWE-bench, Terminal-Bench, τ-bench-style) | **Natural** | Per-task image + tests-must-pass maps directly onto `task.image` + holdout assertions |
+| String-metric Q&A (classic MMLU / HELM scenarios) | Awkward | verdi grades by container holdout assertions, not output-string metrics; adaptable but a square peg, and the hermetic/forensic machinery doesn't add much |
+
+### Adding another battery
+
+Implement a `TaskSource` (see `harness/corpus/benchmarks.py`): a `fetch()` that
+reads the benchmark's exported records and yields `RawTask`s whose `content` is
+Harbor-format (agent-visible keys + a `holdout` key), then import it through
+`import_public_dataset`. You author the **importer** — a bounded, one-time shim —
+never the tasks.
+
+---
+
+## 11. Making a run comparable and citable: the result card
+
+A finished run is a defensible *private* A/B. To put it in the same conversation
+as a public benchmark you need a result that is **citable** (tamper-evident
+provenance) and **comparable** (two runs of the same tasks can be set side by
+side). That is the **result card** — a read-only projection of an analyzed run:
+
+```bash
+uv run bench analyze <exp> --exploratory                     # a card certifies a rendered result
+uv run bench card emit <exp> --corpus manifest.json --out run-a.card.json
+uv run bench card compare run-a.card.json run-b.card.json    # side by side, or a loud refusal
+```
+
+The card is deliberately **co-equal**: it carries the per-arm **absolute score**
+(the leaderboard's language — e.g. "control resolved 62%") *and* verdi's paired
+**delta + CI + decision** (the rigor a bare leaderboard number lacks), under the
+honesty stamps (`ADVISORY` tier, render mode, subset `n`).
+
+**Comparability is verified, not claimed.** Each card carries a `battery_sha` —
+a fingerprint of the exact task set that ran. `card compare` sets two cards side
+by side only when their `battery_sha`, basis, and primary metric all match;
+otherwise it **refuses loudly** ("not comparable: different task set"). With
+`--corpus`, the fingerprint is the corpus's *intrinsic* task shas
+(image-insensitive, so two runs of the same SWE-bench subset compare across image
+mirrors); without it, the fingerprint is the lock's task commitment
+(image-sensitive but always present and tamper-evident).
+
+Everything on the card already exists in the hash-chained ledger — it computes no
+new statistic and appends no event; it is re-derivable, and it carries the
+`spec_sha256`, `lock_commitment_sha`, and `ledger_head` so a reader can verify it
+against the chain. What it does **not** do: turn verdi into a leaderboard or vouch
+that your corpus is representative — the `ADVISORY` tier and subset `n` stay on
+the card so a comparable number is never mistaken for an authoritative one.
+
+### Human-readable renders
+
+The JSON form is the canonical, comparable artifact (feed it to `card compare`).
+For reading or sharing, render the same card as markdown or a self-contained
+HTML page (inline styles, no external references — archivable like the dossier):
+
+```bash
+uv run bench card emit <exp> --format md                     # human markdown to stdout
+uv run bench card emit <exp> --format html --out run.card.html   # shareable page
+```
+
+Both are deterministic projections of the JSON card — they add no data, and the
+`ADVISORY`/mode/`n` stamps ride along so a shared card stays honest about scope.
+
+### Producing a real reference card (what it takes)
+
+To publish a *reference* card comparing two real models on a public battery, you
+need three things this repo cannot supply for you: the exported dataset (§10),
+provider credentials for each arm (`run.config.yaml`, §6 — ideally per-arm keys),
+and the battery's grading images (for SWE-bench, its per-instance images). With
+those in a real environment (or a CI job with egress + a daemon), the recipe is:
+
+```bash
+uv run bench corpus import instances.jsonl --cache ./cache --benchmark swebench
+uv run bench corpus materialize ./cache/manifest.json --cache ./cache --out ./exp
+# add two arms + a third-vendor judge to ./exp/experiment.yaml, then:
+uv run bench plan ./exp/experiment.yaml --ledger ./exp/ledger.ndjson
+uv run bench run ./exp --engine harbor          # real models via the metering proxy
+uv run bench grade ./exp --runner docker        # the battery's grading image
+uv run bench analyze ./exp --official --corpus ./cache/manifest.json
+uv run bench card emit ./exp --corpus ./cache/manifest.json --format html --out reference.card.html
+```
+
+The card's `battery_sha` lets anyone else who ran the same subset drop their card
+next to yours with `card compare` — the comparable, citable artifact that was the
+whole point. verdi deliberately does not ship a fabricated reference card: an
+`ADVISORY` number stamped as if it were a measured model comparison would be
+exactly the dishonesty the instrument exists to prevent.
+
+---
+
+## 12. Where to go next
 
 - **[deep-dive.md](deep-dive.md)** — what each stage writes to the ledger, the
   trust mechanism behind every claim, and the test that owns it.

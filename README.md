@@ -80,7 +80,8 @@ fast suite (`uv run pytest -m "not docker"`) is green — over 700 tests — and
 `make verify` runs it plus the 7 import-linter contracts. Two more CI jobs cover
 what the fast suite cannot: a `docker`-marked suite of real-container tests (the
 grade container, a Harbor trial, redaction, digest-pinning, kill-on-timeout,
-network-less plugin isolation, and metering-proxy egress attribution) run with
+network-less plugin isolation, metering-proxy egress attribution, and a
+real-container grade of a SWE-bench-materialized task) run with
 `-m docker` under `VERDI_REQUIRE_DOCKER=1`; and a `browser` job that provisions
 node + Playwright + Chromium and runs the operator/reviewer/author UI
 acceptance tests under `VERDI_REQUIRE_BROWSER=1` — both fail-closed switches so a
@@ -155,6 +156,8 @@ uv run bench analyze <experiment-dir> --multi-arm-correction holm  # Holm-correc
 #   every analyze invocation also writes the self-contained comparison dossier
 #   (findings.<mode>.dossier.html) beside the markdown — same fence, same
 #   single findings_rendered event, no network references or external assets
+uv run bench card emit <experiment-dir> [--corpus m.json] [--format json|md|html] [--out card.json]   # citable, comparable result card (read-only)
+uv run bench card compare <a.json> <b.json>                  # side-by-side; refuses across different task sets/metrics
 uv run bench verify-chain ledger.ndjson [--against-anchor anchors.ndjson]
 uv run bench anchor ledger.ndjson --out anchors.ndjson       # refuses a tampered ledger
 
@@ -164,7 +167,9 @@ uv run bench serve  --root <workspace-dir>             # workspace home: every e
 uv run bench serve  <experiment-dir> --bundle out.html # static self-contained snapshot of that view (no server, no event)
 uv run bench author <workspace-dir> [--actor <name>]   # draft/validate/preview experiments; the lock is its one ledgered op
 
-uv run bench corpus import <tasks-dir> --cache <dir>   # idempotent public import
+uv run bench corpus import <tasks-dir> --cache <dir>   # idempotent public import (harbor json dir)
+uv run bench corpus import <swe-bench.jsonl> --cache <dir> --benchmark swebench [--image-template T]   # a standardized battery
+uv run bench corpus materialize <manifest> --cache <dir> --out <experiment-dir> [--all]   # → runnable tasks.yaml + holdouts
 uv run bench corpus subset <manifest> --seed 1234      # stratified calibration subset
 uv run bench corpus mine <mr.json> --ticket t.txt --out cand.json
 uv run bench corpus review <cand.json>                 # curation view

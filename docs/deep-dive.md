@@ -414,9 +414,19 @@ itself, and so should its documentation:
   gaming detectors ship proven against planted violations, but their
   real-world precision is only now accumulating through spot-check
   calibration; that is exactly why no flag gates the official fence in v1.
-- **The corpus is yours to bring.** A small public import path and an
-  internal mining/curation pipeline exist; there is no bundled benchmark
-  library, deliberately.
+- **The corpus is yours to bring — but you can plug into a standardized one.**
+  There is no *bundled* benchmark library (deliberate), and verdi-bench is an
+  instrument that runs a corpus, not a benchmark that ships one. What it does
+  provide is an importer path for recognized public batteries: you export a
+  dataset once and `bench corpus import --benchmark swebench` maps it into
+  citable, admitted, contamination-dated corpus tasks, which
+  `bench corpus materialize` turns into a runnable experiment (agent-visible
+  `tasks.yaml` + insulated holdouts). Agentic, test-graded batteries (SWE-bench
+  family) fit naturally; string-metric Q&A batteries fit awkwardly. Executing a
+  battery's tests still needs that battery's own grading image — the one
+  environment-bound piece verdi consumes rather than synthesizes. Adding a
+  battery is a `TaskSource` shim (`harness/corpus/benchmarks.py`), not authoring
+  tasks.
 - **A/A selfcheck validates coverage, not ground truth.** The fence keeps a
   finding statistically honest relative to its pre-registration; it cannot
   make a badly designed experiment meaningful.

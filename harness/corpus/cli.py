@@ -33,23 +33,85 @@ def register(app: typer.Typer) -> None:
 
     @corpus_app.command("import")
     def corpus_import(
-        source_dir: Path = typer.Argument(..., help="Directory of harbor task json"),
+        source: Path = typer.Argument(
+            ..., help="Harbor-task dir (--benchmark dir) or a benchmark export file"
+        ),
         cache: Path = typer.Option(..., "--cache", help="Local cache dir"),
-        corpus_id: str = typer.Option("terminal-bench", "--corpus-id"),
+        benchmark: str = typer.Option(
+            "dir", "--benchmark",
+            help="Source format: 'dir' (harbor json dir) | 'swebench' (SWE-bench export)",
+        ),
+        corpus_id: str = typer.Option(None, "--corpus-id", help="Default: the benchmark name"),
         semver: str = typer.Option("1.0.0", "--semver"),
-        dataset_version: str = typer.Option("2.0", "--dataset-version"),
+        dataset_version: str = typer.Option(
+            None, "--dataset-version",
+            help="Dataset version label recorded on the manifest/card; "
+            "default is benchmark-specific",
+        ),
+        image_template: str = typer.Option(
+            None, "--image-template",
+            help="swebench: per-instance image ref template ({instance_id}, {repo})",
+        ),
     ) -> None:
-        """Import a public dataset into the local cache (idempotent)."""
-        from .public import DirectorySource, import_terminal_bench
+        """Import a standardized public dataset into the local cache (idempotent).
 
-        manifest = import_terminal_bench(
-            DirectorySource(source_dir),
-            cache,
-            corpus_id=corpus_id,
-            semver=semver,
-            dataset_version=dataset_version,
-        )
+        ``--benchmark dir`` imports a directory of harbor-format task json (the
+        terminal-bench path). ``--benchmark swebench`` maps a SWE-bench instances
+        export (JSON array or JSONL) into citable, admitted corpus tasks — the
+        problem statement is agent-visible, the tests become the grading holdout.
+        """
+        from .public import DirectorySource, import_public_dataset
+
+        if benchmark == "dir":
+            task_source = DirectorySource(source)
+            dataset_name = corpus_id or "terminal-bench"
+            resolved_version = dataset_version or "2.0"
+        elif benchmark == "swebench":
+            from .benchmarks import SWEBENCH, SweBenchSource
+
+            task_source = SweBenchSource(source, image_template=image_template)
+            dataset_name = SWEBENCH
+            # do NOT inherit terminal-bench's "2.0"; the user labels the export
+            resolved_version = dataset_version or "SWE-bench_Verified"
+        else:
+            typer.echo(f"unknown --benchmark {benchmark!r} (dir | swebench)", err=True)
+            raise typer.Exit(code=2)
+
+        try:
+            manifest = import_public_dataset(
+                task_source,
+                cache,
+                corpus_id=corpus_id or dataset_name,
+                semver=semver,
+                dataset_name=dataset_name,
+                dataset_version=resolved_version,
+            )
+        except Exception as e:  # noqa: BLE001 — a malformed export is a user error, named
+            typer.echo(f"{type(e).__name__}: {e}", err=True)
+            raise typer.Exit(code=2)
         typer.echo(f"imported {len(manifest.tasks)} task(s) → {cache}/manifest.json")
+
+    @corpus_app.command("materialize")
+    def corpus_materialize(
+        manifest_path: Path = typer.Argument(..., help="manifest.json from a prior import"),
+        cache: Path = typer.Option(..., "--cache", help="Cache dir the import wrote"),
+        out: Path = typer.Option(..., "--out", help="Experiment dir to write tasks.yaml + holdouts/"),
+        all_tasks: bool = typer.Option(
+            False, "--all", help="Materialize every cached task, not just admitted ones"
+        ),
+    ) -> None:
+        """Write a runnable experiment (tasks.yaml + read-only holdouts) from an
+        imported corpus, so `plan → run → grade` can use a standardized task set."""
+        from .materialize import materialize_experiment
+        from .registry import CorpusManifest
+
+        manifest = CorpusManifest.load(manifest_path)
+        try:
+            dest = materialize_experiment(manifest, cache, out, only_admitted=not all_tasks)
+        except Exception as e:  # noqa: BLE001 — cache/manifest mismatch is named, not swallowed
+            typer.echo(f"{type(e).__name__}: {e}", err=True)
+            raise typer.Exit(code=2)
+        typer.echo(f"materialized → {dest}/tasks.yaml (+ holdouts/)")
 
     @corpus_app.command("subset")
     def corpus_subset(
