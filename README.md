@@ -80,7 +80,8 @@ fast suite (`uv run pytest -m "not docker"`) is green — over 700 tests — and
 `make verify` runs it plus the 7 import-linter contracts. Two more CI jobs cover
 what the fast suite cannot: a `docker`-marked suite of real-container tests (the
 grade container, a Harbor trial, redaction, digest-pinning, kill-on-timeout,
-network-less plugin isolation, and metering-proxy egress attribution) run with
+network-less plugin isolation, metering-proxy egress attribution, and a
+real-container grade of a SWE-bench-materialized task) run with
 `-m docker` under `VERDI_REQUIRE_DOCKER=1`; and a `browser` job that provisions
 node + Playwright + Chromium and runs the operator/reviewer/author UI
 acceptance tests under `VERDI_REQUIRE_BROWSER=1` — both fail-closed switches so a

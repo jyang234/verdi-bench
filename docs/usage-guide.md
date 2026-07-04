@@ -709,6 +709,15 @@ contract it consumes. This is the same honest boundary as the rest of the
 real-container path — the logic is built and tested offline; the live run needs
 the benchmark's own image.
 
+The compatibility is proven, not asserted: offline tests drive a materialized
+SWE-bench corpus through the whole real pipeline (`plan → run → grade → analyze →
+verify-chain`) and through the actual deterministic grader, and a
+`docker`-marked test grades a materialized SWE-bench task in a real network-less
+container at the trusted (`grader=docker`) tier — the grading image required the
+mounted holdout spec before emitting results. The only simulated step is the
+SWE-bench test *execution* itself (its own per-instance image), which a real
+`swebench/sweb.eval.*` image drops into.
+
 ### Fit by benchmark type
 
 | Benchmark shape | Fit | Why |

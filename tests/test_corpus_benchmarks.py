@@ -23,6 +23,7 @@ from harness.corpus.commit import load_task_dicts
 from harness.corpus.materialize import agent_visible_leak, materialize_experiment
 from harness.corpus.public import import_public_dataset
 from harness.corpus.registry import CorpusManifest
+from tests.fixtures.docker import DOCKER_AVAILABLE
 
 # A representative SWE-bench Verified record (fields as the HF dataset ships them:
 # FAIL_TO_PASS / PASS_TO_PASS are JSON-encoded strings).
@@ -265,3 +266,77 @@ def test_swebench_corpus_runs_end_to_end_through_bench(tmp_path):
     _ok("analyze", expdir, "--exploratory")
     assert (expdir / "findings.exploratory.md").exists()
     _ok("verify-chain", ledger)
+
+
+@pytest.mark.docker
+@pytest.mark.skipif(not DOCKER_AVAILABLE, reason="no docker daemon available")
+def test_docker_grade_of_materialized_swebench_task(tmp_path):
+    """The final seal (docker-marked, CI only): verdi's REAL trusted grading
+    container grades a materialized SWE-bench task.
+
+    The grading image is a busybox stand-in for SWE-bench's per-instance image —
+    a drop-in for the one entrypoint that runs the instance's baked-in tests. It
+    *requires* the materialized holdout spec to have been mounted read-only
+    before it emits the resolved results, so this proves verdi delivered the
+    SWE-bench holdout to the network-less grading container and scored its
+    FAIL_TO_PASS/PASS_TO_PASS results at the trusted (``grader=docker``) tier —
+    the one step the offline pipeline test simulates on the host."""
+    import subprocess
+
+    from harness.grade.container import DockerGradeRunner, GradingContainer
+    from harness.grade.deterministic import grade_trial
+    from harness.grade.types import GradeTask
+    from harness.ledger.events import EventContext
+    from harness.ledger.query import find_events
+
+    # import + materialize a real SWE-bench instance (host side)
+    export = _write_export(tmp_path / "instances.jsonl", [_INSTANCE])
+    cache = tmp_path / "cache"
+    manifest = import_public_dataset(SweBenchSource(export), cache, corpus_id="swe-bench")
+    expdir = tmp_path / "exp"
+    materialize_experiment(manifest, cache, expdir)
+    task_id = "astropy__astropy-12345"
+    holdouts_dir = expdir / "holdouts" / task_id
+    spec = json.loads((holdouts_dir / "holdout.json").read_text())
+
+    # what SWE-bench's image emits when the instance is resolved — via the REAL
+    # reference function, from the REAL materialized spec.
+    resolved = swebench_holdout_results(
+        spec, {t: True for t in spec["fail_to_pass"] + spec["pass_to_pass"]}
+    )
+
+    # a tiny grader image that FAILS unless verdi mounted the holdout spec at
+    # /holdouts (read-only), then emits the resolved results into /workspace.
+    img = tmp_path / "img"
+    img.mkdir()
+    (img / "results.json").write_text(json.dumps(resolved), encoding="utf-8")
+    (img / "Dockerfile").write_text(
+        "FROM busybox\n"
+        "COPY results.json /results.json\n"
+        'CMD ["sh", "-c", '
+        '"test -f /holdouts/holdout.json && cp /results.json /workspace/holdout_results.json"]\n',
+        encoding="utf-8",
+    )
+    image = "verdi-bench/swebench-grader-e2e:latest"
+    subprocess.run(["docker", "build", "-t", image, str(img)], check=True, capture_output=True)
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "patch_applied.txt").write_text("agent solution", encoding="utf-8")
+
+    ledger = tmp_path / "l.ndjson"
+    container = GradingContainer(runner=DockerGradeRunner(), image=image)
+    grade_trial(
+        "trial-swe",
+        GradeTask(id=task_id, task_sha="s", holdouts_dir=str(holdouts_dir)),
+        ws, ledger, EventContext(experiment_id="e", clock=lambda: "t"), container=container,
+    )
+
+    grades = find_events(ledger, "grade")
+    assert len(grades) == 1
+    g = grades[0]
+    assert g["binary_score"] is True             # the instance resolved
+    assert g.get("grader") == "docker"           # trusted tier, not local/advisory
+    graded_ids = {a["id"] for a in g["assertions"]}
+    assert set(spec["fail_to_pass"]) <= graded_ids   # SWE-bench tests were the ones scored
+    assert set(spec["pass_to_pass"]) <= graded_ids
