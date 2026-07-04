@@ -75,7 +75,7 @@ def admit_task(
     candidate_id: str,
     task_sha: str,
     baseline_ref: str,
-    keyring: set,
+    keyring: dict,
 ) -> TaskEntry:
     """Admit a pending candidate into ``manifest`` iff every precondition holds.
 

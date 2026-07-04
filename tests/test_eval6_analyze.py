@@ -673,6 +673,21 @@ def test_d002_identity_blind_disclosure_in_both_renders(tmp_path):
         assert "[computed]" in md
 
 
+def test_cant_analyze_reason_maps_phase7_fence_errors():
+    """The Phase-7 fence refusals (rubric swap, missing/failed selfcheck) each get
+    their own distinguishable cant_analyze reason — not the generic analyze_error
+    fallback that would erase which gate refused [AN-3 closed set]."""
+    from harness.analyze.report import (
+        CantAnalyzeReason,
+        RubricMismatchError,
+        SelfcheckRequiredError,
+        cant_analyze_reason,
+    )
+
+    assert cant_analyze_reason(RubricMismatchError("x")) == CantAnalyzeReason.rubric_mismatch
+    assert cant_analyze_reason(SelfcheckRequiredError("x")) == CantAnalyzeReason.selfcheck_required
+
+
 def test_dp7_6_official_fence_refuses_rubric_mismatch(tmp_path):
     """D-P7-6: when the lock committed a rubric_sha256, a verdict whose provenance
     rubric hash disagrees refuses the official render (post-lock rubric swap)."""

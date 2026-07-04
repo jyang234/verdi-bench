@@ -303,6 +303,53 @@ def test_resolve_terminal_overrides_refusals_and_hash(tmp_path):
     assert ov == {"terminal": ledger_head_hash(ledger)}
 
 
+def test_retry_terminal_stamps_override_of_on_unknown_task_reattempt(tmp_path):
+    """7B-2 fix: a --retry-terminal re-attempt that lands on the CLI's
+    unknown_task pre-check still records override_of, so the override stays
+    linked to the terminal cant_grade it overrode (the pre-check paths were
+    dropping it)."""
+    import yaml
+    from typer.testing import CliRunner
+
+    from harness.adapters.base import Outcome, Provenance, Telemetry, TrialRecord
+    from harness.cli import app
+    from harness.ledger import events
+    from harness.ledger.events import record_trial
+    from tests.fixtures.builders import fixed_ctx, write_experiment_yaml
+
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    write_experiment_yaml(expdir / "experiment.yaml")
+    (expdir / "tasks.yaml").write_text(
+        yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "p", "task_class": "refactor"}]}),
+        encoding="utf-8",
+    )
+    ledger = expdir / "ledger.ndjson"
+    runner = CliRunner()
+    assert runner.invoke(
+        app, ["plan", str(expdir / "experiment.yaml"), "--ledger", str(ledger)]
+    ).exit_code == 0
+
+    ctx = fixed_ctx(experiment_id="exp")
+    # a trial whose task id is NOT in tasks.yaml → its grade is a terminal
+    # cant_grade(unknown_task); seed both the trial and that terminal event.
+    rec = TrialRecord.assemble(
+        trial_id="tr-ghost", task_id="ghost", arm="control", repetition=0,
+        outcome=Outcome.completed, telemetry=Telemetry(), provenance=Provenance(),
+        artifacts_path="/tmp/tr-ghost/artifacts",
+    )
+    record_trial(ledger, ctx, trial_record=rec.model_dump(mode="json"))
+    events.record_cant_grade(ledger, ctx, trial_id="tr-ghost", reason="unknown_task")
+
+    r = runner.invoke(app, ["grade", str(expdir), "--runner", "local",
+                            "--retry-terminal", "tr-ghost"])
+    assert r.exit_code == 0, r.output
+    cants = [c for c in find_events(ledger, "cant_grade") if c["trial_id"] == "tr-ghost"]
+    assert len(cants) == 2  # the original terminal + the re-attempt
+    assert "override_of" not in cants[0]  # original had none
+    assert len(cants[1]["override_of"]) == 64  # the re-attempt is linked
+
+
 class _FreshCopyRunner:
     """A runner that (like DockerGradeRunner) grades a fresh workspace copy and
     writes its *own* holdout output — records what it was handed. It does not set

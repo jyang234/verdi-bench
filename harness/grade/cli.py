@@ -57,6 +57,11 @@ def _resolve_terminal_overrides(ledger_path, trial_ids: list) -> dict:
     from ..ledger.query import event_line_hash, find_events
     from .deterministic import TRANSIENT_CANT_GRADE
 
+    # The common `bench grade` invocation passes no --retry-terminal; skip the two
+    # full-ledger scans below when there is nothing to resolve.
+    if not trial_ids:
+        return {}
+
     graded = {e["trial_id"] for e in find_events(ledger_path, events.GRADE)}
     cant_by_trial: dict = {}
     for e in find_events(ledger_path, events.CANT_GRADE):
@@ -195,7 +200,10 @@ def register(app: typer.Typer) -> None:
                 if ev["trial_record"]["trial_id"] not in already
             ]
             for tid in pending:
-                events.record_cant_grade(ledger_path, ctx, trial_id=tid, reason=REASON_DAEMON)
+                events.record_cant_grade(
+                    ledger_path, ctx, trial_id=tid, reason=REASON_DAEMON,
+                    override_of=overrides.get(tid),
+                )
             typer.echo(
                 f"grader unavailable: {e}; marked {len(pending)} trial(s) "
                 "grader_unavailable (transient, regradeable)",
@@ -213,11 +221,16 @@ def register(app: typer.Typer) -> None:
             if task is None:
                 # GR-7: an unknown task is a fail-closed cant_grade, not a silent
                 # skip that leaves the trial ungraded and unrecorded forever.
-                events.record_cant_grade(ledger_path, ctx, trial_id=tid, reason=REASON_UNKNOWN_TASK)
+                # Thread override_of so a --retry-terminal re-attempt that lands
+                # here is still linked to the terminal event it overrode [D-P7-2].
+                events.record_cant_grade(ledger_path, ctx, trial_id=tid,
+                                         reason=REASON_UNKNOWN_TASK,
+                                         override_of=overrides.get(tid))
                 continue
             if not rec.get("artifacts_path"):
                 events.record_cant_grade(
-                    ledger_path, ctx, trial_id=tid, reason=REASON_ARTIFACTS_MISSING
+                    ledger_path, ctx, trial_id=tid, reason=REASON_ARTIFACTS_MISSING,
+                    override_of=overrides.get(tid),
                 )
                 continue
             workspace = Path(rec["artifacts_path"]).parent

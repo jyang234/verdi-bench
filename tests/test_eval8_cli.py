@@ -23,6 +23,28 @@ _CURATOR_PRIV = "57d8af6bd26b16f1f558e600e70fb2a40a5349804c864b3513b12015dc15555
 _CURATOR_PUB = "54f22d27057d6c0a336de3f2d0df143546f31591c169072e90f18f651e49e148"
 
 
+def test_admit_legacy_list_keyring_exits_2_not_traceback(tmp_path):
+    """A pre-Phase-7 JSON-list keyring must refuse cleanly (exit 2), not escape
+    the `except CorpusError` handler as an uncaught KeyringFormatError traceback
+    [D-P7-3]."""
+    manifest = CorpusManifest(corpus_id="internal-k", semver="1.0.0", kind="internal",
+                              boundary_path=str(tmp_path / "boundary"))
+    mpath = tmp_path / "manifest.json"
+    manifest.save(mpath)
+    keyring = tmp_path / "keyring.json"
+    keyring.write_text(json.dumps([_CURATOR_PUB]), encoding="utf-8")  # legacy list format
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    r = runner.invoke(app, [
+        "corpus", "admit", str(expdir), "--manifest", str(mpath),
+        "--candidate-id", "c", "--task-sha", "s" * 64, "--baseline-ref", "b1",
+        "--keyring", str(keyring),
+    ])
+    assert r.exit_code == 2, r.output
+    assert r.exception is None or isinstance(r.exception, SystemExit)  # clean exit, no traceback
+    assert "list" in (r.output + (r.stderr or "")).lower()  # names the legacy format
+
+
 def test_co8_mine_approve_admit_cli_flow(tmp_path):
     manifest = CorpusManifest(corpus_id="internal-x", semver="1.0.0", kind="internal",
                               boundary_path=str(tmp_path / "boundary"))

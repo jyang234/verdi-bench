@@ -245,16 +245,25 @@ def register(app: typer.Typer) -> None:
         """Admit a curated candidate — verifies the signed approval + clean baseline."""
         from ..ledger.events import EventContext
         from .admit import admit_task
-        from .attestation import load_keyring
+        from .attestation import KeyringFormatError, load_keyring
         from .registry import CorpusError, CorpusManifest
 
         ledger_path = experiment_dir / "ledger.ndjson"
         ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
         manifest = CorpusManifest.load(manifest_path)
+        # Load the keyring before the admit envelope: a legacy list-format keyring
+        # raises KeyringFormatError (a ValueError, not CorpusError), so evaluating
+        # it inside the `except CorpusError` block below would escape as a
+        # traceback instead of the clean exit-2 migration refusal [D-P7-3].
+        try:
+            authorized = load_keyring(keyring)
+        except KeyringFormatError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
         try:
             admit_task(
                 manifest, ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
-                baseline_ref=baseline_ref, keyring=load_keyring(keyring),
+                baseline_ref=baseline_ref, keyring=authorized,
             )
         except CorpusError as e:
             typer.echo(str(e), err=True)

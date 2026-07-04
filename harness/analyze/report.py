@@ -91,17 +91,27 @@ class CantAnalyzeReason(str, Enum):
     unregistered_metric = "unregistered_metric"
     disclosure_missing = "disclosure_missing"
     provenance_invalid = "provenance_invalid"
+    rubric_mismatch = "rubric_mismatch"
+    selfcheck_required = "selfcheck_required"
     analyze_error = "analyze_error"
 
 
 def cant_analyze_reason(exc: AnalyzeError) -> CantAnalyzeReason:
-    """Map an ``AnalyzeError`` to its enumerated ``cant_analyze`` reason."""
+    """Map an ``AnalyzeError`` to its enumerated ``cant_analyze`` reason.
+
+    Every official-fence refusal must carry its own distinguishable reason in
+    this closed set [AN-3] — a generic ``analyze_error`` fallback would erase
+    which gate refused. The Phase-7 fence checks (rubric-swap, missing/failed
+    selfcheck) are mapped here alongside the calibration/corpus/disclosure ones.
+    """
     return {
         CalibrationIncompleteError: CantAnalyzeReason.calibration_incomplete,
         CorpusMismatchError: CantAnalyzeReason.corpus_mismatch,
         UnregisteredOfficialError: CantAnalyzeReason.unregistered_metric,
         DisclosureError: CantAnalyzeReason.disclosure_missing,
         ProvenanceError: CantAnalyzeReason.provenance_invalid,
+        RubricMismatchError: CantAnalyzeReason.rubric_mismatch,
+        SelfcheckRequiredError: CantAnalyzeReason.selfcheck_required,
     }.get(type(exc), CantAnalyzeReason.analyze_error)
 
 
@@ -831,9 +841,9 @@ def _ledgered_calibration_status(ledger_path, corpus_id: str, semver: str) -> Op
 
 
 def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, ledger_path) -> None:
-    """Bind the official fence to corpus identity [AN-2, D-P5-2].
+    """Bind the official fence to corpus identity + integrity [AN-2, D-P5-2].
 
-    All three checks — a fence that trusts fewer is a hand-editable bypass:
+    All five checks — a fence that trusts fewer is a hand-editable bypass:
 
     1. the cited manifest is the **pre-registered** corpus (id + semver match
        ``spec.corpus``); a different corpus cannot be laundered into an official
@@ -841,7 +851,11 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
     2. every task the experiment **ran** is an admitted task in that manifest, so
        the manifest actually covers the data;
     3. the corpus is full-run-validated per the **ledgered** ``calibration_run``
-       events, not the mutable ``manifest.calibration.status`` [CO-4].
+       events, not the mutable ``manifest.calibration.status`` [CO-4];
+    4. every verdict's rubric hash agrees with the lock's committed
+       ``rubric_sha256`` (a post-lock rubric swap is refused) [D-P7-6];
+    5. a ledgered ``selfcheck`` with ``passed=true`` exists (the coverage
+       self-validation gate) [EVAL-1-D008].
 
     Note on check (2): D-P5-2 framed this as reconciling ``manifest.task_shas()``
     with the lock's ``task_commitment``, but those are different hash domains —
