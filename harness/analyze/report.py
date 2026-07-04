@@ -292,6 +292,15 @@ def _judge_preference_by_task(
     task cluster (the bootstrap resamples tasks, not individual verdicts). A task
     with no real A/B verdict for this pair contributes nothing.
     """
+    rates = _judge_preference_rates(ledger_path, arm_a, arm_b)
+    a_vals = [rates[task_id] for task_id in sorted(rates)]
+    return a_vals, [1.0 - a for a in a_vals]
+
+
+def _judge_preference_rates(ledger_path, arm_a: str, arm_b: str) -> dict[str, float]:
+    """``task_id -> arm_a win-rate`` for the ``(arm_a, arm_b)`` pair — the
+    task-keyed core of :func:`_judge_preference_by_task`, exposed so the
+    dossier's per-task view keeps task identity [EVAL-12 AC-6]."""
     pair = {arm_a, arm_b}
     per_task: dict[str, dict[str, int]] = defaultdict(lambda: {"a": 0, "n": 0})
     for ev in find_events(ledger_path, events.JUDGE_VERDICT):
@@ -312,13 +321,10 @@ def _judge_preference_by_task(
         per_task[task_id]["n"] += 1
         if winner_arm == arm_a:
             per_task[task_id]["a"] += 1
-    a_vals, b_vals = [], []
-    for task_id in sorted(per_task):
-        c = per_task[task_id]
-        a_rate = c["a"] / c["n"]  # n > 0 by construction
-        a_vals.append(a_rate)
-        b_vals.append(1.0 - a_rate)
-    return a_vals, b_vals
+    return {
+        task_id: per_task[task_id]["a"] / per_task[task_id]["n"]  # n > 0 by construction
+        for task_id in sorted(per_task)
+    }
 
 
 def _mean(xs: list[float]) -> float:
@@ -336,6 +342,36 @@ def _paired_arm_series(
             a_vals.append(_mean(arms[arm_a]))
             b_vals.append(_mean(arms[arm_b]))
     return a_vals, b_vals
+
+
+def paired_task_rows(ledger_path, primary: str, arm_a: str, arm_b: str) -> list[dict]:
+    """Per-task side-by-side values for one arm pair [EVAL-12 AC-6].
+
+    ``[{task_id, a, b, delta}]`` sorted by task id — the same pairing rules as
+    :func:`_comparison_series` (rep-mean reduction, both-arms-present tasks
+    only; TIE/CANT_JUDGE excluded for judge_preference), with task identity
+    kept so the dossier's analyst layer can render the A-vs-B table. A task a
+    metric cannot pair contributes no row — never an imputed zero [D004].
+    """
+    rows: list[dict] = []
+    if primary == PrimaryMetric.judge_preference.value:
+        rates = _judge_preference_rates(ledger_path, arm_a, arm_b)
+        for task_id in sorted(rates):
+            a = rates[task_id]
+            rows.append({"task_id": task_id, "a": a, "b": 1.0 - a, "delta": 2 * a - 1.0})
+        return rows
+    if primary == PrimaryMetric.holdout_pass_rate.value:
+        per_task = _holdout_values(ledger_path)
+    elif primary in _METRIC_TELEMETRY_FIELD:
+        per_task = _telemetry_values(ledger_path, _METRIC_TELEMETRY_FIELD[primary])
+    else:  # pragma: no cover - enum is closed
+        raise AnalyzeError(f"unsupported primary metric {primary!r}")
+    for task_id in sorted(per_task):
+        arms = per_task[task_id]
+        if arm_a in arms and arm_b in arms and arms[arm_a] and arms[arm_b]:
+            a, b = _mean(arms[arm_a]), _mean(arms[arm_b])
+            rows.append({"task_id": task_id, "a": a, "b": b, "delta": a - b})
+    return rows
 
 
 def _comparison_series(
