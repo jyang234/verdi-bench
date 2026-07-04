@@ -173,8 +173,27 @@ EXECUTED_ORDER = register_event("executed_order")
 
 
 def record_trial(ledger_path, ctx: EventContext, *, trial_record: dict) -> dict:
-    """Embeds a normalized TrialRecord [AC-2]."""
-    return emit(ledger_path, ctx, TRIAL, {"trial_record": trial_record})
+    """Embeds a normalized TrialRecord [AC-2].
+
+    ``trajectory_sha`` (additive field, EVAL-12-D001) binds the persisted
+    per-trial trajectory artifact to the chain, following the
+    ``task_commitment``/``rubric_sha256`` insert-only-when-present precedent.
+    Its single source is the ``TrialRecord`` dump itself: the constructor
+    hoists the embedded field out of the payload, so the ``trial_record``
+    shape on the event is unchanged from pre-EVAL-12 and the sha lives in
+    exactly one place — the top-level event field. Readers must take it from
+    the EVENT (``ev.get("trajectory_sha")``), never from a re-validated
+    ``TrialRecord`` (whose field is transport-only and always ``None`` after
+    a round-trip). Absent field = pre-EVAL-12 trial or an honestly absent
+    trajectory; no reader may require it, and legacy chains are never refused
+    over it.
+    """
+    trial_record = dict(trial_record)
+    sha = trial_record.pop("trajectory_sha", None)
+    payload: dict = {"trial_record": trial_record}
+    if sha is not None:
+        payload["trajectory_sha"] = sha
+    return emit(ledger_path, ctx, TRIAL, payload)
 
 
 def record_trial_infra_failed(

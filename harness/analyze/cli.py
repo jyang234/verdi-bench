@@ -2,9 +2,12 @@
 
 Asserts the experiment lock, computes findings as a pure function of
 ``(ledger, seed)``, renders official or exploratory, and writes only the
-findings output plus a single ``findings_rendered`` provenance event. Official
-renders refuse off-registration metrics and an un-calibrated corpus; exploratory
-renders carry the watermark on every section.
+findings outputs plus a single ``findings_rendered`` provenance event. The
+self-contained comparison dossier (``findings.<mode>.dossier.html``) rides the
+same invocation as an additional artifact behind the same fence — no new verb,
+no extra event [EVAL-12 AC-7, D004]. Official renders refuse off-registration
+metrics and an un-calibrated corpus; exploratory renders carry the watermark on
+every section.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False, a
     )
     from ..plan.lock import assert_lock
     from ..schema.experiment import ExperimentSpec
+    from .dossier import render_dossier
     from .report import (
         AnalyzeError,
         cant_analyze_reason,
@@ -60,6 +64,10 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False, a
         findings = compute_findings(ledger_path, spec, spec.seed, corpus_manifest=manifest)
         renderer = render_html if html else render_markdown
         rendered = renderer(findings, ledger_path, mode, corpus_manifest=manifest)
+        # EVAL-12 AC-7/D004: the dossier rides the same invocation as a third
+        # artifact — same fence (render_dossier delegates to render_markdown's
+        # validators), same single findings_rendered event, no new verb.
+        dossier = render_dossier(findings, ledger_path, mode, corpus_manifest=manifest)
     except AnalyzeError as e:
         record_cant_analyze(
             ledger_path, ctx, mode=mode, reason=cant_analyze_reason(e).value, detail=str(e)
@@ -83,6 +91,7 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False, a
     )
     out_json.write_text(findings_json, encoding="utf-8")
     out_render.write_text(rendered, encoding="utf-8")
+    (experiment_dir / f"findings.{mode}.dossier.html").write_text(dossier, encoding="utf-8")
     return out_render
 
 

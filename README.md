@@ -69,6 +69,9 @@ uv run bench judge  <experiment-dir>                          # identity-blind a
 uv run bench selfcheck <experiment-dir>                      # D008 coverage selfcheck (required before official)
 uv run bench analyze <experiment-dir> --exploratory                # watermarked findings
 uv run bench analyze <experiment-dir> --official --corpus m.json   # fenced official render (requires a passed selfcheck)
+#   every analyze invocation also writes the self-contained comparison dossier
+#   (findings.<mode>.dossier.html) beside the markdown — same fence, same
+#   single findings_rendered event, no network references or external assets
 uv run bench verify-chain ledger.ndjson [--against-anchor anchors.ndjson]
 uv run bench anchor ledger.ndjson --out anchors.ndjson       # refuses a tampered ledger
 

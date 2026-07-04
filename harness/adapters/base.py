@@ -10,9 +10,12 @@ cross-check signal, surfaced as a delta — never used to fill a null.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, ConfigDict, model_validator
+
+if TYPE_CHECKING:  # runtime import stays in the concrete adapters
+    from ..run.trajectory import TrajectoryStep
 
 ADVISORY = "ADVISORY"
 
@@ -94,6 +97,11 @@ class TrialRecord(BaseModel):
     flags: Flags = Flags()
     provenance: Provenance = Provenance()
     artifacts_path: Optional[str] = None
+    # EVAL-12 AC-1: sha256 of the persisted trajectory artifact; None when the
+    # engine honestly produced no trajectory. Transport only — record_trial
+    # hoists it to the top-level additive event field [EVAL-12-D001], so the
+    # embedded trial_record payload keeps its pre-EVAL-12 shape.
+    trajectory_sha: Optional[str] = None
 
     @model_validator(mode="after")
     def _nulls_match_telemetry(self) -> "TrialRecord":
@@ -122,6 +130,7 @@ class TrialRecord(BaseModel):
         exit_status: Optional[int] = None,
         flags: Optional[Flags] = None,
         artifacts_path: Optional[str] = None,
+        trajectory_sha: Optional[str] = None,
     ) -> "TrialRecord":
         return cls(
             trial_id=trial_id,
@@ -135,6 +144,7 @@ class TrialRecord(BaseModel):
             flags=flags or Flags(),
             provenance=provenance,
             artifacts_path=artifacts_path,
+            trajectory_sha=trajectory_sha,
         )
 
 
@@ -148,4 +158,18 @@ class Adapter:
     platform: str = "base"
 
     def normalize(self, native_log: dict) -> Telemetry:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def normalize_trajectory(
+        self, native_log: dict
+    ) -> Optional[list["TrajectoryStep"]]:  # pragma: no cover - abstract
+        """Map the platform's native log to ordered shared-schema steps
+        (``list[harness.run.trajectory.TrajectoryStep]``) [EVAL-12 AC-1].
+
+        Returns ``None`` when the log carries no trajectory content at all —
+        the honest absent state, distinct from an empty step list [AC-2]. Step
+        fields the platform cannot measure stay ``None``, never estimated
+        [D004]; the null asymmetry between platforms is data, per field, the
+        same way codex's null cost is.
+        """
         raise NotImplementedError
