@@ -661,6 +661,47 @@ def test_ac5_official_happy_path(tmp_path):
     assert spec.primary_metric.value in md
 
 
+def test_dp7_2_override_disclosure_in_official_render(tmp_path):
+    """D-P7-2 refinement (b): the terminal-override disclosure rides the
+    OFFICIAL render too, not only the exploratory one (which the retry-terminal
+    e2e test owns) — a manual override must never be invisible in the official
+    findings."""
+    from harness.adapters.base import Flags, Outcome, Provenance, Telemetry, TrialRecord
+    from harness.ledger.events import record_cant_grade, record_grade, record_trial
+    from harness.ledger.query import event_line_hash, find_events
+
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+
+    # Production override shape [D-P7-2]: an extra trial whose first grade
+    # attempt was a terminal cant_grade, then the --retry-terminal re-attempt's
+    # grade stamped with the overridden line's hash.
+    rec = TrialRecord.assemble(
+        trial_id="c-0-2", task_id="task0", arm="control", repetition=2,
+        outcome=Outcome.completed, telemetry=Telemetry(cost=1.0, wall_time_s=10.0),
+        provenance=Provenance(image_digest="digestC"), flags=Flags(),
+        artifacts_path="/tmp/c-0-2/artifacts",
+    )
+    record_trial(ledger, ctx, trial_record=rec.model_dump(mode="json"))
+    record_cant_grade(ledger, ctx, trial_id="c-0-2", reason="container_failure")
+    overridden = find_events(ledger, "cant_grade")[-1]
+    record_grade(
+        ledger, ctx, trial_id="c-0-2", task_sha="sha-task0",
+        assertions=[{"id": "h1", "source": "holdout_test", "result": "pass"}],
+        binary_score=True, override_of=event_line_hash(overridden),
+    )
+
+    _seed_full_calibration(ledger, ctx)
+    _seed_matching_selfcheck(ledger, ctx, spec)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    assert f.overrides == {"n_override_events": 1, "override_trials": ["c-0-2"]}
+    official = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+    assert "Official findings" in official
+    assert "Terminal overrides" in official
+    assert "1 override-graded re-attempt(s)" in official and "c-0-2" in official
+
+
 def test_d002_identity_blind_disclosure_in_both_renders(tmp_path):
     """D-1/D002: both renders carry the [computed] disclosure that the judge is
     identity-blind (not outcome-blind) — judge_preference is not independent of
