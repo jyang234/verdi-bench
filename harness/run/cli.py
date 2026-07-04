@@ -38,7 +38,6 @@ def register(app: typer.Typer) -> None:
     def run(
         experiment_dir: Path = typer.Argument(..., help="Directory with experiment.yaml"),
         engine: str = typer.Option("fake", "--engine", help="fake | harbor"),
-        concurrency: int = typer.Option(1, "--concurrency", help=">1 stamps contention caveat"),
         corpus_manifest: Path = typer.Option(
             None, "--corpus-manifest", help="Manifest gating schedulability (is_schedulable) [CO-2]"
         ),
@@ -116,7 +115,6 @@ def register(app: typer.Typer) -> None:
         settings = load_run_settings(experiment_dir)
         config = RunConfig(
             engine=eng,
-            concurrency=concurrency,
             proxy=settings.proxy,
             quotas=settings.quotas,
             provider_keys=settings.provider_keys,

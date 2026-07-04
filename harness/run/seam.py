@@ -83,7 +83,6 @@ def run_trial(
             task.timeout_s if task.timeout_s is not None else config.default_timeout_s
         ),
         ts=ts,
-        concurrency=config.concurrency,
         proxy=config.proxy,
         provider_keys=config.provider_keys,
         fake_behavior=task.fake_behavior,
@@ -107,10 +106,7 @@ def run_trial(
     adapter = get_adapter(arm.platform)
     telemetry = adapter.normalize(result.native_log)
 
-    flags = Flags(
-        egress_violation=result.egress_violation,
-        contention_caveat=config.concurrency > 1,  # [D003]
-    )
+    flags = Flags(egress_violation=result.egress_violation)
     if result.egress_attempts:
         flags.egress_attempts = result.egress_attempts
     if result.proxy_metered_cost is not None:

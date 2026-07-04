@@ -1,4 +1,9 @@
-"""EVAL-4 AC-6 — quotas applied; contention caveat under concurrency."""
+"""EVAL-4 AC-6 — quotas applied in the run command and recorded in provenance.
+
+The ``--concurrency`` knob and its ``contention_caveat`` stamp were removed
+(RN-18 / D-P7-5): execution is serial by design, so the caveat described
+nothing real. Their tests were removed with them.
+"""
 
 from __future__ import annotations
 
@@ -38,22 +43,6 @@ def test_ac6_quota_recorded_in_provenance(tmp_path):
     rec = run_trial(Task(id="task", prompt="p"), _arm(), tmp_path / "ws", config)
     assert rec.provenance.quotas.cpus == 1.5
     assert rec.provenance.quotas.mem == "2g"
-
-
-def test_ac6_contention_flag_under_concurrency(tmp_path):
-    from harness.run.engines.fake import FakeEngine
-
-    config = RunConfig(engine=FakeEngine(), concurrency=4)
-    rec = run_trial(Task(id="task", prompt="p"), _arm(), tmp_path / "ws", config)
-    assert rec.flags.contention_caveat is True
-
-
-def test_ac6_no_contention_flag_serial(tmp_path):
-    from harness.run.engines.fake import FakeEngine
-
-    rec = run_trial(Task(id="task", prompt="p"), _arm(), tmp_path / "ws",
-                    RunConfig(engine=FakeEngine(), concurrency=1))
-    assert rec.flags.contention_caveat is False
 
 
 def test_ac6_no_ambient_network_without_proxy(tmp_path):

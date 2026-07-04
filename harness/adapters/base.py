@@ -65,7 +65,6 @@ class Quotas(BaseModel):
 class Flags(BaseModel):
     model_config = ConfigDict(extra="allow")  # room for future flags [§5.1 "..."]
     egress_violation: bool = False
-    contention_caveat: bool = False
 
 
 class Provenance(BaseModel):
