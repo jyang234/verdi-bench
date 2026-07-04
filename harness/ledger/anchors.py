@@ -30,11 +30,32 @@ def _ledger_lines(path: Path) -> list[str]:
     return [p.decode("utf-8") for p in parts]
 
 
+class AnchorIntegrityError(RuntimeError):
+    """Refused to anchor a ledger whose own hash chain does not verify.
+
+    Anchoring pins the current head as an authentic checkpoint; doing so over a
+    rewritten/deleted/reordered ledger would launder tampered history into the
+    anchor store. ``anchor_head`` verifies the chain first and raises this
+    instead of writing anything [7A-2].
+    """
+
+
 def anchor_head(ledger_path, anchor_path, *, ts: str) -> dict:
     """Append ``{head_hash, height, ts}`` for the current ledger head to
-    ``anchor_path``. ``ts`` is injected (no wall-clock reads here)."""
+    ``anchor_path``. ``ts`` is injected (no wall-clock reads here).
+
+    Refuses (``AnchorIntegrityError``) before writing anything if the ledger's
+    hash chain does not verify — an anchor must checkpoint authentic history.
+    """
     ledger_path = Path(ledger_path)
     anchor_path = Path(anchor_path)
+    result = verify_chain(ledger_path)
+    if not result.ok:
+        at = f" at line {result.line_number}" if result.line_number else ""
+        raise AnchorIntegrityError(
+            f"ledger chain verification failed{at}: {result.detail} "
+            "— refusing to anchor tampered history"
+        )
     lines = _ledger_lines(ledger_path)
     height = len(lines)
     head = hash_line(lines[-1]) if lines else "0" * 64

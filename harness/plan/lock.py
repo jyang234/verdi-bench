@@ -76,6 +76,13 @@ def lock_experiment(
     )
     sha = _sha256_bytes(spec_bytes)
 
+    # 7A-3: before trusting anything the ledger already contains (the lock-count
+    # check below, or any later append onto it), verify its chain. An
+    # absent/empty ledger is the fresh-experiment path — assert_chain is silent
+    # there — but a pre-existing tampered or truncated ledger is refused rather
+    # than chained onto.
+    assert_chain(ledger_path)
+
     # PL-3: refuse a second lock. A re-lock would append a second
     # experiment_locked event while assert_lock keys the first, telling the
     # operator a spec is locked when it isn't. One lock per ledger, period.

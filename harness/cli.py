@@ -43,6 +43,7 @@ def plan(
 ) -> None:
     """Validate, power-check, and write the genesis lock event."""
     from .corpus.commit import TaskCommitmentError, load_task_dicts
+    from .ledger.query import ChainIntegrityError
     from .plan.lock import AlreadyLockedError, UnderpoweredError, lock_experiment
     from .plan.power import calibration_variance_from_runs
 
@@ -72,7 +73,12 @@ def plan(
             task_dicts=task_dicts,
             variance_source=variance_source,
         )
-    except (UnderpoweredError, AlreadyLockedError, TaskCommitmentError) as e:
+    except (
+        UnderpoweredError,
+        AlreadyLockedError,
+        TaskCommitmentError,
+        ChainIntegrityError,
+    ) as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(code=2)
     mde = outcome.mde["mde"]
@@ -115,14 +121,20 @@ def anchor(
     Also ledgers a ``chain_anchor`` event so the act of anchoring is itself an
     auditable, chained record — not just an external-file side effect [PL-4].
     """
-    from .ledger.anchors import anchor_head
+    from .ledger.anchors import AnchorIntegrityError, anchor_head
     from .ledger.events import record_chain_anchor
 
     # Route the timestamp through the EventContext clock seam rather than a bare
     # wall-clock read in the CLI [PL-4 / determinism]. Capture the pre-anchor
     # head externally, then ledger that same head.
     ctx = _default_ctx(experiment_id=ledger.parent.name)
-    rec = anchor_head(ledger, out, ts=ctx.clock())
+    # 7A-2: anchor_head chain-verifies first and refuses tampered history before
+    # writing anything; exit 1 and append neither the anchor line nor the event.
+    try:
+        rec = anchor_head(ledger, out, ts=ctx.clock())
+    except AnchorIntegrityError as e:
+        typer.echo(f"CHAIN BROKEN: {e}", err=True)
+        raise typer.Exit(code=1)
     record_chain_anchor(ledger, ctx, head_hash=rec["head_hash"], height=rec["height"])
     typer.echo(f"anchored head={rec['head_hash'][:12]}… height={rec['height']}")
 
