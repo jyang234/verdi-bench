@@ -1,8 +1,8 @@
 ---
 # MACHINE CONTRACT — see template header for consumers and YAML style rules.
-# STATUS: PROPOSED (2026-07-04). Lives under specs/proposed/ so the AC-coverage
-# hook does not enforce it before build; graduates to specs/ in the same commit
-# as the story's first AC tests, once its open decisions resolve.
+# Graduated from specs/proposed/ 2026-07-04 in the same commit as the story's
+# first AC tests; D001–D004 resolved in the decision session, D005–D007 raised
+# and resolved in the build session (see eval11.decisions.ndjson).
 kind: "story"
 ticket: "EVAL-11"   # synthetic key — source: Phase-7 readiness assessment roadmap gap #1
 parent: "EVAL-1"
@@ -15,7 +15,7 @@ touchpoints:        # PLANNED symbols [judgment]
   - "harness/forensics/metrics.py:trajectory_metrics"
   - "harness/forensics/detectors.py:run_detectors"
   - "harness/forensics/review.py:forensic_review"
-  - "harness/cli.py:cmd_forensics"
+  - "harness/forensics/cli.py:register"   # realized as the repo-standard sub-typer
 
 graph_provenance: []
 
@@ -78,15 +78,14 @@ constraints:
     enforced_by: "test:test_ac1_versioned_vocabulary"
 
 decisions:
-  - "EVAL-11-D001"  # v1 metric + detector set (OPEN)
-  - "EVAL-11-D002"  # LLM forensic pass in v1 or deferred (OPEN)
-  - "EVAL-11-D003"  # flag disposition (OPEN)
-  - "EVAL-11-D004"  # fence coupling (OPEN)
-open_decisions:
-  - "EVAL-11-D001"
-  - "EVAL-11-D002"
-  - "EVAL-11-D003"
-  - "EVAL-11-D004"
+  - "EVAL-11-D001"  # v1 metric + detector set (RESOLVED: proposed-set)
+  - "EVAL-11-D002"  # LLM forensic pass in v1 (RESOLVED: in-v1)
+  - "EVAL-11-D003"  # flag disposition (RESOLVED: disclose-plus-operator-path)
+  - "EVAL-11-D004"  # fence coupling (RESOLVED: disclosure-only-v1)
+  - "EVAL-11-D005"  # trajectory command field (RESOLVED: extend-step-command, ContractChange)
+  - "EVAL-11-D006"  # human spot-check ingestion (RESOLVED: forensics-record-verb)
+  - "EVAL-11-D007"  # quarantine semantics (RESOLVED: exclude-and-disclose)
+open_decisions: []
 
 policy_proposals: []
 predicted_reach: null

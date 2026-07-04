@@ -113,7 +113,7 @@ def _official_findings(tmp_path, *, flags=(), gaps=(), covered=10):
 
 
 # --- AC-5: primary ineligibility -------------------------------------------------
-def test_forensic_metrics_schema_ineligible_as_primary():
+def test_ac5_primary_ineligible():
     """Registering any forensic metric as primary_metric fails EVAL-3 schema
     validation — the closed PrimaryMetric vocabulary is unchanged [AC-5 VC]."""
     for metric_id in METRIC_IDS:
@@ -122,7 +122,7 @@ def test_forensic_metrics_schema_ineligible_as_primary():
 
 
 # --- AC-5: flags render beside the comparison, non-suppressing -------------------
-def test_flags_render_beside_comparison_official_and_exploratory(tmp_path):
+def test_ac5_flags_render_beside_comparison(tmp_path):
     spec, ledger, findings = _official_findings(tmp_path, flags=[_TAMPER_FLAG])
 
     official = render_markdown(findings, ledger, "official", corpus_manifest=_full_corpus())
@@ -170,7 +170,7 @@ def test_flags_suppress_nothing(tmp_path):
 
 
 # --- AC-6: coverage honesty ------------------------------------------------------
-def test_partial_coverage_gap_disclosed(tmp_path):
+def test_ac6_partial_coverage_disclosed(tmp_path):
     """A trajectory-less trial renders its gap with trial id + reason [AC-6 VC]."""
     spec, ledger, findings = _official_findings(
         tmp_path,

@@ -52,7 +52,7 @@ def _ok_response() -> str:
     ),
     filler=st.text(alphabet="abcdefgh \n", max_size=80),
 )
-def test_blinding_canaries_never_reach_payload(fragment, filler):
+def test_ac4_blinded_isolated_call(fragment, filler):
     """Property [AC-4 VC]: identity canaries planted anywhere in the transcript
     are scrubbed before the provider sees the payload."""
     provider = FakeProvider([_ok_response()])
@@ -96,7 +96,7 @@ def test_judgment_tag_on_every_narrative():
 
 
 # --- fail-closed CANT_REVIEW ---------------------------------------------------
-def test_provider_failure_fails_closed():
+def test_ac4_cant_review_fail_closed():
     for exc, reason in [
         (ProviderError("boom"), "provider_error"),
         (ProviderTimeout("slow"), "timeout"),

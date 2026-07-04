@@ -31,7 +31,7 @@ def _rich_steps() -> list[TrajectoryStep]:
     ]
 
 
-def test_metrics_deterministic_bytes():
+def test_ac1_metrics_deterministic():
     """Fixed trajectory fixtures yield byte-identical metric payloads [AC-1 VC]."""
     a = trajectory_metrics(_record(_rich_steps()))
     b = trajectory_metrics(_record(_rich_steps()))
@@ -39,7 +39,7 @@ def test_metrics_deterministic_bytes():
     assert dumps(a) == dumps(b)
 
 
-def test_vocabulary_closed_and_versioned():
+def test_ac1_versioned_vocabulary():
     """Payload keys are exactly the closed vocabulary; the version constant is
     the value stamped into every forensics_report [AC-1]."""
     payload = trajectory_metrics(_record([]))
