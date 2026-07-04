@@ -76,13 +76,19 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 
 All EVAL-1 child stories plus the Phase-7 roadmap stories (EVAL-10/11/12) and
 the operator/authoring/reviewer stories EVAL-13 through EVAL-21 are built. The
-fast suite (`uv run pytest -m "not docker"`) is green — over 700 tests — plus a
-`docker`-marked suite of real-container tests (a real grade container and a real
-Harbor trial) run with `-m docker` in a dedicated CI job on Docker-capable
-runners; 7 import-linter contracts kept. AC-mapped tests are **enforced per
-story**: collection fails if any story's pre-registered acceptance criteria (from
-its `eval<N>.spec.md`) lack a `test_ac<N>_*` test, or if an AC test is duplicated
-or names an AC its story does not declare. `--ac-report` additionally prints the
+fast suite (`uv run pytest -m "not docker"`) is green — over 700 tests — and
+`make verify` runs it plus the 7 import-linter contracts. Two more CI jobs cover
+what the fast suite cannot: a `docker`-marked suite of real-container tests (the
+grade container, a Harbor trial, redaction, digest-pinning, kill-on-timeout,
+network-less plugin isolation, and metering-proxy egress attribution) run with
+`-m docker` under `VERDI_REQUIRE_DOCKER=1`; and a `browser` job that provisions
+node + Playwright + Chromium and runs the operator/reviewer/author UI
+acceptance tests under `VERDI_REQUIRE_BROWSER=1` — both fail-closed switches so a
+job cannot green-pass by skipping. AC-mapped tests are **enforced per story**:
+collection fails if any story's pre-registered acceptance criteria (from its
+`eval<N>.spec.md`) lack a `test_ac<N>_*` test, if an AC test is duplicated or
+names an AC its story does not declare, or if an AC test is disabled with an
+unconditional `@pytest.mark.skip`. `--ac-report` additionally prints the
 exercised AC numbers.
 
 ## Provisional decisions
@@ -145,6 +151,7 @@ uv run bench judge  <experiment-dir>                          # identity-blind a
 uv run bench selfcheck <experiment-dir>                      # D008 coverage selfcheck (required before official)
 uv run bench analyze <experiment-dir> --exploratory                # watermarked findings
 uv run bench analyze <experiment-dir> --official --corpus m.json   # fenced official render (requires a passed selfcheck)
+uv run bench analyze <experiment-dir> --multi-arm-correction holm  # Holm-correct the secondary-arm family (default: none)
 #   every analyze invocation also writes the self-contained comparison dossier
 #   (findings.<mode>.dossier.html) beside the markdown — same fence, same
 #   single findings_rendered event, no network references or external assets
@@ -190,7 +197,10 @@ per-trial attribution, and cost enforcement for non-self-reporting arms depend
 on it — a configured-but-missing proxy log now fails loud rather than silently
 allowing spend. Operational wiring (proxy, quotas, provider-key names) comes
 from an optional `run.config.yaml` + the environment — never the sha-locked
-`experiment.yaml` or the ledger. The digest-pin, request-mount, and key
+`experiment.yaml` or the ledger. Provider keys may be declared flat
+(`provider_key_names`, injected into every arm) or per-arm
+(`provider_key_names_by_arm`), so a multi-model experiment can hand each arm
+only its own credentials and never leak one arm's key into another's container. The digest-pin, request-mount, and key
 redaction paths are covered by `docker`-marked real-container tests in CI
 (`uv run pytest -m docker`); the proxy-egress end-to-end path has a
 real-proxy docker test under `deploy/metering-proxy/`.
