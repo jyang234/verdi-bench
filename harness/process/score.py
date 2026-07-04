@@ -65,6 +65,15 @@ class CantScoreReason(str, Enum):
     human_cant = "human_cant"
 
 
+# PRA-M13: reasons a re-run should re-attempt — the scorer could not *run*
+# (transient network/provider hiccup), mirroring judge's TRANSIENT_CANT_JUDGE
+# and grade's TRANSIENT_CANT_GRADE. context_overflow/parse/etc. are
+# deterministic for a fixed transcript, so retrying reproduces them — terminal.
+TRANSIENT_CANT_SCORE = frozenset(
+    {CantScoreReason.timeout.value, CantScoreReason.provider_error.value}
+)
+
+
 # --- schema ----------------------------------------------------------------
 class Scorer(BaseModel):
     model_config = ConfigDict(extra="forbid")

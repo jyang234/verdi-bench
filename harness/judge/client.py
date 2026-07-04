@@ -19,7 +19,13 @@ from pydantic import BaseModel, ValidationError
 
 from ..ledger import events
 from ..ledger.events import EventContext
-from .packet import IdentityLeakError, Packet, validate_identity_free
+from .packet import (
+    IdentityLeakError,
+    Packet,
+    SecretLeakError,
+    validate_identity_free,
+    validate_secret_free,
+)
 from .providers.base import (
     Provider,
     ProviderError,
@@ -156,6 +162,14 @@ def judge_pair(
         validate_identity_free(packet, canaries)
     except IdentityLeakError:
         return _cant(CantJudgeReason.IDENTITY_LEAK)
+
+    # PRA-L4: defense-in-depth secret re-scan (redaction ran at trial time, but a
+    # miss — or a symlink escape into another tree — must not ship a key to the
+    # provider). Fail closed to one CANT_JUDGE, never send.
+    try:
+        validate_secret_free(packet)
+    except SecretLeakError:
+        return _cant(CantJudgeReason.SECRET_LEAK)
 
     orders_to_run = ["AB", "BA"] if config.orders == "both" else ["AB"]
     mapped: list[tuple[str, list[Evidence], str]] = []

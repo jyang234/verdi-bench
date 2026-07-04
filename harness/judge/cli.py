@@ -92,14 +92,24 @@ def register(app: typer.Typer) -> None:
         canaries = arm_canaries(spec.arms)
         ctx = EventContext(experiment_id=experiment_dir.name)
 
+        from .schema import TRANSIENT_CANT_JUDGE
+
         comparisons = comparisons_from_ledger(ledger_path, spec, task_classes=task_classes)
         # 7A-4: idempotent — one verdict per comparison. A re-run must not append
         # a duplicate verdict set (which would inflate calibration/preference
         # statistics); skip comparisons that already carry a judge_verdict,
         # mirroring process score's `already` skip.
+        # PRA-M13: a *transient* CANT_JUDGE (timeout / provider_error — the judge
+        # could not run) is NOT counted as done, so a re-run re-attempts it
+        # instead of permanently dropping the comparison from calibration. A
+        # terminal CANT_JUDGE (deterministic for a fixed packet) stays skipped.
+        def _is_transient(v: dict) -> bool:
+            return v.get("winner") == "CANT_JUDGE" and v.get("reason") in TRANSIENT_CANT_JUDGE
+
         already = {
             ev["verdict"]["comparison_id"]
             for ev in find_events(ledger_path, events.JUDGE_VERDICT)
+            if not _is_transient(ev["verdict"])
         }
         judged = 0
         for cmp in comparisons:

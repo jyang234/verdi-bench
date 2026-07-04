@@ -59,12 +59,30 @@ class CantJudgeReason(str, Enum):
     """
 
     IDENTITY_LEAK = "identity_leak"
+    SECRET_LEAK = "secret_leak"  # PRA-L4: a provider-key-shaped secret in the packet
     TIMEOUT = "timeout"
     REFUSAL = "refusal"
     PROVIDER_ERROR = "provider_error"
+    # PRA-H3: provider_failure_reason() returns "context_overflow" for a
+    # ProviderContextOverflow (OpenAI context_length_exceeded), but this enum was
+    # missing the member — so CantJudgeReason(provider_failure_reason(e)) raised
+    # ValueError *inside* the except, escaping judge_pair with NO verdict event
+    # and voiding AC-8 for OpenAI judges on large packets. The process stage
+    # already had this member; the judge had drifted from it.
+    CONTEXT_OVERFLOW = "context_overflow"
     PARSE = "parse"
     JUDGE_CANT_JUDGE = "judge_cant_judge"
     MALFORMED = "malformed"
+
+
+# PRA-M13: reasons a re-run should re-attempt — the judge could not *run* the
+# comparison (a transient network/provider hiccup), mirroring grade's
+# TRANSIENT_CANT_GRADE. Everything else (context_overflow, parse, malformed,
+# identity/secret leak, refusal, judge_cant_judge) is deterministic for a fixed
+# packet, so retrying would only reproduce it — terminal, stays skipped.
+TRANSIENT_CANT_JUDGE = frozenset(
+    {CantJudgeReason.TIMEOUT.value, CantJudgeReason.PROVIDER_ERROR.value}
+)
 
 
 class Evidence(BaseModel):

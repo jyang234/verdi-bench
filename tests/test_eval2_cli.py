@@ -85,6 +85,54 @@ def test_jd9_bench_judge_is_idempotent(tmp_path):
     assert len(after_second) == 1  # zero new verdicts on re-run
 
 
+def _seed_cant_verdict(ledger, ctx, *, comparison_id, reason):
+    from harness.ledger.events import append_verdict
+
+    append_verdict(ledger, ctx, verdict={
+        "winner": "CANT_JUDGE", "reason": reason, "evidence": [],
+        "confidence": "low", "order_inconsistent": False, "source": "judge",
+        "comparison_id": comparison_id,
+        "provenance": {
+            "judge_model": "fake/j", "rubric_sha256": "x", "packet_sha256": "y",
+            "call_ids": [], "orders": "both", "temperature": 0.0, "ts": "t",
+        },
+    })
+
+
+def test_m13_transient_cant_judge_is_retried(tmp_path):
+    """PRA-M13: a prior CANT_JUDGE(timeout) — the judge could not run — is
+    re-attempted on a re-run instead of permanently dropping the comparison."""
+    expdir = tmp_path / "exp"
+    ledger = _setup(expdir)
+    ctx = fixed_ctx(experiment_id="exp")
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-a", task_id="t1", arm="control", passed=True)
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-b", task_id="t1", arm="treatment", passed=False)
+    _seed_cant_verdict(ledger, ctx, comparison_id="cmp-t1-r0", reason="timeout")
+
+    r = runner.invoke(app, ["judge", str(expdir)])
+    assert r.exit_code == 0, r.output
+    verdicts = [e["verdict"] for e in find_events(ledger, "judge_verdict")]
+    # the transient CANT was retried: a real verdict now exists for the comparison
+    reals = [v for v in verdicts if v["comparison_id"] == "cmp-t1-r0" and v["winner"] != "CANT_JUDGE"]
+    assert len(reals) == 1
+
+
+def test_m13_terminal_cant_judge_stays_skipped(tmp_path):
+    """PRA-M13: a terminal CANT_JUDGE (deterministic for a fixed packet) is not
+    re-attempted — no new verdict is appended for it."""
+    expdir = tmp_path / "exp"
+    ledger = _setup(expdir)
+    ctx = fixed_ctx(experiment_id="exp")
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-a", task_id="t1", arm="control", passed=True)
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-b", task_id="t1", arm="treatment", passed=False)
+    _seed_cant_verdict(ledger, ctx, comparison_id="cmp-t1-r0", reason="identity_leak")
+
+    before = len(find_events(ledger, "judge_verdict"))
+    r = runner.invoke(app, ["judge", str(expdir)])
+    assert r.exit_code == 0, r.output
+    assert len(find_events(ledger, "judge_verdict")) == before  # not retried
+
+
 def _seed_trial_with_workspace(ledger, ctx, *, trial_id, task_id, arm, workspace, passed):
     """Seed one trial whose artifacts_path points at a real on-disk workspace, so
     the judge assembles a diff from actual files."""

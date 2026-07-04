@@ -11,10 +11,49 @@ from hypothesis import strategies as st
 from harness.judge.packet import (
     IdentityLeakError,
     ResponseArtifacts,
+    SecretLeakError,
     build_packet,
     validate_identity_free,
+    validate_secret_free,
 )
 from tests.fixtures.judge_fakes import make_packet
+
+
+def test_m5_symlink_escape_excluded_from_workspace_diff(tmp_path):
+    """PRA-M5: a symlink planted in the workspace pointing at a host file must
+    not have its target's contents read into the (blind) judge packet."""
+    from harness.judge.assemble import _read_workspace_diff
+
+    secret_host = tmp_path / "host_secret.txt"
+    secret_host.write_text("HOST_SECRET sk-not-yours-1234567890abcdef", encoding="utf-8")
+    ws = tmp_path / "ws"
+    (ws / "artifacts").mkdir(parents=True)
+    (ws / "solution.py").write_text("print('mine')\n", encoding="utf-8")
+    # a symlinked file and a symlinked directory, both escaping the workspace
+    (ws / "leak.txt").symlink_to(secret_host)
+    (ws / "escape_dir").symlink_to(tmp_path)
+
+    diff = _read_workspace_diff(str(ws / "artifacts"))
+    assert "print('mine')" in diff  # the real file is included
+    assert "HOST_SECRET" not in diff  # neither symlink leaked host content
+    assert "sk-not-yours" not in diff
+
+
+def test_l4_secret_in_packet_blocks_send():
+    """PRA-L4: a provider-key-shaped secret in the packet fails closed before any
+    provider call (defense-in-depth over trial-time redaction)."""
+    pkt = build_packet(
+        ResponseArtifacts(diff="leftover key sk-abcdefghij0123456789", holdout_results=[]),
+        ResponseArtifacts(diff="clean", holdout_results=[]),
+        task_prompt="task",
+        rubric="rubric",
+    )
+    with pytest.raises(SecretLeakError):
+        validate_secret_free(pkt)
+
+
+def test_l4_clean_packet_secret_free():
+    validate_secret_free(make_packet())  # no raise
 
 
 def test_ac2_packet_allowlist_only():

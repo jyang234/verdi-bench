@@ -50,10 +50,23 @@ def _read_workspace_diff(artifacts_path) -> str:
     workspace = artifacts_dir.parent
     if not workspace.is_dir():
         return ""
+    # PRA-M5: never follow a symlink out of the workspace. An agent-controlled
+    # workspace can plant a symlink (a file, or a directory rglob would descend)
+    # pointing at a host path; following it read arbitrary host contents verbatim
+    # into the blind judge packet (and validate_identity_free only re-scans for
+    # *identity*, so host secrets/other-arm files passed straight through). Skip
+    # link files, and confine every read to the resolved workspace subtree so a
+    # file reached through a symlinked directory is excluded too. Mirrors the
+    # grade container's copytree(symlinks=True) no-follow stance.
+    ws_real = workspace.resolve()
     parts: list[str] = []
     for p in sorted(workspace.rglob("*")):
+        if p.is_symlink():
+            continue
         if not p.is_file():
             continue
+        if not p.resolve().is_relative_to(ws_real):
+            continue  # reached through a symlinked directory into another tree
         if artifacts_dir in p.parents:
             continue
         if p.name == _GRADER_OUTPUT:
