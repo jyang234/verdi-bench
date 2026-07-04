@@ -139,7 +139,7 @@ def test_phase4_exit_admission_reachable_and_schedulable_gate(tmp_path):
     keyfile = tmp_path / "alice.key"
     keyfile.write_text(_CURATOR_PRIV, encoding="utf-8")
     keyring = tmp_path / "keyring.json"
-    keyring.write_text(json.dumps([_CURATOR_PUB]), encoding="utf-8")
+    keyring.write_text(json.dumps({"alice": _CURATOR_PUB}), encoding="utf-8")  # D-P7-3
     expdir = tmp_path / "exp"
     expdir.mkdir()
     ledger = expdir / "ledger.ndjson"

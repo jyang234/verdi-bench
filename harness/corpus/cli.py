@@ -236,7 +236,10 @@ def register(app: typer.Typer) -> None:
         candidate_id: str = typer.Option(..., "--candidate-id"),
         task_sha: str = typer.Option(..., "--task-sha"),
         baseline_ref: str = typer.Option(..., "--baseline-ref"),
-        keyring: Path = typer.Option(..., "--keyring", help="Authorized curator public keys (JSON list)"),
+        keyring: Path = typer.Option(
+            ..., "--keyring",
+            help="Authorized curators (JSON object: approver id -> public-key hex) [D-P7-3]",
+        ),
         actor: str = typer.Option(None, "--actor", help="Actor recorded on the admission [GR-12]"),
     ) -> None:
         """Admit a curated candidate — verifies the signed approval + clean baseline."""

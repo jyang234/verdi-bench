@@ -107,21 +107,35 @@ def admit_task(
             f"candidate {candidate_id!r} has no curation_approval event; a mined "
             "task requires human curation before admission [AC-4]"
         )
-    # D-P4-3: the approval must be a valid signature by an authorized curator who
-    # is not the miner — a signature is an authorization check, not just integrity.
+    # D-P7-3: identity-bound authorization. Resolve the *named* approver in the
+    # keyring and verify the signature against THAT approver's registered key —
+    # not the self-attested signer_public_key. Verifying against the self-attested
+    # key let any authorized-key holder self-approve by relabeling the approver;
+    # binding to the named approver's key refuses that (a relabeled approval no
+    # longer verifies under the impersonated approver's key).
+    approver = approval["approver"]
+    if approver not in keyring:
+        raise UnauthorizedCuratorError(
+            f"curation approval for {candidate_id!r} names approver {approver!r}, "
+            "who is not in the authorized-curator keyring; only registered "
+            "approver identities can admit a task [D-P7-3]"
+        )
+    authorized_key = keyring[approver]
     if not verify_approval(
-        approval.get("signature", ""), approval.get("signer_public_key", ""),
-        candidate_id=candidate_id, task_sha=task_sha, approver=approval["approver"],
+        approval.get("signature", ""), authorized_key,
+        candidate_id=candidate_id, task_sha=task_sha, approver=approver,
     ):
         raise AttestationError(
-            f"curation approval for {candidate_id!r} has an invalid signature; "
-            "admission requires a verifiable curator attestation [D-P4-3]"
+            f"curation approval for {candidate_id!r} does not verify against the "
+            f"registered key for approver {approver!r}; a signature under any "
+            "other key (including a relabeled self-approval) is refused [D-P7-3]"
         )
-    if approval["signer_public_key"] not in keyring:
+    # Defense in depth: the self-attested signer key must equal the keyring key,
+    # so a mismatched attestation is a loud refusal rather than silently ignored.
+    if approval.get("signer_public_key") != authorized_key:
         raise UnauthorizedCuratorError(
-            f"curation approval for {candidate_id!r} is signed by a key not in the "
-            "authorized-curator keyring; a self-generated key cannot launder an "
-            "approval [D-P4-3]"
+            f"curation approval for {candidate_id!r} attests a signer key that "
+            f"does not match the keyring key for approver {approver!r} [D-P7-3]"
         )
     # The approver≠miner bar can only be enforced if the miner is recorded; a
     # candidate with no miner cannot be verified, so admission is refused rather
@@ -188,7 +202,7 @@ def _admit_entrypoint(ctx_dir: str) -> None:
     )
     admit_task(manifest, d / "ledger.ndjson", EventContext(experiment_id="prop"),
                candidate_id="cand-prop", task_sha=_PROP_SHA, baseline_ref="b1",
-               keyring={_CURATOR_PUB})
+               keyring={"curator": _CURATOR_PUB})
 
 
 def _register() -> None:
