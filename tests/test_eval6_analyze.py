@@ -52,10 +52,28 @@ def _full_corpus():
 
 def _seed_full_calibration(ledger, ctx, *, corpus_id="public-mini", semver="1.0.0"):
     """Ledger a full-run-validated calibration_run for the corpus — the chain-
-    anchored status the AN-2 fence binds to (not the mutable manifest JSON)."""
+    anchored status the AN-2 fence binds to (not the mutable manifest JSON).
+
+    Also seeds a passing selfcheck: EVAL-1-D008 makes a passed ledgered selfcheck
+    an official-render prerequisite, so the official-ready fixtures need one.
+    (A refusal test that trips an earlier fence check still refuses — the
+    selfcheck check is the fence's last.)"""
     record_calibration_run(
         ledger, ctx, corpus_id=corpus_id, semver=semver, kind="full",
         run={"p": 0.5, "rho": 0.3, "n_tasks": 5}, status="full-run-validated",
+    )
+    _seed_selfcheck_pass(ledger, ctx)
+
+
+def _seed_selfcheck_pass(ledger, ctx):
+    """A passing selfcheck event [EVAL-1-D008], hand-seeded for official tests
+    that are not exercising the selfcheck itself."""
+    from harness.ledger.events import record_selfcheck
+
+    record_selfcheck(
+        ledger, ctx, selected_method="percentile", nominal=0.95, coverage=0.95,
+        mc_interval=[0.9, 1.0], n_sim=200, n_boot=1000, n_tasks=5,
+        null_model="paired_binary", passed=True,
     )
 
 
@@ -866,8 +884,8 @@ def test_analyze_one_render_event(tmp_path):
     app = typer.Typer()
     register(app)
     before = len(find_events(ledger, "findings_rendered"))
-    # single-command Typer app ⇒ invoke without the command name
-    result = CliRunner().invoke(app, [str(tmp_path / "e"), "--exploratory"])
+    # register() now attaches both `analyze` and `selfcheck`, so name the command
+    result = CliRunner().invoke(app, ["analyze", str(tmp_path / "e"), "--exploratory"])
     assert result.exit_code == 0, result.output
     after = len(find_events(ledger, "findings_rendered"))
     assert after - before == 1

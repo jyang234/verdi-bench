@@ -71,6 +71,10 @@ class RubricMismatchError(AnalyzeError):
     lock's committed rubric_sha256 — the rubric was swapped after lock [D-P7-6]."""
 
 
+class SelfcheckRequiredError(AnalyzeError):
+    """Official render requested without a passed ledgered selfcheck [EVAL-1-D008]."""
+
+
 class ProvenanceError(AnalyzeError):
     """A finding is missing provenance, or the head hash no longer verifies."""
 
@@ -898,6 +902,19 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
                 f"disagree with the locked rubric_sha256 {locked_rubric_sha}; the "
                 "judging rubric was swapped after the lock [D-P7-6]"
             )
+    # 5. self-validation [EVAL-1-D008]: a ledgered `selfcheck` event with
+    # passed=true must exist. Absent or failed ⇒ the experiment is
+    # exploratory-only; the official finding is refused.
+    from .selfcheck import selfcheck_passed
+
+    passed = selfcheck_passed(ledger_path)
+    if passed is not True:
+        detail = "no selfcheck has been run" if passed is None else "the selfcheck failed"
+        raise SelfcheckRequiredError(
+            f"official render refused: {detail}. Run `bench selfcheck "
+            "<experiment-dir>` and pass it before the first official finding "
+            "[EVAL-1-D008]"
+        )
 
 
 def _override_lines(findings: FindingsDocument) -> list[str]:

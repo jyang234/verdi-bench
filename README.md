@@ -66,8 +66,9 @@ uv run bench run    <experiment-dir>                          # execute trials
 uv run bench grade  <experiment-dir>                          # deterministic grades
 uv run bench grade  <experiment-dir> --retry-terminal <trial-id>   # ledgered terminal-cant_grade override
 uv run bench judge  <experiment-dir>                          # identity-blind advisory verdicts (idempotent)
+uv run bench selfcheck <experiment-dir>                      # D008 coverage selfcheck (required before official)
 uv run bench analyze <experiment-dir> --exploratory                # watermarked findings
-uv run bench analyze <experiment-dir> --official --corpus m.json   # fenced official render
+uv run bench analyze <experiment-dir> --official --corpus m.json   # fenced official render (requires a passed selfcheck)
 uv run bench verify-chain ledger.ndjson [--against-anchor anchors.ndjson]
 uv run bench anchor ledger.ndjson --out anchors.ndjson       # refuses a tampered ledger
 

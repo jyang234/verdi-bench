@@ -412,7 +412,7 @@ the listed condition holds:
 | Invariant (§6) | Current status | Flips when |
 |---|---|---|
 | Arms insulated; no rubric/holdout content to the agent | **Enforced (Phase 6)** — the insulation property test is now genuine: canary refusal is tested across every request channel (prompt, arm payload, fake_behavior) and the tautological prompt assertion was replaced (XC-4); leak-refusal genuine; Phase 1 exit done | Phase 6 (XC-4 fixed) ✓ |
-| Fail closed; no operation without a ledger event | **Enforced (Phase 3)** — the one-event property sweep covers every ledgered stage operation (13 entrypoints today; 14 once the EVAL-1-D008 `selfcheck` lands, expected-set asserted); judge/process/review/analyze/corpus fail-closed | Phase 3 exit (all-stage property sweep) ✓ |
+| Fail closed; no operation without a ledger event | **Enforced (Phase 3)** — the one-event property sweep covers every ledgered stage operation (14 entrypoints incl. the EVAL-1-D008 `selfcheck`, expected-set asserted); judge/process/review/analyze/corpus fail-closed | Phase 3 exit (all-stage property sweep) ✓ |
 | Claims tagged [computed]/[judgment]; provenance stamped | **Enforced (Phase 5)** — structured `claim_tag` on each finding (`report.py`), renders derive the `[computed]`/`[judgment]` marker, `test_ac6_finding_provenance` asserts every claim carries one; provenance real | Phase 5 (tags implemented + owned test) ✓ |
 | Orchestrator can't tamper (chain tamper-evident) | **Enforced (Phase 7)** — the writers now verify before acting: `bench anchor` chain-verifies before checkpointing (`ledger/anchors.py` `anchor_head`), `bench plan` `assert_chain`s an existing ledger before appending (`plan/lock.py`), and `append_event` refuses a truncated final line (`ledger/chain.py` `TruncatedLedgerError`) — the previously-unread tamper evidence is now consulted at the write seams (7A) | Phase 7 (7A) ✓ |
 | experiment.yaml sha-locked; primary/rule immutable | **Enforced (Phase 7)** — lock fence real; the TOCTOU/re-lock/tasks.yaml holes were closed by D-6 (task_commitment) and `bench plan` now chain-verifies a pre-existing ledger before appending; the judging rubric content is committed into the lock (`rubric_sha256`, D-P7-6) so a post-lock rubric swap is refused | Phase 7 (7A + D-P7-6) + D-6 ✓ |
@@ -423,9 +423,10 @@ the listed condition holds:
 **Before the first official finding** (master plan §9), additionally:
 full-run calibration recorded through a ledgered path (CO-4 fixed — a
 hand-editable JSON status does not satisfy EVAL-8 AC-2), the calibration fence
-bound to corpus identity (AN-2), and EVAL-1-D008 (A/A + coverage selfcheck)
-resolved — still OPEN in the idea ledger; the nullsim machinery it needs
-exists but must first run at the real N (AN-4).
+bound to corpus identity (AN-2), the judging rubric committed into the lock
+(D-P7-6), and EVAL-1-D008 (coverage selfcheck) **RESOLVED (Phase 7)**: `bench
+selfcheck` runs the nullsim at the realized N and ledgers a `selfcheck` event;
+the official fence refuses until a `passed=true` selfcheck exists.
 
 ## 7. Verified sound (carry forward — worth protecting with regression tests)
 

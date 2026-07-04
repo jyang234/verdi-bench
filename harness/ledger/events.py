@@ -335,6 +335,46 @@ def append_human_verdict(
 # ---------------------------------------------------------------------------
 FINDINGS_RENDERED = register_event("findings_rendered")
 CANT_ANALYZE = register_event("cant_analyze")
+SELFCHECK = register_event("selfcheck")
+
+
+def record_selfcheck(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    selected_method: str,
+    nominal: float,
+    coverage: Optional[float],
+    mc_interval: Optional[list],
+    n_sim: int,
+    n_boot: int,
+    n_tasks: int,
+    null_model: str,
+    passed: bool,
+) -> dict:
+    """Harness self-validation result [EVAL-1-D008; master plan §7.7].
+
+    Records the coverage self-check: the selected CI method's estimated coverage
+    under the recentered null at the realized N, its Monte-Carlo (Wilson 95%)
+    interval, and whether the nominal level lies within it (``passed``). A **new
+    additive event kind** — old ledgers simply lack it, so no existing hash chain
+    is invalidated. The official fence requires a ``passed=true`` selfcheck."""
+    return emit(
+        ledger_path,
+        ctx,
+        SELFCHECK,
+        {
+            "selected_method": selected_method,
+            "nominal": nominal,
+            "coverage": coverage,
+            "mc_interval": mc_interval,
+            "n_sim": n_sim,
+            "n_boot": n_boot,
+            "n_tasks": n_tasks,
+            "null_model": null_model,
+            "passed": passed,
+        },
+    )
 
 
 def record_cant_analyze(

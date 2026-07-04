@@ -404,6 +404,11 @@ def test_ac6_exploratory_rendering(tmp_path):
     manifest.calibration.status = "full-run-validated"
     record_calibration_run(ledger, ctx, corpus_id="public-mini", semver="1.0.0", kind="full",
                            run={"p": 0.5, "rho": 0.3, "n_tasks": 3}, status="full-run-validated")
+    # EVAL-1-D008: the official fence requires a passed ledgered selfcheck.
+    from harness.ledger.events import record_selfcheck
+    record_selfcheck(ledger, ctx, selected_method="percentile", nominal=0.95,
+                     coverage=0.95, mc_interval=[0.9, 1.0], n_sim=200, n_boot=1000,
+                     n_tasks=3, null_model="paired_binary", passed=True)
     findings2 = compute_findings(ledger, spec, spec.seed, corpus_manifest=manifest,
                                  coverage_n_sim=20, n_boot=200)
     official = render_markdown(findings2, ledger, "official", corpus_manifest=manifest)

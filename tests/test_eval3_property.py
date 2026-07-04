@@ -45,6 +45,7 @@ EXPECTED_ENTRYPOINTS = {
     "review-record",
     "review-reveal",
     "analyze",
+    "selfcheck",  # EVAL-1-D008: the coverage selfcheck ledgers one event
     "corpus-admit",
     "corpus-calibration-run",
     "corpus-subset-draw",
