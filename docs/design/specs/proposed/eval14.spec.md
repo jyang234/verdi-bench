@@ -82,7 +82,8 @@ constraints:
   - text: "The UI renders what the seams return and never re-derives statistics client-side; fence and watermark vocabulary comes from the same code paths bench analyze uses."
     enforced_by: "AC-6/AC-7 tests on graduation"
 
-decisions: []
+decisions:
+  - "EVAL-14-D004"  # per-step content (RESOLVED: trajectory-v3-additive-detail — capture-side slice behind P0, five guardrail ACs recorded in eval14.decisions.ndjson)
 open_decisions:
   - "EVAL-14-D001"  # frontend form: dependency-free single-file JS (recommended) vs build step
   - "EVAL-14-D002"  # trial detail default: side panel + enter-to-page (recommended) vs always full page
@@ -133,6 +134,15 @@ history, live token streaming, auto-declared winners.
 P0: AC-1..AC-5 (workspace + drill-down + routing/feed ergonomics).
 P1: AC-6..AC-7 (compare + findings). AC-8 holds throughout.
 P2 polish (ETA estimate, saved views, sparklines) rides later stories.
+
+Trajectory v3 (D004, resolved): the per-step `detail` capture is a separate
+capture-side slice — schema_version 3, adapters, and the five guardrail ACs
+from eval14.decisions.ndjson — sequenced behind P0. Trial detail (AC-2)
+ships rendering the current step schema plus the whole-trial workspace diff;
+`detail` lights up where present, and absent detail renders "not captured in
+this record version" (old records never backfill). Per-step patch
+affordances are claude-code-mostly by data availability; codex steps show
+commands/timings.
 
 ## Out of scope
 
