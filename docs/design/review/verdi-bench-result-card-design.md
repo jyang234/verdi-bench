@@ -133,8 +133,15 @@ A `card` command group (the repo's idiom for multi-action verbs):
    refusal, and a SWE-bench materialized run producing a card with the swe-bench
    battery identity + per-arm resolved rates. README verb docs + usage-guide
    section.
-2. *(Future, not now)* a human-facing render (markdown/HTML) of the card, and a
-   published reference dossier of two real models on a SWE-bench subset.
+2. **Human render (done).** `render_card_markdown` + a self-contained
+   `render_card_html` (no external references, like the dossier), wired to
+   `card emit --format json|md|html`. Both are deterministic projections of the
+   JSON card that carry the honesty stamps.
+   - The *reference dossier of two real models* is deliberately **not**
+     fabricated: it needs live model APIs + the battery's grading images, which
+     the dev sandbox blocks. The usage guide documents the exact recipe to
+     produce it in a real/CI environment; shipping a fake one would be the
+     dishonesty the instrument exists to prevent.
 
 ## What this does and does not claim
 

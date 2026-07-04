@@ -14,7 +14,14 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from harness.analyze.card import CardError, build_card, compare_cards, serialize_card
+from harness.analyze.card import (
+    CardError,
+    build_card,
+    compare_cards,
+    render_card_html,
+    render_card_markdown,
+    serialize_card,
+)
 from harness.cli import app
 from harness.ledger.query import find_events
 from harness.schema.experiment import ExperimentSpec
@@ -154,6 +161,39 @@ def test_cli_emit_and_compare_roundtrip(tmp_path):
     _ok("card", "emit", e2, "--out", tmp_path / "b.json")
     r = _ok("card", "compare", tmp_path / "a.json", tmp_path / "b.json")
     assert '"comparable": true' in r.output
+
+
+# --- human renders (slice 2) ------------------------------------------------
+def test_markdown_render_is_deterministic_and_shows_score_and_delta(tmp_path):
+    expdir, spec = _graded_analyzed(tmp_path, control_pass=True, treatment_pass=False)
+    card = _card(expdir, spec)
+    md = render_card_markdown(card)
+    assert md == render_card_markdown(card)              # byte-deterministic
+    # co-equal: both the per-arm absolute score AND the paired delta are present
+    assert "absolute score" in md and "1.0000" in md
+    assert "delta = 1.0000" in md
+    # honesty stamps survive the render
+    assert "Tier:** ADVISORY" in md and "battery_sha" in md
+    assert "ADVISORY: " in md or "ADVISORY tier" in md
+
+
+def test_html_render_is_self_contained_and_deterministic(tmp_path):
+    expdir, spec = _graded_analyzed(tmp_path)
+    card = _card(expdir, spec)
+    one = render_card_html(card)
+    assert one == render_card_html(card)
+    # same archivability discipline as the dossier: no external/active references
+    for needle in ("http://", "https://", "src=", "href=", "url(", "@import", "<script", "<link"):
+        assert needle not in one, f"external/active reference {needle!r} in card html"
+    assert "battery_sha" not in one or card["battery"]["battery_sha"] in one  # the sha itself is shown
+
+
+def test_cli_emit_md_and_html(tmp_path):
+    expdir, _ = _graded_analyzed(tmp_path)
+    r_md = _ok("card", "emit", expdir, "--format", "md")
+    assert "# verdi-bench result card" in r_md.output
+    _ok("card", "emit", expdir, "--format", "html", "--out", tmp_path / "card.html")
+    assert "<!doctype html>" in (tmp_path / "card.html").read_text()
 
 
 def test_swebench_card_has_corpus_battery_and_resolved_rates(tmp_path):

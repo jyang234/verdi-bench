@@ -195,6 +195,150 @@ def serialize_card(card: dict) -> str:
     return json.dumps(card, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+# --- human-facing renders (pure projections of the card dict) ---------------
+def _fmt_score(v) -> str:
+    return "n/a (pairwise-only)" if v is None else f"{v:.4f}"
+
+
+def _fmt(v) -> str:
+    return "n/a" if v is None else (f"{v:.4f}" if isinstance(v, float) else str(v))
+
+
+def render_card_markdown(card: dict) -> str:
+    """A human-readable markdown render — deterministic, leads with the co-equal
+    score + delta, and keeps every honesty stamp visible."""
+    b = card["battery"]
+    inst = card["instrument"]
+    prov = card["provenance"]
+    comp = card.get("comparison") or {}
+    lines: list[str] = []
+    lines.append(f"# verdi-bench result card — {b.get('corpus_id') or 'experiment'}")
+    lines.append("")
+    lines.append(
+        f"**Tier:** {inst['tier']} · **Mode:** {prov['mode']} · "
+        f"**Primary metric:** `{card['primary_metric']}` · **Battery n:** {b['n_tasks']}"
+    )
+    lines.append("")
+    lines.append("## Scores (per arm)")
+    lines.append("")
+    lines.append("| arm | model | absolute score | n |")
+    lines.append("|---|---|---|---|")
+    for a in card["arms"]:
+        lines.append(
+            f"| {a['name']} | `{a['model']}` | {_fmt_score(a['absolute_score'])} | {a['n']} |"
+        )
+    lines.append("")
+    lines.append("## Comparison (paired)")
+    lines.append("")
+    if comp:
+        lines.append(
+            f"`{comp['arm_a']}` vs `{comp['arm_b']}`: **delta = {_fmt(comp['delta'])}**, "
+            f"{_fmt(comp.get('ci_level'))} CI [{_fmt(comp['ci_low'])}, {_fmt(comp['ci_high'])}] "
+            f"({comp.get('ci_method')}); detected: {comp.get('detected')}; "
+            f"official: {comp.get('official_decision')}."
+        )
+        lines.append("")
+        lines.append(f"Decision rule: `{card['decision_rule']}` · MDE: {_fmt(comp.get('mde'))}")
+    else:
+        lines.append("_no comparison available_")
+    lines.append("")
+    lines.append("## Battery (comparability key)")
+    lines.append("")
+    dataset = b.get("dataset")
+    ds = f" · dataset {dataset['name']}@{dataset['version']}" if dataset else ""
+    lines.append(f"`battery_sha` = `{b['battery_sha']}`")
+    lines.append("")
+    lines.append(
+        f"basis: **{b['battery_basis']}** · corpus: {b.get('corpus_id')} {b.get('semver') or ''}{ds}"
+    )
+    lines.append("")
+    lines.append(
+        "> Two cards are comparable **iff** their `battery_sha`, basis, and primary "
+        "metric match. `bench card compare` refuses otherwise."
+    )
+    lines.append("")
+    lines.append("## Provenance")
+    lines.append("")
+    lines.append(f"- spec_sha256: `{prov.get('spec_sha256')}`")
+    lines.append(f"- lock_commitment_sha: `{prov.get('lock_commitment_sha')}`")
+    lines.append(
+        f"- ledger_head: `{prov.get('ledger_head')}` (chain {'ok' if prov.get('chain_ok') else 'BROKEN'})"
+    )
+    lines.append(f"- selfcheck: {prov.get('selfcheck')} · rubric committed: {prov.get('rubric_committed')}")
+    lines.append("")
+    d = card["disclosures"]
+    lines.append("## Disclosures")
+    lines.append("")
+    lines.append(f"- confounds: {', '.join(d['confounds']) or 'none'}")
+    contam = d.get("contamination") or {}
+    lines.append(
+        f"- contamination: probe {contam.get('probe_status', 'n/a')}; "
+        f"asymmetric: {', '.join(contam.get('asymmetric', [])) or 'none'}"
+    )
+    lines.append(f"- excluded metrics: {', '.join(d['excluded_metrics']) or 'none'}")
+    lines.append("")
+    lines.append(
+        f"_Instrument {inst['version']} ({inst['git_sha'][:12]}). ADVISORY tier: a "
+        "comparable number, not an authoritative leaderboard entry._"
+    )
+    return "\n".join(lines) + "\n"
+
+
+def render_card_html(card: dict) -> str:
+    """A compact, self-contained HTML card (inline style, no external references)
+    — the shareable/publishable artifact. Byte-deterministic for a fixed card."""
+    import html as _html
+
+    b = card["battery"]
+    prov = card["provenance"]
+    comp = card.get("comparison") or {}
+    inst = card["instrument"]
+
+    def esc(x) -> str:
+        return _html.escape(str(x))
+
+    rows = "".join(
+        f"<tr><td>{esc(a['name'])}</td><td><code>{esc(a['model'])}</code></td>"
+        f"<td class=n>{esc(_fmt_score(a['absolute_score']))}</td><td class=n>{a['n']}</td></tr>"
+        for a in card["arms"]
+    )
+    delta_line = (
+        f"<b>delta {esc(_fmt(comp.get('delta')))}</b>, "
+        f"{esc(_fmt(comp.get('ci_level')))} CI [{esc(_fmt(comp.get('ci_low')))}, "
+        f"{esc(_fmt(comp.get('ci_high')))}] ({esc(comp.get('ci_method'))}); "
+        f"detected {esc(comp.get('detected'))}; official {esc(comp.get('official_decision'))}"
+        if comp else "no comparison"
+    )
+    dataset = b.get("dataset")
+    ds = f" &middot; dataset {esc(dataset['name'])}@{esc(dataset['version'])}" if dataset else ""
+    style = (
+        "body{font:14px system-ui,sans-serif;margin:2rem;max-width:52rem}"
+        "table{border-collapse:collapse;width:100%;margin:.5rem 0}"
+        "td,th{border:1px solid #ccc;padding:.3rem .5rem;text-align:left}"
+        ".n{text-align:right;font-variant-numeric:tabular-nums}"
+        "code{background:#f2f2f2;padding:0 .2rem;border-radius:3px;word-break:break-all}"
+        ".stamp{color:#666;font-size:.85em}.sha{font-family:monospace;word-break:break-all}"
+    )
+    return (
+        "<!doctype html><html lang=en><head><meta charset=utf-8>"
+        f"<title>verdi-bench result card</title><style>{style}</style></head><body>"
+        f"<h1>verdi-bench result card &mdash; {esc(b.get('corpus_id') or 'experiment')}</h1>"
+        f"<p class=stamp>Tier {esc(inst['tier'])} &middot; mode {esc(prov['mode'])} &middot; "
+        f"metric <code>{esc(card['primary_metric'])}</code> &middot; battery n {esc(b['n_tasks'])}</p>"
+        f"<h2>Scores</h2><table><tr><th>arm</th><th>model</th><th>absolute score</th><th>n</th></tr>{rows}</table>"
+        f"<h2>Comparison</h2><p>{delta_line}<br><span class=stamp>rule "
+        f"<code>{esc(card['decision_rule'])}</code> &middot; MDE {esc(_fmt(comp.get('mde')))}</span></p>"
+        f"<h2>Battery</h2><p class=sha>{esc(b['battery_sha'])}</p>"
+        f"<p class=stamp>basis {esc(b['battery_basis'])}{ds}. Comparable iff battery_sha + basis + metric match.</p>"
+        f"<h2>Provenance</h2><p class=sha>spec {esc(prov.get('spec_sha256'))}<br>"
+        f"ledger head {esc(prov.get('ledger_head'))} (chain {'ok' if prov.get('chain_ok') else 'BROKEN'}) "
+        f"&middot; selfcheck {esc(prov.get('selfcheck'))}</p>"
+        f"<p class=stamp>Instrument {esc(inst['version'])}. ADVISORY: a comparable number, "
+        "not an authoritative leaderboard entry.</p>"
+        "</body></html>"
+    )
+
+
 # --- comparability ---------------------------------------------------------
 def _comparability_key(card: dict) -> tuple:
     b = card.get("battery", {})

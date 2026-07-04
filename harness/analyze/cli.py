@@ -196,16 +196,26 @@ def register(app: typer.Typer) -> None:
             None, "--corpus",
             help="Corpus manifest.json → image-insensitive, cross-mirror battery_sha",
         ),
-        out: Path = typer.Option(None, "--out", help="Write the card json here (default: stdout)"),
+        fmt: str = typer.Option(
+            "json", "--format",
+            help="json (canonical/comparable) | md (human) | html (self-contained)",
+        ),
+        out: Path = typer.Option(None, "--out", help="Write the card here (default: stdout)"),
     ) -> None:
         """Emit a benchmark result card — a read-only projection of an analyzed run.
 
         Requires a prior `bench analyze` (the card certifies a rendered result).
+        The `json` form is the canonical, comparable artifact (feed it to
+        `card compare`); `md`/`html` are human renders of the same card.
         """
         from ..corpus.commit import load_task_dicts
         from ..plan.lock import assert_lock
-        from .card import CardError, build_card, serialize_card
+        from .card import (
+            CardError, build_card, render_card_html, render_card_markdown, serialize_card,
+        )
 
+        if fmt not in ("json", "md", "html"):
+            raise typer.BadParameter("--format must be json, md, or html")
         spec = assert_lock(
             experiment_dir / "experiment.yaml", experiment_dir / "ledger.ndjson"
         ).spec
@@ -223,12 +233,17 @@ def register(app: typer.Typer) -> None:
         except CardError as e:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
-        text = serialize_card(card)
+        text = (
+            serialize_card(card) if fmt == "json"
+            else render_card_markdown(card) if fmt == "md"
+            else render_card_html(card)
+        )
         if out is not None:
-            Path(out).write_text(text + "\n", encoding="utf-8")
+            Path(out).write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
             b = card["battery"]
             typer.echo(
-                f"card → {out} (battery_sha={b['battery_sha'][:12]}…, basis={b['battery_basis']})"
+                f"card ({fmt}) → {out} "
+                f"(battery_sha={b['battery_sha'][:12]}…, basis={b['battery_basis']})"
             )
         else:
             typer.echo(text)

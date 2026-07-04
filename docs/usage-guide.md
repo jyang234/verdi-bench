@@ -769,6 +769,45 @@ against the chain. What it does **not** do: turn verdi into a leaderboard or vou
 that your corpus is representative — the `ADVISORY` tier and subset `n` stay on
 the card so a comparable number is never mistaken for an authoritative one.
 
+### Human-readable renders
+
+The JSON form is the canonical, comparable artifact (feed it to `card compare`).
+For reading or sharing, render the same card as markdown or a self-contained
+HTML page (inline styles, no external references — archivable like the dossier):
+
+```bash
+uv run bench card emit <exp> --format md                     # human markdown to stdout
+uv run bench card emit <exp> --format html --out run.card.html   # shareable page
+```
+
+Both are deterministic projections of the JSON card — they add no data, and the
+`ADVISORY`/mode/`n` stamps ride along so a shared card stays honest about scope.
+
+### Producing a real reference card (what it takes)
+
+To publish a *reference* card comparing two real models on a public battery, you
+need three things this repo cannot supply for you: the exported dataset (§10),
+provider credentials for each arm (`run.config.yaml`, §6 — ideally per-arm keys),
+and the battery's grading images (for SWE-bench, its per-instance images). With
+those in a real environment (or a CI job with egress + a daemon), the recipe is:
+
+```bash
+uv run bench corpus import instances.jsonl --cache ./cache --benchmark swebench
+uv run bench corpus materialize ./cache/manifest.json --cache ./cache --out ./exp
+# add two arms + a third-vendor judge to ./exp/experiment.yaml, then:
+uv run bench plan ./exp/experiment.yaml --ledger ./exp/ledger.ndjson
+uv run bench run ./exp --engine harbor          # real models via the metering proxy
+uv run bench grade ./exp --runner docker        # the battery's grading image
+uv run bench analyze ./exp --official --corpus ./cache/manifest.json
+uv run bench card emit ./exp --corpus ./cache/manifest.json --format html --out reference.card.html
+```
+
+The card's `battery_sha` lets anyone else who ran the same subset drop their card
+next to yours with `card compare` — the comparable, citable artifact that was the
+whole point. verdi deliberately does not ship a fabricated reference card: an
+`ADVISORY` number stamped as if it were a measured model comparison would be
+exactly the dishonesty the instrument exists to prevent.
+
 ---
 
 ## 12. Where to go next
