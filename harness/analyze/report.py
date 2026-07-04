@@ -413,7 +413,8 @@ def _judge_calibration(ledger_path, spec, seed) -> Optional[dict]:
         "min_human_verdicts": esc.min_human_verdicts,
         "single_order_verdicts": single_order,
         "by_class": {
-            c: {"kappa": v.kappa, "n": v.n, "sufficient": v.sufficient, "escalate": v.escalate}
+            c: {"kappa": v.kappa, "n": v.n, "sufficient": v.sufficient,
+                "escalate": v.escalate, "sensitivity": v.sensitivity}
             for c, v in sorted(cal.items())
         },
         "escalation_candidates": sorted(c for c, v in cal.items() if v.escalate),
@@ -1029,6 +1030,11 @@ def _judge_calibration_lines(findings: FindingsDocument) -> list[str]:
         else:
             flag = " ESCALATE" if c["escalate"] else ""
             lines.append(f"- {cls}: kappa={_fmt(c['kappa'], 3)} (n={c['n']}){flag}")
+            # D-P7-4: the floor-only sensitivity beside the IPW headline, so the
+            # reweighting's leverage on the headline is visible.
+            sens = c.get("sensitivity")
+            if sens is not None:
+                lines.append(f"  - sensitivity (floor-only): kappa={_fmt(sens, 3)}")
     if jc["escalation_candidates"]:
         lines.append(f"- escalation candidates: {jc['escalation_candidates']}")
     return lines

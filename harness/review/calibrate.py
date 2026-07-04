@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from ..judge.calibrate import ClassCalibration
-from .kappa import KappaEstimator, estimate_kappa
+from .kappa import kappa_report
 from .sample import (
     comparisons_from_ledger,
     realized_floor_prob,
@@ -64,13 +64,17 @@ def kappa_by_class_ipw(
         if n < min_human_verdicts:
             out[cls] = ClassCalibration(cls, n, kappa=None, sufficient=False, escalate=False)
             continue
-        k = estimate_kappa(cls_items, KappaEstimator.ipw, floor_prob=floor_prob)
+        # D-P7-4: compute the IPW headline AND the floor-only sensitivity through
+        # kappa_report (its production caller), so the render can show both.
+        report = kappa_report(cls_items, floor_prob=floor_prob)
+        k = report.headline
         if k is None:
             # D-5: degenerate marginals ⇒ no chance-corrected information;
             # insufficient, not perfect, and cannot escalate on undefined.
             out[cls] = ClassCalibration(cls, n, kappa=None, sufficient=False, escalate=False)
             continue
         out[cls] = ClassCalibration(
-            cls, n, kappa=k, sufficient=True, escalate=k < kappa_threshold
+            cls, n, kappa=k, sufficient=True, escalate=k < kappa_threshold,
+            sensitivity=report.sensitivity,
         )
     return out
