@@ -12,44 +12,21 @@ zero [EVAL-4-D004].
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from ..ledger import events
 from ..ledger.query import find_events
-from ..run.trajectory import (
-    TRAJECTORY_FILENAME,
-    TrajectoryCorruptError,
-    load_trajectory,
-    trajectory_sha256,
-)
-
-# Closed trajectory-coverage vocabulary; only `verified` yields renderable steps.
-TRAJECTORY_STATUSES = ("verified", "absent", "missing_artifact", "sha_mismatch", "corrupt")
+from ..run.trajectory import resolve_trajectory
 
 
 def _trajectory_for(rec: dict, ledgered_sha) -> tuple[str, list | None]:
-    """Resolve one trial's trajectory to ``(status, steps-or-None)``.
-
-    Steps render only when the artifact bytes hash to the ledgered sha — an
-    edited or unhashed trajectory is a coverage gap with a named reason, never
-    silently treated as evidence.
+    """One trial's ``(status, steps-or-None)`` via the shared sha-verified
+    resolver — steps render only when the artifact bytes hash to the ledgered
+    sha; an edited or unhashed trajectory is a coverage gap with a named
+    reason, never silently treated as evidence. ``resolve_trajectory`` never
+    raises, so a bad artifact can't crash the render out of the AN-3 envelope.
     """
-    if ledgered_sha is None:
-        return "absent", None
-    artifacts_path = rec.get("artifacts_path")
-    if not artifacts_path:
-        return "missing_artifact", None
-    path = Path(artifacts_path) / TRAJECTORY_FILENAME
-    if not path.exists():
-        return "missing_artifact", None
-    raw = path.read_bytes()
-    if trajectory_sha256(raw) != ledgered_sha:
-        return "sha_mismatch", None
-    try:
-        record = load_trajectory(path)
-    except TrajectoryCorruptError:
-        return "corrupt", None
-    return "verified", [s.model_dump(mode="json") for s in record.steps]
+    status, record = resolve_trajectory(rec.get("artifacts_path"), ledgered_sha)
+    steps = None if record is None else [s.model_dump(mode="json") for s in record.steps]
+    return status, steps
 
 
 def trial_timeline(ledger_path) -> dict[str, dict[str, list[dict]]]:

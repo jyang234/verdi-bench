@@ -30,9 +30,6 @@ from .redact import redact_text
 TRAJECTORY_SCHEMA_VERSION = 1
 TRAJECTORY_FILENAME = "trajectory.json"
 
-# Closed step-kind vocabulary [AC-1]. Extending it bumps the schema version.
-STEP_KINDS = ("tool_call", "file_edit", "test_run", "message")
-
 
 class TrajectoryCorruptError(RuntimeError):
     """A trajectory could not be persisted or read back intact [AC-2].
@@ -95,15 +92,18 @@ def persist_trajectory(
     the trial closed, never persists silently wrong bytes.
     """
     text = canonical_bytes(record).decode("utf-8")
-    scrubbed, _ = redact_text(text, extra_patterns)
-    try:
-        clean = TrajectoryRecord.model_validate(json.loads(scrubbed))
-    except (json.JSONDecodeError, ValidationError) as e:
-        raise TrajectoryCorruptError(
-            f"trajectory for {record.trial_id} is not a valid record after "
-            f"redaction — refusing to persist a broken artifact [AC-2]: {e}"
-        ) from e
-    data = canonical_bytes(clean)
+    scrubbed, n_hits = redact_text(text, extra_patterns)
+    if n_hits:
+        # only a scrub that actually rewrote bytes can have broken the record's
+        # structure; re-validate before those bytes become the artifact
+        try:
+            TrajectoryRecord.model_validate(json.loads(scrubbed))
+        except (json.JSONDecodeError, ValidationError) as e:
+            raise TrajectoryCorruptError(
+                f"trajectory for {record.trial_id} is not a valid record after "
+                f"redaction — refusing to persist a broken artifact [AC-2]: {e}"
+            ) from e
+    data = scrubbed.encode("utf-8")
     path = Path(artifacts_dir) / TRAJECTORY_FILENAME
     try:
         path.write_bytes(data)
@@ -120,6 +120,17 @@ def persist_trajectory(
     return trajectory_sha256(data)
 
 
+def parse_trajectory(data: bytes, *, source: str = "trajectory artifact") -> TrajectoryRecord:
+    """Parse trajectory bytes; anything invalid is :class:`TrajectoryCorruptError`."""
+    try:
+        return TrajectoryRecord.model_validate(json.loads(data.decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValidationError) as e:
+        raise TrajectoryCorruptError(
+            f"{source} is corrupt (present but not a valid "
+            f"v{TRAJECTORY_SCHEMA_VERSION} record): {e}"
+        ) from e
+
+
 def load_trajectory(path) -> TrajectoryRecord:
     """Load a persisted trajectory artifact; corrupt content fails loud.
 
@@ -132,10 +143,37 @@ def load_trajectory(path) -> TrajectoryRecord:
         raw = path.read_bytes()
     except OSError as e:
         raise TrajectoryCorruptError(f"trajectory artifact {path} unreadable: {e}") from e
+    return parse_trajectory(raw, source=f"trajectory artifact {path}")
+
+
+def resolve_trajectory(artifacts_path, ledgered_sha) -> tuple[str, Optional[TrajectoryRecord]]:
+    """Resolve a trial's trajectory to ``(status, record-or-None)``.
+
+    The closed status vocabulary: ``verified`` (artifact bytes hash to the
+    ledgered sha — the only status that yields a record), ``absent`` (no
+    ledgered sha: pre-EVAL-12 trial or an honestly absent trajectory),
+    ``missing_artifact``, ``sha_mismatch``, and ``corrupt`` (present but
+    unreadable or unparseable). The sha and the parsed record come from the
+    same read, so a record is never evidence unless its exact bytes matched
+    the chain; readers (the dossier today, EVAL-11 forensics next) get one
+    verifier instead of each growing their own. Never raises — coverage gaps
+    are data with a named reason, and the run-path fail-closed door is
+    :func:`persist_trajectory`, not here.
+    """
+    if ledgered_sha is None:
+        return "absent", None
+    if not artifacts_path:
+        return "missing_artifact", None
+    path = Path(artifacts_path) / TRAJECTORY_FILENAME
     try:
-        return TrajectoryRecord.model_validate(json.loads(raw.decode("utf-8")))
-    except (UnicodeDecodeError, json.JSONDecodeError, ValidationError) as e:
-        raise TrajectoryCorruptError(
-            f"trajectory artifact {path} is corrupt (present but not a valid "
-            f"v{TRAJECTORY_SCHEMA_VERSION} record): {e}"
-        ) from e
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return "missing_artifact", None
+    except OSError:
+        return "corrupt", None
+    if trajectory_sha256(raw) != ledgered_sha:
+        return "sha_mismatch", None
+    try:
+        return "verified", parse_trajectory(raw, source=f"trajectory artifact {path}")
+    except TrajectoryCorruptError:
+        return "corrupt", None

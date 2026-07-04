@@ -172,28 +172,24 @@ RUN_STOPPED_COST_CEILING = register_event("run_stopped_cost_ceiling")
 EXECUTED_ORDER = register_event("executed_order")
 
 
-def record_trial(
-    ledger_path,
-    ctx: EventContext,
-    *,
-    trial_record: dict,
-    trajectory_sha: Optional[str] = None,
-) -> dict:
+def record_trial(ledger_path, ctx: EventContext, *, trial_record: dict) -> dict:
     """Embeds a normalized TrialRecord [AC-2].
 
     ``trajectory_sha`` (additive field, EVAL-12-D001) binds the persisted
     per-trial trajectory artifact to the chain, following the
     ``task_commitment``/``rubric_sha256`` insert-only-when-present precedent.
-    Absent field = pre-EVAL-12 trial or an honestly absent trajectory; no
-    reader may require it, and legacy chains are never refused over it.
-    The constructor hoists a ``trajectory_sha`` embedded in a full
-    ``TrialRecord`` dump out of the payload, so the ``trial_record`` shape on
-    the event is unchanged from pre-EVAL-12 and the sha lives in exactly one
-    place — the top-level event field.
+    Its single source is the ``TrialRecord`` dump itself: the constructor
+    hoists the embedded field out of the payload, so the ``trial_record``
+    shape on the event is unchanged from pre-EVAL-12 and the sha lives in
+    exactly one place — the top-level event field. Readers must take it from
+    the EVENT (``ev.get("trajectory_sha")``), never from a re-validated
+    ``TrialRecord`` (whose field is transport-only and always ``None`` after
+    a round-trip). Absent field = pre-EVAL-12 trial or an honestly absent
+    trajectory; no reader may require it, and legacy chains are never refused
+    over it.
     """
     trial_record = dict(trial_record)
-    embedded = trial_record.pop("trajectory_sha", None)
-    sha = trajectory_sha if trajectory_sha is not None else embedded
+    sha = trial_record.pop("trajectory_sha", None)
     payload: dict = {"trial_record": trial_record}
     if sha is not None:
         payload["trajectory_sha"] = sha

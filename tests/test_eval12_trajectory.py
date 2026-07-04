@@ -203,6 +203,31 @@ def test_ac2_corrupt_fails_closed(tmp_path):
     assert [ev["reason"] for ev in failures] == ["trajectory_corrupt"]
 
 
+def test_timeout_with_corrupt_native_log_keeps_datapoint(tmp_path):
+    """A timeout kill can truncate agent_log.json mid-write. The timeout outcome
+    is data (RN-17 keeps it at the engine seam); capture must record an honest
+    absent trajectory, not destroy the datapoint as trajectory_corrupt."""
+    rec = _run(
+        tmp_path, CLAUDE_ARM, CLAUDE_NATIVE,
+        outcome="timeout",
+        # overwrite the engine-written log with truncated bytes, as a kill
+        # mid-write would leave it
+        workspace_files={"artifacts/agent_log.json": "{truncated"},
+    )
+    from harness.adapters.base import Outcome
+
+    assert rec.outcome == Outcome.timeout
+    assert rec.trajectory_sha is None
+    assert not _trajectory_path(rec).exists()
+
+    # the same corrupt log on a COMPLETED trial still fails closed
+    with pytest.raises(TrajectoryCorruptError):
+        _run(
+            tmp_path / "completed", CLAUDE_ARM, CLAUDE_NATIVE,
+            workspace_files={"artifacts/agent_log.json": "{truncated"},
+        )
+
+
 def test_ac2_absent_distinguishable_from_empty(tmp_path):
     """An engine that cannot produce a trajectory records honest absence — no
     artifact, no sha — never a fabricated empty record; an explicitly empty
@@ -215,6 +240,24 @@ def test_ac2_absent_distinguishable_from_empty(tmp_path):
     assert empty.trajectory_sha is not None
     stored = load_trajectory(_trajectory_path(empty))
     assert stored.steps == []
+
+
+def test_malformed_native_shapes_never_crash():
+    """A garbled native log field must degrade to an honest null, never crash
+    normalize_trajectory (a crash misfiles a completed trial as a generic
+    trial_error) and never shred a scalar into characters."""
+    steps = ClaudeCodeAdapter().normalize_trajectory(
+        {"messages": [{"content": [{"type": "tool_use", "name": "Edit", "input": "raw"}]}]}
+    )
+    assert steps[0].kind == "file_edit" and steps[0].files_touched is None
+
+    codex = CodexAdapter()
+    # a bare-string files field is unmeasurable, not eight one-char paths
+    steps = codex.normalize_trajectory({"events": [{"type": "patch", "files": "src/a.py"}]})
+    assert steps[0].files_touched is None
+    # a measured-empty patch is [], distinguishable from unmeasurable [D004]
+    steps = codex.normalize_trajectory({"events": [{"type": "patch", "files": []}]})
+    assert steps[0].files_touched == []
 
 
 def test_load_trajectory_corrupt_raises(tmp_path):

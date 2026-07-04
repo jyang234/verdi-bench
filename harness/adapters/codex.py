@@ -60,7 +60,13 @@ class CodexAdapter(Adapter):
                     TrajectoryStep(
                         kind="file_edit",
                         relative_ts=rel,
-                        files_touched=[str(f) for f in files] if files else None,
+                        # a list is a measurement — a measured-empty patch stays
+                        # [] [D004]; any other shape is unmeasurable, never
+                        # iterated on faith (a bare string would shred into
+                        # characters)
+                        files_touched=(
+                            [str(f) for f in files] if isinstance(files, list) else None
+                        ),
                     )
                 )
             elif etype == "exec":

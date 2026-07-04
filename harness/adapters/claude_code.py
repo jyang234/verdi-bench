@@ -66,7 +66,10 @@ class ClaudeCodeAdapter(Adapter):
                     steps.append(TrajectoryStep(kind="message"))
                 elif c.get("type") == "tool_use":
                     name = c.get("name")
-                    file_path = (c.get("input") or {}).get("file_path")
+                    tool_input = c.get("input")
+                    file_path = (
+                        tool_input.get("file_path") if isinstance(tool_input, dict) else None
+                    )
                     steps.append(
                         TrajectoryStep(
                             kind="file_edit" if name in _FILE_EDIT_TOOLS else "tool_call",

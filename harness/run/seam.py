@@ -10,6 +10,7 @@ raised as an exception.
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -43,11 +44,9 @@ def _redacted_native_log(artifacts_dir: Path, trial_id: str) -> dict:
     path = artifacts_dir / "agent_log.json"
     if not path.exists():
         return {}
-    import json as _json
-
     try:
-        parsed = _json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, _json.JSONDecodeError) as e:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
         raise TrajectoryCorruptError(
             f"post-redaction native log {path} for {trial_id} is unreadable; "
             "trajectory capture fails closed [EVAL-12 AC-2]: " + str(e)
@@ -85,14 +84,12 @@ def run_trial(
     # canaries are never placed into the request. Defensively verify no canary
     # reaches ANY request-bound channel — prompt, arm payload, or fake behavior —
     # not just the prompt, since all three flow to the engine/workspace.
-    import json as _json
-
     prompt = task.prompt
     request_blob = "\n".join(
         [
             prompt,
-            _json.dumps(arm.payload, sort_keys=True, default=str),
-            _json.dumps(task.fake_behavior, sort_keys=True, default=str),
+            json.dumps(arm.payload, sort_keys=True, default=str),
+            json.dumps(task.fake_behavior, sort_keys=True, default=str),
         ]
     )
     for canary in task.holdout_canaries:
@@ -150,8 +147,19 @@ def run_trial(
     # specific reason.
     trajectory_sha: Optional[str] = None
     if result.outcome != Outcome.infra_failed:
-        steps = adapter.normalize_trajectory(
-            _redacted_native_log(Path(result.artifacts_dir), trial_id)
+        try:
+            native_log = _redacted_native_log(Path(result.artifacts_dir), trial_id)
+        except TrajectoryCorruptError:
+            if result.outcome != Outcome.timeout:
+                raise
+            # A timeout kill can truncate agent_log.json mid-write. The timeout
+            # outcome is data (the RN-17 seam keeps it); destroying the trial as
+            # trajectory_corrupt would erase the datapoint and its spend. The
+            # trajectory is honestly absent instead — a COMPLETED trial with a
+            # corrupt post-redaction log still fails closed above.
+            native_log = None
+        steps = (
+            adapter.normalize_trajectory(native_log) if native_log is not None else None
         )
         if steps is not None:
             trajectory_sha = persist_trajectory(

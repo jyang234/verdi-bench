@@ -154,6 +154,17 @@ def test_arm_markup_lands_inert(tmp_path):
     assert "&lt;script&gt;" in dossier
 
 
+def test_verdict_escapes_once(tmp_path):
+    """The decision rule always contains a comparator; it must render as a
+    single-escaped entity, never double-escaped into visible '&gt;' text."""
+    _, ledger, findings = _seeded_findings(tmp_path)
+    assert ">" in findings.decision_rule  # the fixture rule is 'delta_... > 0'
+    dossier = render_dossier(findings, ledger, "exploratory")
+    verdict = _layer_chunks(dossier)["verdict"]
+    assert "&gt;" in verdict  # escaped exactly once
+    assert "&amp;gt;" not in dossier  # never twice
+
+
 # --- AC-4: fence parity + watermark on every layer -----------------------------
 def test_ac4_fence_parity(tmp_path):
     """A fence-refusing ledger refuses the official dossier with the same
@@ -247,6 +258,30 @@ def test_ac6_side_by_side_timelines(tmp_path):
     # the auditor layer's chain status matches verify_chain's verdict
     auditor = _layer_chunks(dossier)["auditor"]
     assert f"chain_ok={verify(ledger).ok}" in auditor
+
+
+def test_unreadable_artifact_is_coverage_data_not_a_crash(tmp_path):
+    """A present-but-unreadable trajectory artifact is a 'corrupt' coverage gap;
+    it must never escape the render as a raw OSError (the AN-3 envelope only
+    catches AnalyzeError, so an escape means zero ledger events)."""
+    from pathlib import Path
+
+    _, ledger, findings = _run_experiment(tmp_path)
+    ev = find_events(ledger, "trial")[0]
+    artifact = Path(ev["trial_record"]["artifacts_path"]) / "trajectory.json"
+    artifact.unlink()
+    artifact.mkdir()  # read_bytes now raises IsADirectoryError
+
+    timelines = trial_timeline(ledger)
+    statuses = [
+        t["trajectory_status"]
+        for arms in timelines.values()
+        for rows in arms.values()
+        for t in rows
+    ]
+    assert "corrupt" in statuses
+    dossier = render_dossier(findings, ledger, "exploratory")  # must not raise
+    assert "corrupt: 1 trial(s)" in _layer_chunks(dossier)["auditor"]
 
 
 def test_ac6_null_never_zero(tmp_path):

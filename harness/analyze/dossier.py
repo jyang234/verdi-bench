@@ -32,6 +32,7 @@ from markupsafe import Markup
 
 from .report import (
     _WATERMARK,
+    ComparisonFinding,
     FindingsDocument,
     _fmt,
     _integrity_line,
@@ -151,11 +152,16 @@ svg{display:block;margin:4px 0}
 </html>
 """
 
-_ENV = Environment(
-    loader=DictLoader({"page": _PAGE_TEMPLATE, **VERDICT_TEMPLATES}),
+# Two environments on purpose: the page renders MARKUP (autoescaped), the
+# verdict registry renders SENTENCES (plain text — escaping is the embedder's
+# job, exactly once). Separate loaders also make a template-name collision
+# with "page" unrepresentable.
+_PAGE_ENV = Environment(
+    loader=DictLoader({"page": _PAGE_TEMPLATE}),
     autoescape=True,
     keep_trailing_newline=True,
 )
+_VERDICT_ENV = Environment(loader=DictLoader(VERDICT_TEMPLATES), autoescape=False)
 
 
 def _lines_html(lines: list[str]) -> Markup:
@@ -165,7 +171,7 @@ def _lines_html(lines: list[str]) -> Markup:
     return Markup(f"<ul>{items}</ul>")
 
 
-def _verdict_context(findings: FindingsDocument, cf) -> dict:
+def _verdict_context(findings: FindingsDocument, cf: ComparisonFinding) -> dict:
     s = cf.stats or {}
     return {
         "arm_a": cf.arm_a,
@@ -184,7 +190,7 @@ def _verdict_context(findings: FindingsDocument, cf) -> dict:
     }
 
 
-def verdict_sentences(findings: FindingsDocument, cf) -> list[str]:
+def verdict_sentences(findings: FindingsDocument, cf: ComparisonFinding) -> list[str]:
     """The verdict layer for one comparison: an ordered selection from
     :data:`VERDICT_TEMPLATES`, selected by computed decision fields only.
     Uncertainty (CI/MDE/N) is always present, whichever branch renders [AC-5].
@@ -204,7 +210,7 @@ def verdict_sentences(findings: FindingsDocument, cf) -> list[str]:
     if findings.mde.assumption_based_mde:
         names.append("caveat_assumption_mde")
     ctx = _verdict_context(findings, cf)
-    return [_ENV.get_template(name).render(**ctx) for name in names]
+    return [_VERDICT_ENV.get_template(name).render(**ctx) for name in names]
 
 
 # --- inline SVG (generated at render time from findings fields) [AC-3] -------
@@ -385,8 +391,10 @@ def _disclosure_sections(findings: FindingsDocument) -> list[dict]:
             "body": _lines_html([_integrity_line(findings)]),
         },
     ]
+    # NB: grade-tier lines are NOT a section here — they ride every layer as
+    # the ADVISORY banner (render_dossier), and a second copy per layer would
+    # just be the same sentences twice.
     for title, lines in (
-        ("Grade tier", _tier_lines(findings)),
         ("Ledger consistency", _ledger_consistency_lines(findings)),
         ("Terminal overrides", _override_lines(findings)),
     ):
@@ -473,7 +481,7 @@ def render_dossier(
         {"id": "auditor", "title": "Auditor — verify it yourself", "sections": auditor_sections},
     ]
     banners = _tier_lines(findings)
-    return _ENV.get_template("page").render(
+    return _PAGE_ENV.get_template("page").render(
         experiment_id=findings.experiment_id,
         mode=mode,
         watermark=_WATERMARK if mode != "official" else None,
