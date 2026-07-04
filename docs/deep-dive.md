@@ -105,9 +105,10 @@ vocabulary; hitting the pre-registered cost ceiling appends
 is ledgered as **`executed_order`**.
 
 Since EVAL-12, every trial also captures a **trajectory**: a versioned record
-of the agent's ordered steps (`harness/run/trajectory.py`, schema v2:
+of the agent's ordered steps (`harness/run/trajectory.py`, schema v3:
 `kind`, `relative_ts`, `tokens`, `cost`, `files_touched`, `exit_code`,
-`command`), normalized per adapter, scrubbed through the same redaction door
+`command`, and the additive `detail` field for per-step forensic content),
+normalized per adapter, scrubbed through the same redaction door
 as every artifact, persisted as canonical JSON, and bound to the chain by an
 additive `trajectory_sha` on the trial event. A corrupt trajectory fails the
 trial closed; an engine that honestly cannot produce one records *absence*,
@@ -282,7 +283,7 @@ This section is the skeptic's index: claim → mechanism → owner.
 | No operation happened off the record | every verb routes through typed constructors in `events.py`; direct chain writes are contract-forbidden | one-event property sweep `test_ac7_one_event_per_operation` over the closed entrypoint registry |
 | The ledger you're shown is the ledger that was written | hash chain + optional external anchors | `test_eval3_chain.py`, `test_eval3_anchors.py` |
 | Arms never saw graders' answers | holdouts/rubrics outside trial workspaces; canary strings planted and asserted absent | `test_ac9_holdout_canaries_absent`, `test_ac1_holdouts_readonly` |
-| Grades are mechanical | no-LLM import contracts on `harness/grade/`, the `harness/forensics/` deterministic tier, and the `harness/contamination/` detectors | three of the five import-linter contracts |
+| Grades are mechanical | no-LLM import contracts on `harness/grade/`, the `harness/forensics/` deterministic tier, and the `harness/contamination/` detectors | three of the seven import-linter contracts |
 | The judge can't favor a brand | identity scrub with per-experiment canaries; property tests plant canaries and assert absence from payloads | `test_ac1_scrub_canaries` and packet property tests |
 | Judge weight is earned, not assumed | order-consistency diagnostics; IPW kappa vs blinded humans; escalation gate at κ<0.6 | `test_eval2_calibrate.py`, `test_eval7_review.py` kappa suite |
 | Secrets don't leak into artifacts | capture-side redaction plus defense-in-depth rescans before any provider call; property tests with generated secrets | `test_ac2_capture_post_redaction`, redaction suites in eval4 |
@@ -291,8 +292,10 @@ This section is the skeptic's index: claim → mechanism → owner.
 | Nothing suppresses evidence | flags/confounds/quarantines render beside the comparison in *both* renders, non-suppressing | `test_ac5_flags_render_beside_comparison` |
 | Docs match the binary | README verb coverage and contract count are tested; AC coverage is recomputed at collection | `test_readme_consistency.py`, `tests/ac_coverage.py` hook |
 
-Two structural contracts complete the set: Harbor is importable only through
-the engine seam, and ledger appends flow only through the typed constructors.
+Four structural contracts complete the set: Harbor is importable only through
+the engine seam, ledger appends flow only through the typed constructors, the
+blinded reviewer surface never imports the unblinded operator tier, and
+read-only observability imports no LLM client.
 
 ---
 
@@ -335,7 +338,7 @@ Reading any module goes faster once you know the house rules:
 
 ## 5. How the test suite keeps the instrument honest
 
-The suite (550+ fast tests, plus Docker-marked container tests) is not just
+The suite (700+ fast tests, plus Docker-marked container tests) is not just
 regression cover — parts of it are the instrument's *own* integrity
 mechanism:
 

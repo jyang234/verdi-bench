@@ -88,21 +88,36 @@ def _spec_acs(specs_dir: Path) -> tuple[dict[str, set[int]], list[str]]:
     return out, malformed
 
 
-def _test_ac_defs(tests_dir: Path) -> tuple[dict[str, set[int]], list[str], list[tuple[str, str]]]:
+def _is_unconditional_skip(node) -> bool:
+    """True if an AC test carries an UNCONDITIONAL ``@pytest.mark.skip`` (or a
+    bare ``@unittest.skip``) — the decorator that makes a named AC test satisfy
+    the presence gate while never executing anywhere [PRA-L7]. ``skipif`` is
+    deliberately NOT flagged: it is the legitimate way docker/browser-gated AC
+    tests opt out when their runtime is absent."""
+    for dec in node.decorator_list:
+        target = dec.func if isinstance(dec, ast.Call) else dec
+        if isinstance(target, ast.Attribute) and target.attr == "skip":
+            return True
+    return False
+
+
+def _test_ac_defs(tests_dir: Path):
     """Scan test files for ``test_ac<N>_*`` function definitions.
 
-    Returns ``(by_story, orphans, duplicates)`` where ``by_story`` maps a story
-    ``eval<N>`` to the AC numbers its files exercise, ``orphans`` are AC tests in
-    files that do not belong to a story, and ``duplicates`` are ``(name, where)``
-    pairs for any AC test function name that is defined more than once anywhere.
-    A file that does not parse (a work-in-progress syntax error) is skipped —
-    pytest reports its own collection error, so the AC hook must not crash the
-    whole session over it.
+    Returns ``(by_story, orphans, duplicates, skipped)`` where ``by_story`` maps
+    a story ``eval<N>`` to the AC numbers its files exercise, ``orphans`` are AC
+    tests in files that do not belong to a story, ``duplicates`` are
+    ``(name, where)`` pairs for any AC test function name defined more than once,
+    and ``skipped`` are ``(name, where)`` pairs for AC tests carrying an
+    unconditional ``@pytest.mark.skip`` [PRA-L7]. A file that does not parse (a
+    work-in-progress syntax error) is skipped — pytest reports its own collection
+    error, so the AC hook must not crash the whole session over it.
     """
     by_story: dict[str, set[int]] = {}
     orphans: list[str] = []
     seen: dict[str, str] = {}          # func name -> first "file:line" seen
     duplicates: list[tuple[str, str]] = []
+    skipped: list[tuple[str, str]] = []
     for py in sorted(tests_dir.rglob("test_*.py")):
         story_m = _TEST_FILE_RE.match(py.name)
         try:
@@ -120,11 +135,13 @@ def _test_ac_defs(tests_dir: Path) -> tuple[dict[str, set[int]], list[str], list
                 duplicates.append((node.name, f"{seen[node.name]} and {where}"))
             else:
                 seen[node.name] = where
+            if _is_unconditional_skip(node):
+                skipped.append((node.name, where))
             if story_m:
                 by_story.setdefault(f"eval{story_m.group(1)}", set()).add(int(ac_m.group(1)))
             else:
                 orphans.append(f"{node.name} ({where})")
-    return by_story, orphans, duplicates
+    return by_story, orphans, duplicates, skipped
 
 
 def check_ac_coverage(specs_dir: Path, tests_dir: Path) -> list[str]:
@@ -144,9 +161,17 @@ def check_ac_coverage(specs_dir: Path, tests_dir: Path) -> list[str]:
     specs_dir = Path(specs_dir)
     tests_dir = Path(tests_dir)
     spec_acs, malformed = _spec_acs(specs_dir)
-    by_story, orphans, duplicates = _test_ac_defs(tests_dir)
+    by_story, orphans, duplicates, skipped = _test_ac_defs(tests_dir)
 
     violations: list[str] = list(malformed)
+    for name, where in skipped:
+        # PRA-L7: an unconditionally-skipped AC test satisfies the presence gate
+        # while never executing — the exact way "the spec is implemented" could be
+        # a named-but-unverified claim. Refuse it.
+        violations.append(
+            f"{name} ({where}) is an AC test with an unconditional @pytest.mark.skip; "
+            "an AC test must run (use skipif for runtime-gated tests) [PRA-L7]"
+        )
     for story in sorted(spec_acs, key=lambda s: int(s[4:])):
         expected = spec_acs[story]
         actual = by_story.get(story, set())

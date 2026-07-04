@@ -14,17 +14,40 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parents[1]
 
 
-def test_readme_contract_count_matches_importlinter():
-    live = len(
+_NUMBER_WORDS = {
+    3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight",
+}
+
+
+def _live_contract_count() -> int:
+    return len(
         re.findall(r"^\[importlinter:contract:", (_REPO / ".importlinter").read_text(),
                    flags=re.MULTILINE)
     )
+
+
+def test_readme_contract_count_matches_importlinter():
+    live = _live_contract_count()
     readme = (_REPO / "README.md").read_text()
     m = re.search(r"(\d+)\s+import-linter contracts", readme)
     assert m, "README no longer states an import-linter contract count"
     assert int(m.group(1)) == live, (
         f"README claims {m.group(1)} import-linter contracts but .importlinter "
         f"declares {live}"
+    )
+
+
+def test_deep_dive_contract_count_matches_importlinter():
+    """PRA-M docs: the deep dive's spelled-out contract total must not drift from
+    the number of contracts actually declared (it said 'five' when seven were
+    kept). The trust-architecture table splits the set as 'three of the N' plus
+    'M structural contracts complete the set'; pin that N."""
+    live = _live_contract_count()
+    deep = (_REPO / "docs" / "deep-dive.md").read_text()
+    word = _NUMBER_WORDS[live]
+    assert re.search(rf"of the {word} import-linter contracts", deep), (
+        f".importlinter declares {live} contracts but docs/deep-dive.md does not "
+        f"say 'of the {word} import-linter contracts' — stale contract count"
     )
 
 

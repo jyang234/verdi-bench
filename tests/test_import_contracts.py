@@ -35,6 +35,35 @@ def test_baseline_contracts_are_green():
     assert _run_lint().returncode == 0, "contracts must be green before planting"
 
 
+def test_ledger_contract_source_list_covers_every_harness_package():
+    """PRA-L6: the ledger contract's source list is hand-maintained, so a new
+    top-level harness package/module could import ledger.chain undetected until
+    someone remembers to add it. Assert the list is complete — every top-level
+    harness entry (except the ledger package itself, the contract's owner) is a
+    source, so the fail-open gap is closed with a mechanical check."""
+    import re
+
+    harness_dir = _REPO / "harness"
+    live: set[str] = set()
+    for p in harness_dir.iterdir():
+        if p.name in ("__init__.py", "__pycache__", "ledger"):
+            continue
+        if p.is_dir() and (p / "__init__.py").exists():
+            live.add(f"harness.{p.name}")
+        elif p.suffix == ".py":
+            live.add(f"harness.{p.stem}")
+
+    text = (_REPO / ".importlinter").read_text()
+    block = text.split("Ledger appends flow only through typed constructors", 1)[1]
+    block = block.split("forbidden_modules", 1)[0]
+    listed = set(re.findall(r"harness\.[A-Za-z0-9_]+", block))
+    missing = live - listed
+    assert not missing, (
+        f"ledger import contract omits harness package(s) {sorted(missing)}; a "
+        "module absent from the source list could import ledger.chain undetected"
+    )
+
+
 @pytest.mark.parametrize("module, planted, target", _CASES)
 def test_completed_contract_catches_planted_import(module, planted, target):
     path = _REPO / module

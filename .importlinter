@@ -83,6 +83,7 @@ source_modules =
     harness.cli
     harness.entrypoints
     harness.version
+    harness.http_guard
     harness.schema
     harness.plan
     harness.run

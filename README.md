@@ -64,10 +64,19 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 | **EVAL-12** | Trajectory capture (versioned per-trial record, sha-ledgered) + three-layer comparison dossier | ✅ |
 | **EVAL-11** | Transcript forensics: trajectory metrics, gaming detectors, blinded advisory review, quarantine path | ✅ |
 | **EVAL-10** | Contamination sentinel: cutoff dating, canaries, memory probes, overlap detector, asymmetry fence | ✅ |
+| **EVAL-13** | Read-only operator observability: status/serve seams, live view, LLM-free contract | ✅ |
+| **EVAL-14** | Operator UI v2: workspace home, drill-down, compare, per-agent attribution | ✅ |
+| **EVAL-15** | Trajectory v3: additive per-step `detail` for step-content forensics | ✅ |
+| **EVAL-16** | Step-content forensics: the moment of tampering, disclosed coverage | ✅ |
+| **EVAL-17** | Authoring surface: draft/validate/preview as pure reads, the lock as a ceremony | ✅ |
+| **EVAL-18** | Reviewer surface: blinded capture-then-reveal, isolated by construction | ✅ |
+| **EVAL-19** | Operator UI P2: static bundle, typed grammar, saved views | ✅ |
+| **EVAL-20** | Pre-registered multi-model arms (declared hosts, aux-model canaries) | ✅ |
+| **EVAL-21** | Per-agent attribution + per-model telemetry | ✅ |
 
-All EVAL-1 child stories plus the Phase-7 roadmap stories EVAL-12, EVAL-11,
-and EVAL-10 are built. The fast suite
-(`uv run pytest -m "not docker"`) is green — over 600 tests — plus a
+All EVAL-1 child stories plus the Phase-7 roadmap stories (EVAL-10/11/12) and
+the operator/authoring/reviewer stories EVAL-13 through EVAL-21 are built. The
+fast suite (`uv run pytest -m "not docker"`) is green — over 700 tests — plus a
 `docker`-marked suite of real-container tests (a real grade container and a real
 Harbor trial) run with `-m docker` in a dedicated CI job on Docker-capable
 runners; 7 import-linter contracts kept. AC-mapped tests are **enforced per
@@ -173,12 +182,18 @@ uv run bench contamination probe <experiment-dir> --manifest m.json   # membersh
 `--engine harbor` runs the real container path: digest-pinned images
 (`--pull=never`), the task prompt + arm delivered read-only at
 `/verdi/request.json` (outside the graded workspace), provider keys env-injected
-and redacted at capture, egress confined to the metering proxy on an internal
+and redacted at capture, egress confined to a metering proxy on an internal
 docker network with per-trial JSONL attribution, and containers killed on
-timeout. Operational wiring (proxy, quotas, provider-key names) comes from an
-optional `run.config.yaml` + the environment — never the sha-locked
-`experiment.yaml` or the ledger. Its container behavior is covered by
-`docker`-marked tests in CI (`uv run pytest -m docker`).
+timeout. **The metering proxy is an external operational component** you supply
+(a reference config ships in `deploy/metering-proxy/`); egress confinement,
+per-trial attribution, and cost enforcement for non-self-reporting arms depend
+on it — a configured-but-missing proxy log now fails loud rather than silently
+allowing spend. Operational wiring (proxy, quotas, provider-key names) comes
+from an optional `run.config.yaml` + the environment — never the sha-locked
+`experiment.yaml` or the ledger. The digest-pin, request-mount, and key
+redaction paths are covered by `docker`-marked real-container tests in CI
+(`uv run pytest -m docker`); the proxy-egress end-to-end path has a
+real-proxy docker test under `deploy/metering-proxy/`.
 
 `bench grade` defaults to `--runner docker` (the real network-less grading
 container), with `--runner local` for the no-daemon fake/test path.
