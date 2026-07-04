@@ -1,7 +1,8 @@
 ---
-# MACHINE CONTRACT — PROPOSED (not yet graduated; AC enforcement begins when
-# this file moves to docs/design/specs/ in the same commit as its first AC
-# tests). Drafted 2026-07-04: the EVAL-14 P2 list, promoted to a story now
+# MACHINE CONTRACT — see template header for consumers and YAML style rules.
+# Graduated from specs/proposed/ 2026-07-04 in the same commit as the story's
+# first AC tests, all three local decisions resolved (see
+# eval19.decisions.ndjson). The EVAL-14 P2 list, promoted to a story now
 # that the P0/P1 surface is real — every item here is ergonomics over
 # existing seams; none adds telemetry, events, or trust surface.
 kind: "story"
@@ -28,37 +29,43 @@ acceptance:
     vc: "Two bundles over the same experiment are byte-identical; the bundle passes the needle scan and renders every screen headlessly from file:// with the banner present; the experiment dir digest is unchanged and no event lands."
     touchpoints:
       - "harness/serve/bundle.py:write_bundle"
-    tests: []
+    tests:
+      - "test_ac1_bundle_deterministic_selfcontained"
   - id: "AC-2"
     text: "Typed filter grammar (the Langfuse two-tier borrow): a closed, documented grammar — field:value terms for the existing facets, negation (-field:value), * wildcards on id-like fields, and bare words as free text — compiles to exactly the same URL state the chips produce, both directions (chips render the grammar; grammar edits update the chips). Malformed input yields a named parse error displayed in place; it never silently applies a partial filter."
     vc: "Grammar strings and chip interactions produce identical URL states and row sets; each documented production round-trips; a malformed string shows the parse error and leaves the previous filter intact."
     touchpoints:
       - "harness/serve/page.py:OPERATOR_PAGE"
-    tests: []
+    tests:
+      - "test_ac2_grammar_chips_one_state"
   - id: "AC-3"
     text: "Saved views: named local views (filter + sort + screen) stored in the browser's localStorage (D002 — the server stays structurally read-only), with rename and delete; the canonical shareable form remains the URL, and the UI says so — a saved view IS a stored URL fragment, restored by navigation, portable by copying the link."
     vc: "Headless drive: save/rename/delete round-trips across a reload; restoring a view reproduces the exact URL and row set; no request mutates the server or the experiment dir."
     touchpoints:
       - "harness/serve/page.py:OPERATOR_PAGE"
-    tests: []
+    tests:
+      - "test_ac3_saved_views_local_url_canonical"
   - id: "AC-4"
     text: "Honest small multiples: the live screen's ETA derives client-side from trial-event completion timestamps, is labeled approximate, and is absent (not zero, not dash-dressed-as-data) below a minimum sample; per-arm cumulative-cost sparklines render as inline SVG from the same events with nulls as gaps (never zeros), following the dataviz mark discipline already used by the dossier."
     vc: "A two-trial experiment shows no ETA; a longer fixture shows the labeled estimate consistent with the timestamps; sparkline path points equal the per-arm cumulative costs with null-cost trials absent from the path, not zeroed."
     touchpoints:
       - "harness/serve/page.py:OPERATOR_PAGE"
-    tests: []
+    tests:
+      - "test_ac4_eta_sparklines_null_honest"
   - id: "AC-5"
     text: "Tallies become navigation: compare-summary counts filter to their slice (click 'control 9' → control-won pairs), forensic flag chips deep-link to the trial's forensics tab, and every such affordance is URL-encoded so the filtered slice is shareable — the LangSmith/Braintrust header-tally idiom, on our separated-tier counts."
     vc: "Headless drive: each tally click filters to exactly the matching pairs with the state in the URL; a flag chip lands on the named trial's forensics tab; reload restores each slice."
     touchpoints:
       - "harness/serve/page.py:OPERATOR_PAGE"
-    tests: []
+    tests:
+      - "test_ac5_tallies_navigate"
   - id: "AC-6"
     text: "Posture under growth, again: bench serve remains GET-only with the EVAL-14 AC-8 suite passing unmodified; the bundle writer is added to the observability import-contract source lists; the page stays a single dependency-free file; no new ledger event kinds and no entrypoints."
     vc: "Existing posture suites pass untouched; the contract sections name the new module; REGISTERED_EVENTS and the entrypoint registry are unchanged."
     touchpoints:
       - "harness/serve/cli.py:register"
-    tests: []
+    tests:
+      - "test_ac6_posture_unchanged"
 
 constraints:
   - text: "The bundle is an archive of the operator tier, and says so: banner, watermarks, and the chain verdict at bundle time are embedded — it is a snapshot with provenance, not a live view, and its determinism makes two archives of the same ledger comparable byte-for-byte [the dossier's self-containment lineage]."
@@ -68,11 +75,11 @@ constraints:
   - text: "Views never move trust server-side: localStorage only, URL as the portable truth; a future team surface would revisit this as part of the platform story, not silently here [D002]."
     enforced_by: "AC-3 tests on graduation"
 
-decisions: []
-open_decisions:
-  - "EVAL-19-D001"  # bundle surface: bench serve --bundle flag (recommended) vs a new verb
-  - "EVAL-19-D002"  # saved-view storage: browser localStorage, URL stays canonical (recommended) vs server-side files
-  - "EVAL-19-D003"  # grammar scope v1: facet fields + negation + id wildcards + free text (recommended) vs comparison operators on numerics too
+decisions:
+  - "EVAL-19-D001"  # bundle surface (RESOLVED: serve-bundle-flag)
+  - "EVAL-19-D002"  # saved-view storage (RESOLVED: localstorage-url-canonical)
+  - "EVAL-19-D003"  # grammar scope v1 (RESOLVED: facets-negation-wildcards)
+open_decisions: []
 
 policy_proposals: []
 predicted_reach: null

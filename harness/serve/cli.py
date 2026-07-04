@@ -5,6 +5,10 @@ them (one-level scan for ``ledger.ndjson`` directories — D003). Loopback by
 default; binding a non-loopback host exposes unblinded experiment content
 (arm identities, task ids, spend) to that network — the flag exists, the
 default does not.
+
+``--bundle <out>`` [EVAL-19 AC-1, D001] writes the same view as a static,
+self-contained snapshot instead of hosting it: one experiment directory in,
+one deterministic HTML file out, no server started and no event appended.
 """
 
 from __future__ import annotations
@@ -35,6 +39,11 @@ def register(app: typer.Typer) -> None:
             "--corpus-manifest",
             help="Manifest for the official-fence corpus items (single-experiment mode)",
         ),
+        bundle: Optional[Path] = typer.Option(
+            None,
+            "--bundle",
+            help="Write a static self-contained snapshot to this path instead of serving",
+        ),
     ) -> None:
         """Live operator view (read-only, unblinded — see the page banner)."""
         from .server import DEFAULT_HOST, DEFAULT_PORT, make_server
@@ -50,6 +59,21 @@ def register(app: typer.Typer) -> None:
             from ..corpus.registry import CorpusManifest
 
             manifest = CorpusManifest.load(corpus_manifest)
+        if bundle is not None:
+            if experiment_dir is None:
+                typer.echo(
+                    "--bundle archives one experiment: pass an <experiment-dir>, not --root",
+                    err=True,
+                )
+                raise typer.Exit(code=2)
+            from .bundle import write_bundle
+
+            out = write_bundle(Path(experiment_dir), bundle, corpus_manifest=manifest)
+            typer.echo(
+                f"bundled {experiment_dir} -> {out} "
+                "(static snapshot; unblinded operator view; no server started)"
+            )
+            return
         srv = make_server(
             Path(experiment_dir) if experiment_dir is not None else None,
             root=Path(root) if root is not None else None,

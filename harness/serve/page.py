@@ -1,4 +1,4 @@
-"""The operator dashboard page [EVAL-13 AC-6; EVAL-14 AC-3, AC-4, AC-5, D001, D002].
+"""The operator dashboard page [EVAL-13 AC-6; EVAL-14 AC-3..AC-5; EVAL-19 AC-2..AC-5].
 
 One self-contained HTML document (D001: dependency-free single-file app):
 inline CSS, inline script, relative ``fetch('/api/…')`` calls only — no
@@ -6,16 +6,28 @@ external URI schemes, no fetched assets, no href/src/link/@import/url()
 references. Navigation out (the dossier artifact) uses scripted
 ``window.open`` on relative paths, never an anchor, so the needle property
 holds verbatim. All dynamic values land via ``textContent`` — ledger strings
-are data, never markup.
+are data, never markup. Inline SVG (the cost sparklines) is created through
+the namespace of a static ``<svg>`` prototype in the document, so no
+namespace URI string ever appears in the page bytes.
 
 Structure: a hash router over six screens (workspace home, experiment live,
 trials, trial detail, compare, findings). Every view state that matters —
-screen, experiment, trial, facets, the open side panel (D002) — lives in the
-URL, so a link reproduces the exact slice [AC-3]. List screens share j/k/
-enter/esc conventions [AC-4]; the ledger feed rides the byte cursor with
-follow/pause/new-pill ergonomics and never re-reads from offset zero in its
-poll loop [AC-5]. ``window.__vb()`` exposes a small read-only state snapshot
-as an explicit test seam for the headless AC drives — it is not an API.
+screen, experiment, trial, facets, the open side panel (D002), the filter
+grammar, the compare slice — lives in the URL, so a link reproduces the
+exact slice [AC-3]. The typed filter grammar and the facet chips are two
+projections of that one URL state [EVAL-19 AC-2]; saved views are stored
+URL fragments in localStorage, never on the server [EVAL-19 AC-3/D002].
+List screens share j/k/enter/esc conventions [AC-4]; the ledger feed rides
+the byte cursor with follow/pause/new-pill ergonomics and never re-reads
+from offset zero in its poll loop [AC-5]. ``window.__vb()`` exposes a small
+read-only state snapshot as an explicit test seam for the headless AC
+drives — it is not an API.
+
+``const BUNDLE = null;`` is the static-export seam [EVAL-19 AC-1]:
+``harness.serve.bundle.write_bundle`` replaces that one line with the
+archived data object, turning the same document into a no-server snapshot —
+the data helper short-circuits to the embedded object and the poll loop
+never re-arms.
 
 The page is the **openly-unblinded operator tier** and says so on every
 render [EVAL-13 D003]. Staleness of a ``running`` heartbeat is judged
@@ -35,7 +47,7 @@ OPERATOR_PAGE = """<!doctype html>
     --surface-1: #fcfcfb; --plane: #f9f9f7;
     --ink-1: #0b0b0b; --ink-2: #52514e; --ink-3: #898781;
     --hairline: #e1e0d9; --border: rgba(11,11,11,0.10);
-    --meter: #2a78d6; --soft: #eef3fa;
+    --meter: #2a78d6; --meter2: #7d4fc9; --soft: #eef3fa;
     --good: #0ca30c; --warning: #9a6b00; --critical: #d03b3b;
     --add: rgba(12,163,12,0.14); --del: rgba(208,59,59,0.13);
   }
@@ -44,7 +56,7 @@ OPERATOR_PAGE = """<!doctype html>
       --surface-1: #1a1a19; --plane: #0d0d0d;
       --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781;
       --hairline: #2c2c2a; --border: rgba(255,255,255,0.10);
-      --meter: #3987e5; --soft: #1c2733;
+      --meter: #3987e5; --meter2: #a98ae8; --soft: #1c2733;
       --good: #0ca30c; --warning: #d9a21b; --critical: #e05252;
       --add: rgba(12,163,12,0.18); --del: rgba(224,82,82,0.16);
     }
@@ -136,6 +148,10 @@ OPERATOR_PAGE = """<!doctype html>
   .empty { color: var(--ink-3); text-align: center; padding: 28px 0; }
   .fence li { display: flex; gap: 8px; padding: 4px 0; font-size: 13px; align-items: baseline; }
   .fence { list-style: none; }
+  .gerr { color: var(--critical); font-size: 12px; }
+  .sparkrow { display: flex; align-items: center; gap: 6px; }
+  .sparkrow svg { flex: none; }
+  .gram { min-width: 300px; }
   @media (max-width: 860px) { .split, .diff2 { grid-template-columns: 1fr; }
     .diff2 > div:first-child { border-right: none; border-bottom: 1px solid var(--hairline); } }
 </style>
@@ -145,17 +161,26 @@ OPERATOR_PAGE = """<!doctype html>
   <div class="banner">&#9888;&#65039; <strong>Unblinded operator view.</strong>
     Arm identities are visible by design; anyone who watches this page is
     <strong>disqualified from serving as these experiments' blinded (EVAL-7)
-    reviewers</strong>. Read-only: this page appends nothing.</div>
+    reviewers</strong>. Read-only: this page appends nothing.<span id="bundlenote"></span></div>
   <header class="bar" id="bar"></header>
   <div id="app"></div>
+  <svg id="svgp" width="0" height="0" aria-hidden="true"></svg>
   <div class="kbdrow"><kbd>j</kbd>/<kbd>k</kbd> select &#183; <kbd>enter</kbd> open &#183;
     <kbd>esc</kbd> back/close &#183; state lives in the URL &#8212; share it</div>
 </main>
 
 <script>
 "use strict";
+/* static-export seam [EVAL-19 AC-1]: write_bundle replaces this one line with
+   the archived data object; everything below treats BUNDLE as the no-server
+   data source and stops polling. In the live page it stays null. */
+const BUNDLE = null;
 /* ------------------------------------------------------------------ state */
-const POLL_MS = 1500, FEED_MAX = 400;
+const POLL_MS = 1500, FEED_MAX = 400, ETA_MIN_SAMPLE = 3;
+const VIEWS_KEY = "vb.views.v1";
+const FILTER_FIELDS = ["arm", "task", "outcome", "graded", "flagged"];
+const WILDCARD_FIELDS = ["task"];
+const SPARK_COLORS = ["var(--meter)", "var(--meter2)"];
 const S = {
   experiments: null,          // /api/experiments rows
   exp: {},                    // per-experiment: {events, cursor, status, sel...}
@@ -170,12 +195,22 @@ function expState(name) {
   return S.exp[name];
 }
 /* explicit read-only test seam for the headless AC drives — not an API */
-window.__vb = () => ({
-  route: location.hash, sel: S.sel, paused: S.paused, newCount: S.newCount,
-  cursor: S.route && S.route.exp ? expState(S.route.exp).cursor : 0,
-  events: S.route && S.route.exp ? expState(S.route.exp).events.length : 0,
-  rows: (document.querySelectorAll("tr.row") || []).length,
-});
+window.__vb = () => {
+  const r = S.route || {};
+  const st = r.exp ? expState(r.exp) : null;
+  return {
+    route: location.hash, sel: S.sel, paused: S.paused, newCount: S.newCount,
+    cursor: st ? st.cursor : 0,
+    events: st ? st.events.length : 0,
+    rows: (document.querySelectorAll("tr.row") || []).length,
+    bundle: !!BUNDLE,
+    views: loadViews().map(v => v.name),
+    filterErr: S.filterErr || null, viewsErr: S.viewsErr || null,
+    grammar: r.screen === "trials" ? serializeFilter(r.params) : null,
+    eta: st ? etaFromEvents(st) : null,
+    spark: st ? sparkSummary(st) : null,
+  };
+};
 
 /* ------------------------------------------------------------------ router */
 function parseHash() {
@@ -203,7 +238,32 @@ function setParam(key, value) {
 }
 
 /* ------------------------------------------------------------------ data */
-async function j(url) { const r = await fetch(url); if (!r.ok) throw new Error((await r.json()).error || r.status); return r.json(); }
+/* One lookup for the whole page: the live observer fetches; a static bundle
+   answers from its embedded object — same shapes, no transport [EVAL-19 AC-1]. */
+function bundleData(url) {
+  const halves = url.split("?");
+  const path = halves[0], p = new URLSearchParams(halves[1] || "");
+  if (path === "/api/experiments") return { experiments: BUNDLE.experiments };
+  const exp = p.get("exp");
+  if (exp !== BUNDLE.experiment)
+    throw new Error("experiment '" + exp + "' is not in this bundle (it archives '" + BUNDLE.experiment + "')");
+  if (path === "/api/status") return BUNDLE.status;
+  if (path === "/api/events") {
+    const off = Number(p.get("offset") || "0");
+    if (off >= BUNDLE.next_offset) return { events: [], next_offset: BUNDLE.next_offset };
+    return { events: BUNDLE.events, next_offset: BUNDLE.next_offset };
+  }
+  if (path === "/api/timeline") return BUNDLE.timeline;
+  if (path === "/api/trial") {
+    const d = BUNDLE.trials[p.get("id") || ""];
+    if (!d) throw new Error("trial '" + p.get("id") + "' is not in this bundle");
+    return d;
+  }
+  if (path === "/api/compare") return BUNDLE.compare;
+  if (path === "/api/fence") return BUNDLE.fence;
+  throw new Error("route '" + path + "' is not in this bundle");
+}
+async function j(url) { if (BUNDLE) return bundleData(url); const r = await fetch(url); if (!r.ok) throw new Error((await r.json()).error || r.status); return r.json(); }
 async function refresh() {
   const r = S.route;
   try {
@@ -227,7 +287,8 @@ async function refresh() {
     S.online = true;
   } catch (e) { S.online = false; S.lastError = String(e && e.message || e); }
   if (!(S.paused && S.route.screen === "exp")) render();
-  clearTimeout(S.timer); S.timer = setTimeout(refresh, POLL_MS);
+  /* a bundle's data cannot change: render per navigation, never poll */
+  if (!BUNDLE) { clearTimeout(S.timer); S.timer = setTimeout(refresh, POLL_MS); }
 }
 
 /* ------------------------------------------------------------------ dom */
@@ -269,15 +330,208 @@ function deriveTrials(st) {
     };
   });
 }
+/* ------------------------------------------- filter grammar [EVAL-19 AC-2]
+   A CLOSED grammar over the facet params; grammar text and chips are two
+   projections of the same URLSearchParams state. Anything outside the
+   productions is a named parse error — never a guessed partial filter.
+   Negation is a leading "-" on a field term and rides INSIDE the param value,
+   so the URL stays the single canonical state (a literal leading "-" in a
+   facet value is not expressible in v1 — documented in the ? card). */
+function parseFilter(text) {
+  const parsed = { fields: {}, q: [] };
+  for (const tok of (text || "").split(" ").map(s => s.trim()).filter(Boolean)) {
+    let t = tok, neg = false;
+    if (t[0] === "-") {
+      neg = true; t = t.slice(1);
+      if (!t) throw new Error("bare '-' \\u2014 negation is -field:value");
+    }
+    const i = t.indexOf(":");
+    if (i === 0) throw new Error("missing field name before ':' in '" + tok + "'");
+    if (i > 0) {
+      const field = t.slice(0, i), value = t.slice(i + 1);
+      if (FILTER_FIELDS.indexOf(field) < 0)
+        throw new Error("unknown field '" + field + "' \\u2014 fields: " + FILTER_FIELDS.join(", "));
+      if (!value) throw new Error("empty value in '" + tok + "'");
+      if (value.indexOf("*") >= 0 && WILDCARD_FIELDS.indexOf(field) < 0)
+        throw new Error("'*' wildcards apply to id-like fields only (" + WILDCARD_FIELDS.join(", ") + ")");
+      if (field in parsed.fields)
+        throw new Error("field '" + field + "' given twice \\u2014 one term per field");
+      parsed.fields[field] = (neg ? "-" : "") + value;
+    } else {
+      if (neg) throw new Error("negation applies to field:value terms, not free text");
+      parsed.q.push(t);
+    }
+  }
+  return parsed;
+}
+function serializeFilter(p) {
+  const parts = [];
+  for (const f of FILTER_FIELDS) {
+    const raw = p.get(f);
+    if (raw) parts.push(raw[0] === "-" ? "-" + f + ":" + raw.slice(1) : f + ":" + raw);
+  }
+  const q = (p.get("q") || "").trim();
+  if (q) parts.push(q);
+  return parts.join(" ");
+}
+function setFacetParams(parsed) {
+  const p = S.route.params;
+  for (const f of FILTER_FIELDS)
+    if (parsed.fields[f] !== undefined) p.set(f, parsed.fields[f]); else p.delete(f);
+  if (parsed.q.length) p.set("q", parsed.q.join(" ")); else p.delete("q");
+  const qs = p.toString();
+  const base = location.hash.split("?")[0];
+  const next = qs ? base + "?" + qs : base;
+  if (location.hash === next) render(); else location.hash = next;
+}
+function wildMatch(pattern, value) {
+  const parts = pattern.split("*");
+  if (parts.length === 1) return value === pattern;
+  if (parts[0] && !value.startsWith(parts[0])) return false;
+  let pos = parts[0].length;
+  for (let k = 1; k < parts.length - 1; k++) {
+    if (!parts[k]) continue;
+    const at = value.indexOf(parts[k], pos);
+    if (at < 0) return false;
+    pos = at + parts[k].length;
+  }
+  const last = parts[parts.length - 1];
+  if (!last) return true;
+  return value.endsWith(last) && value.length - last.length >= pos;
+}
+function facetActual(t, key) {
+  if (key === "task") return t.task_id;
+  if (key === "flagged") return String(t.flagged);
+  return String(t[key]);
+}
+function facetHit(t, key, raw) {
+  const neg = raw[0] === "-";
+  const v = neg ? raw.slice(1) : raw;
+  const actual = facetActual(t, key);
+  const hit = (key === "task" && v.indexOf("*") >= 0) ? wildMatch(v, actual) : actual === v;
+  return neg ? !hit : hit;
+}
 function applyFacets(rows, p) {
-  const q = (p.get("q") || "").toLowerCase();
-  return rows.filter(t =>
-    (!p.get("arm") || t.arm === p.get("arm")) &&
-    (!p.get("task") || t.task_id === p.get("task")) &&
-    (!p.get("outcome") || t.outcome === p.get("outcome")) &&
-    (!p.get("graded") || t.graded === p.get("graded")) &&
-    (!p.get("flagged") || String(t.flagged) === p.get("flagged")) &&
-    (!q || t.trial_id.toLowerCase().includes(q) || t.task_id.toLowerCase().includes(q)));
+  const words = (p.get("q") || "").toLowerCase().split(" ").filter(Boolean);
+  return rows.filter(t => {
+    for (const key of FILTER_FIELDS) {
+      const raw = p.get(key);
+      if (raw && !facetHit(t, key, raw)) return false;
+    }
+    for (const w of words) {
+      const tid = t.trial_id.toLowerCase(), kid = t.task_id.toLowerCase();
+      const hit = w.indexOf("*") >= 0 ? (wildMatch(w, tid) || wildMatch(w, kid))
+                                      : (tid.indexOf(w) >= 0 || kid.indexOf(w) >= 0);
+      if (!hit) return false;
+    }
+    return true;
+  });
+}
+
+/* --------------------------------------------- saved views [EVAL-19 AC-3]
+   A view IS a stored URL fragment: localStorage holds {name, hash} pairs,
+   the URL stays the canonical shareable form, the server never sees them. */
+function loadViews() {
+  const raw = localStorage.getItem(VIEWS_KEY);
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v : [];
+  } catch (e) {
+    S.viewsErr = "saved views unreadable \\u2014 they reset on the next save";
+    return [];
+  }
+}
+function persistViews(views) { localStorage.setItem(VIEWS_KEY, JSON.stringify(views)); render(); }
+function saveView(name) {
+  const views = loadViews();
+  const n = (name || "").trim() || ("view-" + (views.length + 1));
+  if (views.some(v => v.name === n)) {
+    S.viewsErr = "a view named '" + n + "' exists \\u2014 rename or delete it first"; render(); return;
+  }
+  S.viewsErr = null;
+  views.push({ name: n, hash: location.hash });
+  persistViews(views);
+}
+function renameView(oldName) {
+  const el = document.getElementById("viewname");
+  const n = ((el && el.value) || "").trim();
+  const views = loadViews();
+  if (!n) { S.viewsErr = "type the new name, then \\u270e"; render(); return; }
+  if (views.some(v => v.name === n)) { S.viewsErr = "a view named '" + n + "' exists"; render(); return; }
+  const v = views.find(x => x.name === oldName);
+  if (v) { v.name = n; S.viewsErr = null; persistViews(views); }
+}
+function deleteView(name) { S.viewsErr = null; persistViews(loadViews().filter(v => v.name !== name)); }
+
+/* ---------------------------------- honest small multiples [EVAL-19 AC-4] */
+function etaFromEvents(st) {
+  const stg = st.status && st.status.stages;
+  if (!stg) return null;
+  const remaining = stg.cells.planned - stg.cells.done;
+  const ts = st.events.filter(e => e.event === "trial")
+    .map(e => Date.parse((e.provenance || {}).ts))
+    .filter(t => isFinite(t)).sort((a, b) => a - b);
+  /* below the minimum sample (or with nothing left) there is no estimate —
+     absent, never zero or a dash dressed as data */
+  if (remaining <= 0 || ts.length < ETA_MIN_SAMPLE) return null;
+  const span = ts[ts.length - 1] - ts[0];
+  if (span <= 0) return null;
+  const perCell = span / (ts.length - 1);
+  return { seconds: Math.round(remaining * perCell / 1000), sample: ts.length, remaining };
+}
+function fmtDur(s) {
+  if (s >= 3600) return Math.floor(s / 3600) + "h " + Math.round((s % 3600) / 60) + "m";
+  if (s >= 60) return Math.floor(s / 60) + "m " + Math.round(s % 60) + "s";
+  return Math.round(s) + "s";
+}
+function sparkSeries(st) {
+  const series = {};
+  for (const ev of st.events) {
+    if (ev.event !== "trial") continue;
+    const rec = ev.trial_record || {};
+    const s = series[rec.arm] = series[rec.arm] || { pts: [], nulls: 0, i: 0, cum: 0 };
+    const c = (rec.telemetry || {}).cost;
+    /* a null cost is a GAP: the x slot advances, no point lands, the line
+       breaks — unmeasured is never drawn as zero */
+    if (c === null || c === undefined) { s.nulls += 1; s.i += 1; continue; }
+    s.cum += c;
+    s.pts.push({ x: s.i, y: s.cum });
+    s.i += 1;
+  }
+  return series;
+}
+function sparkSummary(st) {
+  const out = {}, series = sparkSeries(st);
+  for (const arm of Object.keys(series))
+    out[arm] = { ys: series[arm].pts.map(p => p.y), nulls: series[arm].nulls };
+  return out;
+}
+/* SVG namespace via the static prototype element — the URI never appears in
+   the page bytes, keeping the needle property honest */
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(document.getElementById("svgp").namespaceURI, tag);
+  for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, String(v));
+  return el;
+}
+function sparkline(pts, xmax, color) {
+  const W = 120, H = 26, PAD = 3;
+  const ymax = Math.max.apply(null, pts.map(p => p.y)) || 1;
+  const X = x => PAD + (xmax <= 0 ? 0 : (W - 2 * PAD) * x / xmax);
+  const Y = y => H - PAD - (H - 2 * PAD) * y / ymax;
+  const svg = svgEl("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H,
+                             role: "img", "aria-label": "cumulative cost" });
+  let d = "";
+  pts.forEach((p, i) => {
+    const restart = i === 0 || p.x - pts[i - 1].x > 1;  /* a gap breaks the line */
+    d += (restart ? " M" : " L") + X(p.x).toFixed(1) + " " + Y(p.y).toFixed(1);
+  });
+  svg.append(svgEl("path", { d: d.trim(), fill: "none", stroke: color,
+                             "stroke-width": "2", "stroke-linecap": "round" }));
+  const last = pts[pts.length - 1];
+  if (last) svg.append(svgEl("circle", { cx: X(last.x).toFixed(1), cy: Y(last.y).toFixed(1),
+                                         r: "2.5", fill: color }));
+  return svg;
 }
 
 /* ------------------------------------------------------------------ header */
@@ -316,7 +570,10 @@ function renderBar() {
     }
   }
   bar.append(h("span", { class: r.exp ? "" : "spacer" }));
-  bar.append(h("span", { class: "chip " + (S.online ? "ok" : "bad"),
+  if (BUNDLE) bar.append(h("span", { class: "chip" + (S.online === false ? " bad" : ""),
+    text: "STATIC BUNDLE" + (S.online === false ? " \\u00b7 " + (S.lastError || "")
+                                                : " \\u00b7 archived snapshot, does not update") }));
+  else bar.append(h("span", { class: "chip " + (S.online ? "ok" : "bad"),
     text: S.online ? "live" : ("unreachable: " + (S.lastError || "")) }));
 }
 
@@ -399,6 +656,9 @@ function renderExp(app) {
   const m1 = h("div", { class: "meter" }, h("div"));
   if (stg.cells.planned) m1.firstChild.style.width = Math.min(100, 100 * stg.cells.done / stg.cells.planned) + "%";
   cellsTile.append(m1, h("div", { class: "sub", text: "infra failures: " + fmt(stg.cells.infra_failures, 0) }));
+  const eta = etaFromEvents(st);
+  if (eta) cellsTile.append(h("div", { class: "sub", text: "\\u2248 " + fmtDur(eta.seconds) +
+    " left \\u00b7 approximate, from " + eta.sample + " completion timestamps" }));
   tiles.append(cellsTile);
 
   const spendTile = h("div", { class: "card tile" });
@@ -408,6 +668,18 @@ function renderExp(app) {
   if (stg.spend.ceiling) m2.firstChild.style.width = Math.min(100, 100 * stg.spend.accumulated / stg.spend.ceiling) + "%";
   const perArm = Object.entries(stg.per_arm).map(([a, c]) => a + " " + fmt(c.cost)).join(" \\u00b7 ");
   spendTile.append(m2, h("div", { class: "sub", text: (stg.spend.currency || "") + (perArm ? " \\u00b7 " + perArm : "") + (stg.spend.stopped_cost_ceiling ? " \\u00b7 STOPPED" : "") }));
+  const series = sparkSeries(st);
+  Object.keys(stg.per_arm).forEach((arm, idx) => {
+    const s = series[arm] || { pts: [], nulls: 0, i: 0 };
+    const row = h("div", { class: "sub sparkrow" });
+    row.append(h("span", { class: "mono", text: arm }));
+    if (s.pts.length) {
+      row.append(sparkline(s.pts, Math.max(1, s.i - 1), SPARK_COLORS[idx] || "var(--ink-3)"));
+      row.append(h("span", { class: "mono", text: fmt(s.pts[s.pts.length - 1].y) }));
+    } else row.append(h("span", { class: "dim3", text: "no measured costs" }));
+    if (s.nulls) row.append(h("span", { class: "dim3", text: s.nulls + " unmeasured (gaps)" }));
+    spendTile.append(row);
+  });
   tiles.append(spendTile);
 
   const flightTile = h("div", { class: "card tile" });
@@ -469,8 +741,13 @@ function renderTrials(app) {
   const facetBar = h("div", { class: "toolbar card" });
   const facet = (key, values) => {
     const cur = p.get(key);
-    if (cur) facetBar.append(h("span", { class: "chip click on", tabindex: "0", text: key + ": " + cur + " \\u2715", onclick: () => setParam(key, null) }));
-    else {
+    if (cur) {
+      /* the chip renders the grammar, negation included [EVAL-19 AC-2] */
+      const neg = cur[0] === "-";
+      facetBar.append(h("span", { class: "chip click on", tabindex: "0",
+        text: (neg ? "-" : "") + key + ": " + (neg ? cur.slice(1) : cur) + " \\u2715",
+        onclick: () => setParam(key, null) }));
+    } else {
       for (const v of values.slice(0, 6))
         facetBar.append(h("span", { class: "chip click", tabindex: "0", text: key + ": " + v, onclick: () => setParam(key, v) }));
     }
@@ -480,11 +757,59 @@ function renderTrials(app) {
   facet("outcome", [...new Set(all.map(t => t.outcome))].sort());
   facet("graded", ["pass", "fail", "cant_grade", "pending"]);
   facet("flagged", ["true"]);
-  const search = h("input", { class: "search", placeholder: "search trial or task id\\u2026", value: p.get("q") || "" });
-  search.addEventListener("change", () => setParam("q", search.value || null));
-  facetBar.append(search, h("span", { class: "spacer" }),
+  /* the typed grammar: the other projection of the same URL state; a parse
+     error is shown in place and the previous filter stays applied */
+  const search = h("input", { class: "search gram", id: "gram", spellcheck: "false",
+    placeholder: "arm:control -graded:pass task:t1* free text \\u2026 (? explains)",
+    value: S.filterErr ? (S.filterRaw || "") : serializeFilter(p) });
+  search.addEventListener("change", () => {
+    try {
+      const parsed = parseFilter(search.value);
+      S.filterErr = null; S.filterRaw = null;
+      setFacetParams(parsed);
+    } catch (err) {
+      S.filterErr = String((err && err.message) || err);
+      S.filterRaw = search.value;
+      render();
+    }
+  });
+  facetBar.append(search);
+  facetBar.append(h("span", { class: "chip click" + (p.get("help") ? " on" : ""), tabindex: "0", text: "?",
+    onclick: () => setParam("help", p.get("help") ? null : "1") }));
+  if (S.filterErr) facetBar.append(h("span", { class: "gerr", id: "gramerr", text: "parse error: " + S.filterErr }));
+  facetBar.append(h("span", { class: "spacer" }),
     h("span", { class: "dim3", text: rows.length + " of " + all.length + " trials \\u00b7 filters live in the URL" }));
   app.append(facetBar);
+  if (p.get("help")) {
+    const help = h("div", { class: "card", id: "gramcard" });
+    help.append(h("h2", { text: "Filter grammar (closed \\u2014 anything else is a parse error)" }));
+    for (const line of [
+      "field:value \\u2014 filter one facet; fields: " + FILTER_FIELDS.join(", "),
+      "-field:value \\u2014 negate a field term (a literal leading '-' in a value is not expressible)",
+      "task:t1* \\u2014 '*' wildcards on id-like fields (" + WILDCARD_FIELDS.join(", ") + "); wildcarded terms match the whole id",
+      "bare words \\u2014 free text over trial/task ids (substring; a word with '*' matches a whole id)",
+      "terms are space-separated; one term per field \\u2014 duplicates and unknown fields are parse errors",
+    ]) help.append(h("div", { class: "dim", text: line }));
+    app.append(help);
+  }
+  /* saved views: stored URL fragments, local to this browser [EVAL-19 AC-3] */
+  const viewsBar = h("div", { class: "toolbar card" });
+  viewsBar.append(h("h2", { text: "Views", style: "margin:0" }));
+  for (const v of loadViews()) {
+    viewsBar.append(h("span", { class: "chip click", tabindex: "0", text: "view: " + v.name,
+      onclick: () => { location.hash = v.hash; } }));
+    viewsBar.append(h("button", { class: "btn", text: "\\u270e", title: "rename to the typed name",
+      onclick: () => renameView(v.name) }));
+    viewsBar.append(h("button", { class: "btn", text: "\\u2715", title: "delete this view",
+      onclick: () => deleteView(v.name) }));
+  }
+  const nameIn = h("input", { class: "search", id: "viewname", placeholder: "view name\\u2026" });
+  viewsBar.append(nameIn,
+    h("button", { class: "btn", id: "viewsave", text: "Save view", onclick: () => saveView(nameIn.value) }));
+  if (S.viewsErr) viewsBar.append(h("span", { class: "gerr", id: "viewserr", text: S.viewsErr }));
+  viewsBar.append(h("span", { class: "spacer" }),
+    h("span", { class: "dim3", text: "a saved view is a stored URL \\u2014 copy the link to share it" }));
+  app.append(viewsBar);
 
   const selId = p.get("sel");
   const wrap = selId ? h("div", { class: "split" }) : h("div");
@@ -503,7 +828,9 @@ function renderTrials(app) {
         h("td", {}, gradeChip(t)),
         h("td", { class: "mono", text: t.cost === null || t.cost === undefined ? "\\u2014" : fmt(t.cost) }),
         h("td", { class: t.wall === null || t.wall === undefined ? "dim3" : "mono", text: nm(t.wall) }),
-        h("td", {}, ...(t.flagged ? [h("span", { class: "chip bad", text: "\\u2691 flag" })] : []),
+        h("td", {}, ...(t.flagged ? [h("span", { class: "chip bad click", tabindex: "0", text: "\\u2691 flag",
+                     onclick: (e) => { e.stopPropagation();  /* deep link, not row select [EVAL-19 AC-5] */
+                       nav("#/exp/" + encodeURIComponent(S.route.exp) + "/trial/" + encodeURIComponent(t.trial_id) + "?tab=forensics"); } })] : []),
                    ...(t.quarantined ? [h("span", { class: "chip bad", text: "quarantined" })] : []),
                    ...(t.egress ? [h("span", { class: "chip", text: "egress " + t.egress })] : [])));
       table.append(tr);
@@ -619,16 +946,53 @@ function renderCompare(app) {
     h("span", { class: "chip click" + (only ? " on" : ""), tabindex: "0", text: "only disagreements (" + c.summary.disagreements + ")" + (only ? " \\u2715" : ""),
       onclick: () => setParam("only", only ? null : "disagreements") }));
   app.append(head);
+  /* tallies are navigation [EVAL-19 AC-5]: every count filters to its slice,
+     and the slice lives in the URL. Predicates mirror compare.py's summary
+     arithmetic exactly, so a tally always equals its filtered row count. */
+  const slice = S.route.params.get("slice") || "";
+  const knownSlice = ["holdout:a_only", "holdout:b_only", "holdout:both", "holdout:neither",
+                      "judge:a", "judge:b", "judge:tie", "judge:cant", "judge:unjudged"];
+  const tally = (key, label, count) => h("span", {
+    class: "chip click" + (slice === key ? " on" : ""), tabindex: "0",
+    text: label + " " + count + (slice === key ? " \\u2715" : ""),
+    onclick: () => setParam("slice", slice === key ? null : key) });
   const sm = h("div", { class: "toolbar card" });
   sm.append(h("span", { class: "dim", text: "holdout: " }),
-    h("b", { text: c.arm_a + " " + c.summary.holdout.a_only + " \\u00b7 " + c.arm_b + " " + c.summary.holdout.b_only +
-      " \\u00b7 both " + c.summary.holdout.both + " \\u00b7 neither " + c.summary.holdout.neither }),
+    tally("holdout:a_only", c.arm_a, c.summary.holdout.a_only),
+    tally("holdout:b_only", c.arm_b, c.summary.holdout.b_only),
+    tally("holdout:both", "both", c.summary.holdout.both),
+    tally("holdout:neither", "neither", c.summary.holdout.neither),
     h("span", { class: "dim", text: "\\u2003judge (ADVISORY): " }),
-    h("b", { text: "A " + c.summary.judge.a + " \\u00b7 B " + c.summary.judge.b + " \\u00b7 tie " + c.summary.judge.tie +
-      " \\u00b7 cant " + c.summary.judge.cant + " \\u00b7 unjudged " + c.summary.judge.unjudged }));
+    tally("judge:a", "A", c.summary.judge.a),
+    tally("judge:b", "B", c.summary.judge.b),
+    tally("judge:tie", "tie", c.summary.judge.tie),
+    tally("judge:cant", "cant", c.summary.judge.cant),
+    tally("judge:unjudged", "unjudged", c.summary.judge.unjudged),
+    h("span", { class: "spacer" }),
+    h("span", { class: "dim3", text: "counts filter \\u00b7 the slice lives in the URL" }));
+  if (slice && knownSlice.indexOf(slice) < 0)
+    sm.append(h("span", { class: "gerr", text: "unknown slice '" + slice + "' \\u2014 ignored" }));
   app.append(sm);
-  const pairs = c.pairs.filter(p => !only || p.disagreement);
-  if (!pairs.length) app.append(h("div", { class: "card empty", text: only ? "No disagreements \\u2014 arms agree on every pair." : "No complete pairs yet (both arms must have a trial per task/rep)." }));
+  const slicePred = (p) => {
+    const a = p.a.holdout_pass, b = p.b.holdout_pass;
+    const w = p.judge ? p.judge.winner : null;
+    switch (slice) {
+      case "holdout:a_only": return !!a && !b;
+      case "holdout:b_only": return !!b && !a;
+      case "holdout:both": return !!a && !!b;
+      case "holdout:neither": return a === false && b === false;
+      case "judge:a": return w === "A";
+      case "judge:b": return w === "B";
+      case "judge:tie": return w === "TIE";
+      case "judge:cant": return w === "CANT_JUDGE";
+      case "judge:unjudged": return w === null || w === undefined;
+      default: return true;
+    }
+  };
+  const pairs = c.pairs.filter(p => (!only || p.disagreement) && slicePred(p));
+  if (!pairs.length) app.append(h("div", { class: "card empty",
+    text: slice && knownSlice.indexOf(slice) >= 0 ? "No pairs in this slice."
+      : (only ? "No disagreements \\u2014 arms agree on every pair." : "No complete pairs yet (both arms must have a trial per task/rep).") }));
   for (const p of pairs) {
     const card = h("div", { class: "card" });
     const bar = h("div", { class: "toolbar" });
@@ -674,14 +1038,18 @@ function renderFindings(app) {
   app.append(card);
   const art = h("div", { class: "card" });
   art.append(h("h2", { text: "Rendered artifacts (read-only)" }));
-  const names = ["findings.json", "findings.exploratory.dossier.html", "findings.official.dossier.html",
-                 "findings.exploratory.md", "findings.official.md"];
-  const bar = h("div", { class: "toolbar" });
-  for (const name of names)
-    bar.append(h("button", { class: "btn", text: name, onclick: () =>
-      window.open("/artifact?exp=" + encodeURIComponent(S.route.exp) + "&name=" + encodeURIComponent(name), "_blank") }));
-  art.append(bar, h("div", { class: "dim3", style: "margin-top:8px",
-    text: "buttons open the artifact if analyze has rendered it (404 otherwise, honestly); the dossier is its own self-contained record" }));
+  if (BUNDLE) {
+    art.append(h("div", { class: "dim3", text: "artifacts are not embedded in a bundle \\u2014 open findings.* beside the experiment's ledger, or use the live observer" }));
+  } else {
+    const names = ["findings.json", "findings.exploratory.dossier.html", "findings.official.dossier.html",
+                   "findings.exploratory.md", "findings.official.md"];
+    const bar = h("div", { class: "toolbar" });
+    for (const name of names)
+      bar.append(h("button", { class: "btn", text: name, onclick: () =>
+        window.open("/artifact?exp=" + encodeURIComponent(S.route.exp) + "&name=" + encodeURIComponent(name), "_blank") }));
+    art.append(bar, h("div", { class: "dim3", style: "margin-top:8px",
+      text: "buttons open the artifact if analyze has rendered it (404 otherwise, honestly); the dossier is its own self-contained record" }));
+  }
   app.append(art);
 }
 
@@ -741,8 +1109,14 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ------------------------------------------------------------------ boot */
-window.addEventListener("hashchange", () => { S.route = parseHash(); S.sel = 0; render(); refresh(); });
+window.addEventListener("hashchange", () => {
+  S.route = parseHash(); S.sel = 0;
+  S.filterErr = null; S.filterRaw = null; S.viewsErr = null;  /* navigation clears input errors */
+  render(); refresh();
+});
 S.route = parseHash();
+if (BUNDLE) document.getElementById("bundlenote").textContent =
+  " Static bundle: an archived, deterministic render of this experiment's ledger \\u2014 nothing here is live and nothing can be changed from this page.";
 refresh();
 </script>
 </body>
