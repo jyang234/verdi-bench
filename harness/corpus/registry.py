@@ -110,15 +110,11 @@ class TaskEntry(BaseModel):
     def _created_at_parses(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        from datetime import datetime
+        # Same parser the dating channel runs, so load-time acceptance is
+        # analysis-time acceptance [EVAL-10 AC-1].
+        from ..schema.dates import parse_rfc3339
 
-        try:
-            datetime.fromisoformat(v)
-        except ValueError as e:
-            raise CorpusError(
-                f"task created_at {v!r} is not an RFC 3339 date/timestamp "
-                f"[EVAL-10 AC-1]: {e}"
-            ) from e
+        parse_rfc3339(v, field="task created_at")
         return v
 
 

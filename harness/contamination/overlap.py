@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Optional, Sequence
 
 from ..run.seam import HoldoutLeakError
@@ -48,12 +49,15 @@ class OverlapResult:
     flagged: bool
 
 
+@lru_cache(maxsize=256)
 def _fingerprints(text: str) -> frozenset[int]:
     """Winnowed fingerprint set of ``text``.
 
-    Lowercased word tokens → k-gram sha256 prefixes → per-window minimum
-    (rightmost on ties, per the winnowing paper). Fewer hashes than a window
-    keeps them all; fewer tokens than a shingle yields the honest empty set.
+    Lowercased word tokens → k-gram sha256 prefixes → per-window minimum.
+    Fewer hashes than a window keeps them all; fewer tokens than a shingle
+    yields the honest empty set. Cached: the scan compares the same oracle and
+    holdout texts against every trial of a task, and re-hashing them per trial
+    is pure waste (pure function of the text, so the cache cannot go stale).
     """
     tokens = _TOKEN_RE.findall(text.lower())
     if len(tokens) < _K:
@@ -79,6 +83,15 @@ def _fingerprints(text: str) -> frozenset[int]:
 def _containment(reference_fp: frozenset[int], solution_fp: frozenset[int]) -> float:
     """Fraction of the reference's fingerprints present in the solution."""
     return len(reference_fp & solution_fp) / len(reference_fp)
+
+
+def fingerprintable(text: str) -> bool:
+    """Whether ``text`` is long enough to serve as an overlap reference.
+
+    The probe pre-flights its oracle inputs with this before spending any
+    provider call, so an unusable oracle fails the run closed instead of
+    crashing mid-probe [AC-3]."""
+    return bool(_fingerprints(text))
 
 
 def solution_overlap(
@@ -125,8 +138,11 @@ def solution_overlap(
             )
         holdout_scores.append(_containment(holdout_fp, solution_fp))
 
-    flagged = (oracle_score is not None and oracle_score >= threshold) or any(
-        s >= threshold for s in holdout_scores
+    # one threshold evaluation feeds both the flag and the alarm, so they can
+    # never disagree about whether a holdout leaked
+    leaking = [i for i, s in enumerate(holdout_scores) if s >= threshold]
+    flagged = bool(leaking) or (
+        oracle_score is not None and oracle_score >= threshold
     )
     result = OverlapResult(
         oracle_score=oracle_score,
@@ -134,7 +150,6 @@ def solution_overlap(
         threshold=threshold,
         flagged=flagged,
     )
-    leaking = [i for i, s in enumerate(holdout_scores) if s >= threshold]
     if leaking:
         err = HoldoutLeakError(
             f"trial solution overlaps holdout content #{leaking[0]} "

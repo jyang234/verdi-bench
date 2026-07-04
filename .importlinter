@@ -61,6 +61,7 @@ source_modules =
     harness.contamination.dating
     harness.contamination.canary
     harness.contamination.overlap
+    harness.contamination.scan
     harness.contamination.summary
 forbidden_modules =
     harness.judge.providers

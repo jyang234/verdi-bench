@@ -5,18 +5,22 @@ an arm model's training cutoff cannot have been memorized by that model.
 ``unknown`` is a first-class honest state (§7.8 cross-vendor honesty) — a
 missing date never launders into clean — and a positive detection (AC-3 canary,
 AC-4 overlap) outranks dating in the flagged direction. Pure by construction:
-no clock, no ledger, no I/O.
+no clock, no ledger, no I/O. Date parsing is the shared
+:mod:`harness.schema.dates` implementation, the same one the schema validators
+run at load time, so a date accepted there cannot fail here.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from enum import Enum
 
+from ..schema.dates import Rfc3339Error, parse_rfc3339
 
-class DatingError(ValueError):
-    """A date that should be RFC 3339 does not parse — refused loudly, never
-    silently degraded to ``unknown`` [fail-loudly]."""
+# The dating channel's refusal is the shared parse refusal — one grammar, one
+# error; re-exported under the story-local name the tests and callers use.
+DatingError = Rfc3339Error
+
+__all__ = ["ContaminationStatus", "DatingError", "cutoff_status", "parse_rfc3339"]
 
 
 class ContaminationStatus(str, Enum):
@@ -25,23 +29,6 @@ class ContaminationStatus(str, Enum):
     CLEAN_BY_DATE = "clean_by_date"
     UNKNOWN = "unknown"
     FLAGGED = "flagged"
-
-
-def parse_rfc3339(value: str, *, field: str) -> datetime:
-    """Parse an RFC 3339 date/timestamp, naming the field on refusal.
-
-    A naive value is pinned to UTC so mixed naive/aware comparisons are total
-    instead of a mid-comparison ``TypeError``.
-    """
-    try:
-        parsed = datetime.fromisoformat(value)
-    except (TypeError, ValueError) as e:
-        raise DatingError(
-            f"{field} {value!r} is not an RFC 3339 date/timestamp: {e}"
-        ) from e
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
 
 
 def cutoff_status(

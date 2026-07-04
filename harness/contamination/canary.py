@@ -4,7 +4,9 @@ A model that completes the canary *without it in context* has seen the task in
 training — near-zero false-positive proof of membership. The evidentiary value
 dies if a canary value leaks through any published surface, so values are
 hash-only everywhere outside the task content itself; renders and packets are
-guarded by the shared scrub mechanism (:mod:`harness.review.scrub`). This is a
+guarded by the shared scrub mechanism — the ``VBCANARY-`` marker format is a
+built-in pattern of :func:`harness.blind.core.identity_pattern_list`, so every
+scrub/assert surface (judge packets, review packets) kills it. This is a
 *different* canary corpus from the blinding canaries (§7.4) — separate
 namespace, separate purpose, one shared scrub. Deterministic by construction:
 a namespaced sub-hash of ``task_sha``, no randomness [§7.5].
@@ -65,5 +67,21 @@ def embed_canary(content: dict, canary: str) -> dict:
             "double embed"
         )
     embedded = dict(content)
-    embedded["prompt"] = f"{prompt}\n\n<!-- {canary} -->\n"
+    embedded["prompt"] = f"{prompt}{_marker(canary)}"
     return embedded
+
+
+def _marker(canary: str) -> str:
+    return f"\n\n<!-- {canary} -->\n"
+
+
+def strip_canary(text: str, canary: str) -> str:
+    """``text`` with the task's embedded canary marker removed.
+
+    The exact inverse of :func:`embed_canary` for probe use: the probe must
+    send the task content *without* its canary (a canary in context proves
+    nothing) [AC-3]. Removes the marker form wherever it appears; a canary
+    value surviving outside the marker form is NOT removed — that anomaly is
+    the probe's fail-closed ``canary_in_prompt`` refusal, not a scrub.
+    """
+    return text.replace(_marker(canary), "").replace(f"<!-- {canary} -->", "")

@@ -29,7 +29,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from ..contamination.summary import contamination_summary
+from ..contamination.summary import contamination_summary, latest_probe, probe_asymmetries
 from ..ledger import events
 from ..ledger.query import find_events, ledger_head_hash, verify
 from ..schema.metrics import PrimaryMetric
@@ -966,13 +966,15 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
     # contamination case A/B cannot disclose its way out of — a flag on one
     # arm's model with the other arm not flagged breaks the pairing. Symmetric
     # flags and unknowns stay disclosed caveats in the render, never refusals.
-    asymmetric = (findings.contamination or {}).get("asymmetric", [])
+    # Recomputed from the LEDGERED probe event, like the fence's other checks —
+    # the findings field is disclosure, not the thing the fence trusts; the
+    # findings-based list still counts (defense in depth for summary-only
+    # flags), but an empty findings dict cannot silence a ledgered asymmetry.
+    asymmetric = probe_asymmetries(latest_probe(ledger_path)) or (
+        findings.contamination or {}
+    ).get("asymmetric", [])
     if asymmetric:
-        detail = "; ".join(
-            f"task {a['task_id']!r} flagged for arm(s) {a['flagged_arms']}, "
-            f"not for {a['unflagged_arms']}"
-            for a in asymmetric
-        )
+        detail = "; ".join(_asymmetry_line(a) for a in asymmetric)
         raise AsymmetricContaminationError(
             f"official render refused: asymmetric flagged contamination — "
             f"{detail}. The pairing is invalid for these tasks; exploratory "
@@ -991,6 +993,15 @@ def _override_lines(findings: FindingsDocument) -> list[str]:
         f"- {n} override-graded re-attempt(s) via `--retry-terminal` on "
         f"{len(trials)} trial(s): {trials}"
     ]
+
+
+def _asymmetry_line(a: dict) -> str:
+    """One asymmetric-contamination entry, worded identically in the official
+    refusal and the exploratory disclosure so the two accounts reconcile."""
+    return (
+        f"task {a['task_id']!r} flagged for arm(s) {a['flagged_arms']}, "
+        f"not for {a['unflagged_arms']}"
+    )
 
 
 def _contamination_lines(findings: FindingsDocument) -> list[str]:
@@ -1023,10 +1034,7 @@ def _contamination_lines(findings: FindingsDocument) -> list[str]:
             "disclosed as unknown, never upgraded to clean [EVAL-10 AC-1]"
         )
     for a in c.get("asymmetric", []):
-        lines.append(
-            f"- ⚠ ASYMMETRIC: task {a['task_id']!r} flagged for "
-            f"{a['flagged_arms']}, not for {a['unflagged_arms']} — pairing invalid"
-        )
+        lines.append(f"- ⚠ ASYMMETRIC: {_asymmetry_line(a)} — pairing invalid")
     return lines
 
 

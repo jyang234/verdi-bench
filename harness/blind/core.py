@@ -84,6 +84,11 @@ _IDENTITY_NAME_PATTERNS = [
     # transcript role markers that would leak the harness/agent identity
     r"\bassistant:\s",
     r"\bhuman:\s",
+    # EVAL-10 AC-2: contamination-canary values (markers embedded in task
+    # content). A canary that reaches any published surface — judge packet,
+    # review packet, render — is evidentially dead, so the shared scrub kills
+    # the value everywhere; events and manifests carry its hash only.
+    r"VBCANARY-[0-9a-f]{32}",
 ]
 
 

@@ -11,6 +11,7 @@ from harness.contamination.canary import (
     derive_canary,
     embed_canary,
     hash_canary,
+    strip_canary,
 )
 from harness.corpus.admit import admit_task
 from harness.corpus.registry import CorpusManifest, TaskEntry
@@ -71,12 +72,40 @@ def test_ac2_canary_deterministic_embed(tmp_path):
         embed_canary(embedded, canary)
     with pytest.raises(CanaryError, match="prompt"):
         embed_canary({"workspace_ref": "w"}, canary)
+    # strip is the exact inverse, so the probe can send the pre-embed content
+    assert strip_canary(embedded["prompt"], canary) == content["prompt"]
 
-    # admission records the canary by hash on the manifest entry
+    # admission given the content embeds + records the canary by hash
+    manifest, ledger, ctx = _admissible(tmp_path)
+    task = admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha=_SHA,
+                      baseline_ref="b1", keyring=_KEYRING,
+                      candidate_content=dict(content))
+    assert task.canary_sha256 == hash_canary(canary)
+
+
+def test_admit_without_content_claims_no_canary(tmp_path):
+    """Admission WITHOUT candidate content records no canary hash — claiming a
+    canary that was never embedded would turn the probe's honest 'unprobed'
+    into a false 'negative' [AC-2, review fix]."""
     manifest, ledger, ctx = _admissible(tmp_path)
     task = admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha=_SHA,
                       baseline_ref="b1", keyring=_KEYRING)
-    assert task.canary_sha256 == hash_canary(canary)
+    assert task.canary_sha256 is None
+    assert task.status == "admitted"
+
+
+def test_admit_embed_failure_refuses_before_ledgering(tmp_path):
+    """A failing embed refuses admission outright: no status flip, no
+    task_admitted event — never a ledgered-but-unmarked tear [review fix]."""
+    from harness.ledger.query import find_events
+
+    manifest, ledger, ctx = _admissible(tmp_path)
+    with pytest.raises(CanaryError, match="prompt"):
+        admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha=_SHA,
+                   baseline_ref="b1", keyring=_KEYRING,
+                   candidate_content={"no_prompt": "here"})
+    assert manifest.task("cand-1").status == "pending-curation"
+    assert find_events(ledger, "task_admitted") == []
 
 
 def test_ac2_canary_never_published(tmp_path):
@@ -92,7 +121,8 @@ def test_ac2_canary_never_published(tmp_path):
     # the manifest serialization carries the hash, never the value
     manifest, ledger, ctx = _admissible(tmp_path)
     admit_task(manifest, ledger, ctx, candidate_id="cand-1", task_sha=_SHA,
-               baseline_ref="b1", keyring=_KEYRING)
+               baseline_ref="b1", keyring=_KEYRING,
+               candidate_content={"prompt": "Fix the bug in foo()."})
     blob = manifest.to_json()
     assert canary not in blob
     assert hash_canary(canary) in blob
@@ -114,9 +144,13 @@ def test_ac2_canary_never_published(tmp_path):
     assert hash_canary(canary) in ledger_bytes
 
     # any render/packet surface containing a canary value fails the shared
-    # scrub property test (one scrub mechanism, one list to extend [§7.4])
+    # scrub property test (one scrub mechanism, one list to extend [§7.4]) —
+    # and the VBCANARY marker format is a BUILT-IN pattern, so every existing
+    # scrub/assert surface catches it without per-experiment literals
     leaking_render = f"## Findings\n\nthe task said <!-- {canary} -->"
     with pytest.raises(ScrubError):
+        assert_identity_free(leaking_render)  # no extra literals needed
+    with pytest.raises(ScrubError):
         assert_identity_free(leaking_render, canaries=[canary])
-    assert canary not in blind_scrub(leaking_render, canaries=[canary])
+    assert canary not in blind_scrub(leaking_render)
     assert_identity_free("## Findings\n\nclean text", canaries=[canary])

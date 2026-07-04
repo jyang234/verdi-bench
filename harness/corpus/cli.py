@@ -113,15 +113,20 @@ def register(app: typer.Typer) -> None:
         # CO-8: the mine→manifest link — stage the candidate as a pending task so
         # admission (which requires a manifest entry) is reachable.
         if manifest_path is not None:
+            from pydantic import ValidationError
+
             manifest = CorpusManifest.load(manifest_path)
             try:
                 # EVAL-10 AC-1: created_at comes from the MR's merged_at — input
                 # data, not a wall-clock read; absent stays an honest unknown.
+                # A malformed merged_at surfaces as a pydantic ValidationError
+                # (the created_at validator runs inside TaskEntry), so it must
+                # be caught here for the clean exit-2 refusal, not a traceback.
                 manifest.stage_candidate(
                     task_id or out.stem, sha=sha, miner=who,
                     created_at=data.get("merged_at"),
                 )
-            except CorpusError as e:
+            except (CorpusError, ValidationError) as e:
                 typer.echo(str(e), err=True)
                 raise typer.Exit(code=2)
             manifest.save(manifest_path)
@@ -248,8 +253,9 @@ def register(app: typer.Typer) -> None:
         candidate_json: Path = typer.Option(
             None, "--candidate-json",
             help="Stored candidate content to embed the contamination canary into "
-                 "on admission (the manifest sha stays the reviewed, pre-embed "
-                 "identity; the canary is re-derivable from it) [EVAL-10 AC-2]",
+                 "on admission. The reviewed file is never rewritten (its bytes "
+                 "are what the approval sha signs); the embedded copy is written "
+                 "alongside as <name>.embedded.json [EVAL-10 AC-2]",
         ),
         actor: str = typer.Option(None, "--actor", help="Actor recorded on the admission [GR-12]"),
     ) -> None:
@@ -259,6 +265,19 @@ def register(app: typer.Typer) -> None:
         from .admit import admit_task
         from .attestation import KeyringFormatError, load_keyring
         from .registry import CorpusError, CorpusManifest, assert_outside_instrument
+
+        # EVAL-10 AC-2: read + validate the candidate content BEFORE admission,
+        # so a bad path/JSON refuses cleanly with nothing ledgered.
+        candidate_content = None
+        if candidate_json is not None:
+            try:
+                assert_outside_instrument(candidate_json)
+                candidate_content = json.loads(
+                    candidate_json.read_text(encoding="utf-8")
+                )
+            except (CorpusError, OSError, ValueError) as e:
+                typer.echo(str(e), err=True)
+                raise typer.Exit(code=2)
 
         ledger_path = experiment_dir / "ledger.ndjson"
         ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
@@ -273,28 +292,28 @@ def register(app: typer.Typer) -> None:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
         try:
+            # admit_task validates the canary embed BEFORE ledgering, so an
+            # embed refusal (no prompt, double embed) leaves nothing torn.
             admit_task(
                 manifest, ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
                 baseline_ref=baseline_ref, keyring=authorized,
+                candidate_content=candidate_content,
             )
-        except CorpusError as e:
+        except (CorpusError, CanaryError) as e:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
-        # EVAL-10 AC-2: embed the derived canary into the stored candidate
-        # content BEFORE the manifest write, so a failed embed leaves neither
-        # side admitted-but-unmarked. Candidate content is internal-corpus data:
-        # the rewrite target must stay outside the instrument repo.
-        if candidate_json is not None:
-            try:
-                assert_outside_instrument(candidate_json)
-                content = json.loads(candidate_json.read_text(encoding="utf-8"))
-                embedded = embed_canary(content, derive_canary(task_sha))
-            except (CorpusError, CanaryError, ValueError) as e:
-                typer.echo(str(e), err=True)
-                raise typer.Exit(code=2)
-            candidate_json.write_text(
+        # EVAL-10 AC-2: persist the embedded copy ALONGSIDE the reviewed file —
+        # never over it. The reviewed bytes are what the curation approval and
+        # manifest sha are keyed to; destroying them would make every admitted
+        # task look post-review-tampered. embed_canary is pure, so this repeats
+        # the exact call admit_task already validated.
+        if candidate_content is not None:
+            embedded = embed_canary(candidate_content, derive_canary(task_sha))
+            embedded_path = candidate_json.with_suffix(".embedded.json")
+            embedded_path.write_text(
                 json.dumps(embedded, sort_keys=True, indent=2), encoding="utf-8"
             )
+            typer.echo(f"canary-embedded content: {embedded_path}")
         manifest.save(manifest_path)
         typer.echo(f"admitted {candidate_id} (sha={task_sha[:12]}…)")
 

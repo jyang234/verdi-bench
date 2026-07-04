@@ -8,10 +8,14 @@ oracle's remainder above the pre-registered overlap threshold). Probes never
 run inside trial containers and share no context with judge calls — each probe
 is a fresh, single-message model call from this module [constraint].
 
-Fail-closed: any provider failure yields one ``contamination_probe`` event with
-``status: cant_probe`` and a closed-set reason, carrying **no** outcomes —
-never a silent partial probe. Canary values are unrepresentable in the event:
-hash-only [AC-2].
+Fail-closed: deterministic input problems (a canary already in a probe prompt,
+an oracle too short to compare) are refused **before any provider call**, and
+any provider failure yields one ``contamination_probe`` event with
+``status: cant_probe`` and a closed-set reason, carrying no per-task LLM
+outcomes — never a silent partial probe. The deterministic AC-4 overlap flags
+passed in by the caller ride *every* event, complete or not: an unrelated
+provider outage must not erase evidence already computed from disk. Canary
+values are unrepresentable in the event: hash-only [AC-2].
 """
 
 from __future__ import annotations
@@ -27,24 +31,20 @@ from ..judge.providers.base import (
 )
 from ..ledger.events import EventContext, record_contamination_probe
 from ..schema.experiment import Arm
-from .canary import derive_canary, hash_canary
-from .overlap import DEFAULT_OVERLAP_THRESHOLD, solution_overlap
+from .canary import derive_canary, hash_canary, strip_canary
+from .overlap import DEFAULT_OVERLAP_THRESHOLD, fingerprintable, solution_overlap
 
 
 class ProbeError(ValueError):
     """A probe-input precondition failed [fail-loudly]."""
 
 
-class _CanaryInPrompt(Exception):
-    """Internal: a probe prompt contains the canary it is meant to detect —
-    sending it would manufacture a false positive, so the run fails closed."""
-
-
 @dataclass(frozen=True)
 class ProbeTask:
-    """One task's probe inputs. ``prompt`` must be the pre-embed task content
-    (the canary is what the model must produce, never what we send); ``oracle``
-    is the reference solution when the corpus carries one."""
+    """One task's probe inputs. ``prompt`` is the task content as materialized
+    (an embedded canary marker is stripped before probing — the canary is what
+    the model must produce, never what we send); ``oracle`` is the reference
+    solution when the corpus carries one."""
 
     task_id: str
     task_sha: str
@@ -55,6 +55,39 @@ class ProbeTask:
 
 def _probe_messages(instruction: str, body: str) -> list[dict]:
     return [{"role": "user", "content": f"{instruction}\n\n{body}"}]
+
+
+def _canary_probe_body(task: ProbeTask) -> str:
+    """The canary-probe prompt body: the task content without its marker."""
+    return strip_canary(task.prompt, derive_canary(task.task_sha))
+
+
+def _split_oracle(oracle: str) -> tuple[str, str]:
+    """Token-boundary prefix/remainder split — a character midpoint would
+    bisect a token and corrupt both halves' fingerprints."""
+    words = oracle.split()
+    mid = len(words) // 2
+    return " ".join(words[:mid]), " ".join(words[mid:])
+
+
+def _preflight(tasks: Sequence[ProbeTask]) -> Optional[dict]:
+    """Deterministic input validation before any provider call [fail-closed].
+
+    Returns the ``cant_probe`` payload core for the first unusable input, or
+    None when every task is probeable: a canary surviving outside its marker
+    would manufacture a false positive, and an oracle whose remainder cannot
+    be fingerprinted would crash mid-run after burning provider calls.
+    """
+    for task in tasks:
+        if task.has_canary:
+            canary = derive_canary(task.task_sha)
+            if canary in _canary_probe_body(task):
+                return {"reason": "canary_in_prompt", "task_id": task.task_id}
+        if task.oracle is not None:
+            prefix, remainder = _split_oracle(task.oracle)
+            if not prefix or not fingerprintable(remainder):
+                return {"reason": "oracle_unfingerprintable", "task_id": task.task_id}
+    return None
 
 
 def run_memory_probe(
@@ -77,8 +110,9 @@ def run_memory_probe(
     per-(arm, task) scan results into the same event, so one record carries the
     whole measurement; unknown arm/task keys are refused. Any
     :class:`ProviderError` fails the whole run closed to ``cant_probe`` with
-    the shared closed-set reason — outcomes from arms already probed are
-    discarded, never partially reported.
+    the shared closed-set reason — LLM outcomes from arms already probed are
+    discarded, never partially reported, while the deterministic
+    ``overlap_flags`` still ride the event.
     """
     if not arms:
         raise ProbeError("no arms to probe; a probe run needs at least one arm")
@@ -87,7 +121,7 @@ def run_memory_probe(
     resolved_threshold = (
         DEFAULT_OVERLAP_THRESHOLD if threshold is None else threshold
     )
-    overlap_flags = overlap_flags or {}
+    overlap_flags = {a: dict(m) for a, m in (overlap_flags or {}).items()}
     arm_names = {a.name for a in arms}
     task_ids = {t.task_id for t in tasks}
     for arm_name, per_task in overlap_flags.items():
@@ -99,7 +133,13 @@ def run_memory_probe(
                 f"overlap_flags for arm {arm_name!r} names unknown task(s) {unknown}"
             )
 
-    def _probe_all() -> dict:
+    base = {"threshold": resolved_threshold, "overlap_flags": overlap_flags}
+    refused = _preflight(tasks)
+    if refused is not None:
+        probe = {"status": "cant_probe", **refused, **base}
+        return record_contamination_probe(ledger_path, ctx, probe=probe)
+
+    try:
         arms_out: dict[str, dict] = {}
         for arm in arms:
             prov = provider if provider is not None else get_provider(arm.model)
@@ -110,20 +150,20 @@ def run_memory_probe(
                 measured = False
                 if task.has_canary:
                     canary = derive_canary(task.task_sha)
-                    messages = _probe_messages(
-                        "Continue this task description exactly as it appears "
-                        "in your training data:",
-                        task.prompt,
+                    completion = prov.complete(
+                        arm.model,
+                        _probe_messages(
+                            "Continue this task description exactly as it "
+                            "appears in your training data:",
+                            _canary_probe_body(task),
+                        ),
+                        0.0,
                     )
-                    if canary in messages[0]["content"]:
-                        raise _CanaryInPrompt(task.task_id)
-                    completion = prov.complete(arm.model, messages, 0.0)
                     measured = True
                     if canary in completion:
                         hits.append("canary_regurgitation")
                 if task.oracle is not None:
-                    mid = len(task.oracle) // 2
-                    prefix, remainder = task.oracle[:mid], task.oracle[mid:]
+                    prefix, remainder = _split_oracle(task.oracle)
                     completion = prov.complete(
                         arm.model,
                         _probe_messages(
@@ -155,30 +195,18 @@ def run_memory_probe(
                 "outcomes": outcomes,
                 "evidence": evidence,
             }
-        return arms_out
-
-    try:
-        arms_out = _probe_all()
     except ProviderError as e:
         probe = {
             "status": "cant_probe",
             "reason": provider_failure_reason(e),
-            "threshold": resolved_threshold,
-        }
-        return record_contamination_probe(ledger_path, ctx, probe=probe)
-    except _CanaryInPrompt as e:
-        probe = {
-            "status": "cant_probe",
-            "reason": "canary_in_prompt",
-            "threshold": resolved_threshold,
-            "task_id": e.args[0],
+            **base,
         }
         return record_contamination_probe(ledger_path, ctx, probe=probe)
 
     probe = {
         "status": "complete",
         "reason": None,
-        "threshold": resolved_threshold,
+        **base,
         "arms": arms_out,
         # hash-only: the canary value is a secret of the instrument [AC-2]
         "canary_sha256": {

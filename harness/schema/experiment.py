@@ -53,15 +53,11 @@ class Arm(BaseModel):
             return v
         # Validated at the schema so a malformed cutoff is refused on every spec
         # load, not first discovered mid-analysis. Absent stays legal (unknown).
-        from datetime import datetime
+        # Same parser the dating channel runs, so load-time acceptance is
+        # analysis-time acceptance [EVAL-10 AC-1].
+        from .dates import parse_rfc3339
 
-        try:
-            datetime.fromisoformat(v)
-        except ValueError as e:
-            raise ValueError(
-                f"arm.training_cutoff {v!r} is not an RFC 3339 date/timestamp "
-                f"[EVAL-10 AC-1]: {e}"
-            ) from e
+        parse_rfc3339(v, field="arm.training_cutoff")
         return v
 
     @field_validator("model")
