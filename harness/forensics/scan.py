@@ -100,14 +100,12 @@ def run_forensics(
     from ..ledger.query import find_events
     from ..plan.lock import assert_lock
     from ..run.trajectory import resolve_trajectory
-    from ..schema.experiment import ExperimentSpec
     from .review import forensic_review
 
     experiment_dir = Path(experiment_dir)
     spec_path = experiment_dir / "experiment.yaml"
     ledger_path = experiment_dir / "ledger.ndjson"
-    assert_lock(spec_path, ledger_path)
-    spec = ExperimentSpec.from_yaml(spec_path)
+    spec = assert_lock(spec_path, ledger_path).spec  # PRA-M1: no second spec read
     tasks = {t["id"]: t for t in load_task_dicts(experiment_dir)}
     canaries = arm_canaries(spec.arms)
 

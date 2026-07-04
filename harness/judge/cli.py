@@ -35,7 +35,6 @@ def register(app: typer.Typer) -> None:
         from ..ledger.events import EventContext
         from ..ledger.query import find_events
         from ..plan.lock import assert_lock
-        from ..schema.experiment import ExperimentSpec
         from ..review.calibrate import calibration_from_spec
         from .assemble import comparisons_from_ledger
         from .client import judge_pair
@@ -44,8 +43,8 @@ def register(app: typer.Typer) -> None:
         experiment_dir = Path(experiment_dir)
         spec_path = experiment_dir / "experiment.yaml"
         ledger_path = experiment_dir / "ledger.ndjson"
-        lock_event = assert_lock(spec_path, ledger_path)
-        spec = ExperimentSpec.from_yaml(spec_path)
+        _lock = assert_lock(spec_path, ledger_path)
+        lock_event, spec = _lock.event, _lock.spec  # PRA-M1: no second spec read
 
         task_dicts = load_task_dicts(experiment_dir)
         # Refuse tasks swapped after the lock before judging anything [PL-7/D-6].

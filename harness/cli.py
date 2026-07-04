@@ -32,7 +32,10 @@ def plan(
     acknowledge_underpowered: bool = typer.Option(
         False, "--acknowledge-underpowered", help="Lock despite an underpowered design"
     ),
-    attested_by: str = typer.Option("cli-user", "--attested-by", help="Lock attester [D008]"),
+    attested_by: Optional[str] = typer.Option(
+        None, "--attested-by",
+        help="Lock attester [D008]; defaults to the resolved --actor (PRA-L2)",
+    ),
     corpus_manifest: Optional[Path] = typer.Option(
         None, "--corpus-manifest", help="Manifest whose calibration runs feed the power gate [PL-5]"
     ),

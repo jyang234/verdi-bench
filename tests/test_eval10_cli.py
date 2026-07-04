@@ -108,10 +108,18 @@ def test_admit_cli_bad_candidate_refuses_with_nothing_ledgered(tmp_path):
 
 
 def _probe_experiment(tmp_path, *, tasks):
+    from harness.plan.lock import lock_experiment
+
     exp = tmp_path / "probe-exp"
     exp.mkdir()
-    write_experiment_yaml(exp / "experiment.yaml", arms=_FAKE_ARMS)
+    spec_path = write_experiment_yaml(exp / "experiment.yaml", arms=_FAKE_ARMS)
     (exp / "tasks.yaml").write_text(yaml.safe_dump({"tasks": tasks}), encoding="utf-8")
+    # PRA-M2: contamination now gates on the lock like every other stage, so the
+    # fixture must pre-register the experiment (lock is the genesis event).
+    lock_experiment(
+        spec_path, exp / "ledger.ndjson", ctx=fixed_ctx(), n_sim=8, n_boot=40,
+        deltas=[0.2, 0.4],
+    )
     return exp
 
 

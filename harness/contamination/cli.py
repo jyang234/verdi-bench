@@ -54,7 +54,7 @@ def register(app: typer.Typer) -> None:
         from ..corpus.commit import load_task_dicts
         from ..corpus.registry import CorpusManifest
         from ..ledger.events import EventContext
-        from ..schema.experiment import ExperimentSpec
+        from ..plan.lock import assert_lock
         from .overlap import OverlapError
         from .probe import ProbeError, ProbeTask, run_memory_probe
         from .scan import TaskReferences, scan_trials
@@ -63,7 +63,11 @@ def register(app: typer.Typer) -> None:
         ctx = EventContext(
             experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor)
         )
-        spec = ExperimentSpec.from_yaml(experiment_dir / "experiment.yaml")
+        # PRA-M2: contamination is a ledgered stage, so it must gate on the lock
+        # like every other stage — otherwise a post-lock-mutated spec is probed
+        # and its results chained. assert_lock chain-verifies and returns the spec
+        # parsed from the locked bytes (no second read; PRA-M1).
+        spec = assert_lock(experiment_dir / "experiment.yaml", ledger_path).spec
         task_dicts = load_task_dicts(experiment_dir)
         manifest = (
             CorpusManifest.load(manifest_path) if manifest_path is not None else None

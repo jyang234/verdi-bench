@@ -32,7 +32,6 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False, a
         record_findings_rendered,
     )
     from ..plan.lock import assert_lock
-    from ..schema.experiment import ExperimentSpec
     from .dossier import render_dossier
     from .report import (
         AnalyzeError,
@@ -45,8 +44,7 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False, a
     experiment_dir = Path(experiment_dir)
     spec_path = experiment_dir / "experiment.yaml"
     ledger_path = experiment_dir / "ledger.ndjson"
-    assert_lock(spec_path, ledger_path)
-    spec = ExperimentSpec.from_yaml(spec_path)
+    spec = assert_lock(spec_path, ledger_path).spec  # PRA-M1: no second spec read
     ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
 
     # AN-3: a refused render lands exactly one cant_analyze event, never escapes.
@@ -103,14 +101,12 @@ def run_selfcheck_cli(experiment_dir, *, actor: str = "unknown", n_sim: int = 20
     locked spec seed, so the check is deterministic and cannot be re-rolled."""
     from ..ledger.events import EventContext, record_selfcheck
     from ..plan.lock import assert_lock
-    from ..schema.experiment import ExperimentSpec
     from .selfcheck import run_selfcheck
 
     experiment_dir = Path(experiment_dir)
     spec_path = experiment_dir / "experiment.yaml"
     ledger_path = experiment_dir / "ledger.ndjson"
-    assert_lock(spec_path, ledger_path)
-    spec = ExperimentSpec.from_yaml(spec_path)
+    spec = assert_lock(spec_path, ledger_path).spec  # PRA-M1: no second spec read
     ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
     result = run_selfcheck(ledger_path, spec, n_sim=n_sim, n_boot=n_boot)
     record_selfcheck(ledger_path, ctx, **result)
