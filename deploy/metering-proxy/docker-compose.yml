@@ -1,0 +1,26 @@
+# Reference: bring the metering proxy up on the internal network the harbor
+# engine attaches trials to. REFERENCE ONLY — pin the image digest and harden
+# for your environment before production use.
+services:
+  metering-proxy:
+    image: ubuntu/squid:latest  # pin to a digest in production
+    container_name: verdi-metering-proxy
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+      - verdi-proxy-log:/var/log/squid
+    networks:
+      - verdi-metered
+      - egress  # the proxy (and only the proxy) can reach model APIs
+
+networks:
+  # The trial containers join this internal network (no external route); only
+  # the proxy bridges to `egress`. The harness creates verdi-metered with
+  # `docker network create --internal` if absent.
+  verdi-metered:
+    name: verdi-metered
+    internal: true
+  egress:
+    name: verdi-egress
+
+volumes:
+  verdi-proxy-log:

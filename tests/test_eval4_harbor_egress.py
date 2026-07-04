@@ -13,6 +13,8 @@ import json
 import subprocess as sp
 from types import SimpleNamespace
 
+import pytest
+
 from harness.run.engines.harbor import DockerCliRunner, HarborEngine
 from harness.run.seam import run_trial
 from harness.run.types import ProxyConfig, RunConfig, Task
@@ -45,6 +47,38 @@ def test_scan_proxy_log_parses_jsonl_by_trial(tmp_path):
     attempts, violation, _cost = HarborEngine._scan_proxy_log(req)
     assert set(attempts) == {"api.anthropic.com", "evil.example.com"}  # only this trial
     assert violation is True
+
+
+def test_h4_missing_proxy_log_fails_loud(tmp_path):
+    """PRA-H4: a configured-but-absent proxy log is NOT silently treated as zero
+    egress/cost — it raises so the trial can fail infra_failed(proxy_log_missing)."""
+    from harness.run.engines.harbor import ProxyLogMissingError
+
+    req = SimpleNamespace(
+        trial_id="trial-x",
+        proxy=ProxyConfig(proxy_url="http://p:3128", log_path=str(tmp_path / "absent.jsonl")),
+    )
+    with pytest.raises(ProxyLogMissingError):
+        HarborEngine._scan_proxy_log(req)
+
+
+def test_m7_unconfirmed_kill_sets_kill_failed(monkeypatch):
+    """PRA-M7: if the timeout kill/reap cannot be confirmed, run_container reports
+    kill_failed so the caller fails the trial closed instead of trusting a
+    possibly-still-live container's (unredacted) workspace."""
+    def fake_run(cmd, **kw):
+        if cmd[:2] == ["docker", "run"]:
+            raise sp.TimeoutExpired(cmd, kw.get("timeout"))
+        class _R:  # kill/wait "fail" (nonzero) — the container may still be live
+            returncode = 1
+            stdout = stderr = ""
+        return _R()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    out = DockerCliRunner().run_container(
+        ["docker", "run", "--name", "verdi-trial-x", "img@sha256:a"], timeout_s=1
+    )
+    assert out.timed_out is True and out.kill_failed is True
 
 
 def test_scan_proxy_log_sums_metered_cost(tmp_path):
@@ -124,6 +158,18 @@ def test_container_runs_as_invoking_user(tmp_path):
               RunConfig(engine=HarborEngine(runner=runner)))
     cmd = runner.last_cmd
     assert "--user" in cmd and cmd[cmd.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
+
+
+def test_l9_container_hardening_flags_present(tmp_path):
+    """PRA-L9: every trial container drops capabilities, forbids privilege
+    escalation, caps pids, and pins swap to the memory limit."""
+    runner = FakeDockerRunner(native_log={})
+    run_trial(_pinned_task(), _arm(), tmp_path / "ws",
+              RunConfig(engine=HarborEngine(runner=runner)))
+    cmd = runner.last_cmd
+    assert cmd[cmd.index("--cap-drop") + 1] == "ALL"
+    assert cmd[cmd.index("--security-opt") + 1] == "no-new-privileges"
+    assert "--pids-limit" in cmd
 
 
 def test_docker_runner_kills_named_container_on_timeout(monkeypatch):

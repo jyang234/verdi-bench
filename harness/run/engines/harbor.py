@@ -69,11 +69,23 @@ class TelemetryCorruptError(RuntimeError):
     fail the trial closed, never silently become "no telemetry"."""
 
 
+class ProxyLogMissingError(RuntimeError):
+    """A configured metering-proxy log file is absent [PRA-H4].
+
+    The proxy is dead or misconfigured; treating this as "no egress, no cost, no
+    violation" is a silent fail-open of the cost guard and the egress fence, so
+    the scan raises and the trial fails infra_failed(proxy_log_missing)."""
+
+
 @dataclass
 class RunOutput:
     exit_status: int
     daemon_error: bool = False
     timed_out: bool = False
+    # PRA-M7: True when the timeout kill/reap could not be confirmed, so a
+    # possibly-still-live container may still be writing into the mounted
+    # workspace — redaction must NOT be trusted; the trial fails infra_failed.
+    kill_failed: bool = False
 
 
 def _name_from_cmd(cmd: list[str]) -> Optional[str]:
@@ -119,15 +131,22 @@ class DockerCliRunner:
             return
 
     @staticmethod
-    def _kill(name: Optional[str]) -> None:
-        """Kill and reap a container by name [RN-10]. Best-effort."""
+    def _kill(name: Optional[str]) -> bool:
+        """Kill and reap a container by name [RN-10]. Returns True iff both the
+        kill and the wait/reap were confirmed — the caller must treat a False as
+        "the container may still be live" and fail the trial closed rather than
+        redact a workspace still being written to [PRA-M7]."""
         if not name:
-            return
+            return True  # no container to kill (never started)
+        ok = True
         for args in (["docker", "kill", name], ["docker", "wait", name]):
             try:
-                subprocess.run(args, capture_output=True, timeout=30, check=False)
+                proc = subprocess.run(args, capture_output=True, timeout=30, check=False)
+                if proc.returncode != 0:
+                    ok = False
             except (OSError, subprocess.SubprocessError):
-                pass
+                ok = False
+        return ok
 
     def resolve_digest(self, image: str) -> Optional[str]:
         if "@sha256:" in image:
@@ -169,9 +188,11 @@ class DockerCliRunner:
             # Kill the CONTAINER, not just the docker CLI: the CLI dying on timeout
             # leaves the container running and writing into the still-mounted
             # workspace AFTER redaction. Kill by name and reap it before returning,
-            # so redaction sees a final, static workspace [RN-10].
-            self._kill(_name_from_cmd(cmd))
-            return RunOutput(exit_status=124, timed_out=True)
+            # so redaction sees a final, static workspace [RN-10]. If the kill/reap
+            # cannot be confirmed the workspace is not safe to redact, so surface
+            # that as kill_failed [PRA-M7].
+            killed = self._kill(_name_from_cmd(cmd))
+            return RunOutput(exit_status=124, timed_out=True, kill_failed=not killed)
         except (OSError, FileNotFoundError):
             return RunOutput(exit_status=125, daemon_error=True)
         # docker returns 125 for daemon/config errors before the container runs
@@ -207,11 +228,20 @@ class HarborEngine:
         # the non-root harness cannot scrub.
         if hasattr(os, "getuid"):
             cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
+        # container hardening [PRA-L9]: drop all capabilities, forbid privilege
+        # escalation, and cap process count so a trial cannot fork-bomb the host
+        # or gain new privileges. Applied unconditionally — a benchmark trial is
+        # untrusted agent code and needs none of these.
+        cmd += ["--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512"]
         # pinned quotas [D003]
         if q.cpus is not None:
             cmd += ["--cpus", str(q.cpus)]
         if q.mem is not None:
             cmd += ["--memory", str(q.mem)]
+            # PRA-L9: pin swap to the memory limit so the quota is a hard ceiling,
+            # not softened by default swap headroom (D003 pins memory symmetrically
+            # across arms; swap headroom would silently loosen it).
+            cmd += ["--memory-swap", str(q.mem)]
         # network insulation: default-deny; egress only via the metering proxy
         if request.proxy is not None and request.proxy.proxy_url:
             # inject the trial id as the proxy-auth credential so the metering
@@ -282,7 +312,14 @@ class HarborEngine:
             shutil.rmtree(req_dir, ignore_errors=True)
 
         failure_reason: Optional[str] = None
-        if result.daemon_error:
+        if result.kill_failed:
+            # PRA-M7: the timeout kill could not be confirmed, so a live container
+            # may still be writing the workspace — do not trust redaction; fail
+            # the trial closed with a specific reason rather than reporting a plain
+            # timeout whose (possibly unredacted) artifacts we would then capture.
+            outcome = Outcome.infra_failed
+            failure_reason = "kill_failed"
+        elif result.daemon_error:
             outcome = Outcome.infra_failed
             # the docker daemon/config error (exit 125) — a real reason the
             # scheduler can ledger, not the fake-only placeholder [RN-14]
@@ -305,7 +342,17 @@ class HarborEngine:
             if outcome == Outcome.completed:
                 outcome = Outcome.infra_failed
                 failure_reason = "telemetry_corrupt"
-        egress_attempts, egress_violation, metered_cost = self._scan_proxy_log(request)
+        try:
+            egress_attempts, egress_violation, metered_cost = self._scan_proxy_log(request)
+        except ProxyLogMissingError:
+            # PRA-H4: fail closed — a missing proxy log means we cannot vouch for
+            # egress confinement or metered cost for this trial. Only downgrade a
+            # would-be-completed trial; a daemon/timeout/kill failure keeps its
+            # more specific reason.
+            egress_attempts, egress_violation, metered_cost = [], False, None
+            if outcome == Outcome.completed:
+                outcome = Outcome.infra_failed
+                failure_reason = "proxy_log_missing"
 
         return EngineResult(
             outcome=outcome,
@@ -374,12 +421,23 @@ class HarborEngine:
         A line that is not a JSON object is skipped without crashing (a bare
         ``42``/``null``/``[...]`` must not abort the whole run); unparseable lines
         are skipped — the metering proxy is expected to emit valid JSONL, so a
-        malformed line is an operational fault of the proxy, not this trial's."""
+        malformed line is an operational fault of the proxy, not this trial's.
+
+        PRA-H4: a *configured but absent* log is NOT treated as "no egress, no
+        cost, no violation" — that silent fail-open let a null-telemetry arm spend
+        invisibly against the ceiling and shed egress-violation evidence when the
+        proxy was dead or its path was wrong. A configured proxy whose log file is
+        missing raises :class:`ProxyLogMissingError`, and the trial fails closed
+        infra_failed(proxy_log_missing)."""
         if request.proxy is None or not request.proxy.log_path:
             return [], False, None
         p = Path(request.proxy.log_path)
         if not p.exists():
-            return [], False, None
+            raise ProxyLogMissingError(
+                f"proxy log {p} is configured but absent — the metering proxy is "
+                "dead or misconfigured; refusing to treat this as zero egress/cost "
+                "[PRA-H4]"
+            )
         attempts: list[str] = []
         violation = False
         metered: Optional[float] = None
