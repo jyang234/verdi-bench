@@ -9,6 +9,43 @@ arm identities, but it does see per-response holdout outcomes by design, so
 (disclosed in every render, EVAL-2 D002). Every operation is a hash-chained
 ledger event; every local record is stamped `ADVISORY`.
 
+## Why this instrument exists
+
+Most evaluation harnesses answer *"what does this model score?"* — verdi-bench
+answers a harder question: *"is stack A actually better than stack B, and can
+you defend that finding?"* The difference is not features, it is posture:
+every trust claim below is backed by an enforcing test or structural contract
+in this repo, not by convention.
+
+- **You cannot p-hack it.** The experiment spec (primary metric, decision
+  rule, seed) is sha-locked *before* any trial runs; the official render
+  refuses unregistered questions, and exploratory output is watermarked as
+  such on every layer.
+- **You cannot quietly edit history.** Every operation appends exactly one
+  typed, provenance-stamped event to a hash-chained ledger; `verify-chain`
+  (optionally against externally-held anchors) detects tampering, and a
+  property test sweeps every registered verb for the one-event guarantee.
+- **The graders cannot hallucinate.** The deterministic grading tier and the
+  forensic detector tier import no LLM client — enforced structurally by
+  import-linter, not by review vigilance.
+- **The judge earns its weight.** The LLM judge is blinded to arm identity
+  (canary-verified), order-debiased, advisory-only, and calibrated against
+  blinded human review with an IPW-corrected kappa; the one designed
+  dependence it has is disclosed in every render.
+- **Gaming is looked for, not assumed away.** Every trial gets a trajectory
+  profile and a gaming scan (holdout tampering, hardcoded expected outputs,
+  test-skip insertion, suspicious single-step completion); each detector is
+  owned by a planted-violation fixture that must flag and a clean fixture
+  that must not. Flags are evidence, never verdicts — exclusion is a
+  ledgered human decision.
+
+What it is *not*: a benchmark library (bring or import your corpus), a
+leaderboard, or a managed fleet. Trials run serially in local containers,
+adapters cover two agent platforms today, and every local result is stamped
+`ADVISORY` — the trusted tier arrives as a CI-tier config cutover. For the
+full architecture, threat model, and the test that owns each guarantee, read
+the [deep dive](docs/deep-dive.md).
+
 ## Status
 
 Implemented stories (following the `00-EVAL-1` master-plan build order):
@@ -24,9 +61,13 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 | **EVAL-6** | Analyze: paired bootstrap, effect sizes, confound flags, pre-registration fence | ✅ |
 | **EVAL-7** | Human review packet (offline, blinded), capture-then-reveal, kappa estimator seam | ✅ |
 | **EVAL-9** | Process rubric: isolated judge scoring, firewalls, weighted-kappa calibration | ✅ |
+| **EVAL-12** | Trajectory capture (versioned per-trial record, sha-ledgered) + three-layer comparison dossier | ✅ |
+| **EVAL-11** | Transcript forensics: trajectory metrics, gaming detectors, blinded advisory review, quarantine path | ✅ |
 
-All EVAL-1 child stories are built. The fast suite
-(`uv run pytest -m "not docker"`) is green — over 400 tests — plus a
+All EVAL-1 child stories plus the Phase-7 roadmap stories EVAL-12 and EVAL-11
+are built; EVAL-10 (contamination sentinel) is specced under
+`docs/design/specs/proposed/` and not yet started. The fast suite
+(`uv run pytest -m "not docker"`) is green — over 550 tests — plus a
 `docker`-marked suite of real-container tests (a real grade container and a real
 Harbor trial) run with `-m docker` in a dedicated CI job on Docker-capable
 runners; 4 import-linter contracts kept. AC-mapped tests are **enforced per
@@ -53,6 +94,32 @@ recommended option behind a seam (a resolution is a config-sized diff):
 - **EVAL-9 D001–D004** — per-trial absolute scoring, judge+human scorers, the
   five v1 dimensions, and full-or-`CANT_SCORE` transcript policy, each
   parameterized so a decision flip is contained.
+- **EVAL-11 D004** (fence coupling) — forensics is disclosure-only in v1; a
+  detector must prove its precision through spot-check calibration before any
+  flag can block an official finding.
+
+## Quickstart
+
+A complete experiment on the no-Docker fake engine, end to end:
+
+```bash
+uv sync
+mkdir demo && cd demo
+# write experiment.yaml (arms, corpus, repetitions, primary_metric,
+# decision_rule, judge, seed, cost_ceiling — see docs/deep-dive.md §2)
+uv run bench plan    experiment.yaml --ledger ledger.ndjson   # pre-register + lock
+uv run bench run     .                                        # paired trials
+uv run bench grade   .                                        # deterministic grades
+uv run bench judge   .                                        # blinded advisory verdicts
+uv run bench forensics scan .                                 # trajectory metrics + gaming scan
+uv run bench selfcheck .                                      # A/A coverage gate
+uv run bench analyze . --exploratory                          # findings + dossier
+uv run bench verify-chain ledger.ndjson                       # audit the ledger
+```
+
+Everything the run produced — who did what, in what order, under which
+instrument version — is on the ledger, and `findings.exploratory.dossier.html`
+is a single self-contained file you can archive or hand to a reviewer.
 
 ## Usage
 
@@ -106,6 +173,17 @@ optional `run.config.yaml` + the environment — never the sha-locked
 
 `bench grade` defaults to `--runner docker` (the real network-less grading
 container), with `--runner local` for the no-daemon fake/test path.
+
+## Learn more
+
+- **[Deep dive](docs/deep-dive.md)** — the full architecture walkthrough:
+  what each stage writes to the ledger, the trust mechanism behind every
+  claim above (and the test that owns it), design principles, honest
+  limitations, and how to extend the instrument.
+- **Design record** — `docs/design/specs/` (machine-checked per-story
+  acceptance criteria), `docs/design/implementation_plans/` (per-story build
+  plans), and `docs/design/review/` (audit and phase reviews). Decisions are
+  ledgered per story in `eval<N>.decisions.ndjson`.
 
 ## Development
 
