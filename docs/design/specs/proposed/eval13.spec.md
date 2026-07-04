@@ -60,16 +60,18 @@ acceptance:
     tests:
       - "test_ac5_mixed_vendor_arm_incomparable"
   - id: "AC-6"
-    text: "Egress attestation (advisory): the metering proxy's per-trial host log is mapped against the declared model set via a deterministic host→vendor table; an allowed model-API host attributable to no declared model raises an advisory undeclared_model_egress flag on the finding — riding it, never suppressing it, and never failing the trial (the proxy-metered-cost cross-check precedent)."
-    vc: "A trial whose proxy log shows an API host outside the declared vendors carries the flag naming the host; declared-vendor hosts and non-model hosts raise nothing; the flag never alters grades or the decision rule."
+    text: "Egress attestation via pre-registered hosts [D003 RESOLVED: declared-hosts-per-model]: each declared model (primary or aux) may carry egress hosts in an arm-level model_hosts map (every key must name a declared model — an undeclared key refuses at spec load), and the experiment declares shared infra_hosts (package registries, mirrors) once for all arms so arm symmetry is preserved; the runtime proxy allowlist is DERIVED from the locked spec, never ad-hoc runtime config; an allowed egress host attributable to no declared model and absent from infra_hosts raises the advisory undeclared_model_egress flag naming the host — riding findings, never gating, never failing the trial (the proxy-metered-cost cross-check precedent). This closes the aggregator/self-hosted blind spot: the preparer declares the actual endpoints (an OpenRouter route, a vLLM host), so attribution needs no global host→vendor table."
+    vc: "The run's effective allowlist equals the spec-derived union of model_hosts and infra_hosts; a trial reaching an allowed host in neither set carries the flag naming the host; a model_hosts key naming an undeclared model refuses at spec load; the flag never alters grades or the decision rule."
     touchpoints:
-      - "harness/analyze/confounds.py:judge_vendor_overlap"
+      - "harness/schema/experiment.py:Arm"
+      - "harness/run/types.py:ProxyConfig"
     tests:
+      - "test_ac6_allowlist_derived_from_spec"
       - "test_ac6_undeclared_model_egress_flag"
       - "test_ac6_flag_rides_never_gates"
 
 constraints:
-  - text: "aux_models is an additive optional spec key: every pre-EVAL-13 spec validates unchanged, no existing hash chain is touched (the lock hashes bytes), and a spec that uses the key fails loudly on pre-EVAL-13 code (extra='forbid') rather than being silently ignored."
+  - text: "aux_models, model_hosts, and infra_hosts are additive optional spec keys: every pre-EVAL-13 spec validates unchanged, no existing hash chain is touched (the lock hashes bytes), and a spec that uses the keys fails loudly on pre-EVAL-13 code (extra='forbid') rather than being silently ignored."
     enforced_by: "test:test_ac1_aux_models_schema"
   - text: "Declaration, not inference: the instrument never guesses which models a stack used — undeclared usage is surfaced only by the AC-6 egress cross-check, as an advisory flag. No telemetry, grade, or gate is derived from inferred model identity."
     enforced_by: "test:test_ac6_flag_rides_never_gates"
@@ -81,13 +83,14 @@ constraints:
 decisions:
   - "EVAL-13-D001"  # ContractChange: additive aux_models on Arm (OPEN)
   - "EVAL-13-D002"  # contamination aggregation semantics (OPEN)
-  - "EVAL-13-D003"  # egress attestation in v1 scope (OPEN)
+  - "EVAL-13-D003"  # egress attestation shape (RESOLVED: declared-hosts-per-model)
   - "EVAL-13-D004"  # mixed-vendor arm comparability posture (OPEN)
+  - "EVAL-13-D005"  # infra_hosts scope: experiment-shared vs per-arm (OPEN)
 open_decisions:
   - "EVAL-13-D001"
   - "EVAL-13-D002"
-  - "EVAL-13-D003"
   - "EVAL-13-D004"
+  - "EVAL-13-D005"
 
 policy_proposals: []
 predicted_reach: null
@@ -149,19 +152,23 @@ conservative bound over a set is its maximum) with absent-means-unknown,
 comparability over vendor-set homogeneity. The per-model tri-state
 breakdown in the summary [AC-4, D002] keeps the aggregate auditable.
 
-**Egress attestation** [AC-6, D003]. The metering proxy already logs
-every egress host per trial. Mapping allowed model-API hosts against
-declared vendors gives the instrument an *independent* tripwire on the
-declaration — the same trust pattern as proxy-metered cost [RN-2]: a
-cross-check surfaced as a flag, never reconciled, never gating. Honest
-coverage statement: a vendor table catches direct first-party API hosts
-only; aggregator hosts (one host, many vendors) and self-hosted
-endpoints (no table entry possible a priori) are blind spots. The
-alternative shape — declaring egress hosts per model *in the spec*, so
-enforcement compares against a pre-registered per-arm allowlist rather
-than a maintained global table — is real enforcement but folds the
-(currently runtime-config) proxy allowlist into the pre-registration; a
-scope decision, deliberately left open in D003.
+**Egress attestation** [AC-6, D003 resolved: declared-hosts-per-model].
+The metering proxy already logs every egress host per trial. The spec
+pre-registers the hosts each declared model is served from (arm-level
+`model_hosts`) plus experiment-level `infra_hosts` shared by all arms —
+so the runtime proxy allowlist derives from the locked bytes instead of
+ad-hoc config (which also closes a pre-existing gap: two "identical"
+runs could previously differ in allowlist). Attribution then needs no
+maintained global host→vendor table and works for aggregators and
+self-hosted endpoints, because the preparer declares the actual
+endpoints. The check keeps the proxy-metered-cost trust pattern [RN-2]:
+a cross-check surfaced as an advisory flag, never reconciled, never
+gating. Residual honest limit: an aggregator host declared for model A
+can silently serve model B behind the same host — host-level
+attestation cannot see through a multiplexer; that residue is
+documented, not papered over. One sub-decision raised (D005): whether
+`infra_hosts` is experiment-level shared (recommended — both arms face
+identical infrastructure, preserving pairing fairness) or per-arm.
 
 ## Change surface
 
@@ -171,8 +178,9 @@ flowchart LR
   SP --> VO[judge_vendor_overlap<br/>vendor union]
   SP --> CD[contamination dating<br/>latest cutoff bounds clean / unknown]
   SP --> CC[cross-vendor comparability<br/>vendor sets]
+  SP --> AL[proxy allowlist<br/>derived from locked spec]
   PX[metering proxy host log] --> EA[egress attestation flag<br/>advisory, never gates]
-  SP --> EA
+  AL --> EA
 ```
 
 > Provenance: [judgment] hand-authored — greenfield.
@@ -210,11 +218,15 @@ model mix.
 - EVAL-13-D002 — contamination aggregation (recommended:
   latest-cutoff-bounds-clean at arm level *plus* per-model tri-states in
   the summary, so the conservative aggregate stays auditable).
-- EVAL-13-D003 — egress attestation shape and scope (genuine fork, no
-  strong recommendation: vendor-table tripwire in v1 with documented
-  aggregator/self-hosted blind spots; per-model declared egress hosts in
-  the spec — real enforcement, folds the proxy allowlist into
-  pre-registration, materially more scope; or defer entirely).
+- EVAL-13-D003 — RESOLVED (2026-07-04, jyang): declared-hosts-per-model.
+  The spec pre-registers per-model egress hosts and shared infra hosts;
+  the runtime allowlist derives from the locked bytes. Residual limit
+  documented: host-level attestation cannot see through an aggregator
+  host multiplexing several models.
+- EVAL-13-D005 — infra_hosts scope (recommended: experiment-level,
+  shared by all arms — both arms face identical infrastructure, so the
+  pairing stays fair; per-arm infra would let arm asymmetry masquerade
+  as a treatment effect).
 - EVAL-13-D004 — mixed-vendor arm comparability (recommended: treat the
   arm as cross-vendor, marking token fields incomparable; the
   alternative — excluding the arm from telemetry sections entirely —

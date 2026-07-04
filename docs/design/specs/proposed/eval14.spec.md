@@ -18,7 +18,6 @@ touchpoints:        # PLANNED symbols [judgment]
   - "harness/run/trajectory.py:TrajectoryStep"
   - "harness/adapters/generic.py:normalize_generic"
   - "harness/adapters/generic.py:normalize_generic_trajectory"
-  - "harness/blind/core.py:identity_pattern_list"
   - "harness/analyze/report.py:telemetry_means"
 
 graph_provenance: []
@@ -43,12 +42,13 @@ acceptance:
       - "test_ac2_undeclared_model_key_fails_loud"
       - "test_ac2_v1_logs_parse_unchanged"
   - id: "AC-3"
-    text: "Identity honesty: agent labels are strings on a published-surface record, so they pass the existing single blinding codepath everywhere trajectories surface (review packets, forensics, dossier) — a label embedding a model id, platform, or arm name is scrubbed by the same identity pattern list, with no second scrub mechanism introduced."
-    vc: "A trajectory whose agent label embeds an arm's model id is scrubbed on every packet/render surface; a neutral label ('planner') passes through; the scrub is provably the §7.4 shared codepath, not a new list."
+    text: "Identity honesty by construction: agent attribution uses a closed role vocabulary published as part of the format standard — a label matches role(-ordinal)? where role is a closed enum (planner, executor, orchestrator, router, critic, reviewer, tester, researcher, worker) and ordinal is a small integer for multiple instances (worker-1, worker-2). Validated loudly at the generic-adapter parse: a non-conforming label ('llama-planner', free text) raises GenericLogError naming it. The value space cannot spell a model, vendor, platform, or arm identity, so no published surface needs a new scrub and the blind subsystem is untouched; extending the vocabulary is a format-version bump (the forensics detector-vocabulary precedent — a closed-enum test forces the bump)."
+    vc: "Every conforming label parses and round-trips; 'llama-planner' and free-text labels are refused at parse naming the label; the blind subsystem diff is empty; the vocabulary closed-enum test forces a version bump on extension."
     touchpoints:
-      - "harness/blind/core.py:identity_pattern_list"
+      - "harness/adapters/generic.py:normalize_generic_trajectory"
     tests:
-      - "test_ac3_agent_labels_pass_identity_scrub"
+      - "test_ac3_closed_role_vocabulary"
+      - "test_ac3_nonconforming_label_refused"
   - id: "AC-4"
     text: "Aggregation honesty: whole-trial telemetry remains the sole authoritative stream — the primary metric, cost guard, and cross-arm comparisons never read telemetry_by_model. When both exist and the by-model blocks sum measurably different from the whole-trial totals, the delta is surfaced as a flag on the record (the proxy_cost_delta precedent) — never reconciled, never imputed in either direction."
     vc: "A log whose by-model costs sum below its total cost yields a by_model_delta flag and untouched totals; the cost guard's enforcement value is identical with and without the by-model block; no analysis gate reads by-model fields."
@@ -80,8 +80,8 @@ constraints:
     enforced_by: "test:test_ac4_authoritative_stream_unchanged"
   - text: "Both format changes are versioned-contract changes (TrajectoryStep v3, generic log v2) requiring explicit human approval with the additive/compatibility posture recorded in the decisions below — older records and logs parse unchanged forever."
     enforced_by: "test:test_ac1_v2_reads_back_null_agent"
-  - text: "No second blinding mechanism: agent labels ride the existing §7.4 single scrub codepath on every surface where trajectories are published."
-    enforced_by: "test:test_ac3_agent_labels_pass_identity_scrub"
+  - text: "The blind subsystem is untouched (2026-07-04 constraint): agent identity leakage is unrepresentable by vocabulary construction, not scrubbed after the fact — no new patterns, no new scrub mechanism, no blinding-wrapper mapping."
+    enforced_by: "test:test_ac3_nonconforming_label_refused"
 
 decisions:
   - "EVAL-14-D001"  # ContractChange: TrajectoryStep v3 'agent' field (OPEN)
@@ -151,20 +151,26 @@ declared set extends that rule — attributing spend to a model the
 locked spec never registered is a contradiction the parser refuses,
 not data it stores.
 
-**Blinding** [AC-3, D003]. Agent labels are the one genuinely new
-identity surface, and the naive posture has a real hole: arm canaries
-are exact-match full-id literals, so a label embedding a model-name
-*fragment* ("llama-planner") matches neither the built-in patterns
-(which carry no llama/qwen/deepseek/mistral entries) nor the literals,
-and would leak on human-review and dossier surfaces. D003 is therefore
-a genuine fork between free-labels-through-scrub (simple, leaky at the
-fragments), a pre-registered roster (identity-scanned at lock; breaks
-dynamically-spawned agents), pseudonymization at capture (leak-proof,
-legibility-destroying), and raw-in-artifact with per-trial deterministic
-pseudonymization at publish (leak-proof on published surfaces, raw for
-forensics; the added mechanism lives in the blinding wrapper). AC-3 as
-written holds under any resolution; its test surface widens if a
-pseudonymizing option is chosen.
+**Identity by vocabulary, not scrubbing** [AC-3, D003]. Agent labels
+are the one genuinely new identity surface, and free-text labels have a
+demonstrated leak: arm canaries are exact-match full-id literals, so a
+model-name *fragment* ("llama-planner") matches neither the built-in
+patterns (no llama/qwen/deepseek/mistral entries) nor the literals, and
+walks onto human-review and dossier surfaces. Per the 2026-07-04
+constraint (do not touch the blind subsystem), the resolution path is a
+*published standard*: a closed role vocabulary with ordinal instances,
+validated loudly where the format's other strictness rules already live
+(the generic-adapter parse). Leakage becomes unrepresentable instead of
+scrubbed — the same construction-over-inspection move as the
+holdout-free TrialRequest signature. Inference at intake was considered
+and rejected: the instrument cannot infer agent identity from log
+structure without the harness supplying it (circular), and labeling by
+inference is estimation — the same reason the claude_code adapter
+refuses to infer test_run from command text. Honest costs: bounded
+expressiveness (worker-N is the catch-all; the vocabulary extends only
+with a format-version bump), and step-structure remains a mild
+stylistic tell (a reviewer can see a fleet's size and shape — the same
+class of tell as transcript style, tolerable on advisory surfaces).
 
 **Consumer + substrate** [AC-5, AC-6]. The exploratory report section
 is the story's own consumer, applying per-model vendor-incomparability
@@ -220,11 +226,12 @@ codex adapters (their logs carry no such structure to parse honestly).
   (ContractChange; recommended: approve, `command` precedent).
 - EVAL-14-D002 — generic log format v2 (ContractChange; recommended:
   approve with v1-parses-forever compatibility).
-- EVAL-14-D003 — agent label posture (genuine fork, no strong
-  recommendation: free-labels-through-single-scrub leaks model-name
-  fragments; pre-registered roster breaks dynamic agents;
-  pseudonymize-at-capture kills legibility;
-  raw-artifact-pseudonymized-publish adds a blinding-wrapper mechanism).
+- EVAL-14-D003 — agent label posture (recommended:
+  closed-role-vocabulary, added after the 2026-07-04 constraint ruled
+  out blind-subsystem changes — leakage unrepresentable by
+  construction, validated at the parse layer that already owns the
+  format's strictness; the earlier four options remain recorded, each
+  failing the constraint or the leak test).
 - EVAL-14-D004 — build gating (recommended: gate on EVAL-13 landing;
   AC-5's exploratory section is the named consumer that unblocks
   building).
