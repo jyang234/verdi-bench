@@ -125,5 +125,56 @@ def test_ac7_concurrent_appends_chain(tmp_path):
         t.start()
     for t in threads:
         t.join()
-    assert len(ledger.read_text().splitlines()) == 40
+    assert len(ledger.read_bytes().split(b"\n")) - 1 == 40
     assert chain.verify_chain(ledger).ok
+
+
+# --- PRA-H1: reader/verifier line-splitting parity -------------------------
+# A chain-valid event whose payload string carries a Unicode line separator
+# (U+0085 NEL, U+2028 LS, U+2029 PS — all legal, unescaped, inside a JSON
+# string) must round-trip through the read helpers, not tear into fragments.
+# Before the fix, query.iter_events/tail_events used str.splitlines() (which
+# splits on those code points) while verify_chain used b"\n" only, so such an
+# event verified clean yet crashed every read gate — a poison-event DoS.
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
+
+from harness.ledger import query
+
+_LINE_SEPS = "\x85  \x0b\x0c\x1c\x1d\x1e"
+
+
+@settings(max_examples=50, deadline=None)
+@given(payload=st.text())
+@example(payload="before\x85after")
+@example(payload="line sep")
+@example(payload="para sep")
+@example(payload="all" + _LINE_SEPS + "seps")
+def test_reader_verifier_parity_over_unicode_payloads(tmp_path_factory, payload):
+    ledger = tmp_path_factory.mktemp("chain") / "l.ndjson"
+    stored = chain.append_event(
+        ledger, {"event": "cant_grade", "experiment_id": "exp", "reason": payload}
+    )
+    # the chain says the ledger is clean...
+    assert chain.verify_chain(ledger).ok
+    # ...and the read helpers agree, yielding the event intact (not torn).
+    events = query.read_events(ledger)
+    assert len(events) == 1
+    assert events[0]["reason"] == payload
+    assert events[0]["prev_hash"] == stored["prev_hash"]
+    # tail_events must consume it identically.
+    tail, offset = query.tail_events(ledger, 0)
+    assert len(tail) == 1 and tail[0]["reason"] == payload
+    assert offset == ledger.stat().st_size
+
+
+def test_append_refuses_nonfinite_floats(tmp_path):
+    """PRA-L1: NaN/Infinity are not RFC 8259 JSON; refuse them at append so the
+    ledger stays independently verifiable (jq, other languages)."""
+    ledger = tmp_path / "l.ndjson"
+    with pytest.raises(ValueError):
+        chain.append_event(ledger, {"event": "x", "cost": float("nan")})
+    with pytest.raises(ValueError):
+        chain.append_event(ledger, {"event": "x", "ceiling": float("inf")})
+    # nothing was written
+    assert not ledger.exists() or ledger.read_bytes() == b""

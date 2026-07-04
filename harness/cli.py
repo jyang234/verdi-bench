@@ -135,25 +135,30 @@ def anchor(
     auditable, chained record — not just an external-file side effect [PL-4].
     """
     from .ledger.actor import ActorResolutionError
-    from .ledger.anchors import AnchorIntegrityError, anchor_head
+    from .ledger.anchors import AnchorIntegrityError, anchor_record, write_anchor
     from .ledger.events import record_chain_anchor
 
     # Route the timestamp through the EventContext clock seam rather than a bare
     # wall-clock read in the CLI [PL-4 / determinism]. Capture the pre-anchor
-    # head externally, then ledger that same head.
+    # head, then ledger that same head.
     try:
         ctx = _default_ctx(experiment_id=ledger.parent.name, actor_flag=actor)
     except ActorResolutionError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(code=2)
-    # 7A-2: anchor_head chain-verifies first and refuses tampered history before
-    # writing anything; exit 1 and append neither the anchor line nor the event.
+    # 7A-2: anchor_record chain-verifies first and refuses tampered history
+    # before writing anything; exit 1 and append neither the event nor the file.
     try:
-        rec = anchor_head(ledger, out, ts=ctx.clock())
+        rec = anchor_record(ledger, ts=ctx.clock())
     except AnchorIntegrityError as e:
         typer.echo(f"CHAIN BROKEN: {e}", err=True)
         raise typer.Exit(code=1)
+    # Ledger the anchoring FIRST (durable, fsync'd), then write the external
+    # checkpoint. A crash between the two thus leaves an in-chain record with no
+    # external file (re-anchoring recreates it) rather than an orphaned external
+    # checkpoint with no ledgered record [PRA-L5].
     record_chain_anchor(ledger, ctx, head_hash=rec["head_hash"], height=rec["height"])
+    write_anchor(out, rec)
     typer.echo(f"anchored head={rec['head_hash'][:12]}… height={rec['height']}")
 
 

@@ -44,8 +44,40 @@ class TruncatedLedgerError(RuntimeError):
 
 
 def canonical_line(obj: dict) -> str:
-    """The canonical single-line JSON serialization (no trailing newline)."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """The canonical single-line JSON serialization (no trailing newline).
+
+    ``allow_nan=False`` refuses ``NaN``/``Infinity`` at the append boundary: they
+    are not RFC 8259 JSON, so a line containing them would round-trip through
+    Python's own ``json.loads`` (and pass ``verify_chain``) yet be rejected by any
+    independent verifier — jq, another language, an auditor's tooling — defeating
+    the chain's whole point of being externally checkable [PRA-L1]. A compliant
+    chain never contains these, so this is append-side only, no migration.
+    """
+    return json.dumps(
+        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+
+
+def split_ledger_lines(data: bytes) -> list[bytes]:
+    """Split raw ledger bytes into event lines on ``b"\\n"`` only.
+
+    The ledger is one canonical JSON event per line, each ``\\n``-terminated.
+    Splitting on anything other than ``b"\\n"`` — notably ``str.splitlines()``,
+    which also breaks on U+0085 (NEL), U+2028 (LS), and U+2029 (PS), all legal
+    *unescaped* inside a JSON string — would tear a single legitimate event into
+    fragments. ``verify_chain`` and the read helpers in ``query.py`` share this one
+    splitter so the two halves the module promises "cannot drift" actually cannot
+    [PRA-H1].
+
+    Returns the line byte-strings with the single terminating newline dropped. A
+    well-formed ledger ends in ``\\n`` so its last element is empty and removed; a
+    non-empty final element is a truncated tail, returned as-is for the caller to
+    detect (``verify_chain`` reports it; a reader hits it as invalid JSON).
+    """
+    lines = data.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines = lines[:-1]
+    return lines
 
 
 def hash_line(line: str) -> str:
@@ -182,16 +214,15 @@ def verify_chain(path: str | Path) -> ChainResult:
     if not data:
         return ChainResult(True)  # empty ledger is trivially consistent
 
-    raw_lines = data.split(b"\n")
-    if raw_lines and raw_lines[-1] == b"":
-        raw_lines = raw_lines[:-1]
-    else:
+    if not data.endswith(b"\n"):
         # file does not end in a newline: last line is truncated/partial
         return ChainResult(
             False,
-            len(raw_lines),
+            len(data.split(b"\n")),
             "ledger does not end in a newline; final line is truncated",
         )
+    # Shared splitter with the read helpers — b"\n" only, never splitlines() [PRA-H1].
+    raw_lines = split_ledger_lines(data)
 
     prev = GENESIS_PREV_HASH
     for i, raw in enumerate(raw_lines, start=1):
