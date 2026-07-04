@@ -1,7 +1,8 @@
 ---
-# MACHINE CONTRACT — PROPOSED (not yet graduated; AC enforcement begins when
-# this file moves to docs/design/specs/ in the same commit as its first AC
-# tests). Drafted 2026-07-04: the reviewer-safe surface every observability
+# MACHINE CONTRACT — see template header for consumers and YAML style rules.
+# Graduated from specs/proposed/ 2026-07-04 in the same commit as the story's
+# first AC tests, all four local decisions resolved (see
+# eval18.decisions.ndjson). The reviewer-safe surface every observability
 # story since EVAL-13 has explicitly deferred — deferred precisely because
 # its blinding gates must be designed in, not bolted on.
 kind: "story"
@@ -30,32 +31,37 @@ acceptance:
     touchpoints:
       - "harness/review/serve.py:make_review_server"
       - "harness/review/scrub.py:assert_identity_free"
-    tests: []
+    tests:
+      - "test_ac1_isolation_routes_imports_scrub"
   - id: "AC-2"
     text: "Capture-then-reveal survives the transport: the verdict form (winner 1|2|TIE|CANT_JUDGE, confidence, notes) and the two blinding-integrity questions submit as ONE ledgered human_verdict through the existing constructor — exactly one event, actor = the launch-bound reviewer; no page, response, or route exposes response_map, arm identities, or the judge's verdict before that event exists; the reveal affordance appears only afterwards and is its own explicit action producing exactly one ledgered reveal via reveal_comparison, which keeps refusing pre-verdict reveals at the record layer beneath the UI."
     vc: "One capture POST → one human_verdict with integrity answers and reviewer actor; pre-verdict pages contain no arm strings (canary scan) and no reveal affordance; the reveal POST → one reveal event; a hand-crafted pre-verdict reveal POST is refused with RevealError's message."
     touchpoints:
       - "harness/review/record.py:record_human_verdict"
       - "harness/review/record.py:reveal_comparison"
-    tests: []
+    tests:
+      - "test_ac2_capture_then_reveal_one_event_each"
   - id: "AC-3"
     text: "Mutation posture: the reviewer's identity binds at launch through resolve_actor (refused loudly when unresolvable — never 'unknown'); the two capture/reveal endpoints are the only mutating routes and both flow through the existing record-layer functions (no new event kinds, one-event-per-operation preserved); every GET is side-effect-free (experiment bytes identical after arbitrary browsing); loopback bind by default."
     vc: "Launch without a resolvable reviewer exits with ActorResolutionError's message; non-enumerated POSTs are refused; a browse-everything pass leaves the directory byte-identical; REGISTERED_EVENTS is unchanged by the new modules."
     touchpoints:
       - "harness/review/cli.py:register"
-    tests: []
+    tests:
+      - "test_ac3_mutation_posture"
   - id: "AC-4"
     text: "Queue ergonomics at leader parity, adapted to our verdict vocabulary: a pending-comparisons queue (built packets minus recorded verdicts) with progress (n of m), keyboard-first capture (1 / 2 / T for tie / C for CANT_JUDGE, field navigation, submit-and-advance), CANT_JUDGE always reachable, and integrity questions required before submit enables; served pages are self-contained (the needle property) and carry the reviewer-tier standing instruction — the inverse of the operator banner: do not open the operator view for experiments you review."
     vc: "Headless drive: the queue advances on submit with the hotkeys; a submit without integrity answers is refused client- and server-side; the needle scan passes; the reviewer banner text names the operator-view prohibition."
     touchpoints:
       - "harness/review/serve.py:make_review_server"
-    tests: []
+    tests:
+      - "test_ac4_queue_keyboard_drive"
   - id: "AC-5"
     text: "Cross-surface isolation is testable, not aspirational: with an operator server and a reviewer server running over the same experiment, the reviewer surface never serves an unblinded byte (continuous canary scans across all its routes) and the operator surface gains no new route or affordance from this story — its EVAL-14 AC-8 posture tests pass unmodified. Packets served are the same built-packet bytes the CLI flow would show (D004): the surface adds transport, never content."
     vc: "Dual-server drive: every reviewer route passes the canary scan while operator routes still serve arm identities; bench serve's posture suite is untouched; served packet bytes equal the built packet file bytes."
     touchpoints:
       - "harness/review/serve.py:make_review_server"
-    tests: []
+    tests:
+      - "test_ac5_dual_server_isolation"
 
 constraints:
   - text: "Blinding is enforced at every layer that already enforces it, plus the transport: packet build scrubs (existing), the reviewer server re-scans before serving (belt-and-suspenders, the packet-validator precedent), and the record layer keeps its capture-before-reveal gates — the UI adds no bypass and holds no secret: response_map never reaches its process's responses."
@@ -65,12 +71,12 @@ constraints:
   - text: "No new event kinds and no verdict-schema changes: EVAL-7's kappa calibration and EVAL-9's reveal-keyed process scoring consume these verdicts and reveals unchanged."
     enforced_by: "AC-2/AC-3 tests on graduation"
 
-decisions: []
-open_decisions:
-  - "EVAL-18-D001"  # surface: separate verb + process with import-contract isolation (recommended) vs role-gated routes on one server
-  - "EVAL-18-D002"  # reviewer identity: launch-bound via resolve_actor (recommended) vs per-request field
-  - "EVAL-18-D003"  # hotkeys: 1/2/T/C + enter-advance mapped to our verdict vocabulary (recommended) vs the LangSmith A/B/E convention
-  - "EVAL-18-D004"  # packet transport: serve the built packet bytes verbatim (recommended) vs re-render live per request
+decisions:
+  - "EVAL-18-D001"  # surface separation (RESOLVED: separate-verb-and-process)
+  - "EVAL-18-D002"  # reviewer identity (RESOLVED: launch-bound-actor)
+  - "EVAL-18-D003"  # capture hotkeys (RESOLVED: native-vocabulary-keys)
+  - "EVAL-18-D004"  # packet transport (RESOLVED: built-bytes-verbatim)
+open_decisions: []
 
 policy_proposals: []
 predicted_reach: null

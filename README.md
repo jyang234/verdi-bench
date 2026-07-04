@@ -70,7 +70,7 @@ and EVAL-10 are built. The fast suite
 (`uv run pytest -m "not docker"`) is green — over 600 tests — plus a
 `docker`-marked suite of real-container tests (a real grade container and a real
 Harbor trial) run with `-m docker` in a dedicated CI job on Docker-capable
-runners; 6 import-linter contracts kept. AC-mapped tests are **enforced per
+runners; 7 import-linter contracts kept. AC-mapped tests are **enforced per
 story**: collection fails if any story's pre-registered acceptance criteria (from
 its `eval<N>.spec.md`) lack a `test_ac<N>_*` test, or if an AC test is duplicated
 or names an AC its story does not declare. `--ac-report` additionally prints the
@@ -156,6 +156,7 @@ uv run bench corpus calibrate <experiment-dir> --manifest m.json   # ledger a ca
 uv run bench corpus admit <experiment-dir> --manifest m.json --candidate-id c --task-sha s --baseline-ref b --keyring keyring.json
 
 uv run bench review build  <experiment-dir>            # blinded human-review packet (idempotent)
+uv run bench review serve  <experiment-dir> --reviewer alice   # blinded capture-then-reveal queue (never the operator view)
 uv run bench review record <experiment-dir> --comparison-id c1 --winner 1|2|TIE|CANT_JUDGE ...
 uv run bench review reveal <experiment-dir> --comparison-id c1   # refuses pre-verdict
 uv run bench process score  <experiment-dir>          # isolated judge process scoring

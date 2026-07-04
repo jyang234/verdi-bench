@@ -51,8 +51,15 @@ def seed_trial_and_grade(
     provenance=None,
     flags=None,
     egress_violation=False,
+    assertions=None,
 ):
-    """Append one trial record + its grade event, matching the real schemas."""
+    """Append one trial record + its grade event, matching the real schemas.
+
+    ``assertions`` overrides the default single holdout assertion — e.g. a
+    mixed pass/fail list whose pass *count* diverges from ``binary_score``, the
+    shape that makes the content-based fake judge disagree with the
+    deterministic winner (EVAL-7's mandatory-review stratum).
+    """
     from harness.adapters.base import Flags, Outcome, Provenance, Telemetry, TrialRecord
     from harness.ledger.events import record_grade, record_trial
 
@@ -76,8 +83,9 @@ def seed_trial_and_grade(
         ctx,
         trial_id=trial_id,
         task_sha=f"sha-{task_id}",
-        assertions=[{"id": "h1", "source": "holdout_test",
-                     "result": "pass" if passed else "fail"}],
+        assertions=assertions if assertions is not None else [
+            {"id": "h1", "source": "holdout_test",
+             "result": "pass" if passed else "fail"}],
         binary_score=passed,
     )
     return rec

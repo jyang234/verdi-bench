@@ -163,4 +163,40 @@ def register(app: typer.Typer) -> None:
         identities = rec["revealed"]["arm_identities"]
         typer.echo(f"revealed {comparison_id}: {identities}")
 
+    @review_app.command("serve")
+    def review_serve(
+        experiment_dir: Path = typer.Argument(..., help="Dir with the built review packet"),
+        reviewer: str = typer.Option(
+            None, "--reviewer", help="The reviewer recorded on every verdict/reveal [GR-12]"
+        ),
+        host: str = typer.Option(
+            None, "--host", help="Bind address (default 127.0.0.1 — loopback only)"
+        ),
+        port: int = typer.Option(
+            None, "--port", help="Port (default 8395; 0 = OS-assigned)"
+        ),
+    ) -> None:
+        """Blinded capture-then-reveal queue (its own surface — never the operator view)."""
+        from .serve import DEFAULT_HOST, DEFAULT_REVIEW_PORT, make_review_server
+
+        resolved = _resolve_actor_or_exit(reviewer)
+        srv = make_review_server(
+            Path(experiment_dir),
+            reviewer=resolved,
+            host=host if host is not None else DEFAULT_HOST,
+            port=port if port is not None else DEFAULT_REVIEW_PORT,
+        )
+        bound_host, bound_port = srv.server_address[:2]
+        typer.echo(
+            f"blinded review of {experiment_dir} at http://{bound_host}:{bound_port}/ "
+            f"(reviewer {resolved}; do NOT open the operator view for this "
+            "experiment; Ctrl-C to stop)"
+        )
+        try:
+            srv.serve_forever()
+        except KeyboardInterrupt:
+            typer.echo("reviewer surface stopped")
+        finally:
+            srv.server_close()
+
     app.add_typer(review_app, name="review")
