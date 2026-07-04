@@ -243,15 +243,20 @@ def test_ac3_status_snapshot_from_fixture_ledger(tmp_path):
     # 2 tasks × 2 arms × 3 reps, via run's own enumeration
     assert st["cells"] == {"planned": 12, "done": 3, "infra_failures": 0}
     assert st["per_arm"] == {
-        "control": {"trials": 2, "completed": 2, "timeout": 0, "infra_failed": 0},
-        "treatment": {"trials": 1, "completed": 1, "timeout": 0, "infra_failed": 0},
+        "control": {"trials": 2, "completed": 2, "timeout": 0, "infra_failed": 0, "cost": 1.5},
+        "treatment": {"trials": 1, "completed": 1, "timeout": 0, "infra_failed": 0, "cost": 1.0},
     }
     assert st["spend"]["accumulated"] == 2.5  # tr3's null cost never imputed
     assert st["spend"]["ceiling"] == 25.0 and st["spend"]["currency"] == "USD"
     assert st["spend"]["stopped_cost_ceiling"] is False
     # grade mirrors bench grade's skip vocabulary: transient cant_grade ⇒ pending
     assert st["grade"] == {"graded": 2, "cant_grade_terminal": 0, "pending": 1}
-    assert st["judge"] == {"verdicts": 2, "cant_judge": 1}
+    # pairs_ready: only (t1, rep0) has both locked arms' trials; expected =
+    # planned cells (12) / arms (2) [EVAL-14 additive denominators]
+    assert st["judge"] == {
+        "verdicts": 2, "cant_judge": 1, "pairs_ready": 1, "pairs_expected": 6,
+    }
+    assert st["last_event_ts"].startswith("2026-01-01T")
     assert st["review"] == {"packets": 1, "human_verdicts": 1, "reveals": 0}
     assert st["process_scores"] == 0
     assert st["forensics"] == {"reports": 0, "latest": None}
@@ -411,9 +416,11 @@ def test_ac6_operator_page_self_contained(tmp_path):
     for needle in ("http://", "https://", "src=", "href=", "url(", "@import", "<link"):
         assert needle not in OPERATOR_PAGE, f"external/active reference {needle!r} in page"
     assert OPERATOR_PAGE.lstrip().startswith("<!doctype html>")
-    # its only network calls are same-origin relative /api/ fetches
-    assert 'fetch("/api/status")' in OPERATOR_PAGE
-    assert 'fetch("/api/events?offset=" + cursor)' in OPERATOR_PAGE
+    # its only network calls are same-origin relative /api/ fetches (v2 routes
+    # them through one helper; the URL literals stay relative)
+    assert "await fetch(url)" in OPERATOR_PAGE
+    for literal in ('"/api/experiments"', '"/api/status?exp="', '"/api/events?exp="'):
+        assert literal in OPERATOR_PAGE, f"expected relative endpoint literal {literal}"
 
 
 def test_ac6_operator_page_unblinded_disclosure(tmp_path):

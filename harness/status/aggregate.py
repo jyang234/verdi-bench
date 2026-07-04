@@ -86,16 +86,27 @@ def _stages(
 
     spec, spec_error = _load_spec(experiment_dir / "experiment.yaml")
     trials = by_kind.get(events.TRIAL, [])
+    cells = _cells(experiment_dir, spec, trials, by_kind)
+    judge = _judge(spec, trials, by_kind)
+    # planned cells = tasks × arms × reps, so planned pairs = planned / |arms|.
+    if cells["planned"] is not None and spec is not None and spec.arms:
+        judge["pairs_expected"] = cells["planned"] // len(spec.arms)
 
     return {
         "lock": _lock(by_kind),
         "spec": _spec_summary(spec),
         "spec_error": spec_error,
-        "cells": _cells(experiment_dir, spec, trials, by_kind),
+        # provenance ts of the newest event — the "updated" signal for a
+        # workspace home row [EVAL-14 AC-1]. Ledger-derived, so it lives in the
+        # withheld-on-tamper block with everything else.
+        "last_event_ts": (
+            ((evs[-1].get("provenance") or {}).get("ts")) if evs else None
+        ),
+        "cells": cells,
         "per_arm": _per_arm(trials, by_kind),
         "spend": _spend(spec, trials, by_kind),
         "grade": _grade(trials, by_kind),
-        "judge": _judge(by_kind),
+        "judge": judge,
         "review": {
             "packets": len(by_kind.get(events.REVIEW_PACKET_BUILT, [])),
             "human_verdicts": len(by_kind.get(events.HUMAN_VERDICT, [])),
@@ -192,12 +203,21 @@ def _cells(
     }
 
 
+def _enforcement_cost(rec: dict) -> Optional[float]:
+    """The RN-2 figure: self-reported telemetry cost, else proxy-metered."""
+    cost = (rec.get("telemetry") or {}).get("cost")
+    if cost is None:
+        cost = (rec.get("flags") or {}).get("proxy_metered_cost")
+    return cost
+
+
 def _per_arm(trials: list[dict], by_kind: dict) -> dict:
     acc: dict[str, dict] = {}
 
     def bucket(arm: Optional[str]) -> dict:
         return acc.setdefault(
-            arm or "?", {"trials": 0, "completed": 0, "timeout": 0, "infra_failed": 0}
+            arm or "?",
+            {"trials": 0, "completed": 0, "timeout": 0, "infra_failed": 0, "cost": 0.0},
         )
 
     for ev in trials:
@@ -207,6 +227,9 @@ def _per_arm(trials: list[dict], by_kind: dict) -> dict:
         outcome = rec.get("outcome")
         if outcome in ("completed", "timeout"):
             b[outcome] += 1
+        cost = _enforcement_cost(rec)
+        if cost is not None:
+            b["cost"] += cost
     for ev in by_kind.get(events.TRIAL_INFRA_FAILED, []):
         bucket(ev.get("arm"))["infra_failed"] += 1
     return {arm: acc[arm] for arm in sorted(acc)}
@@ -218,10 +241,7 @@ def _spend(spec: Optional[ExperimentSpec], trials: list[dict], by_kind: dict) ->
     ``schedule`` resumes with, so status and the guard cannot disagree."""
     accumulated = 0.0
     for ev in trials:
-        rec = ev.get("trial_record") or {}
-        cost = (rec.get("telemetry") or {}).get("cost")
-        if cost is None:
-            cost = (rec.get("flags") or {}).get("proxy_metered_cost")
+        cost = _enforcement_cost(ev.get("trial_record") or {})
         if cost is not None:
             accumulated += cost
     stops = by_kind.get(events.RUN_STOPPED_COST_CEILING, [])
@@ -254,12 +274,32 @@ def _grade(trials: list[dict], by_kind: dict) -> dict:
     }
 
 
-def _judge(by_kind: dict) -> dict:
+def _judge(spec: Optional[ExperimentSpec], trials: list[dict], by_kind: dict) -> dict:
+    """Verdict counts plus honest denominators: ``pairs_ready`` counts
+    (task, repetition) cells with BOTH locked arms' trials present (what judge
+    can compare today); ``pairs_expected`` is the planned total when the spec
+    and task source define one (None otherwise, never guessed)."""
     verdicts = by_kind.get(events.JUDGE_VERDICT, [])
     cant = sum(
         1 for ev in verdicts if (ev.get("verdict") or {}).get("winner") == "CANT_JUDGE"
     )
-    return {"verdicts": len(verdicts), "cant_judge": cant}
+    pairs_ready = 0
+    pairs_expected: Optional[int] = None
+    if spec is not None and len(spec.arms) >= 2:
+        arm_a, arm_b = spec.arms[0].name, spec.arms[1].name
+        seen: dict[tuple, set] = {}
+        for ev in trials:
+            rec = ev.get("trial_record") or {}
+            seen.setdefault((rec.get("task_id"), rec.get("repetition")), set()).add(
+                rec.get("arm")
+            )
+        pairs_ready = sum(1 for arms in seen.values() if {arm_a, arm_b} <= arms)
+    return {
+        "verdicts": len(verdicts),
+        "cant_judge": cant,
+        "pairs_ready": pairs_ready,
+        "pairs_expected": pairs_expected,
+    }
 
 
 def _forensics(by_kind: dict) -> dict:

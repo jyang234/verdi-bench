@@ -1,38 +1,71 @@
-"""Read-only HTTP observer [EVAL-13 AC-5, D002, D004].
+"""Read-only HTTP observer [EVAL-13 AC-5; EVAL-14 AC-1..AC-8].
 
-stdlib ``ThreadingHTTPServer`` wrapping the three read seams — no new runtime
-dependency for a loopback GET-only tool. The handler is the allowlist: four
-routes, GET only; nothing here appends an event, writes a file, or triggers
-execution. A UI-triggered mutation path is a different story with its own
-actor plumbing and one-event obligations (spec: out of scope).
+stdlib ``ThreadingHTTPServer`` wrapping the read seams — no new runtime
+dependency for a loopback GET-only tool. The handler is the allowlist:
+fixed routes, GET only; nothing here appends an event, writes a file, or
+triggers execution. A UI-triggered mutation path is a different story with
+its own actor and one-event obligations (spec: out of scope).
 
-Route errors are *served*, not dropped: a failing read (corrupt heartbeat,
-unreadable ledger) returns its message as a 500 JSON body — surfaced to the
-observer while the server keeps answering other requests. An invalid tail
-cursor (the ledger shrank — rewrite evidence) is 409, distinct from a merely
-malformed offset (400).
+Two modes [EVAL-14 D003]: a single experiment directory, or a workspace
+root (``--root``) scanned one level for ``ledger.ndjson`` directories. In
+root mode every experiment-scoped route takes ``exp=<dirname>``, validated
+against a conservative name shape and the scanned set — never joined into
+a path from raw input. Artifacts are served from a fixed-name allowlist
+(the analyze render outputs), so no route can read an arbitrary file.
+
+Route errors are *served*, not dropped: a failing read returns its message
+as a 500 JSON body — surfaced to the observer while the server keeps
+answering other requests. An invalid tail cursor (the ledger shrank —
+rewrite evidence) is 409, distinct from a merely malformed offset (400).
 """
 
 from __future__ import annotations
 
 import json
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
+from ..analyze.fence import official_fence_report
 from ..analyze.timeline import trial_timeline
 from ..ledger.query import TailOffsetError, tail_events
 from ..status.aggregate import compute_status
+from ..status.trial import trial_detail
+from .compare import paired_comparisons
 from .page import OPERATOR_PAGE
+from .workspace import scan_workspace
 
 DEFAULT_HOST = "127.0.0.1"  # loopback by default: an operator tool, not a service
 DEFAULT_PORT = 8383
 
+# Experiment names come from directory scans; a name used in a query string
+# must have the same conservative shape — no separators, no dot-dot, nothing
+# a path join could be steered with.
+_EXP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+# The only files /artifact will ever serve: the analyze render outputs.
+_ARTIFACT_RE = re.compile(
+    r"^findings\.(json|(official|exploratory)\.(md|html|dossier\.html))$"
+)
+_ARTIFACT_TYPES = {
+    ".json": "application/json",
+    ".html": "text/html; charset=utf-8",
+    ".md": "text/plain; charset=utf-8",
+}
+
+
+class _NotFound(Exception):
+    """Route-level 404 with a message the observer can act on."""
+
 
 class ObserverHandler(BaseHTTPRequestHandler):
-    """GET-only routes over one experiment directory (bound by make_server)."""
+    """GET-only routes over one experiment dir or a workspace root."""
 
-    experiment_dir: Path  # bound per-server via make_server
+    experiment_dir: Optional[Path]  # single mode (bound by make_server)
+    workspace_root: Optional[Path]  # root mode (bound by make_server)
+    corpus_manifest = None  # optional CorpusManifest for the fence items
 
     server_version = "verdi-bench-observer"
     sys_version = ""
@@ -41,39 +74,111 @@ class ObserverHandler(BaseHTTPRequestHandler):
     # -- routes ---------------------------------------------------------------
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
         parsed = urlparse(self.path)
+        q = parse_qs(parsed.query)
         try:
             if parsed.path == "/":
                 self._send(200, OPERATOR_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            elif parsed.path == "/favicon.ico":
+                # Browsers request this unprompted; a <link> tag would break the
+                # page's no-external-references property, so answer empty here.
+                self._send(204, b"", "image/x-icon")
+            elif parsed.path == "/api/experiments":
+                self._json(200, {"experiments": self._experiments()})
             elif parsed.path == "/api/status":
-                self._json(200, compute_status(self.experiment_dir))
+                self._json(200, compute_status(self._dir(q)))
             elif parsed.path == "/api/events":
-                self._events(parsed.query)
+                self._events(q)
             elif parsed.path == "/api/timeline":
-                self._json(200, trial_timeline(self._ledger_path()))
+                self._json(200, trial_timeline(self._dir(q) / "ledger.ndjson"))
+            elif parsed.path == "/api/trial":
+                self._trial(q)
+            elif parsed.path == "/api/compare":
+                self._json(
+                    200,
+                    paired_comparisons(self._dir(q), corpus_manifest=self.corpus_manifest),
+                )
+            elif parsed.path == "/api/fence":
+                self._json(
+                    200,
+                    official_fence_report(self._dir(q), corpus_manifest=self.corpus_manifest),
+                )
+            elif parsed.path == "/artifact":
+                self._artifact(q)
             else:
                 self._json(404, {"error": f"unknown path {parsed.path!r}"})
+        except _NotFound as e:
+            self._json(404, {"error": str(e)})
         except Exception as e:  # noqa: BLE001 — surfaced as a served 500, so one
             # failing read cannot take the observer down for other requests; the
             # message travels to the client instead of vanishing into a dropped
             # connection. Nothing is retried or defaulted.
             self._json(500, {"error": f"{type(e).__name__}: {e}"})
 
-    def _events(self, query: str) -> None:
-        raw = parse_qs(query).get("offset", ["0"])[0]
+    # -- experiment resolution --------------------------------------------------
+    def _experiments(self) -> list[dict]:
+        if self.workspace_root is not None:
+            return scan_workspace(self.workspace_root)
+        from .workspace import _summary_row  # single mode: a list of one
+
+        assert self.experiment_dir is not None
+        return [
+            _summary_row(self.experiment_dir.name, compute_status(self.experiment_dir))
+        ]
+
+    def _dir(self, q: dict) -> Path:
+        """The experiment directory a request targets — validated, never joined
+        from raw input. Root mode requires ``exp``; single mode accepts only its
+        own directory's name (or no ``exp`` at all)."""
+        exp = q.get("exp", [None])[0]
+        if self.workspace_root is not None:
+            if not exp:
+                raise _NotFound("root mode: pass exp=<experiment-name>")
+            if not _EXP_NAME_RE.match(exp):
+                raise _NotFound(f"invalid experiment name {exp!r}")
+            candidate = self.workspace_root / exp
+            if not (candidate.is_dir() and (candidate / "ledger.ndjson").exists()):
+                raise _NotFound(f"unknown experiment {exp!r}")
+            return candidate
+        assert self.experiment_dir is not None
+        if exp and exp != self.experiment_dir.name:
+            raise _NotFound(f"unknown experiment {exp!r} (serving {self.experiment_dir.name!r})")
+        return self.experiment_dir
+
+    # -- endpoint bodies ----------------------------------------------------------
+    def _events(self, q: dict) -> None:
+        raw = q.get("offset", ["0"])[0]
         try:
             offset = int(raw)
         except ValueError:
             self._json(400, {"error": f"offset must be an integer, got {raw!r}"})
             return
         try:
-            events, next_offset = tail_events(self._ledger_path(), offset)
+            events, next_offset = tail_events(self._dir(q) / "ledger.ndjson", offset)
         except TailOffsetError as e:
             self._json(409, {"error": str(e)})  # cursor invalid: rewrite evidence
             return
         self._json(200, {"events": events, "next_offset": next_offset})
 
-    def _ledger_path(self) -> Path:
-        return Path(self.experiment_dir) / "ledger.ndjson"
+    def _trial(self, q: dict) -> None:
+        trial_id = q.get("id", [None])[0]
+        if not trial_id:
+            self._json(400, {"error": "pass id=<trial-id>"})
+            return
+        detail = trial_detail(self._dir(q), trial_id)
+        if detail is None:
+            self._json(404, {"error": f"no trial {trial_id!r} on this ledger"})
+            return
+        self._json(200, detail)
+
+    def _artifact(self, q: dict) -> None:
+        name = q.get("name", [None])[0] or ""
+        if not _ARTIFACT_RE.match(name):
+            raise _NotFound(f"{name!r} is not a servable artifact (analyze outputs only)")
+        path = self._dir(q) / name
+        if not path.is_file():
+            raise _NotFound(f"artifact {name!r} has not been rendered for this experiment")
+        content_type = _ARTIFACT_TYPES["".join(path.suffixes[-1:])]
+        self._send(200, path.read_bytes(), content_type)
 
     # -- non-GET methods are refused, naming the one allowed method ------------
     def _method_not_allowed(self) -> None:
@@ -99,7 +204,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _json(self, status: int, payload: dict) -> None:
+    def _json(self, status: int, payload) -> None:
         self._send(
             status,
             json.dumps(payload, sort_keys=True).encode("utf-8"),
@@ -112,17 +217,29 @@ class ObserverHandler(BaseHTTPRequestHandler):
 
 
 def make_server(
-    experiment_dir, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT
+    experiment_dir=None,
+    *,
+    root=None,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    corpus_manifest=None,
 ) -> ThreadingHTTPServer:
-    """Bind a threaded observer server to one experiment directory.
+    """Bind a threaded observer to one experiment directory OR a workspace root.
 
-    ``port=0`` asks the OS for an ephemeral port (tests); the caller reads the
-    realized address from ``server_address``. The caller owns the lifecycle
-    (``serve_forever`` / ``shutdown`` / ``server_close``).
+    Exactly one of ``experiment_dir``/``root`` must be given. ``port=0`` asks
+    the OS for an ephemeral port (tests); the caller reads the realized address
+    from ``server_address`` and owns the lifecycle (``serve_forever`` /
+    ``shutdown`` / ``server_close``).
     """
+    if (experiment_dir is None) == (root is None):
+        raise ValueError("pass exactly one of experiment_dir or root")
     handler = type(
         "BoundObserverHandler",
         (ObserverHandler,),
-        {"experiment_dir": Path(experiment_dir)},
+        {
+            "experiment_dir": Path(experiment_dir) if experiment_dir is not None else None,
+            "workspace_root": Path(root) if root is not None else None,
+            "corpus_manifest": corpus_manifest,
+        },
     )
     return ThreadingHTTPServer((host, port), handler)

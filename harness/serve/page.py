@@ -1,17 +1,25 @@
-"""The operator dashboard page [EVAL-13 AC-6, D003].
+"""The operator dashboard page [EVAL-13 AC-6; EVAL-14 AC-3, AC-4, AC-5, D001, D002].
 
-One self-contained HTML document: inline CSS, inline script, relative
-``fetch('/api/…')`` calls only — no external URI schemes, no fetched assets, no
-href/src/link/@import/url() references (the dossier's self-containment
-property, minus its script ban: this is a live tool, not an archival
-artifact). All dynamic values land via ``textContent`` — ledger strings are
-data, never markup.
+One self-contained HTML document (D001: dependency-free single-file app):
+inline CSS, inline script, relative ``fetch('/api/…')`` calls only — no
+external URI schemes, no fetched assets, no href/src/link/@import/url()
+references. Navigation out (the dossier artifact) uses scripted
+``window.open`` on relative paths, never an anchor, so the needle property
+holds verbatim. All dynamic values land via ``textContent`` — ledger strings
+are data, never markup.
 
-The page is the **openly-unblinded operator tier** and says so on every render
-[D003, the EVAL-9 openly-unblinded precedent]: arm identities are visible by
-design, so a person who watches this view is disqualified from serving as this
-experiment's EVAL-7 blinded reviewer. Staleness of a ``running`` heartbeat is
-judged client-side (the harness never guesses at liveness it did not observe).
+Structure: a hash router over six screens (workspace home, experiment live,
+trials, trial detail, compare, findings). Every view state that matters —
+screen, experiment, trial, facets, the open side panel (D002) — lives in the
+URL, so a link reproduces the exact slice [AC-3]. List screens share j/k/
+enter/esc conventions [AC-4]; the ledger feed rides the byte cursor with
+follow/pause/new-pill ergonomics and never re-reads from offset zero in its
+poll loop [AC-5]. ``window.__vb()`` exposes a small read-only state snapshot
+as an explicit test seam for the headless AC drives — it is not an API.
+
+The page is the **openly-unblinded operator tier** and says so on every
+render [EVAL-13 D003]. Staleness of a ``running`` heartbeat is judged
+client-side (the harness never guesses at liveness it did not observe).
 """
 
 from __future__ import annotations
@@ -27,268 +35,706 @@ OPERATOR_PAGE = """<!doctype html>
     --surface-1: #fcfcfb; --plane: #f9f9f7;
     --ink-1: #0b0b0b; --ink-2: #52514e; --ink-3: #898781;
     --hairline: #e1e0d9; --border: rgba(11,11,11,0.10);
-    --meter: #2a78d6;
-    --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+    --meter: #2a78d6; --soft: #eef3fa;
+    --good: #0ca30c; --warning: #9a6b00; --critical: #d03b3b;
+    --add: rgba(12,163,12,0.14); --del: rgba(208,59,59,0.13);
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --surface-1: #1a1a19; --plane: #0d0d0d;
       --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781;
       --hairline: #2c2c2a; --border: rgba(255,255,255,0.10);
-      --meter: #3987e5;
-      --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+      --meter: #3987e5; --soft: #1c2733;
+      --good: #0ca30c; --warning: #d9a21b; --critical: #e05252;
+      --add: rgba(12,163,12,0.18); --del: rgba(224,82,82,0.16);
     }
   }
   * { box-sizing: border-box; margin: 0; }
   body {
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
     background: var(--plane); color: var(--ink-1);
-    padding: 20px; font-size: 14px; line-height: 1.45;
+    padding: 18px; font-size: 14px; line-height: 1.45;
   }
-  main { max-width: 1080px; margin: 0 auto; display: grid; gap: 12px; }
+  main { max-width: 1180px; margin: 0 auto; display: grid; gap: 12px; }
   .banner {
     background: var(--surface-1); border: 1px solid var(--border);
     border-left: 3px solid var(--warning); border-radius: 6px;
-    padding: 10px 14px; color: var(--ink-2);
+    padding: 9px 14px; color: var(--ink-2); font-size: 13px;
   }
   .banner strong { color: var(--ink-1); }
-  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
-  header h1 { font-size: 18px; font-weight: 650; }
+  header.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 30px; }
+  header.bar .crumb { font-size: 16px; font-weight: 650; }
+  header.bar .crumb .up { color: var(--ink-3); font-weight: 400; cursor: pointer; }
+  header.bar .crumb .up:hover { color: var(--ink-1); text-decoration: underline; }
   .chip {
-    display: inline-block; padding: 1px 9px; border-radius: 999px;
-    border: 1px solid var(--border); background: var(--surface-1);
+    display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px;
+    border-radius: 999px; border: 1px solid var(--border); background: var(--surface-1);
     color: var(--ink-2); font-size: 12px; white-space: nowrap;
   }
-  .card {
-    background: var(--surface-1); border: 1px solid var(--border);
-    border-radius: 6px; padding: 12px 14px;
-  }
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .chip.ok { color: var(--good); } .chip.bad { color: var(--critical); }
+  .chip.click { cursor: pointer; } .chip.click:hover { border-color: var(--ink-3); }
+  .chip.on { background: var(--soft); color: var(--ink-1); border-color: var(--meter); }
+  .spacer { flex: 1; }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); gap: 12px; }
   .tile .label { color: var(--ink-3); font-size: 12px; }
-  .tile .value { font-size: 26px; font-weight: 650; margin: 2px 0 6px; }
+  .tile .value { font-size: 24px; font-weight: 650; margin: 2px 0 6px; }
   .tile .sub { color: var(--ink-2); font-size: 12px; }
   .meter { height: 6px; border-radius: 3px; background: var(--hairline); overflow: hidden; }
   .meter > div { height: 100%; border-radius: 3px; background: var(--meter); width: 0%; }
   h2 { font-size: 13px; font-weight: 650; color: var(--ink-2); margin-bottom: 8px; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th { text-align: left; color: var(--ink-3); font-size: 12px; font-weight: 500;
-       border-bottom: 1px solid var(--hairline); padding: 4px 8px 6px 0; }
-  td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--hairline); }
+  th { text-align: left; color: var(--ink-3); font-size: 11.5px; font-weight: 500;
+       border-bottom: 1px solid var(--hairline); padding: 4px 8px 6px 0; white-space: nowrap; }
+  td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--hairline); vertical-align: top; }
   tr:last-child td { border-bottom: none; }
-  #feed { list-style: none; font-variant-numeric: tabular-nums; }
-  #feed li { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--hairline); }
-  #feed li:last-child { border-bottom: none; }
-  #feed .ts { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
-  #feed .kind { color: var(--ink-2); font-size: 12px; min-width: 150px; }
-  footer { color: var(--ink-3); font-size: 12px; }
-  .ok { color: var(--good); } .bad { color: var(--critical); } .warn-ink { color: var(--ink-1); }
+  tr.row { cursor: pointer; }
+  tr.row:hover td { background: var(--soft); }
+  tr.sel td { background: var(--soft); }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+  .dim { color: var(--ink-2); } .dim3 { color: var(--ink-3); }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    font-size: 12px; color: var(--ink-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 3px 11px; background: var(--surface-1); cursor: pointer;
+    font-family: inherit;
+  }
+  .btn:hover { border-color: var(--ink-3); color: var(--ink-1); }
+  .btn:focus-visible, .chip.click:focus-visible { outline: 2px solid var(--meter); outline-offset: 1px; }
+  input.search {
+    font: inherit; font-size: 12.5px; color: var(--ink-1); background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; min-width: 190px;
+  }
+  .split { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: 12px; }
+  .panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; align-self: start; position: sticky; top: 12px; }
+  #feedbox li { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--hairline); font-size: 12.5px; }
+  #feedbox li:last-child { border-bottom: none; }
+  #feedbox { list-style: none; max-height: 420px; overflow-y: auto; }
+  #feedbox .ts { color: var(--ink-3); font-size: 11.5px; white-space: nowrap; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  #feedbox .k { color: var(--ink-2); min-width: 140px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; }
+  .pill { font-size: 11.5px; color: var(--surface-1); background: var(--meter); border: none;
+          border-radius: 999px; padding: 2px 10px; font-weight: 600; cursor: pointer; }
+  .rail { display: flex; gap: 6px; flex-wrap: wrap; }
+  .stage { flex: 1; min-width: 108px; border: 1px solid var(--border); border-radius: 7px; padding: 7px 10px; background: var(--surface-1); }
+  .stage .nm { font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  .stage .st { font-size: 12.5px; font-weight: 600; margin-top: 2px; }
+  .steps { list-style: none; }
+  .steps li { display: flex; gap: 10px; align-items: baseline; padding: 5px 0; border-bottom: 1px solid var(--hairline); font-size: 12.5px; }
+  .steps li:last-child { border-bottom: none; }
+  .steps .ico { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; color: var(--ink-3); width: 72px; flex: none; }
+  .steps .t { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; color: var(--ink-3); width: 48px; flex: none; text-align: right; }
+  .diff2 { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--hairline); border-radius: 6px; overflow: hidden; }
+  .diff2 > div { padding: 8px 12px; min-width: 0; }
+  .diff2 > div:first-child { border-right: 1px solid var(--hairline); }
+  .code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px;
+          line-height: 1.55; color: var(--ink-2); overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+  .code .add { background: var(--add); color: var(--ink-1); }
+  .code .del { background: var(--del); color: var(--ink-1); }
+  .kbdrow { color: var(--ink-3); font-size: 12px; }
+  kbd { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; border: 1px solid var(--hairline);
+        border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface-1); color: var(--ink-2); }
+  .empty { color: var(--ink-3); text-align: center; padding: 28px 0; }
+  .fence li { display: flex; gap: 8px; padding: 4px 0; font-size: 13px; align-items: baseline; }
+  .fence { list-style: none; }
+  @media (max-width: 860px) { .split, .diff2 { grid-template-columns: 1fr; }
+    .diff2 > div:first-child { border-right: none; border-bottom: 1px solid var(--hairline); } }
 </style>
 </head>
 <body>
 <main>
   <div class="banner">&#9888;&#65039; <strong>Unblinded operator view.</strong>
-    Arm identities are visible by design. Anyone who watches this page is
-    <strong>disqualified from serving as this experiment's blinded (EVAL-7)
-    reviewer</strong> — their arm-recognition answers and the judge&#8211;human
-    kappa would be silently corrupted. Read-only: this page appends nothing.</div>
-
-  <header>
-    <h1 id="exp">experiment</h1>
-    <span class="chip" id="chain">chain: …</span>
-    <span class="chip" id="hb">heartbeat: …</span>
-    <span class="chip" id="conn">connecting…</span>
-  </header>
-
-  <section class="tiles">
-    <div class="card tile">
-      <div class="label">Cells (done / planned)</div>
-      <div class="value" id="cells">–</div>
-      <div class="meter"><div id="cells-meter"></div></div>
-      <div class="sub" id="cells-sub"></div>
-    </div>
-    <div class="card tile">
-      <div class="label">Spend vs ceiling</div>
-      <div class="value" id="spend">–</div>
-      <div class="meter"><div id="spend-meter"></div></div>
-      <div class="sub" id="spend-sub"></div>
-    </div>
-    <div class="card tile">
-      <div class="label">In flight</div>
-      <div class="value" id="flight">–</div>
-      <div class="sub" id="flight-sub"></div>
-    </div>
-    <div class="card tile">
-      <div class="label">Pipeline</div>
-      <div class="value" id="pipeline">–</div>
-      <div class="sub" id="pipeline-sub"></div>
-    </div>
-  </section>
-
-  <section class="card">
-    <h2>Per-arm trials (unblinded)</h2>
-    <table>
-      <thead><tr><th>arm</th><th>trials</th><th>completed</th><th>timeout</th><th>infra failed</th></tr></thead>
-      <tbody id="arms"></tbody>
-    </table>
-  </section>
-
-  <section class="card">
-    <h2>Ledger feed (newest first)</h2>
-    <ul id="feed"></ul>
-  </section>
-
-  <footer>verdi-bench operator view — polls /api/status and /api/events on this
-    server only; every value is derived from the hash-chained ledger and the
-    operational heartbeat. Local records are ADVISORY.</footer>
+    Arm identities are visible by design; anyone who watches this page is
+    <strong>disqualified from serving as these experiments' blinded (EVAL-7)
+    reviewers</strong>. Read-only: this page appends nothing.</div>
+  <header class="bar" id="bar"></header>
+  <div id="app"></div>
+  <div class="kbdrow"><kbd>j</kbd>/<kbd>k</kbd> select &#183; <kbd>enter</kbd> open &#183;
+    <kbd>esc</kbd> back/close &#183; state lives in the URL &#8212; share it</div>
 </main>
 
 <script>
 "use strict";
-const POLL_MS = 1500, FEED_MAX = 40, STALE_MS = 90000;
-let cursor = 0;
-const feed = [];
-const $ = (id) => document.getElementById(id);
+/* ------------------------------------------------------------------ state */
+const POLL_MS = 1500, FEED_MAX = 400;
+const S = {
+  experiments: null,          // /api/experiments rows
+  exp: {},                    // per-experiment: {events, cursor, status, sel...}
+  route: null,
+  sel: 0,                     // selected row index on the current list screen
+  paused: false, newCount: 0, // feed ergonomics
+  timer: null,
+};
+function expState(name) {
+  if (!S.exp[name]) S.exp[name] = { events: [], cursor: 0, status: null,
+                                    compare: null, fence: null, trial: {} };
+  return S.exp[name];
+}
+/* explicit read-only test seam for the headless AC drives — not an API */
+window.__vb = () => ({
+  route: location.hash, sel: S.sel, paused: S.paused, newCount: S.newCount,
+  cursor: S.route && S.route.exp ? expState(S.route.exp).cursor : 0,
+  events: S.route && S.route.exp ? expState(S.route.exp).events.length : 0,
+  rows: (document.querySelectorAll("tr.row") || []).length,
+});
 
-function fmt(n, digits) {
-  return (n === null || n === undefined) ? "?" :
-    Number(n).toLocaleString(undefined, { maximumFractionDigits: digits === undefined ? 2 : digits });
+/* ------------------------------------------------------------------ router */
+function parseHash() {
+  const h = (location.hash || "#/experiments").slice(1);
+  const [path, qs] = h.split("?");
+  const seg = path.split("/").filter(Boolean);
+  const params = new URLSearchParams(qs || "");
+  if (seg[0] === "exp" && seg[1]) {
+    const exp = decodeURIComponent(seg[1]);
+    if (seg[2] === "trials") return { screen: "trials", exp, params };
+    if (seg[2] === "trial" && seg[3]) return { screen: "trial", exp, id: decodeURIComponent(seg[3]), params };
+    if (seg[2] === "compare") return { screen: "compare", exp, params };
+    if (seg[2] === "findings") return { screen: "findings", exp, params };
+    return { screen: "exp", exp, params };
+  }
+  return { screen: "home", params };
+}
+function nav(hash) { location.hash = hash; }
+function setParam(key, value) {
+  const p = S.route.params;
+  if (value === null || value === "" || value === undefined) p.delete(key); else p.set(key, value);
+  const qs = p.toString();
+  const base = location.hash.split("?")[0];
+  location.hash = qs ? base + "?" + qs : base;
 }
 
-function setChip(el, text, cls) {
-  el.textContent = text;
-  el.classList.remove("ok", "bad");
-  if (cls) el.classList.add(cls);
+/* ------------------------------------------------------------------ data */
+async function j(url) { const r = await fetch(url); if (!r.ok) throw new Error((await r.json()).error || r.status); return r.json(); }
+async function refresh() {
+  const r = S.route;
+  try {
+    if (r.screen === "home" || S.experiments === null) {
+      S.experiments = (await j("/api/experiments")).experiments;
+    }
+    if (r.exp) {
+      const st = expState(r.exp);
+      st.status = await j("/api/status?exp=" + encodeURIComponent(r.exp));
+      const page = await j("/api/events?exp=" + encodeURIComponent(r.exp) + "&offset=" + st.cursor);
+      if (page.events.length) {
+        st.events.push(...page.events);
+        if (S.paused || feedScrolled()) S.newCount += page.events.length;
+      }
+      st.cursor = page.next_offset;
+      if (r.screen === "compare" && !st.compare) st.compare = await j("/api/compare?exp=" + encodeURIComponent(r.exp));
+      if (r.screen === "findings") st.fence = await j("/api/fence?exp=" + encodeURIComponent(r.exp));
+      if (r.screen === "trial" && !st.trial[r.id])
+        st.trial[r.id] = await j("/api/trial?exp=" + encodeURIComponent(r.exp) + "&id=" + encodeURIComponent(r.id));
+    }
+    S.online = true;
+  } catch (e) { S.online = false; S.lastError = String(e && e.message || e); }
+  if (!(S.paused && S.route.screen === "exp")) render();
+  clearTimeout(S.timer); S.timer = setTimeout(refresh, POLL_MS);
 }
 
-function renderStatus(s) {
-  $("exp").textContent = "experiment " + s.experiment_id;
-  const chain = s.chain || {};
-  setChip($("chain"), chain.ok ? ("\\u2713 chain OK (" + fmt(chain.events, 0) + " events)")
-                              : "\\u2715 chain BROKEN: " + (chain.detail || ""),
-          chain.ok ? "ok" : "bad");
+/* ------------------------------------------------------------------ dom */
+function h(tag, props, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (k === "class") el.className = v;
+    else if (k === "text") el.textContent = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v);
+  }
+  for (const kid of kids) if (kid !== null && kid !== undefined) el.append(kid);
+  return el;
+}
+const fmt = (n, d) => (n === null || n === undefined) ? "?" :
+  Number(n).toLocaleString(undefined, { maximumFractionDigits: d === undefined ? 2 : d });
+const nm = (v) => (v === null || v === undefined) ? "not measured" : String(v);
 
-  const hb = s.heartbeat;
-  if (!hb) { setChip($("hb"), "heartbeat: none"); }
+/* --------------------------------------------------------- derived trials */
+function deriveTrials(st) {
+  const grades = {}, cants = {}, quarantined = {}, flags = {};
+  let latestReport = null;
+  for (const ev of st.events) {
+    if (ev.event === "grade") grades[ev.trial_id] = ev;
+    else if (ev.event === "cant_grade") cants[ev.trial_id] = ev;
+    else if (ev.event === "forensic_quarantine") quarantined[(ev.forensic_quarantine || {}).trial_id] = true;
+    else if (ev.event === "forensics_report") latestReport = ev.forensics_report;
+  }
+  for (const f of ((latestReport || {}).flags || [])) (flags[f.trial_id] = flags[f.trial_id] || []).push(f);
+  return st.events.filter(e => e.event === "trial").map(e => {
+    const r = e.trial_record;
+    const g = grades[r.trial_id], c = cants[r.trial_id];
+    return {
+      trial_id: r.trial_id, task_id: r.task_id, arm: r.arm, repetition: r.repetition,
+      outcome: r.outcome, cost: (r.telemetry || {}).cost, wall: (r.telemetry || {}).wall_time_s,
+      graded: g ? (g.binary_score ? "pass" : "fail") : (c ? "cant_grade" : "pending"),
+      flagged: !!(flags[r.trial_id] || []).length, quarantined: !!quarantined[r.trial_id],
+      egress: ((r.flags || {}).egress_attempts || []).length,
+    };
+  });
+}
+function applyFacets(rows, p) {
+  const q = (p.get("q") || "").toLowerCase();
+  return rows.filter(t =>
+    (!p.get("arm") || t.arm === p.get("arm")) &&
+    (!p.get("task") || t.task_id === p.get("task")) &&
+    (!p.get("outcome") || t.outcome === p.get("outcome")) &&
+    (!p.get("graded") || t.graded === p.get("graded")) &&
+    (!p.get("flagged") || String(t.flagged) === p.get("flagged")) &&
+    (!q || t.trial_id.toLowerCase().includes(q) || t.task_id.toLowerCase().includes(q)));
+}
+
+/* ------------------------------------------------------------------ header */
+function renderBar() {
+  const bar = document.getElementById("bar");
+  bar.textContent = "";
+  const r = S.route, st = r.exp ? expState(r.exp) : null;
+  const crumb = h("div", { class: "crumb" });
+  if (r.screen === "home") crumb.append("experiments");
   else {
-    let label = "heartbeat: " + hb.state;
-    let cls = hb.state === "finished" ? "ok" : null;
-    const age = Date.now() - Date.parse(hb.ts);
-    if (hb.state === "running" && isFinite(age) && age > STALE_MS) {
-      label = "\\u26A0 heartbeat stale (" + Math.round(age / 1000) + "s, was running)";
-      cls = null;
+    const up = h("span", { class: "up", text: "experiments / ", onclick: () => nav("#/experiments") });
+    crumb.append(up, h("span", { text: r.exp }));
+    if (r.screen !== "exp") crumb.append(h("span", { class: "up", text: " / " + (r.screen === "trial" ? "trial" : r.screen) }));
+  }
+  bar.append(crumb);
+  if (st && st.status) {
+    const chain = st.status.chain || {};
+    bar.append(h("span", { class: "chip " + (chain.ok ? "ok" : "bad"),
+      text: chain.ok ? ("\\u2713 chain OK \\u00b7 " + fmt(chain.events, 0) + " events") : "\\u2715 chain BROKEN" }));
+    bar.append(h("span", { class: "chip", text: "ADVISORY" }));
+    const hb = st.status.heartbeat;
+    if (hb) {
+      let label = "heartbeat: " + hb.state, cls = "chip" + (hb.state === "finished" ? " ok" : "");
+      const age = Date.now() - Date.parse(hb.ts);
+      if (hb.state === "running" && isFinite(age) && age > 90000)
+        { label = "\\u26a0 heartbeat stale " + Math.round(age / 1000) + "s"; cls = "chip"; }
+      bar.append(h("span", { class: cls, text: label }));
     }
-    setChip($("hb"), label, cls);
   }
-
-  const st = s.stages;
-  if (!st) {
-    $("cells").textContent = "withheld";
-    $("cells-sub").textContent = chain.ok ? "" : "ledger content unverified — fail closed";
-    return;
-  }
-  const cells = st.cells, spend = st.spend;
-  $("cells").textContent = fmt(cells.done, 0) + " / " + fmt(cells.planned, 0);
-  $("cells-meter").style.width =
-    cells.planned ? Math.min(100, 100 * cells.done / cells.planned) + "%" : "0%";
-  $("cells-sub").textContent = "infra failures: " + fmt(cells.infra_failures, 0);
-
-  $("spend").textContent = fmt(spend.accumulated) + " / " + fmt(spend.ceiling);
-  $("spend-meter").style.width =
-    spend.ceiling ? Math.min(100, 100 * spend.accumulated / spend.ceiling) + "%" : "0%";
-  $("spend-sub").textContent = (spend.currency || "") +
-    (spend.stopped_cost_ceiling ? " — STOPPED at ceiling" : "");
-
-  const flight = s.heartbeat && s.heartbeat.in_flight;
-  if (flight) {
-    $("flight").textContent = flight.task_id + " / " + flight.arm;
-    const started = Date.parse(flight.started_ts);
-    const elapsed = isFinite(started) ? Math.max(0, Math.round((Date.now() - started) / 1000)) + "s" : "";
-    $("flight-sub").textContent =
-      "rep " + flight.repetition + ", attempt " + flight.attempt + (elapsed ? ", " + elapsed + " elapsed" : "");
-  } else {
-    $("flight").textContent = "idle";
-    $("flight-sub").textContent = "";
-  }
-
-  $("pipeline").textContent =
-    fmt(st.grade.graded, 0) + " graded, " + fmt(st.judge.verdicts, 0) + " judged";
-  $("pipeline-sub").textContent =
-    "grade pending " + fmt(st.grade.pending, 0) +
-    " · review " + fmt(st.review.human_verdicts, 0) + "/" + fmt(st.review.packets, 0) +
-    " · selfcheck " + st.analyze.selfcheck +
-    (st.quarantines.length ? " · quarantined " + st.quarantines.length : "");
-
-  const tbody = $("arms");
-  tbody.textContent = "";
-  for (const [arm, c] of Object.entries(st.per_arm)) {
-    const tr = document.createElement("tr");
-    for (const v of [arm, c.trials, c.completed, c.timeout, c.infra_failed]) {
-      const td = document.createElement("td");
-      td.textContent = String(v);
-      tr.appendChild(td);
+  if (r.exp) {
+    bar.append(h("span", { class: "spacer" }));
+    for (const [label, screen] of [["live", ""], ["trials", "/trials"], ["compare", "/compare"], ["findings", "/findings"]]) {
+      const on = (screen === "" && r.screen === "exp") || screen.slice(1) === r.screen;
+      bar.append(h("span", { class: "chip click" + (on ? " on" : ""), tabindex: "0", text: label,
+        onclick: () => nav("#/exp/" + encodeURIComponent(r.exp) + screen) }));
     }
-    tbody.appendChild(tr);
   }
+  bar.append(h("span", { class: r.exp ? "" : "spacer" }));
+  bar.append(h("span", { class: "chip " + (S.online ? "ok" : "bad"),
+    text: S.online ? "live" : ("unreachable: " + (S.lastError || "")) }));
+}
+
+/* ------------------------------------------------------------------ screens */
+function renderHome(app) {
+  const rows = S.experiments || [];
+  const card = h("div", { class: "card" });
+  card.append(h("h2", { text: "Experiments" }));
+  if (!rows.length) { card.append(h("div", { class: "empty", text: "No experiment directories (with a ledger.ndjson) found under this root." })); app.append(card); return; }
+  const table = h("table");
+  table.append(h("tr", {}, ...["experiment", "state", "cells", "", "spend", "graded", "judged", "selfcheck", "updated"].map(t => h("th", { text: t }))));
+  rows.forEach((e, i) => {
+    const sm = e.summary;
+    const tr = h("tr", { class: "row" + (i === S.sel ? " sel" : "") });
+    tr.addEventListener("click", () => nav("#/exp/" + encodeURIComponent(e.name)));
+    tr.append(h("td", {}, h("b", { text: e.name })));
+    const state = e.chain && e.chain.ok === false ? "\\u2715 chain broken"
+      : (e.heartbeat_state || (sm && sm.cells.done ? "idle" : "unplanned"));
+    tr.append(h("td", {}, h("span", { class: "chip" + (e.heartbeat_state === "running" ? " ok" : (e.chain && e.chain.ok === false ? " bad" : "")), text: state })));
+    if (!sm) {
+      tr.append(h("td", { class: "dim3", text: "withheld" }), h("td"), h("td", { class: "dim3", text: "withheld" }),
+                h("td", { class: "dim3", text: "\\u2014" }), h("td", { class: "dim3", text: "\\u2014" }),
+                h("td", { class: "dim3", text: "\\u2014" }), h("td", { class: "dim3", text: "\\u2014" }));
+    } else {
+      tr.append(h("td", { class: "mono", text: fmt(sm.cells.done, 0) + "/" + fmt(sm.cells.planned, 0) }));
+      const meter = h("div", { class: "meter", style: "width:76px" }, h("div"));
+      if (sm.cells.planned) meter.firstChild.style.width = Math.min(100, 100 * sm.cells.done / sm.cells.planned) + "%";
+      tr.append(h("td", {}, meter));
+      tr.append(h("td", { class: "mono", text: fmt(sm.spend.accumulated) + "/" + fmt(sm.spend.ceiling) }));
+      tr.append(h("td", { class: "mono", text: fmt(sm.grade.graded, 0) }));
+      tr.append(h("td", { class: "mono", text: fmt(sm.judge.verdicts, 0) + "/" + fmt(sm.judge.pairs_expected, 0) }));
+      tr.append(h("td", {}, h("span", { class: "chip", text: sm.selfcheck })));
+      tr.append(h("td", { class: "dim3", text: (sm.last_event_ts || "").replace("T", " ").slice(0, 19) || "\\u2014" }));
+    }
+    table.append(tr);
+  });
+  card.append(table);
+  app.append(card);
 }
 
 function summarize(ev) {
-  const kind = ev.event || "?";
   const rec = ev.trial_record || {};
-  switch (kind) {
-    case "trial":
-      return rec.task_id + " / " + rec.arm + " rep" + rec.repetition + " \\u2192 " + rec.outcome;
-    case "trial_infra_failed":
-      return ev.task_id + " / " + ev.arm + " \\u2192 " + ev.reason;
-    case "grade":
-      return ev.trial_id + " \\u2192 " + (ev.binary_score ? "pass" : "fail");
-    case "cant_grade":
-      return ev.trial_id + " \\u2192 " + ev.reason;
-    case "judge_verdict": {
-      const v = ev.verdict || {};
-      return (v.comparison_id || "") + " \\u2192 " + (v.winner || "");
+  switch (ev.event) {
+    case "trial": return rec.task_id + " / " + rec.arm + " rep" + rec.repetition + " \\u2192 " + rec.outcome;
+    case "trial_infra_failed": return ev.task_id + " / " + ev.arm + " \\u2192 " + ev.reason;
+    case "grade": return ev.trial_id + " \\u2192 " + (ev.binary_score ? "pass" : "fail");
+    case "cant_grade": return ev.trial_id + " \\u2192 " + ev.reason;
+    case "judge_verdict": { const v = ev.verdict || {}; return (v.comparison_id || "") + " \\u2192 " + (v.winner || ""); }
+    case "run_stopped_cost_ceiling": return "spend " + fmt(ev.accumulated_cost) + " of " + fmt(ev.ceiling);
+    case "experiment_locked": return "seed " + ev.seed + ", spec " + String(ev.spec_sha256 || "").slice(0, 12);
+    default: return "";
+  }
+}
+function feedScrolled() { const el = document.getElementById("feedbox"); return !!el && el.scrollTop > 8; }
+
+function renderExp(app) {
+  const st = expState(S.route.exp), snap = st.status;
+  if (!snap) { app.append(h("div", { class: "empty", text: "loading\\u2026" })); return; }
+  const stg = snap.stages;
+  if (!stg) { app.append(h("div", { class: "card", text: "Ledger content withheld: " + ((snap.chain || {}).detail || "chain failed verification") + " [fail closed]" })); return; }
+
+  const rail = h("div", { class: "rail" });
+  const stages = [
+    ["run", fmt(stg.cells.done, 0) + "/" + fmt(stg.cells.planned, 0) + (snap.heartbeat && snap.heartbeat.in_flight ? " \\u00b7 in flight" : "")],
+    ["grade", fmt(stg.grade.graded, 0) + " \\u00b7 " + fmt(stg.grade.pending, 0) + " pending"],
+    ["judge", fmt(stg.judge.verdicts, 0) + "/" + fmt(stg.judge.pairs_expected, 0) + " pairs"],
+    ["review", fmt(stg.review.human_verdicts, 0) + "/" + fmt(stg.review.packets, 0)],
+    ["forensics", fmt(stg.forensics.reports, 0) + " scan" + (stg.forensics.latest ? " \\u00b7 " + stg.forensics.latest.flags + " flags" : "")],
+    ["analyze", "selfcheck " + stg.analyze.selfcheck],
+  ];
+  for (const [name, val] of stages)
+    rail.append(h("div", { class: "stage" }, h("div", { class: "nm", text: name }), h("div", { class: "st", text: val })));
+  app.append(rail);
+
+  const tiles = h("div", { class: "tiles" });
+  const flight = snap.heartbeat && snap.heartbeat.in_flight;
+  const cellsTile = h("div", { class: "card tile" });
+  cellsTile.append(h("div", { class: "label", text: "Cells (done / planned)" }),
+    h("div", { class: "value", text: fmt(stg.cells.done, 0) + " / " + fmt(stg.cells.planned, 0) }));
+  const m1 = h("div", { class: "meter" }, h("div"));
+  if (stg.cells.planned) m1.firstChild.style.width = Math.min(100, 100 * stg.cells.done / stg.cells.planned) + "%";
+  cellsTile.append(m1, h("div", { class: "sub", text: "infra failures: " + fmt(stg.cells.infra_failures, 0) }));
+  tiles.append(cellsTile);
+
+  const spendTile = h("div", { class: "card tile" });
+  spendTile.append(h("div", { class: "label", text: "Spend vs ceiling" }),
+    h("div", { class: "value", text: fmt(stg.spend.accumulated) + " / " + fmt(stg.spend.ceiling) }));
+  const m2 = h("div", { class: "meter" }, h("div"));
+  if (stg.spend.ceiling) m2.firstChild.style.width = Math.min(100, 100 * stg.spend.accumulated / stg.spend.ceiling) + "%";
+  const perArm = Object.entries(stg.per_arm).map(([a, c]) => a + " " + fmt(c.cost)).join(" \\u00b7 ");
+  spendTile.append(m2, h("div", { class: "sub", text: (stg.spend.currency || "") + (perArm ? " \\u00b7 " + perArm : "") + (stg.spend.stopped_cost_ceiling ? " \\u00b7 STOPPED" : "") }));
+  tiles.append(spendTile);
+
+  const flightTile = h("div", { class: "card tile" });
+  flightTile.append(h("div", { class: "label", text: "In flight" }));
+  if (flight) {
+    const started = Date.parse(flight.started_ts);
+    const elapsed = isFinite(started) ? Math.max(0, Math.round((Date.now() - started) / 1000)) + "s" : "";
+    flightTile.append(h("div", { class: "value", text: flight.task_id + " / " + flight.arm }),
+      h("div", { class: "sub", text: "rep " + flight.repetition + ", attempt " + flight.attempt + (elapsed ? ", " + elapsed : "") }));
+  } else flightTile.append(h("div", { class: "value", text: "idle" }));
+  tiles.append(flightTile);
+
+  const armsTile = h("div", { class: "card tile" });
+  armsTile.append(h("div", { class: "label", text: "Per-arm trials (unblinded)" }));
+  for (const [arm, c] of Object.entries(stg.per_arm))
+    armsTile.append(h("div", { class: "sub", text: arm + ": " + c.trials + " (\\u2713" + c.completed + " t/o " + c.timeout + " infra " + c.infra_failed + ")" }));
+  if (stg.quarantines.length) armsTile.append(h("div", { class: "sub", text: "quarantined: " + stg.quarantines.length }));
+  tiles.append(armsTile);
+  app.append(tiles);
+
+  const feed = h("div", { class: "card" });
+  const bar = h("div", { class: "toolbar" });
+  bar.append(h("h2", { text: "Ledger feed (newest first)", style: "margin:0" }));
+  const kinds = ["trial", "grade", "judge_verdict", "cant_grade", "trial_infra_failed"];
+  const active = S.route.params.get("kind") || "";
+  bar.append(h("span", { class: "chip click" + (!active ? " on" : ""), tabindex: "0", text: "all", onclick: () => setParam("kind", null) }));
+  for (const k of kinds)
+    bar.append(h("span", { class: "chip click" + (active === k ? " on" : ""), tabindex: "0", text: k, onclick: () => setParam("kind", k) }));
+  bar.append(h("span", { class: "spacer" }));
+  if (S.newCount > 0)
+    bar.append(h("button", { class: "pill", text: S.newCount + " new \\u2191", onclick: () => {
+      S.newCount = 0; S.paused = false; render(); const el = document.getElementById("feedbox"); if (el) el.scrollTop = 0;
+    } }));
+  if (S.paused) bar.append(h("span", { class: "chip", text: "\\u23f8 paused (hover)" }));
+  feed.append(bar);
+  const ul = h("ul", { id: "feedbox" });
+  const shown = st.events.filter(e => !active || e.event === active).slice(-FEED_MAX).reverse();
+  if (!shown.length) ul.append(h("li", {}, h("span", { class: "dim3", text: "no events yet" })));
+  for (const ev of shown) {
+    ul.append(h("li", {},
+      h("span", { class: "ts", text: ((ev.provenance || {}).ts || "").replace("T", " ").slice(0, 19) }),
+      h("span", { class: "k", text: ev.event || "?" }),
+      h("span", { text: summarize(ev) })));
+  }
+  feed.append(ul);
+  app.append(feed);
+}
+
+function gradeChip(t) {
+  const cls = { pass: "chip ok", fail: "chip bad", cant_grade: "chip bad", pending: "chip" }[t.graded];
+  return h("span", { class: cls, text: t.graded });
+}
+
+function renderTrials(app) {
+  const st = expState(S.route.exp);
+  const p = S.route.params;
+  const all = deriveTrials(st);
+  const rows = applyFacets(all, p);
+  const facetBar = h("div", { class: "toolbar card" });
+  const facet = (key, values) => {
+    const cur = p.get(key);
+    if (cur) facetBar.append(h("span", { class: "chip click on", tabindex: "0", text: key + ": " + cur + " \\u2715", onclick: () => setParam(key, null) }));
+    else {
+      for (const v of values.slice(0, 6))
+        facetBar.append(h("span", { class: "chip click", tabindex: "0", text: key + ": " + v, onclick: () => setParam(key, v) }));
     }
-    case "run_stopped_cost_ceiling":
-      return "spend " + fmt(ev.accumulated_cost) + " of " + fmt(ev.ceiling);
-    case "experiment_locked":
-      return "seed " + ev.seed + ", spec " + String(ev.spec_sha256 || "").slice(0, 12);
-    default:
-      return "";
+  };
+  facet("arm", [...new Set(all.map(t => t.arm))].sort());
+  facet("task", [...new Set(all.map(t => t.task_id))].sort());
+  facet("outcome", [...new Set(all.map(t => t.outcome))].sort());
+  facet("graded", ["pass", "fail", "cant_grade", "pending"]);
+  facet("flagged", ["true"]);
+  const search = h("input", { class: "search", placeholder: "search trial or task id\\u2026", value: p.get("q") || "" });
+  search.addEventListener("change", () => setParam("q", search.value || null));
+  facetBar.append(search, h("span", { class: "spacer" }),
+    h("span", { class: "dim3", text: rows.length + " of " + all.length + " trials \\u00b7 filters live in the URL" }));
+  app.append(facetBar);
+
+  const selId = p.get("sel");
+  const wrap = selId ? h("div", { class: "split" }) : h("div");
+  const card = h("div", { class: "card" });
+  if (!rows.length) card.append(h("div", { class: "empty", text: all.length ? "No trials match these filters." : "No trials on this ledger yet." }));
+  else {
+    const table = h("table");
+    table.append(h("tr", {}, ...["trial", "task", "arm", "rep", "outcome", "grade", "cost", "wall", "flags"].map(x => h("th", { text: x }))));
+    rows.forEach((t, i) => {
+      const tr = h("tr", { class: "row" + (i === S.sel || t.trial_id === selId ? " sel" : "") });
+      tr.addEventListener("click", () => setParam("sel", t.trial_id));
+      tr.append(
+        h("td", { class: "mono", text: t.trial_id.slice(0, 16) + "\\u2026" }),
+        h("td", { text: t.task_id }), h("td", { text: t.arm }), h("td", { class: "mono", text: String(t.repetition) }),
+        h("td", {}, h("span", { class: "chip", text: t.outcome })),
+        h("td", {}, gradeChip(t)),
+        h("td", { class: "mono", text: t.cost === null || t.cost === undefined ? "\\u2014" : fmt(t.cost) }),
+        h("td", { class: t.wall === null || t.wall === undefined ? "dim3" : "mono", text: nm(t.wall) }),
+        h("td", {}, ...(t.flagged ? [h("span", { class: "chip bad", text: "\\u2691 flag" })] : []),
+                   ...(t.quarantined ? [h("span", { class: "chip bad", text: "quarantined" })] : []),
+                   ...(t.egress ? [h("span", { class: "chip", text: "egress " + t.egress })] : [])));
+      table.append(tr);
+    });
+    card.append(table);
+  }
+  wrap.append(card);
+  if (selId) {
+    const panel = h("div", { class: "panel" });
+    const t = all.find(x => x.trial_id === selId);
+    panel.append(h("h2", { text: selId.slice(0, 22) }));
+    if (!t) panel.append(h("div", { class: "dim3", text: "not on this ledger" }));
+    else {
+      panel.append(h("div", {}, h("b", { text: t.task_id + " / " + t.arm + " \\u00b7 rep " + t.repetition })));
+      panel.append(h("div", { class: "dim", text: t.outcome + " \\u00b7 grade: " + t.graded }));
+      panel.append(h("div", { class: "dim", text: "cost " + (t.cost === null || t.cost === undefined ? "\\u2014" : fmt(t.cost)) + " \\u00b7 wall " + nm(t.wall) }));
+      panel.append(h("div", { style: "margin-top:10px" },
+        h("button", { class: "btn", text: "Open full trial \\u21a6 (enter)",
+          onclick: () => nav("#/exp/" + encodeURIComponent(S.route.exp) + "/trial/" + encodeURIComponent(selId)) })));
+    }
+    wrap.append(panel);
+  }
+  app.append(wrap);
+}
+
+function renderTrial(app) {
+  const st = expState(S.route.exp);
+  const d = st.trial[S.route.id];
+  if (!d) { app.append(h("div", { class: "empty", text: "loading trial\\u2026" })); return; }
+  const rec = d.record || {};
+  const head = h("div", { class: "toolbar card" });
+  head.append(h("b", { class: "mono", text: d.trial_id }),
+    h("span", { class: "chip", text: rec.task_id + " / " + rec.arm + " \\u00b7 rep " + rec.repetition }),
+    h("span", { class: "chip", text: rec.outcome }),
+    h("span", { class: "chip" + (d.trajectory.status === "verified" ? " ok" : ""), text: "trajectory " + d.trajectory.status }));
+  if (d.quarantine) head.append(h("span", { class: "chip bad", text: "quarantined: " + d.quarantine.reason }));
+  head.append(h("span", { class: "spacer" }),
+    h("button", { class: "btn", text: "\\u2190 trials", onclick: () => nav("#/exp/" + encodeURIComponent(S.route.exp) + "/trials") }));
+  app.append(head);
+
+  const tab = S.route.params.get("tab") || "trajectory";
+  const tabs = h("div", { class: "toolbar" });
+  for (const name of ["trajectory", "grade", "forensics", "egress", "raw"])
+    tabs.append(h("span", { class: "chip click" + (tab === name ? " on" : ""), tabindex: "0", text: name, onclick: () => setParam("tab", name) }));
+  app.append(tabs);
+
+  const card = h("div", { class: "card" });
+  if (tab === "trajectory") {
+    const steps = d.trajectory.steps;
+    if (steps === null) card.append(h("div", { class: "empty", text: "trajectory " + d.trajectory.status + " \\u2014 steps unavailable (status is data, not an error)" }));
+    else if (!steps.length) card.append(h("div", { class: "empty", text: "trajectory verified, zero steps" }));
+    else {
+      const ul = h("ul", { class: "steps" });
+      for (const s of steps) {
+        const detail = s.command ? s.command : (s.files_touched || []).join(", ");
+        ul.append(h("li", {},
+          h("span", { class: "t", text: s.relative_ts === null || s.relative_ts === undefined ? "\\u2014" : fmt(s.relative_ts, 0) + "s" }),
+          h("span", { class: "ico", text: s.kind }),
+          h("span", { class: "mono dim", text: detail || "(not captured in this record version)" }),
+          h("span", { class: "dim3", text: (s.exit_code === null || s.exit_code === undefined ? "" : " exit " + s.exit_code) +
+            (s.tokens === null || s.tokens === undefined ? "" : " \\u00b7 " + fmt(s.tokens, 0) + " tok") })));
+      }
+      card.append(ul);
+    }
+  } else if (tab === "grade") {
+    if (!d.grade.grades.length && !d.grade.cant_grades.length) card.append(h("div", { class: "empty", text: "not graded yet" }));
+    for (const g of d.grade.grades) {
+      card.append(h("div", {}, h("b", { text: "grade: " + (g.binary_score ? "pass" : "fail") }),
+        h("span", { class: "dim3", text: "  " + (g.grader || "") + (g.override_of ? " \\u00b7 override" : "") })));
+      const table = h("table");
+      table.append(h("tr", {}, h("th", { text: "assertion" }), h("th", { text: "source" }), h("th", { text: "result" })));
+      for (const a of g.assertions || [])
+        table.append(h("tr", {}, h("td", { class: "mono", text: a.id || "" }), h("td", { class: "dim", text: a.source || "" }),
+          h("td", {}, h("span", { class: "chip " + (a.result === "pass" ? "ok" : "bad"), text: a.result || "" }))));
+      card.append(table);
+    }
+    for (const c of d.grade.cant_grades)
+      card.append(h("div", { class: "dim", text: "cant_grade \\u2192 " + c.reason + (c.override_of ? " (override attempt)" : "") }));
+  } else if (tab === "forensics") {
+    if (!d.forensics.flags.length && !d.forensics.metrics) card.append(h("div", { class: "empty", text: "no forensics scan covers this trial yet" }));
+    for (const f of d.forensics.flags)
+      card.append(h("div", {}, h("span", { class: "chip bad", text: f.detector || "flag" }), h("span", { class: "dim", text: " " + (f.reason || "") + " \\u2014 evidence, never a verdict" })));
+    if (d.forensics.metrics) card.append(h("pre", { class: "code", text: JSON.stringify(d.forensics.metrics, null, 2) }));
+  } else if (tab === "egress") {
+    card.append(h("div", { class: "dim", text: "violation: " + nm(d.egress.violation) }));
+    for (const a of d.egress.attempts || []) card.append(h("div", { class: "mono", text: a }));
+    if (!(d.egress.attempts || []).length) card.append(h("div", { class: "empty", text: "no egress attempts recorded" }));
+  } else {
+    card.append(h("pre", { class: "code", text: JSON.stringify(d.record, null, 2) }));
+  }
+  app.append(card);
+}
+
+function renderCompare(app) {
+  const st = expState(S.route.exp);
+  const c = st.compare;
+  if (!c) { app.append(h("div", { class: "empty", text: "assembling comparisons\\u2026" })); return; }
+  if (c.error) { app.append(h("div", { class: "card", text: c.error })); return; }
+  const only = S.route.params.get("only") === "disagreements";
+  const head = h("div", { class: "toolbar card" });
+  head.append(h("b", { text: "Compare: " + c.arm_a + " vs " + c.arm_b + " (baseline: " + c.arm_a + ", lock order)" }),
+    h("span", { class: "chip" + (c.official_ready ? " ok" : ""), text: c.official_ready ? "official fence PASSES" : "EXPLORATORY \\u2014 official fence not passed" }));
+  head.append(h("span", { class: "spacer" }),
+    h("span", { class: "chip click" + (only ? " on" : ""), tabindex: "0", text: "only disagreements (" + c.summary.disagreements + ")" + (only ? " \\u2715" : ""),
+      onclick: () => setParam("only", only ? null : "disagreements") }));
+  app.append(head);
+  const sm = h("div", { class: "toolbar card" });
+  sm.append(h("span", { class: "dim", text: "holdout: " }),
+    h("b", { text: c.arm_a + " " + c.summary.holdout.a_only + " \\u00b7 " + c.arm_b + " " + c.summary.holdout.b_only +
+      " \\u00b7 both " + c.summary.holdout.both + " \\u00b7 neither " + c.summary.holdout.neither }),
+    h("span", { class: "dim", text: "\\u2003judge (ADVISORY): " }),
+    h("b", { text: "A " + c.summary.judge.a + " \\u00b7 B " + c.summary.judge.b + " \\u00b7 tie " + c.summary.judge.tie +
+      " \\u00b7 cant " + c.summary.judge.cant + " \\u00b7 unjudged " + c.summary.judge.unjudged }));
+  app.append(sm);
+  const pairs = c.pairs.filter(p => !only || p.disagreement);
+  if (!pairs.length) app.append(h("div", { class: "card empty", text: only ? "No disagreements \\u2014 arms agree on every pair." : "No complete pairs yet (both arms must have a trial per task/rep)." }));
+  for (const p of pairs) {
+    const card = h("div", { class: "card" });
+    const bar = h("div", { class: "toolbar" });
+    bar.append(h("b", { text: p.task_id + " \\u00b7 rep " + p.repetition }),
+      h("span", { class: "chip " + (p.a.holdout_pass ? "ok" : "bad"), text: c.arm_a + " holdout " + (p.a.holdout_pass === null ? "\\u2014" : (p.a.holdout_pass ? "\\u2713" : "\\u2715")) }),
+      h("span", { class: "chip " + (p.b.holdout_pass ? "ok" : "bad"), text: c.arm_b + " holdout " + (p.b.holdout_pass === null ? "\\u2014" : (p.b.holdout_pass ? "\\u2713" : "\\u2715")) }));
+    if (p.judge) bar.append(h("span", { class: "chip", text: "judge: " + p.judge.winner + " (ADVISORY)" }));
+    if (p.disagreement) bar.append(h("span", { class: "chip", text: "disagreement" }));
+    card.append(bar);
+    const diff = h("div", { class: "diff2" });
+    const left = h("div", {}, h("div", { class: "code" })), right = h("div", {}, h("div", { class: "code" }));
+    for (const seg of p.segments) {
+      if (seg.op === "equal") { left.firstChild.append(seg.a); right.firstChild.append(seg.b); }
+      else {
+        if (seg.a) left.firstChild.append(h("span", { class: "del", text: seg.a }));
+        if (seg.b) right.firstChild.append(h("span", { class: "add", text: seg.b }));
+      }
+    }
+    if (!p.segments.length) { left.firstChild.textContent = "(empty workspace diff)"; right.firstChild.textContent = "(empty workspace diff)"; }
+    diff.append(left, right);
+    card.append(diff);
+    if (p.judge && p.judge.reason) card.append(h("div", { class: "dim3", style: "margin-top:6px", text: "judge reason: " + p.judge.reason }));
+    app.append(card);
   }
 }
 
-function renderFeed() {
-  const ul = $("feed");
-  ul.textContent = "";
-  for (const ev of feed.slice(-FEED_MAX).reverse()) {
-    const li = document.createElement("li");
-    const ts = document.createElement("span"); ts.className = "ts";
-    ts.textContent = ((ev.provenance || {}).ts || "").replace("T", " ").slice(0, 19);
-    const kind = document.createElement("span"); kind.className = "kind";
-    kind.textContent = ev.event || "?";
-    const what = document.createElement("span");
-    what.textContent = summarize(ev);
-    li.append(ts, kind, what);
-    ul.appendChild(li);
+function renderFindings(app) {
+  const st = expState(S.route.exp);
+  const f = st.fence;
+  if (!f) { app.append(h("div", { class: "empty", text: "checking the fence\\u2026" })); return; }
+  const card = h("div", { class: "card" });
+  card.append(h("h2", { text: "Official fence" }),
+    h("div", { style: "margin-bottom:8px" }, h("span", { class: "chip" + (f.official_ready ? " ok" : ""),
+      text: f.official_ready ? "\\u2713 official render available" : "official render refused \\u2192 exploratory only" })));
+  const ul = h("ul", { class: "fence" });
+  for (const item of f.items) {
+    const mark = { ok: "\\u2713", failed: "\\u2715", unchecked: "\\u25cb" }[item.state] || "?";
+    const cls = { ok: "chip ok", failed: "chip bad", unchecked: "chip" }[item.state];
+    ul.append(h("li", {}, h("span", { class: cls, text: mark + " " + item.state }),
+      h("b", { text: item.name }), h("span", { class: "dim3", text: item.detail || "" })));
   }
+  card.append(ul);
+  app.append(card);
+  const art = h("div", { class: "card" });
+  art.append(h("h2", { text: "Rendered artifacts (read-only)" }));
+  const names = ["findings.json", "findings.exploratory.dossier.html", "findings.official.dossier.html",
+                 "findings.exploratory.md", "findings.official.md"];
+  const bar = h("div", { class: "toolbar" });
+  for (const name of names)
+    bar.append(h("button", { class: "btn", text: name, onclick: () =>
+      window.open("/artifact?exp=" + encodeURIComponent(S.route.exp) + "&name=" + encodeURIComponent(name), "_blank") }));
+  art.append(bar, h("div", { class: "dim3", style: "margin-top:8px",
+    text: "buttons open the artifact if analyze has rendered it (404 otherwise, honestly); the dossier is its own self-contained record" }));
+  app.append(art);
 }
 
-async function poll() {
-  try {
-    const s = await (await fetch("/api/status")).json();
-    renderStatus(s);
-    const page = await (await fetch("/api/events?offset=" + cursor)).json();
-    if (page.events) {
-      cursor = page.next_offset;
-      if (page.events.length) { feed.push(...page.events); renderFeed(); }
-    }
-    setChip($("conn"), "live \\u00b7 " + new Date().toLocaleTimeString(), "ok");
-  } catch (e) {
-    setChip($("conn"), "server unreachable \\u2014 retrying", "bad");
-  } finally {
-    setTimeout(poll, POLL_MS);
-  }
+/* ------------------------------------------------------------------ render */
+function render() {
+  renderBar();
+  const app = document.getElementById("app");
+  app.textContent = "";
+  const r = S.route;
+  if (r.screen === "home") renderHome(app);
+  else if (r.screen === "exp") renderExp(app);
+  else if (r.screen === "trials") renderTrials(app);
+  else if (r.screen === "trial") renderTrial(app);
+  else if (r.screen === "compare") renderCompare(app);
+  else if (r.screen === "findings") renderFindings(app);
 }
-poll();
+
+/* ------------------------------------------------------------------ hover pause */
+// Delegated, because renders replace the feed node: the pause state follows
+// wherever the pointer actually is, not a listener on a node that may be gone.
+document.addEventListener("mouseover", (e) => {
+  const inFeed = !!(e.target && e.target.closest && e.target.closest("#feedbox"));
+  if (inFeed !== S.paused) {
+    S.paused = inFeed;
+    if (!inFeed) S.newCount = 0;
+    render();
+  }
+});
+
+/* ------------------------------------------------------------------ keyboard */
+document.addEventListener("keydown", (e) => {
+  if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+  const r = S.route;
+  const lists = { home: () => S.experiments || [], trials: () => applyFacets(deriveTrials(expState(r.exp)), r.params) };
+  if (e.key === "j" || e.key === "k") {
+    const rows = (lists[r.screen] || (() => []))();
+    if (!rows.length) return;
+    // trials selection lives in the URL (deep-linkable panel, D002); derive the
+    // current index from the sel param — S.sel resets on every hash change.
+    let idx = r.screen === "trials"
+      ? rows.findIndex(t => t.trial_id === r.params.get("sel"))
+      : S.sel;
+    idx = Math.max(0, Math.min(rows.length - 1, idx + (e.key === "j" ? 1 : -1)));
+    S.sel = idx;
+    if (r.screen === "trials") setParam("sel", rows[idx].trial_id); else render();
+  } else if (e.key === "Enter") {
+    if (r.screen === "home" && (S.experiments || [])[S.sel]) nav("#/exp/" + encodeURIComponent(S.experiments[S.sel].name));
+    else if (r.screen === "trials") {
+      const sel = r.params.get("sel");
+      if (sel) nav("#/exp/" + encodeURIComponent(r.exp) + "/trial/" + encodeURIComponent(sel));
+    }
+  } else if (e.key === "Escape") {
+    if (r.screen === "trials" && r.params.get("sel")) setParam("sel", null);
+    else if (r.screen === "trial") nav("#/exp/" + encodeURIComponent(r.exp) + "/trials");
+    else if (r.screen !== "home" && r.exp) nav(r.screen === "exp" ? "#/experiments" : "#/exp/" + encodeURIComponent(r.exp));
+  }
+});
+
+/* ------------------------------------------------------------------ boot */
+window.addEventListener("hashchange", () => { S.route = parseHash(); S.sel = 0; render(); refresh(); });
+S.route = parseHash();
+refresh();
 </script>
 </body>
 </html>
