@@ -61,6 +61,30 @@ def test_jd9_bench_judge_verb_judges_graded_comparisons(tmp_path):
     assert runner.invoke(app, ["verify-chain", str(ledger)]).exit_code == 0
 
 
+def test_jd9_bench_judge_is_idempotent(tmp_path):
+    """Re-running `bench judge` appends zero new verdicts (7A-4).
+
+    Judging iterated every comparison unconditionally; a second run doubled
+    the verdict set, inflating calibration/preference statistics. One verdict
+    per comparison, per the verb's contract.
+    """
+    expdir = tmp_path / "exp"
+    ledger = _setup(expdir)
+    ctx = fixed_ctx(experiment_id="exp")
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-a", task_id="t1", arm="control", passed=True)
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-b", task_id="t1", arm="treatment", passed=False)
+
+    r1 = runner.invoke(app, ["judge", str(expdir)])
+    assert r1.exit_code == 0, r1.output
+    after_first = find_events(ledger, "judge_verdict")
+    assert len(after_first) == 1
+
+    r2 = runner.invoke(app, ["judge", str(expdir)])
+    assert r2.exit_code == 0, r2.output
+    after_second = find_events(ledger, "judge_verdict")
+    assert len(after_second) == 1  # zero new verdicts on re-run
+
+
 def _seed_trial_with_workspace(ledger, ctx, *, trial_id, task_id, arm, workspace, passed):
     """Seed one trial whose artifacts_path points at a real on-disk workspace, so
     the judge assembles a diff from actual files."""

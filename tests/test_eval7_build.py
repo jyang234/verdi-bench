@@ -73,6 +73,31 @@ def test_rv3_review_build_records_response_map(tmp_path):
     assert runner.invoke(app, ["verify-chain", str(ledger)]).exit_code == 0
 
 
+def test_rv3_review_build_is_idempotent(tmp_path):
+    """Re-running `review build` appends zero new packet events and re-renders
+    a byte-identical packet (7A-4).
+
+    Build re-recorded review_packet_built per comparison; a second run doubled
+    the packet events. The re-run reuses the ledgered response_map, so the
+    rendered packet matches the ledgered blinding state exactly.
+    """
+    expdir = tmp_path / "exp"
+    ledger = _setup_judged(expdir)
+
+    r1 = runner.invoke(app, ["review", "build", str(expdir)])
+    assert r1.exit_code == 0, r1.output
+    built_first = find_events(ledger, "review_packet_built")
+    assert len(built_first) == 1
+    packet_first = (expdir / "review_packet.html").read_text(encoding="utf-8")
+
+    r2 = runner.invoke(app, ["review", "build", str(expdir)])
+    assert r2.exit_code == 0, r2.output
+    built_second = find_events(ledger, "review_packet_built")
+    assert len(built_second) == 1  # zero new packet events
+    packet_second = (expdir / "review_packet.html").read_text(encoding="utf-8")
+    assert packet_second == packet_first  # byte-identical re-render
+
+
 def test_rv2_rv6_reveal_and_guess_from_recorded_map(tmp_path):
     """Reveal discloses the REAL arm identities from the recorded map (not a
     hardcoded arm_a/arm_b), and actual_arm is supplied so guess accuracy is a

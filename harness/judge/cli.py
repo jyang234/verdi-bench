@@ -31,7 +31,9 @@ def register(app: typer.Typer) -> None:
             assert_task_commitment,
             load_task_dicts,
         )
+        from ..ledger import events
         from ..ledger.events import EventContext
+        from ..ledger.query import find_events
         from ..plan.lock import assert_lock
         from ..schema.experiment import ExperimentSpec
         from ..review.calibrate import calibration_from_spec
@@ -70,7 +72,18 @@ def register(app: typer.Typer) -> None:
         ctx = EventContext(experiment_id=experiment_dir.name)
 
         comparisons = comparisons_from_ledger(ledger_path, spec, task_classes=task_classes)
+        # 7A-4: idempotent — one verdict per comparison. A re-run must not append
+        # a duplicate verdict set (which would inflate calibration/preference
+        # statistics); skip comparisons that already carry a judge_verdict,
+        # mirroring process score's `already` skip.
+        already = {
+            ev["verdict"]["comparison_id"]
+            for ev in find_events(ledger_path, events.JUDGE_VERDICT)
+        }
+        judged = 0
         for cmp in comparisons:
+            if cmp.comparison_id in already:
+                continue
             packet = build_packet(
                 cmp.response_a, cmp.response_b,
                 task_prompt=prompts.get(cmp.task_id, ""),
@@ -82,7 +95,8 @@ def register(app: typer.Typer) -> None:
                 comparison_id=cmp.comparison_id, task_class=cmp.task_class,
                 arm_map=cmp.arm_map, task_id=cmp.task_id,
             )
-        typer.echo(f"judged {len(comparisons)} comparison(s)")
+            judged += 1
+        typer.echo(f"judged {judged} comparison(s)")
 
         # Thread the locked EscalationConfig through calibration [JD-9, D006]:
         # per-class kappa against any human verdicts, through the D003 IPW seam

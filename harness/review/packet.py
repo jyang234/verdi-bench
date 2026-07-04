@@ -73,6 +73,12 @@ def build_review_packet(
     order (disagreements first); the packet does not disclose that ordering's
     reason.
     """
+    # Determinism: ``difflib.HtmlDiff`` numbers its table/anchor ids from a
+    # *process-global* counter (``_default_prefix``) that increments on every
+    # ``make_table`` call, so the same packet rendered twice in one process
+    # produced different ids. Reset it per build — ids then depend only on the
+    # item order within this packet, making the render byte-reproducible (7A-4).
+    difflib.HtmlDiff._default_prefix = 0
     sections: list[str] = []
     for item in items:
         prompt = html.escape(blind_scrub(item.task_prompt, canaries))

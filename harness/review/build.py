@@ -16,6 +16,7 @@ from ..ledger import events
 from ..ledger.events import EventContext
 from ..plan.seeds import sub_seed
 from .packet import ReviewPacketItem, ReviewResponse, build_review_packet
+from .record import review_packet_built_for
 from .sample import comparisons_from_ledger as records_from_ledger
 from .sample import select_for_review
 
@@ -59,20 +60,27 @@ def build_review(ledger_path, spec, task_dicts, ctx: EventContext, *, seed: int)
                     "silently drop it from the reviewed set [EVAL-7 AC-2]"
                 )
             continue
-        if _swap(seed, sel.comparison_id):
-            first_arm, first, second_arm, second = (
-                arm_b.name, cmp.response_b, arm_a.name, cmp.response_a
-            )
+        # 7A-4: idempotent — one review_packet_built per comparison. If the
+        # comparison already has a recorded packet event, reuse its ledgered
+        # response_map (the authoritative blinding state) and append nothing, so
+        # a re-run renders a byte-identical packet with zero new events. Only a
+        # never-built comparison computes a fresh order and records it.
+        existing = review_packet_built_for(ledger_path, sel.comparison_id)
+        if existing is not None:
+            response_map = existing["response_map"]
         else:
-            first_arm, first, second_arm, second = (
-                arm_a.name, cmp.response_a, arm_b.name, cmp.response_b
+            if _swap(seed, sel.comparison_id):
+                response_map = {"1": arm_b.name, "2": arm_a.name}
+            else:
+                response_map = {"1": arm_a.name, "2": arm_b.name}
+            events.record_review_packet_built(
+                ledger_path, ctx,
+                comparison_id=sel.comparison_id, task_id=cmp.task_id,
+                task_class=cmp.task_class, response_map=response_map, seed=seed,
             )
-        response_map = {"1": first_arm, "2": second_arm}
-        events.record_review_packet_built(
-            ledger_path, ctx,
-            comparison_id=sel.comparison_id, task_id=cmp.task_id,
-            task_class=cmp.task_class, response_map=response_map, seed=seed,
-        )
+        # Map the recorded Response-1/2 arm names back to their trial responses.
+        by_arm = {arm_a.name: cmp.response_a, arm_b.name: cmp.response_b}
+        first, second = by_arm[response_map["1"]], by_arm[response_map["2"]]
         items.append(
             ReviewPacketItem(
                 comparison_id=sel.comparison_id,
