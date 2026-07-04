@@ -222,3 +222,64 @@ the corpus size (recorded deferral).
   `review build` idempotency guards; add the daemon-down exit-1 → transient
   reclassification; record explicit accept-or-fix decisions for the §4.3 list;
   then resolve EVAL-1-D008 before any official run.
+
+## Appendix — Phase 7 disposition
+
+*Appended 2026-07-04, after Phase 7 merged (PR #15, `4d6d645`), per the Phase 7
+exit criterion that this document — the register of record — state each open
+item's terminal disposition. The item-by-item audit backing this table is
+`verdi-bench-phase-7-readiness-assessment.md` §2; commits cite the merged
+history.*
+
+Every row of the Phase 7 disposition map is terminally dispositioned: a fix
+with an owning test that fails on regression, an owning test alone (for
+real-but-unowned fixes), or a recorded decision event.
+
+| Item | Disposition | Owner |
+|---|---|---|
+| PL-13 truncated-final-line append | fix + test (`31489b9`) | `test_eval3_chain.py` (byte-identical refusal) |
+| `bench anchor` fail-open (§4.4-2) | fix + test (`1f35f44`) | `test_eval3_cli.py` (exit 1, nothing written) |
+| `bench plan` unverified append (§4.4-2) | fix + test (`1f35f44`) | `test_eval3_lock.py` |
+| judge / review build re-run duplication (§4.4-1) | fix + tests (`5e77e84`) | `test_eval2_cli.py`, `test_eval7_build.py`; e2e composition owned by `test_e2e_pipeline.py::test_fake_pipeline_rerun_yields_byte_identical_analysis_inputs` (added post-merge, gap §3.3 of the readiness assessment) |
+| GR-8/GR-11 daemon-down misclassification | fix + tests (`8039108`) | `test_eval5_container.py`, `test_eval5_grade.py` |
+| terminal-override recourse (D-P7-2) | fix + tests (`b3a7634`) | `test_eval5_grade.py`, `test_e2e_pipeline.py`; official-render disclosure assertion added post-merge (`test_eval6_analyze.py::test_dp7_2_override_disclosure_in_official_render`, gap §3.4) |
+| `grader` stamp write-only / ADVISORY hole (§4.4-7) | fix + test (`bc4e998`) | `test_eval6_analyze.py` |
+| GR-13 owning test | test (`bc4e998`) | `test_eval5_baseline.py` |
+| PL-9 validation duplication | fix + tests (`4cea334`) | `test_eval3_schema.py` (both loader paths) |
+| PL-10 duplicate arm names (D-P7-1) | fix + test (`4cea334`) | `test_eval3_schema.py` (`ArmNameError`) |
+| PL-11 `==` in rule DSL | fix + test (`4cea334`) | `test_eval3_schema.py` |
+| GR-12 `actor="unknown"` ×7 (D-P7-7) | fix + tests (`c3c7f28`) | `test_eval_phase7_actor.py` |
+| RN-18 inert `--concurrency` (D-P7-5) | removal (`b9d445a`) | grep-clean; README enforced by `test_readme_consistency.py` |
+| JD-10 key in URL | fix + test (`8e9eba1`) | `test_eval2_providers.py` |
+| RN-17 corrupt telemetry | fix + test (`7df1126`) | `test_eval4_harbor_request.py` |
+| PR-9 vendor-overlap + context gate | fix + tests (`d9594aa`) | `test_eval9_process.py`, `test_eval2_providers.py` |
+| rubric not lock-committed (§4.4-8, D-P7-6) | fix + tests (`9ea8dc7`) | `test_eval_phase7_rubric.py`, `test_eval6_analyze.py` (fence + legacy caveat) |
+| RV-9 join asymmetry; integrity-less calibration | fix + tests (`98c9954`) | `test_eval7_review.py` |
+| RV-7 ordering + stale docstrings | test + docs (`4a5e47f`) | `test_eval7_review.py` (delete-the-shuffle fails) |
+| RV-8(c) reference note | spec note (`4a5e47f`) | `eval7.spec.md` |
+| RV-3 `kappa_report` unrendered / EVAL-7 D003 | fix + test (`73acce1`) | `test_eval7_calibrate.py`; D003 `resolved` in `eval7.decisions.ndjson` |
+| CO-7 self-approval label bypass (§4.4-3, D-P7-3) | fix + tests (`fd892a8`) | `test_eval8_corpus.py` (relabel probe refused) |
+| D-1 actions + D002 clarification | docs + decision event (`607dca2`) | `test_eval6_analyze.py` (both renders); `eval2.decisions.ndjson` |
+| XC-7 README Usage + consistency test | fix + strengthened test (`b0f8d0d`) | `test_readme_consistency.py` (two-direction) |
+| §6 stale rows, N-3 drift, stale docstrings, `shutil`×3, AN-11 | docs + decision events (`5b5cb7e`) | consolidated review §6; `eval8`/`eval3`/`eval6` decisions files |
+| package-`__init__` import blind spot (§4.4-4) | fix + planted-violation test (`96734cd`) | `test_eval4_seam.py` (AST member names own the channel; the import-linter source extension was verified unable to catch it — plan judgment call §5-7) |
+| CI docker all-skip green (§4.4-5) | fix + guard test (`d6107f1`) | `ci.yml` `VERDI_REQUIRE_DOCKER=1`; `test_eval_phase7_ci_guard.py` |
+| owning tests: AN-1 swapped frame, AN-10 `n_boot`, arm-payload canary, RN-15, RN-16 | tests (`4fefefb`) | `test_eval6_analyze.py`, `test_eval4_insulation.py`, `test_eval4_interleave.py` |
+| EVAL-1-D008 selfcheck + official gate | feature + fence (`72e4155`, tightened `90e2a16`) | `test_eval_phase7_selfcheck.py`; D008 `resolved` + `amended` in `eval1.decisions.ndjson` |
+
+Not reopened (recorded decisions stand): CO-2/CO-9 opt-in gating, metering-
+proxy unit coverage, JD-13 deterministic labels, CIMethod/`fractional_score`,
+quarantine keying, judge packet content.
+
+Residue judgments recorded here for the register:
+
+- **"outcome-blind" wording**: fixed in the live docs (master plan §1, README,
+  and — post-merge — `CLAUDE.md`). The term is deliberately retained in the
+  frozen pre-registered specs (`eval1/2/9.spec.md`) and the historical
+  implementation plans: retro-editing pre-registered documents would be a
+  worse defect than the stale term. Grep for "outcome-blind" is expected to
+  hit only those frozen documents and the audit-history docs.
+- The 2026-07-04 readiness assessment (`verdi-bench-phase-7-readiness-
+  assessment.md`) found four exit-criteria gaps; all four are closed by the
+  same change series that adds this appendix (this appendix itself closes
+  §3.1).
