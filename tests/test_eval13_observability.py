@@ -524,3 +524,51 @@ def test_ac7_observability_contracts_and_no_entrypoints():
         assert "observability-llm-free" in result.stdout or "Read-only observability" in result.stdout, result.stdout
     finally:
         module.write_text(original, encoding="utf-8")
+
+
+def test_m_t2_status_refuses_nonexistent_directory(tmp_path):
+    """F-M-T2: `bench status <typo>` previously rendered a plausible healthy
+    'chain OK (empty)' snapshot named after the typo'd basename. A directory
+    that does not exist must refuse (exit 2); an existing directory with no
+    ledger still legitimately renders the empty state."""
+    from harness.cli import app
+
+    runner = CliRunner()
+    r = runner.invoke(app, ["status", str(tmp_path / "no-such-exp")])
+    assert r.exit_code == 2
+    assert "no such experiment directory" in (r.output + (r.stderr or ""))
+
+    empty = tmp_path / "real-but-empty"
+    empty.mkdir()
+    r2 = runner.invoke(app, ["status", str(empty)])
+    assert r2.exit_code == 0
+    assert "chain    OK" in r2.output
+
+
+def test_m_i1_same_size_tamper_with_restored_mtime_fails_closed(tmp_path):
+    """F-M-I1: the verify-cache key is a content hash. A same-size rewrite with
+    os.utime() restoring the mtime defeated the old (size, mtime_ns) signature —
+    a warmed cache kept serving tampered events with a stale ok verdict."""
+    import os
+
+    ledger = _fixture_experiment(tmp_path)
+    srv, thread, base = _serve(tmp_path)
+    try:
+        urllib.request.urlopen(base + "/api/events")  # warm the verify cache
+
+        st = ledger.stat()
+        data = ledger.read_bytes()
+        # same-size corruption: swap one byte inside a recorded value
+        idx = data.index(b'"event":"')
+        tampered = data[:idx + 9] + bytes([data[idx + 9] ^ 0x01]) + data[idx + 10:]
+        assert len(tampered) == len(data) and tampered != data
+        ledger.write_bytes(tampered)
+        os.utime(ledger, ns=(st.st_atime_ns, st.st_mtime_ns))  # restore mtime
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(base + "/api/events")
+        assert excinfo.value.code == 409
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=5)

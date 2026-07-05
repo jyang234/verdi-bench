@@ -21,6 +21,7 @@ rewrite evidence) is 409, distinct from a merely malformed offset (400).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -72,7 +73,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
     experiment_dir: Optional[Path]  # single mode (bound by make_server)
     workspace_root: Optional[Path]  # root mode (bound by make_server)
     corpus_manifest = None  # optional CorpusManifest for the fence items
-    _verify_cache: dict = {}  # (path -> ((size, mtime_ns), ChainResult)) [PRA-M10]
+    _verify_cache: dict = {}  # (path -> (content_sha256, ChainResult)) [PRA-M10/F-M-I1]
 
     server_version = "verdi-bench-observer"
     sys_version = ""
@@ -161,7 +162,8 @@ class ObserverHandler(BaseHTTPRequestHandler):
     def _verified_dir(self, q: dict) -> Path:
         """Resolve the target dir AND fail closed on a broken chain, so no
         ledger-reading route renders tampered events [PRA-M10]. The verify verdict
-        is cached by (size, mtime) so the hot path stays O(1)."""
+        is cached by CONTENT hash [F-M-I1], so the hot path pays one file read +
+        hash instead of a full chain re-verification."""
         d = self._dir(q)
         self._require_verified(d / "ledger.ndjson")
         return d
@@ -169,8 +171,11 @@ class ObserverHandler(BaseHTTPRequestHandler):
     def _require_verified(self, ledger: Path) -> None:
         if not ledger.exists():
             return  # absent ledger: nothing to be fooled by (matches assert_chain)
-        st = ledger.stat()
-        sig = (st.st_size, st.st_mtime_ns)
+        # F-M-I1: key the cached verdict on the ledger BYTES. The old
+        # (st_size, st_mtime_ns) signature was defeated by a same-size rewrite
+        # plus os.utime(), serving tampered events from a stale ok verdict; a
+        # byte-identical file is by definition the one that verified.
+        sig = hashlib.sha256(ledger.read_bytes()).hexdigest()
         key = str(ledger)
         entry = ObserverHandler._verify_cache.get(key)
         if entry is None or entry[0] != sig:
