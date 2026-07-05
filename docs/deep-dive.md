@@ -163,12 +163,18 @@ the harness alone can guarantee. The host-side defenses — nonce authentication
 plus the single-fence ambiguity check — are necessary but not sufficient on
 their own: the grader image must run agent-executing tests in a **subprocess
 whose environment scrubs `VERDI_FENCE_NONCE`** so agent code cannot read the
-nonce and emit a competing valid fence (the shipped plugin entrypoint,
-`harness/grade/run_plugin.py`, models the env-scrub half by deleting the nonce
-before any plugin runs). A grader image that leaks the nonce to agent-executing
-code re-opens the forge-a-single-fence path the nonce exists to close. Treat the
-grader image as a trusted component you build and validate, exactly as
-`deploy/metering-proxy/` is for egress.
+nonce and emit a competing valid fence. The scrub must be a *subprocess* one:
+dropping the variable from the current process's `os.environ` is not enough,
+because `unsetenv` does not clear `/proc/self/environ` (served from the
+exec-time block), so in-process or already-forked code can still recover the
+value — genuine isolation means launching the agent-executing code with a
+scrubbed `env=` so its own exec-time environment never held the nonce. (The
+shipped plugin entrypoint, `harness/grade/run_plugin.py`, only drops the
+variable from `os.environ` — a shallow defense-in-depth that suffices there
+because it runs trusted verdi graders, not agent code.) A grader image that
+leaks the nonce to agent-executing code re-opens the forge-a-single-fence path
+the nonce exists to close. Treat the grader image as a trusted component you
+build and validate, exactly as `deploy/metering-proxy/` is for egress.
 
 ### 2.5 `bench judge` — the blinded advisory tier
 

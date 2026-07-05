@@ -12,12 +12,16 @@ just does the work.
 
 Nonce discipline [F-H1 follow-up]: the host injects a per-grade
 ``VERDI_FENCE_NONCE`` that must be stamped into the fence marker. This entrypoint
-reads it and immediately ``del``etes it from the environment BEFORE running any
-plugin, so plugin code (which may import agent-controlled workspace content)
-cannot read the nonce and forge a competing fence. The stronger form of this
-discipline — running agent-executing code in a separate subprocess whose
-environment is scrubbed — is the grader-image contract documented in
-docs/deep-dive.md §2.4; this reference emitter models the env-scrub half.
+reads it and drops it from ``os.environ`` before running any plugin — but that
+is only a SHALLOW scrub: ``unsetenv`` does not clear ``/proc/self/environ``
+(the kernel serves that from the exec-time environment block), so in-process or
+already-forked code can still recover the value there. That is acceptable here
+because the plugins this entrypoint runs are trusted, verdi-authored graders,
+not agent code. The genuine protection for the holdout tier — where the grader
+DOES execute agent code — is to run that code in a separate subprocess launched
+with a scrubbed ``env=`` so the child's own exec-time environment never contains
+the nonce; that is the grader-image contract documented in docs/deep-dive.md
+§2.4. The ``pop`` below is defense-in-depth, not the guarantee.
 """
 
 from __future__ import annotations
@@ -37,8 +41,10 @@ _WORKSPACE = Path("/workspace")
 
 def main(argv: list[str]) -> int:
     plugin_ids = argv[1:]
-    # Read and scrub the nonce before any plugin (hence any agent-controlled
-    # code) runs, so it cannot be read back out of the environment.
+    # Drop the nonce from os.environ before running plugins (defense-in-depth;
+    # plugins here are trusted verdi code). This is a SHALLOW scrub — it does
+    # not clear /proc/self/environ — so it is not by itself a barrier against
+    # untrusted in-process code; that requires subprocess isolation (§2.4).
     nonce = os.environ.pop(NONCE_ENV, None)
     data = json.loads(_TASK_MOUNT.read_text(encoding="utf-8")) if _TASK_MOUNT.exists() else {}
     task = GradeTask(
