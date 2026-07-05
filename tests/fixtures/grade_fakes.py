@@ -22,14 +22,23 @@ class ScriptedGradeRunner:
 
 
 class SeqGradeRunner:
-    """Yields a sequence of outputs across k calls (for flake baselines)."""
+    """Yields a sequence of outputs across k calls (for flake baselines).
+
+    F-L12: exhaustion RAISES instead of silently replaying the last item — a
+    replay can hide a miscounted or under-scripted test (the FakeProvider
+    RN-18 precedent)."""
 
     def __init__(self, outputs: list[dict]):
         self.outputs = list(outputs)
         self.calls = 0
 
     def run_holdouts(self, cmd, workspace, holdouts_dir) -> HoldoutRun:
-        out = self.outputs[min(self.calls, len(self.outputs) - 1)]
+        if self.calls >= len(self.outputs):
+            raise AssertionError(
+                f"SeqGradeRunner exhausted: call {self.calls + 1} but only "
+                f"{len(self.outputs)} output(s) scripted [F-L12]"
+            )
+        out = self.outputs[self.calls]
         self.calls += 1
         return HoldoutRun(out)
 
