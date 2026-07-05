@@ -75,3 +75,36 @@ def test_verify_against_anchor_detects_rewrite(tmp_path):
     result = verify_against_anchor(ledger, anchors)
     assert not result.ok
     assert "rewritten" in result.detail
+
+
+def test_m_o8_empty_anchor_store_fails_closed(tmp_path):
+    """F-M-O8: an existing-but-empty anchor store previously verified ok
+    ('0 anchor(s) verified') — truncating the store converted the cross-check
+    into a pass. Zero checkable anchors now refuses."""
+    ledger = tmp_path / "l.ndjson"
+    record_chain_anchor(ledger, _ctx(), head_hash="0" * 64, height=0)
+    store = tmp_path / "anchors.ndjson"
+    store.write_text("", encoding="utf-8")
+    res = verify_against_anchor(ledger, store)
+    assert res.ok is False
+    assert "no checkable anchors" in res.detail
+
+
+def test_m_o8_corrupt_anchor_line_is_a_verdict_not_a_crash(tmp_path):
+    """F-M-O8: a torn/corrupt anchor line (exactly what an unsynced append can
+    produce) previously escaped as json.JSONDecodeError from the audit verb.
+    It is now a False verdict naming the line."""
+    ledger = tmp_path / "l.ndjson"
+    record_chain_anchor(ledger, _ctx(), head_hash="0" * 64, height=0)
+    store = tmp_path / "anchors.ndjson"
+    write_anchor(store, anchor_record(ledger, ts="t"))
+    store.write_text(store.read_text(encoding="utf-8") + '{"height": 1, "head_ha',
+                     encoding="utf-8")  # torn tail
+    res = verify_against_anchor(ledger, store)
+    assert res.ok is False
+    assert "corrupt at line 2" in res.detail
+
+    # a well-formed line with the wrong shape is likewise a verdict
+    store.write_text('{"not": "an anchor"}\n', encoding="utf-8")
+    res2 = verify_against_anchor(ledger, store)
+    assert res2.ok is False and "corrupt at line 1" in res2.detail
