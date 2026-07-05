@@ -199,3 +199,28 @@ def test_scan_or_merges_repetitions(tmp_path):
                 artifacts_path=_workspace(tmp_path, "ws2", solution=_INDEPENDENT))
     report = scan_trials(ledger, refs)
     assert report.overlap_flags == {"control": {"task0": True}}
+
+
+def test_m_c3_quarantined_trial_is_skipped_disclosed(tmp_path):
+    """F-M-C3 resolution path: a forensically-quarantined trial (a ledgered
+    human disposition) is excluded from the scan — disclosed, never silent —
+    so quarantining an intentional/false-positive holdout leak and re-running
+    scan+probe legitimately clears the insulation fence."""
+    from harness.ledger.events import record_forensic_quarantine
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    refs = {"task0": TaskReferences(holdouts=(_HOLDOUT,))}
+    leaky = _workspace(tmp_path, "ws-leak", solution=_HOLDOUT)
+    _seed_trial(ledger, ctx, trial_id="c-1", task_id="task0", arm="control",
+                artifacts_path=leaky)
+
+    before = scan_trials(ledger, refs)
+    assert before.alarms  # the leak alarms pre-quarantine
+
+    record_forensic_quarantine(ledger, ctx, trial_id="c-1",
+                               reason="intentional fixture leak")
+    after = scan_trials(ledger, refs)
+    assert after.alarms == []
+    (skip,) = after.skipped
+    assert "quarantined" in skip and "c-1" in skip

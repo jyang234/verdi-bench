@@ -91,6 +91,13 @@ class AsymmetricContaminationError(AnalyzeError):
     invalid; exploratory still renders, watermarked [EVAL-10 AC-5, D001]."""
 
 
+class InsulationAlarmError(AnalyzeError):
+    """Official render requested while the latest contamination probe carries a
+    holdout-leak insulation alarm [F-M-C3, EVAL-4 AC-9] — an insulation
+    VIOLATION that must be investigated (and, if intentional, resolved through
+    the ledgered quarantine ceremony + re-scan), never rendered past."""
+
+
 class CorrectionMismatchError(AnalyzeError):
     """Official render whose multi-arm correction differs from a prior official
     render's recorded correction [F-H7] — one experiment, one pre-registered
@@ -109,6 +116,7 @@ class CantAnalyzeReason(str, Enum):
     rubric_mismatch = "rubric_mismatch"
     selfcheck_required = "selfcheck_required"
     asymmetric_contamination = "asymmetric_contamination"
+    insulation_alarm = "insulation_alarm"
     correction_mismatch = "correction_mismatch"
     analyze_error = "analyze_error"
 
@@ -130,6 +138,7 @@ def cant_analyze_reason(exc: AnalyzeError) -> CantAnalyzeReason:
         RubricMismatchError: CantAnalyzeReason.rubric_mismatch,
         SelfcheckRequiredError: CantAnalyzeReason.selfcheck_required,
         AsymmetricContaminationError: CantAnalyzeReason.asymmetric_contamination,
+        InsulationAlarmError: CantAnalyzeReason.insulation_alarm,
         CorrectionMismatchError: CantAnalyzeReason.correction_mismatch,
     }.get(type(exc), CantAnalyzeReason.analyze_error)
 
@@ -1553,6 +1562,12 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
             f"{detail}. The pairing is invalid for these tasks; exploratory "
             "still renders, watermarked, with the full summary [EVAL-10 AC-5]"
         )
+    # 8. holdout-leak insulation alarms [F-M-C3, EVAL-4 AC-9]: an alarm on the
+    # latest ledgered probe is an insulation VIOLATION — holdout content
+    # reproduced in a solution — and refuses the official render until it is
+    # investigated: quarantine the offending trial (ledgered), re-run the scan
+    # (quarantined trials are skipped, disclosed) and the probe.
+    _assert_no_insulation_alarms(ledger_path)
     # 7. multi-arm correction consistency [F-H7]: one pre-registered decision
     # procedure per experiment. The policy lives in the sha-locked spec, so two
     # official renders cannot legitimately differ through the tool; this is
@@ -1560,6 +1575,20 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
     _assert_correction_consistent(
         (findings.multi_arm or {}).get("correction", "none"), ledger_path
     )
+
+
+def _assert_no_insulation_alarms(ledger_path) -> None:
+    """Refuse an official render while the latest probe carries insulation
+    alarms [F-M-C3]. Probes predating the recorded field simply lack it."""
+    alarms = (latest_probe(ledger_path) or {}).get("alarms") or []
+    if alarms:
+        detail = "; ".join(alarms)
+        raise InsulationAlarmError(
+            f"official render refused: {len(alarms)} holdout-leak insulation "
+            f"alarm(s) on the latest contamination probe — {detail}. Investigate; "
+            "if intentional, quarantine the trial (ledgered) and re-run "
+            "`bench contamination probe` [F-M-C3, EVAL-4 AC-9]"
+        )
 
 
 def _assert_correction_consistent(correction: str, ledger_path) -> None:

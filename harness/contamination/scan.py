@@ -112,12 +112,26 @@ def scan_trials(
         gev["trial_id"]: gev.get("workspace_sha256")
         for gev in find_events(ledger_path, events.GRADE)
     }
+    # F-M-C3: a forensically-quarantined trial is excluded from ANALYSIS by a
+    # ledgered human decision — the scan honors the same decision (disclosed,
+    # never silent), so quarantining an intentional/false-positive leak and
+    # re-running scan+probe is a real resolution path for the insulation fence.
+    quarantined = {
+        qev["forensic_quarantine"]["trial_id"]
+        for qev in find_events(ledger_path, events.FORENSIC_QUARANTINE)
+    }
     for ev in find_events(ledger_path, events.TRIAL):
         rec = ev["trial_record"]
         task_id, arm, trial_id = rec["task_id"], rec["arm"], rec["trial_id"]
         refs = references.get(task_id)
         if refs is None or not refs.measurable():
             continue  # nothing the agent could not have produced — unmeasurable
+        if trial_id in quarantined:
+            report.skipped.append(
+                f"trial {trial_id} (task {task_id}, arm {arm}): forensically "
+                "quarantined (ledgered) — excluded from the scan [F-M-C3]"
+            )
+            continue
         artifacts_path = rec.get("artifacts_path")
         ledgered_sha = workspace_sha_by_trial.get(trial_id)
         if ledgered_sha is not None and artifacts_path:

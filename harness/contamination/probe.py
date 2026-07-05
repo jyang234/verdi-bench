@@ -99,6 +99,8 @@ def run_memory_probe(
     provider: Optional[Provider] = None,
     threshold: Optional[float] = None,
     overlap_flags: Optional[Mapping[str, Mapping[str, bool]]] = None,
+    alarms: Optional[Sequence[str]] = None,
+    skipped: Optional[Sequence[str]] = None,
 ) -> dict:
     """Probe every arm model for training-set membership of ``tasks`` [AC-3].
 
@@ -134,6 +136,14 @@ def run_memory_probe(
             )
 
     base = {"threshold": resolved_threshold, "overlap_flags": overlap_flags}
+    # F-M-C3 (additive): the scan's insulation alarms and unscanned trials ride
+    # the SAME event as the overlap flags — previously stderr-only, so a
+    # holdout-leak breach or a wiped-workspace UNSCANNED trial evaporated and
+    # was indistinguishable from scanned-clean in every downstream summary.
+    if alarms is not None:
+        base["alarms"] = list(alarms)
+    if skipped is not None:
+        base["skipped"] = list(skipped)
     refused = _preflight(tasks)
     if refused is not None:
         probe = {"status": "cant_probe", **refused, **base}

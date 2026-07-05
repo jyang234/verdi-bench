@@ -201,3 +201,54 @@ def test_probe_refuses_unfingerprintable_oracle(tmp_path):
     assert probe["status"] == "cant_probe"
     assert probe["reason"] == "oracle_unfingerprintable"
     assert probe["task_id"] == "t1"
+
+
+def test_m_c3_alarms_and_skipped_ride_the_probe_event(tmp_path):
+    """F-M-C3: insulation alarms and unscanned trials were stderr-only — a
+    holdout-leak breach or a wiped-workspace trial evaporated, indistinguishable
+    from scanned-clean downstream. They now ride the ledgered probe event."""
+    ledger = tmp_path / "l.ndjson"
+    ev = run_memory_probe(
+        ledger, fixed_ctx(),
+        arms=[_arm("control")],
+        tasks=[ProbeTask(task_id="t1", task_sha=_SHA_A, prompt="p", has_canary=True)],
+        provider=FakeProvider(["nothing memorized"]),
+        alarms=["trial x: holdout leak"], skipped=["trial y: UNSCANNED"],
+    )
+    probe = ev["probe"]
+    assert probe["alarms"] == ["trial x: holdout leak"]
+    assert probe["skipped"] == ["trial y: UNSCANNED"]
+
+
+def test_m_c3_official_fence_refuses_on_insulation_alarm(tmp_path):
+    """F-M-C3: an insulation alarm on the latest probe is a violation that must
+    be resolved (quarantine + re-scan/probe) — never rendered past. Named
+    cant_analyze reason; probes predating the field are skipped."""
+    import pytest
+
+    from harness.analyze.report import (
+        CantAnalyzeReason,
+        InsulationAlarmError,
+        _assert_no_insulation_alarms,
+        cant_analyze_reason,
+    )
+
+    ledger = tmp_path / "l.ndjson"
+    run_memory_probe(  # legacy-shaped probe: no alarms field -> no refusal
+        ledger, fixed_ctx(), arms=[_arm("control")],
+        tasks=[ProbeTask(task_id="t1", task_sha=_SHA_A, prompt="p", has_canary=True)],
+        provider=FakeProvider(["nothing"]),
+    )
+    _assert_no_insulation_alarms(ledger)
+    run_memory_probe(
+        ledger, fixed_ctx(), arms=[_arm("control")],
+        tasks=[ProbeTask(task_id="t1", task_sha=_SHA_A, prompt="p", has_canary=True)],
+        provider=FakeProvider(["nothing"]),
+        alarms=["trial x: holdout leak"],
+    )
+    with pytest.raises(InsulationAlarmError, match="quarantine"):
+        _assert_no_insulation_alarms(ledger)
+    assert (
+        cant_analyze_reason(InsulationAlarmError("x"))
+        is CantAnalyzeReason.insulation_alarm
+    )

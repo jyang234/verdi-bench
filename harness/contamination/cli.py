@@ -131,6 +131,8 @@ def register(app: typer.Typer) -> None:
         )
 
         overlap_flags: dict[str, dict[str, bool]] = {}
+        scan_alarms: list[str] = []
+        scan_skipped: list[str] = []
         if scan_artifacts:
             try:
                 report = scan_trials(ledger_path, references, threshold=threshold)
@@ -142,12 +144,15 @@ def register(app: typer.Typer) -> None:
             for skip in report.skipped:
                 typer.echo(f"UNSCANNED: {skip}", err=True)
             overlap_flags = report.overlap_flags
+            scan_alarms = report.alarms
+            scan_skipped = report.skipped
 
         try:
             event = run_memory_probe(
                 ledger_path, ctx,
                 arms=spec.arms, tasks=tasks,
                 threshold=threshold, overlap_flags=overlap_flags,
+                alarms=scan_alarms, skipped=scan_skipped,
             )
         except (ProbeError, OverlapError) as e:
             typer.echo(str(e), err=True)

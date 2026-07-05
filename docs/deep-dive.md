@@ -260,7 +260,11 @@ A sibling integrity tier is the **contamination sentinel**
 (`harness/contamination/`, EVAL-10): deterministic cutoff dating of task
 content against each arm's model (an honest tri-state — `predates_cutoff`,
 `postdates_cutoff`, `unknown` — never a guess), canaries embedded at
-admission and carried as `sha256(canary)` only outside task content,
+admission and carried as `sha256(canary)` only outside task content
+(disclosed limitation [F-M-C1]: the canary derives from the *published*
+`task_sha`, so a motivated human can pre-derive and plant one to manufacture
+an asymmetric flag — a denial-of-finding resolved through the ledgered
+quarantine ceremony, not a false membership proof about models),
 membership probes ledgered as one **`contamination_probe`** event per run
 (`bench contamination probe`), and solution/holdout fingerprint-overlap
 scanning. Its fence coupling is deliberately asymmetric: flagged
