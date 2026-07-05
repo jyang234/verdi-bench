@@ -506,3 +506,20 @@ def test_process_score_refuses_tampered_chain(tmp_path):
     with pytest.raises(ChainIntegrityError):
         record_human_process_score("t1", r, scores, ledger_path=ledger, ctx=ctx,
                                    ts="t", scorer_id="human", comparison_id="cmp-1")
+
+
+def test_m_o3_missing_transcript_is_cant_score_never_fabricated(tmp_path):
+    """F-M-O3: an absent transcript reaches the scorer as an empty string; the
+    judge was previously asked to score it and fabricated per-dimension scores
+    from nothing — the exact thing the CLI docstring promises never happens.
+    Now: terminal CANT_SCORE(missing_transcript), one event, zero provider calls."""
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    r = _rubric()
+    fp = FakeProvider([json.dumps({"scores": {d: 3 for d in r.dimension_ids}})])
+    ps = score_trial_process("t1", "", r, ledger_path=ledger, ctx=ctx, ts="t",
+                             scorer_id="judge", provider=fp, spec=_SPEC)
+    assert all(s.is_cant_score for s in ps.scores)
+    assert all(s.cant_score_reason == "missing_transcript" for s in ps.scores)
+    assert fp.calls == []  # the judge is never asked to score nothing
+    assert len(find_events(ledger, "process_score")) == 1

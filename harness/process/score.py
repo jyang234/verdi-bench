@@ -63,6 +63,7 @@ class CantScoreReason(str, Enum):
     judge_declared = "judge_declared"  # the judge replied the instructed "CANT_SCORE"
     out_of_range = "out_of_range"
     human_cant = "human_cant"
+    missing_transcript = "missing_transcript"  # F-M-O3: absent/empty, never scored
 
 
 # PRA-M13: reasons a re-run should re-attempt — the scorer could not *run*
@@ -218,6 +219,12 @@ def score_trial_process(
             ProcessScore(trial_id=trial_id, rubric_version=rubric.rubric_version,
                          comparison_id=comparison_id, scores=scores, provenance=prov),
         )
+
+    # F-M-O3: a missing/empty transcript is fail-closed, exactly as the CLI
+    # docstring promises — the judge must never fabricate dimension scores from
+    # nothing. One event, no provider call.
+    if not transcript.strip():
+        return _score(_all_cant(rubric, CantScoreReason.missing_transcript))
 
     # PR-2: the redaction re-scan in build_process_packet raises RedactionLeakError;
     # it must fail closed to CANT_SCORE(redaction_leak) (mirroring judge's
