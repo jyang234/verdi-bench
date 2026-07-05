@@ -257,7 +257,10 @@ def test_docker_grade_real_container(tmp_path):
     from harness.grade.types import GradeTask
     from harness.ledger.events import EventContext
 
-    # A minimal grader image that writes a FAIL result — no shell escaping.
+    # A minimal grader image that emits a FAIL result on the V1 fenced stdout
+    # transport [F-H1] — the host reads no workspace file.
+    from harness.grade.container import RESULTS_FENCE_BEGIN, RESULTS_FENCE_END
+
     ctx_dir = tmp_path / "img"
     ctx_dir.mkdir()
     (ctx_dir / "results.json").write_text(
@@ -266,7 +269,8 @@ def test_docker_grade_real_container(tmp_path):
     (ctx_dir / "Dockerfile").write_text(
         "FROM busybox\n"
         "COPY results.json /results.json\n"
-        'CMD ["cp", "/results.json", "/workspace/holdout_results.json"]\n',
+        'CMD ["sh", "-c", '
+        f'"echo {RESULTS_FENCE_BEGIN}; cat /results.json; echo {RESULTS_FENCE_END}"]\n',
         encoding="utf-8",
     )
     image = "verdi-bench/grader-e2e:latest"

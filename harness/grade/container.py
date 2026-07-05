@@ -25,11 +25,21 @@ from typing import Optional, Protocol
 # install overrides — never the all-zeros non-digest it used to be [GR-4].
 DEFAULT_GRADER_IMAGE = "verdi-bench/grader:latest"
 
-# Filename the grader container writes its results to inside /workspace. An
-# agent-written file of this name in its own workspace must never be trusted as
-# grader output — the docker runner grades a fresh copy with any pre-existing
-# copy of this file removed [GR-1].
+# Filename the LOCAL (no-daemon, ADVISORY) runner reads its results from inside
+# the workspace. The docker path no longer reads any workspace file [F-H1] —
+# results ride the fenced stdout transport below — but any pre-existing copy is
+# still removed from the fresh grading copy [GR-1], and the name stays excluded
+# from the judge/scanner solution walks.
 HOLDOUT_RESULTS = "holdout_results.json"
+
+# The docker grader's results transport [F-H1]: the image entrypoint prints
+# exactly ONE fenced JSON document on stdout, and the host scores nothing from
+# the agent-writable /workspace — an agent atexit hook or background thread
+# that rewrites a results file after the grader wrote it forges nothing.
+# Versioned sentinels: a transport change bumps V1 so old and new images are
+# never silently cross-read.
+RESULTS_FENCE_BEGIN = "-----VERDI_HOLDOUT_RESULTS_V1_BEGIN-----"
+RESULTS_FENCE_END = "-----VERDI_HOLDOUT_RESULTS_V1_END-----"
 
 # Filename the containerized plugin runner writes its assertion list to [PRA-M6].
 # Same fresh-copy discipline: any agent-written copy is removed before the run.
@@ -62,6 +72,37 @@ class HoldoutRun:
 
 class GradeRunner(Protocol):
     def run_holdouts(self, cmd: list[str], workspace: Path, holdouts_dir: str) -> HoldoutRun: ...
+
+
+def parse_fenced_stdout(stdout: str, exit_status: int = 0) -> HoldoutRun:
+    """Extract the grader's fenced results from container stdout [F-H1].
+
+    Fail-closed by construction: zero fences → the grader produced no results
+    (terminal ``container_failure``, the old missing-file outcome); more than
+    one fence — e.g. agent code in the test subprocess printing its own forged
+    block — or unparseable JSON inside the fence → the malformed marker, so
+    the parser flags ``cant_grade(malformed_holdout_output)``. An ambiguous
+    channel is never scored.
+    """
+    begins = stdout.count(RESULTS_FENCE_BEGIN)
+    ends = stdout.count(RESULTS_FENCE_END)
+    if begins == 0 and ends == 0:
+        raise GradingContainerError(
+            "grader emitted no fenced holdout results on stdout (expected one "
+            f"{RESULTS_FENCE_BEGIN!r} block — a grader image predating the V1 "
+            "stdout transport must be rebuilt; see docs/usage-guide.md)"
+        )
+    if begins != 1 or ends != 1:
+        return HoldoutRun({"__malformed__": True}, exit_status)
+    start = stdout.index(RESULTS_FENCE_BEGIN) + len(RESULTS_FENCE_BEGIN)
+    end = stdout.index(RESULTS_FENCE_END)
+    if end < start:
+        return HoldoutRun({"__malformed__": True}, exit_status)
+    try:
+        raw = json.loads(stdout[start:end])
+    except json.JSONDecodeError:
+        return HoldoutRun({"__malformed__": True}, exit_status)
+    return HoldoutRun(raw, exit_status)
 
 
 class DockerGradeRunner:
@@ -116,16 +157,11 @@ class DockerGradeRunner:
                 f"grader container exited {proc.returncode}"
                 + (f": {detail}" if detail else "")
             )
-        results = Path(workspace) / HOLDOUT_RESULTS
-        if not results.exists():
-            raise GradingContainerError("grader produced no holdout_results.json")
-        try:
-            raw = json.loads(results.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            # Malformed output flows to cant_grade(malformed) via the parser's
-            # marker — never a bare ValueError that escapes grade_trial [GR-6].
-            return HoldoutRun({"__malformed__": True}, proc.returncode)
-        return HoldoutRun(raw, proc.returncode)
+        # F-H1: score ONLY the fenced stdout channel — never a file from the
+        # agent-writable /workspace, which agent code executing at grade time
+        # can rewrite after the grader does. Malformed output still flows to
+        # cant_grade(malformed) via the parser's marker [GR-6].
+        return parse_fenced_stdout(proc.stdout, proc.returncode)
 
 
 class LocalGradeRunner:
@@ -173,8 +209,16 @@ class GradingContainer:
             probe()
 
     def build_grade_command(self, workspace: Path, holdouts_dir: str) -> list[str]:
-        """Fresh, network-less container; holdouts read-only."""
+        """Fresh, network-less container; holdouts read-only; results on stdout.
+
+        Hardened to parity with the plugin command [F-H1]: capabilities
+        dropped, no privilege escalation, and non-root — the grader writes
+        nothing the host reads (results ride the fenced stdout transport), so
+        the container needs no privileged authority over /workspace."""
         cmd = ["docker", "run", "--rm", "--network", "none"]
+        cmd += ["--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
+        if hasattr(os, "getuid"):
+            cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
         cmd += ["--volume", f"{Path(workspace).resolve()}:/workspace"]
         if holdouts_dir:
             # holdouts bind-mounted READ-ONLY [AC-1]

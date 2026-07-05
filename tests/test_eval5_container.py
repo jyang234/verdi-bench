@@ -126,7 +126,9 @@ def test_docker_runner_preflight_ok_when_daemon_up(tmp_path, monkeypatch):
 
 def test_docker_runner_malformed_output_fails_closed(tmp_path, monkeypatch):
     """GR-6: malformed holdout JSON on the docker path must not raise a bare
-    ValueError that escapes grade_trial — it flows to cant_grade(malformed)."""
+    ValueError that escapes grade_trial — it flows to cant_grade(malformed).
+    [F-H1: the docker transport is fenced stdout, so 'malformed' means bad
+    JSON inside the fence.]"""
     import subprocess
 
     from harness.grade.container import DockerGradeRunner
@@ -134,10 +136,10 @@ def test_docker_runner_malformed_output_fails_closed(tmp_path, monkeypatch):
 
     ws = tmp_path / "ws"
     ws.mkdir()
-    (ws / "holdout_results.json").write_text("{not json", encoding="utf-8")
 
     def fake_run(*a, **k):
-        return subprocess.CompletedProcess(a[0] if a else k.get("args"), 0, "", "")
+        stdout = _fenced("{not json")
+        return subprocess.CompletedProcess(a[0] if a else k.get("args"), 0, stdout, "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     run = DockerGradeRunner().run_holdouts(["docker", "run"], ws, "")
@@ -145,3 +147,82 @@ def test_docker_runner_malformed_output_fails_closed(tmp_path, monkeypatch):
     # parsing it fails closed with the module's typed error.
     with pytest.raises(MalformedHoldoutOutput):
         parse_holdout_output(run.raw_output)
+
+
+def _fenced(body: str) -> str:
+    from harness.grade.container import RESULTS_FENCE_BEGIN, RESULTS_FENCE_END
+
+    return f"grader log noise\n{RESULTS_FENCE_BEGIN}\n{body}\n{RESULTS_FENCE_END}\ntail\n"
+
+
+def test_h1_in_run_forged_results_file_is_never_scored(tmp_path, monkeypatch):
+    """F-H1: agent code executing at grade time (holdouts import the solution)
+    can rewrite holdout_results.json in the workspace copy AFTER the grader
+    writes it — via an atexit hook or background thread. The forged file must
+    never influence the grade: the docker path scores only the entrypoint's
+    fenced stdout. Previously the host read the workspace file back, so the
+    forged all-pass vector won."""
+    import json as _json
+    import subprocess
+
+    from harness.grade.container import DockerGradeRunner, GradingContainer
+    from harness.grade.deterministic import compute_binary_score, parse_holdout_output
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "solution.py").write_text("import atexit  # forgery vector", encoding="utf-8")
+
+    def fake_run(cmd, **k):
+        # simulate the in-run forgery: agent code plants an all-pass results
+        # file in the graded copy, while the real grader reports FAIL on stdout
+        mount = next(a for a in cmd if a.endswith(":/workspace"))
+        copy = Path(mount.rsplit(":", 1)[0])
+        (copy / "holdout_results.json").write_text(
+            _json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
+        )
+        stdout = _fenced(_json.dumps({"assertions": [{"id": "h1", "result": "fail"}]}))
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run = GradingContainer(runner=DockerGradeRunner()).run(ws, "")
+    assertions = parse_holdout_output(run.raw_output)
+    assert compute_binary_score(assertions) is False  # the real FAIL, not the forgery
+
+
+def test_h1_fence_parser_fails_closed():
+    """F-H1: zero fences → terminal container failure (grader produced no
+    results); an ambiguous channel (a second fence — the agent printing its own
+    forged block) → the malformed marker. Never scored either way."""
+    import json as _json
+
+    from harness.grade.container import (
+        GradingContainerError,
+        RESULTS_FENCE_BEGIN,
+        RESULTS_FENCE_END,
+        parse_fenced_stdout,
+    )
+
+    with pytest.raises(GradingContainerError, match="no fenced holdout results"):
+        parse_fenced_stdout("just logs, no fence")
+
+    good = _json.dumps({"assertions": [{"id": "h1", "result": "fail"}]})
+    forged = _json.dumps({"assertions": [{"id": "h1", "result": "pass"}]})
+    duplicated = _fenced(good) + _fenced(forged)
+    assert parse_fenced_stdout(duplicated).raw_output == {"__malformed__": True}
+    # inverted fences are ambiguous too
+    inverted = f"{RESULTS_FENCE_END}\n{good}\n{RESULTS_FENCE_BEGIN}"
+    assert parse_fenced_stdout(inverted).raw_output == {"__malformed__": True}
+    # the happy path tolerates surrounding log noise
+    assert parse_fenced_stdout(_fenced(good)).raw_output == _json.loads(good)
+
+
+def test_ac1_grade_command_hardened(tmp_path):
+    """F-H1: the holdout grade command carries the same hardening as the plugin
+    command — capabilities dropped, no privilege escalation, non-root."""
+    import os
+
+    cmd = GradingContainer().build_grade_command(tmp_path / "ws", "")
+    assert cmd[cmd.index("--cap-drop") + 1] == "ALL"
+    assert cmd[cmd.index("--security-opt") + 1] == "no-new-privileges"
+    if hasattr(os, "getuid"):
+        assert cmd[cmd.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
