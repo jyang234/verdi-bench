@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from harness.judge.calibrate import comparison_closed, kappa_by_class, pairs_from_ledger
+from harness.judge.calibrate import comparison_closed, pairs_from_ledger
 from harness.judge.schema import Evidence, Verdict, VerdictProvenance, Winner
 from harness.ledger.events import append_human_verdict, append_verdict
 from harness.review.kappa import (
@@ -12,6 +12,7 @@ from harness.review.kappa import (
     ReviewedItem,
     estimate_kappa,
     kappa_report,
+    keyed_kappa_gate,
     weighted_kappa,
 )
 from harness.review.packet import ReviewPacketItem, ReviewResponse, build_review_packet
@@ -289,7 +290,11 @@ def test_ac5_kappa_feed(tmp_path):
     assert comparison_closed(ledger, "c1") is True
     pairs = pairs_from_ledger(ledger)
     assert len(pairs) == 1
-    table = kappa_by_class(pairs, min_human_verdicts=1)
+    # F-L2: gated through the live shared gate (raw_pooled kappa_by_class is gone)
+    items = {"cls": [ReviewedItem(pr["judge_winner"], pr["human_winner"], "mandatory")
+                     for pr in pairs]}
+    table = keyed_kappa_gate(items, weight="unweighted", categories=["A", "B", "TIE"],
+                             kappa_threshold=0.6, estimator="raw_pooled", min_pairs=1)
     assert table["cls"].n == 1
 
 

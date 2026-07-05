@@ -42,9 +42,10 @@ DEFAULT_MAX_CONTEXT_TOKENS = 100_000
 DEFAULT_MARGIN = 1.15  # conservative: assume the payload is 15% larger than counted
 
 
-class TranscriptPolicy(str, Enum):
-    full_or_cant_score = "full_or_cant_score"
-    # recorded_truncation would add a branch here [D004]; v1 does not truncate.
+# EVAL-9 D004: the transcript policy is full-or-CANT_SCORE — v1 never
+# truncates. A former ``policy`` parameter suggested a live seam, but nothing
+# ever read it [F-L4]; when a recorded-truncation mode is actually built, it
+# becomes a real branch here rather than a dead knob implying one exists.
 
 
 class CantScoreReason(str, Enum):
@@ -200,7 +201,6 @@ def score_trial_process(
     token_counter: Callable[[str], int] = _heuristic_token_count,
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     margin: float = DEFAULT_MARGIN,
-    policy: TranscriptPolicy = TranscriptPolicy.full_or_cant_score,
     comparison_id: Optional[str] = None,
 ) -> ProcessScore:
     """Judge-score one trial's process. Always appends exactly one event [AC-4].

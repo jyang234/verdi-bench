@@ -11,7 +11,6 @@ choice].
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
@@ -62,41 +61,6 @@ class ClassCalibration:
     kappa_ci: Optional[tuple[float, float]] = None
     n_eff: Optional[float] = None
     inconclusive: bool = False
-
-
-def kappa_by_class(
-    pairs: list[dict],
-    *,
-    kappa_threshold: float = 0.6,
-    min_human_verdicts: int = 20,
-) -> dict[str, ClassCalibration]:
-    """``pairs`` = ``[{task_class, judge_winner, human_winner}, ...]``.
-
-    Per class: kappa once ``min_human_verdicts`` are present; classes below the
-    threshold (with sufficient data) are escalation candidates.
-    """
-    by_class: dict[str, list[dict]] = defaultdict(list)
-    for p in pairs:
-        by_class[p["task_class"]].append(p)
-
-    out: dict[str, ClassCalibration] = {}
-    for cls, items in by_class.items():
-        n = len(items)
-        if n < min_human_verdicts:
-            out[cls] = ClassCalibration(cls, n, kappa=None, sufficient=False, escalate=False)
-            continue
-        k = cohens_kappa(
-            [i["judge_winner"] for i in items], [i["human_winner"] for i in items]
-        )
-        if k is None:
-            # D-5: enough verdicts, but no chance-corrected information (degenerate
-            # marginals) — insufficient, not perfect; cannot escalate on undefined.
-            out[cls] = ClassCalibration(cls, n, kappa=None, sufficient=False, escalate=False)
-            continue
-        out[cls] = ClassCalibration(
-            cls, n, kappa=k, sufficient=True, escalate=k < kappa_threshold
-        )
-    return out
 
 
 # --- ledger state machine: only human verdicts close comparisons [AC-7] ----
