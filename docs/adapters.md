@@ -201,9 +201,11 @@ This format is a public seam. v1 parses unchanged forever; any field
 addition or semantic change requires a `verdi_log_version` bump with a
 compatibility story, per the contract rules in `CLAUDE.md`. Note the
 trajectory table is coupled to `TRAJECTORY_SCHEMA_VERSION` — a new step
-field lands in both (in particular, `agent` validates by step schema, so
-it is accepted in any declared log once schema v3 exists; the v2 log
-version is load-bearing for `telemetry_by_model`).
+field lands in both (in particular, `agent` validates by step schema, which
+is at **v3** — the current version, carrying the additive `detail` field —
+so it is accepted in any declared log; the v2 *log* version — a separate
+versioning axis from the step schema — is load-bearing for
+`telemetry_by_model`) [F-L15].
 
 ## Multi-agent workflows as a test subject
 
