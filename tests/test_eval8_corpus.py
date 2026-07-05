@@ -598,3 +598,28 @@ def test_manifest_roundtrip(tmp_path):
 
 def test_curation_approval_registered():
     assert "curation_approval" in events.REGISTERED_EVENTS
+
+
+def test_m_o6_bump_reimport_carries_quarantine_and_never_a_stale_baseline(tmp_path):
+    """F-M-O6: a semver bump previously rebuilt every entry fresh — silently
+    reverting a quarantined task to schedulable and dropping valid baselines.
+    Unchanged tasks now carry their state across a bump exactly like a
+    same-semver re-import [PRA-M12]; a CHANGED task keeps the fresh state, so
+    no stale baseline_ref ever rides a bump (AC-6, structurally)."""
+    src = _write_dataset(tmp_path / "ds")
+    cache = tmp_path / "cache"
+    m1 = import_terminal_bench(DirectorySource(src), cache, semver="1.0.0")
+    changed_id = m1.tasks[0].task_id
+    kept_id = m1.tasks[1].task_id
+    # operator records state on v1: one task quarantined, one baselined
+    m1.task(kept_id).status = "quarantined"
+    m1.task(changed_id).baseline_ref = "stale-ref"
+    m1.save(cache / "manifest.json")
+
+    (src / f"{changed_id}.json").write_text('{"mutated": true}', encoding="utf-8")
+    m2 = import_terminal_bench(DirectorySource(src), cache, semver="1.1.0")
+    assert m2.task(kept_id).status == "quarantined"          # carried: same sha
+    assert m2.task(kept_id).sha == m1.task(kept_id).sha
+    assert m2.task(changed_id).sha != m1.task(changed_id).sha  # changed content
+    assert m2.task(changed_id).baseline_ref is None          # never rides the bump
+    assert m2.task(changed_id).status == "admitted"          # public policy unchanged

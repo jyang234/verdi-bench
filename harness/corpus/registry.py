@@ -225,6 +225,15 @@ class CorpusManifest(BaseModel):
 
         A semver bump re-triggers the flake baseline [AC-6]: a task whose sha
         changed cannot ride the previous version's baseline into ``admitted``.
+
+        Caller note [F-M-O6]: the public import path satisfies this invariant
+        structurally (its bump carry is sha-scoped, so a changed task never
+        inherits a baseline_ref — see ``public.import_public_dataset``); this
+        method is the enforcement half for the INTERNAL manifest bump flow,
+        which lands with the F-H2 corpus-model work. Demoting a changed task
+        to ``pending-curation`` is curation-gate semantics and must not be
+        applied to public corpora (they are admitted-as-imported and have no
+        curation exit).
         """
         prev = previous.task_shas()
         for t in self.tasks:
