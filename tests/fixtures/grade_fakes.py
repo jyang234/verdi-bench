@@ -15,7 +15,7 @@ class ScriptedGradeRunner:
         self.output = output
         self.container_error = container_error
 
-    def run_holdouts(self, cmd, workspace, holdouts_dir) -> HoldoutRun:
+    def run_holdouts(self, cmd, workspace, holdouts_dir, nonce=None) -> HoldoutRun:
         if self.container_error:
             raise GradingContainerError("simulated daemon failure")
         return HoldoutRun(self.output if self.output is not None else {})
@@ -32,7 +32,7 @@ class SeqGradeRunner:
         self.outputs = list(outputs)
         self.calls = 0
 
-    def run_holdouts(self, cmd, workspace, holdouts_dir) -> HoldoutRun:
+    def run_holdouts(self, cmd, workspace, holdouts_dir, nonce=None) -> HoldoutRun:
         if self.calls >= len(self.outputs):
             raise AssertionError(
                 f"SeqGradeRunner exhausted: call {self.calls + 1} but only "

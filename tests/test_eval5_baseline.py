@@ -82,7 +82,7 @@ def test_ac2_transient_grader_outage_is_not_flake(tmp_path):
     healthy task version."""
     class DeadRunner:
         grader_name = "dead"
-        def run_holdouts(self, cmd, workspace, holdouts_dir):
+        def run_holdouts(self, cmd, workspace, holdouts_dir, nonce=None):
             raise GraderUnavailableError("docker daemon down")
 
     ledger = tmp_path / "l.ndjson"
@@ -102,7 +102,7 @@ def test_ac2_baseline_runs_are_independent_copies(tmp_path):
 
     class RecordingRunner:
         grader_name = "rec"
-        def run_holdouts(self, cmd, workspace, holdouts_dir):
+        def run_holdouts(self, cmd, workspace, holdouts_dir, nonce=None):
             seen.append(Path(workspace))
             return HoldoutRun(PASS)
 
