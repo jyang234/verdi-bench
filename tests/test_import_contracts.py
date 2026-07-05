@@ -67,24 +67,29 @@ def test_ledger_contract_source_list_covers_every_harness_package():
 
 
 @pytest.mark.parametrize("module, planted, target", _CASES)
-def test_completed_contract_catches_planted_import(module, planted, target):
-    path = _REPO / module
-    original = path.read_text(encoding="utf-8")
-    injected = (
-        original
-        + f"\n\ndef _planted_contract_violation():  # test-injected, restored below\n"
-        + f"    {planted}  # noqa\n"
+def test_completed_contract_catches_planted_import(module, planted, target, tmp_path):
+    """F-L11: the plant lands in a THROWAWAY copy of the tree, never the live
+    source — the old plant-then-restore-in-finally left the forbidden import
+    in the working tree on a hard kill (SIGKILL skips finally)."""
+    import shutil
+
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    shutil.copytree(_REPO / "harness", shadow / "harness")
+    shutil.copy(_REPO / ".importlinter", shadow / ".importlinter")
+    path = shadow / module
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + f"\n\ndef _planted_contract_violation():  # test-injected, throwaway tree\n"
+        + f"    {planted}  # noqa\n",
+        encoding="utf-8",
     )
-    try:
-        path.write_text(injected, encoding="utf-8")
-        result = _run_lint()
-        assert result.returncode != 0, (
-            f"planting {planted!r} in {module} did not break any contract:\n"
-            f"{result.stdout}"
-        )
-        assert "BROKEN" in result.stdout, result.stdout
-        assert target in result.stdout, result.stdout
-    finally:
-        path.write_text(original, encoding="utf-8")
-    # Restoration is covered by test_baseline_contracts_are_green; re-running
-    # lint-imports here would just re-spawn the slow import-graph walk again.
+    result = subprocess.run(
+        [str(_LINT)], cwd=shadow, capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode != 0, (
+        f"planting {planted!r} in {module} did not break any contract:\n"
+        f"{result.stdout}"
+    )
+    assert "BROKEN" in result.stdout, result.stdout
+    assert target in result.stdout, result.stdout
