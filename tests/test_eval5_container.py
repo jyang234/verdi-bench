@@ -173,6 +173,13 @@ def test_h1_in_run_forged_results_file_is_never_scored(tmp_path, monkeypatch):
     (ws / "solution.py").write_text("import atexit  # forgery vector", encoding="utf-8")
 
     def fake_run(cmd, **k):
+        # a well-behaved grader reads the per-run nonce the host injected via -e
+        # and stamps it into its fence (as the real grader image must).
+        from harness.grade.container import NONCE_ENV, holdout_fence
+
+        nonce = next(
+            a.split("=", 1)[1] for a in cmd if a.startswith(f"{NONCE_ENV}=")
+        )
         # simulate the in-run forgery: agent code plants an all-pass results
         # file in the graded copy, while the real grader reports FAIL on stdout
         mount = next(a for a in cmd if a.endswith(":/workspace"))
@@ -180,7 +187,9 @@ def test_h1_in_run_forged_results_file_is_never_scored(tmp_path, monkeypatch):
         (copy / "holdout_results.json").write_text(
             _json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
         )
-        stdout = _fenced(_json.dumps({"assertions": [{"id": "h1", "result": "fail"}]}))
+        begin, end = holdout_fence(nonce)
+        body = _json.dumps({"assertions": [{"id": "h1", "result": "fail"}]})
+        stdout = f"grader log noise\n{begin}\n{body}\n{end}\ntail\n"
         return subprocess.CompletedProcess(cmd, 0, stdout, "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -214,6 +223,104 @@ def test_h1_fence_parser_fails_closed():
     assert parse_fenced_stdout(inverted).raw_output == {"__malformed__": True}
     # the happy path tolerates surrounding log noise
     assert parse_fenced_stdout(_fenced(good)).raw_output == _json.loads(good)
+
+
+def test_h1_forged_fence_without_valid_nonce_never_scored():
+    """F-H1 follow-up: the fence is nonce-authenticated, closing the residual the
+    plain stdout transport left open.
+
+    Agent code runs in the SAME container as the grader, so it can write to the
+    captured stdout too. A well-timed agent could suppress the grader's genuine
+    fence and print its OWN single forged block — indistinguishable under the old
+    static, publicly-known markers. With a per-grade nonce the agent cannot read,
+    a forged marker carries the wrong nonce (or none) and is not recognized:
+    absent → fail-closed, never scored. Only the grader's correctly-nonced fence
+    is read."""
+    import json as _json
+
+    from harness.grade.container import (
+        GradingContainerError,
+        holdout_fence,
+        parse_fenced_stdout,
+    )
+
+    nonce = "s3cret-per-run-nonce"
+    good = _json.dumps({"assertions": [{"id": "h1", "result": "fail"}]})
+    forged = _json.dumps({"assertions": [{"id": "h1", "result": "pass"}]})
+
+    # genuine fence carrying the correct nonce IS scored
+    gb, ge = holdout_fence(nonce)
+    assert (
+        parse_fenced_stdout(f"noise\n{gb}\n{good}\n{ge}\n", nonce=nonce).raw_output
+        == _json.loads(good)
+    )
+
+    # forged single fence with the BARE (un-nonced) markers — the format is
+    # public, but without the nonce it is not the expected marker → absent.
+    bb, be = holdout_fence(None)
+    with pytest.raises(GradingContainerError, match="no fenced holdout results"):
+        parse_fenced_stdout(f"{bb}\n{forged}\n{be}", nonce=nonce)
+
+    # forged single fence with a GUESSED WRONG nonce → still absent, never scored
+    wb, we = holdout_fence("wrong-guess")
+    with pytest.raises(GradingContainerError, match="no fenced holdout results"):
+        parse_fenced_stdout(f"{wb}\n{forged}\n{we}", nonce=nonce)
+
+    # a longer guess cannot prefix-match the expected nonce'd marker either
+    lb, le = holdout_fence(nonce + "extra")
+    with pytest.raises(GradingContainerError, match="no fenced holdout results"):
+        parse_fenced_stdout(f"{lb}\n{forged}\n{le}", nonce=nonce)
+
+    # and if the agent somehow LEARNED the nonce and emitted a second valid
+    # fence, two valid fences → ambiguous → malformed marker, still never scored
+    both = f"{gb}\n{good}\n{ge}\n{gb}\n{forged}\n{ge}"
+    assert parse_fenced_stdout(both, nonce=nonce).raw_output == {"__malformed__": True}
+
+
+def test_h1_grade_command_injects_per_run_nonce(tmp_path):
+    """F-H1 follow-up: the production grade path injects the per-run nonce into
+    the container as VERDI_FENCE_NONCE (so the grader can stamp it into the
+    fence), and omits the env entirely when no nonce is supplied."""
+    from harness.grade.container import GradingContainer, NONCE_ENV
+
+    cmd = GradingContainer().build_grade_command(tmp_path / "ws", "", nonce="abc123")
+    assert "-e" in cmd
+    assert f"{NONCE_ENV}=abc123" in cmd
+
+    bare = GradingContainer().build_grade_command(tmp_path / "ws", "")
+    assert not any(str(a).startswith(f"{NONCE_ENV}=") for a in bare)
+
+
+def test_h1_run_mints_unpredictable_nonce_per_grade(tmp_path, monkeypatch):
+    """F-H1 follow-up: each container grade mints a fresh, unpredictable nonce and
+    threads it end to end — the fence the host validates carries the same nonce
+    the command injected, and two grades use different nonces."""
+    import subprocess
+
+    from harness.grade.container import (
+        DockerGradeRunner,
+        GradingContainer,
+        NONCE_ENV,
+        holdout_fence,
+    )
+
+    seen: list[str] = []
+
+    def fake_run(cmd, **k):
+        nonce = next(a.split("=", 1)[1] for a in cmd if a.startswith(f"{NONCE_ENV}="))
+        seen.append(nonce)
+        begin, end = holdout_fence(nonce)
+        body = '{"assertions": [{"id": "h1", "result": "pass"}]}'
+        return subprocess.CompletedProcess(cmd, 0, f"{begin}\n{body}\n{end}\n", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    r1 = GradingContainer(runner=DockerGradeRunner()).run(ws, "")
+    r2 = GradingContainer(runner=DockerGradeRunner()).run(ws, "")
+    assert r1.raw_output == {"assertions": [{"id": "h1", "result": "pass"}]}
+    assert len(seen) == 2 and seen[0] != seen[1]  # unpredictable, per-grade
+    assert all(len(n) >= 16 for n in seen)
 
 
 def test_ac1_grade_command_hardened(tmp_path):

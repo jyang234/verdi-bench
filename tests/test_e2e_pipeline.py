@@ -257,9 +257,13 @@ def test_docker_grade_real_container(tmp_path):
     from harness.grade.types import GradeTask
     from harness.ledger.events import EventContext
 
-    # A minimal grader image that emits a FAIL result on the V1 fenced stdout
-    # transport [F-H1] — the host reads no workspace file.
-    from harness.grade.container import RESULTS_FENCE_BEGIN, RESULTS_FENCE_END
+    # A minimal grader image that emits a FAIL result on the nonce-authenticated
+    # fenced stdout transport [F-H1] — the host reads no workspace file, and the
+    # grader stamps the per-run VERDI_FENCE_NONCE into its fence marker (shell
+    # expands ${VERDI_FENCE_NONCE} at runtime).
+    from harness.grade.container import holdout_fence
+
+    begin, end = holdout_fence("${VERDI_FENCE_NONCE}")
 
     ctx_dir = tmp_path / "img"
     ctx_dir.mkdir()
@@ -270,7 +274,7 @@ def test_docker_grade_real_container(tmp_path):
         "FROM busybox\n"
         "COPY results.json /results.json\n"
         'CMD ["sh", "-c", '
-        f'"echo {RESULTS_FENCE_BEGIN}; cat /results.json; echo {RESULTS_FENCE_END}"]\n',
+        f'"echo {begin}; cat /results.json; echo {end}"]\n',
         encoding="utf-8",
     )
     image = "verdi-bench/grader-e2e:latest"

@@ -360,7 +360,7 @@ class _FreshCopyRunner:
         self.saw_stale = None
         self.copy_path = None
 
-    def run_holdouts(self, cmd, workspace, holdouts_dir):
+    def run_holdouts(self, cmd, workspace, holdouts_dir, nonce=None):
         from pathlib import Path
 
         from harness.grade.container import HoldoutRun

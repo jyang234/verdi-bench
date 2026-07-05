@@ -150,6 +150,32 @@ The structural guarantee: `harness/grade/` cannot import an LLM client — an
 import-linter contract, not a review convention. The grade you see was
 computed by assertions, not vibes.
 
+On the docker path the grader's authoritative results ride a
+**nonce-authenticated fenced stdout channel** [F-H1], never a workspace file:
+the host mints a fresh, unpredictable per-grade nonce, injects it as
+`VERDI_FENCE_NONCE`, and scores only a single fence marker carrying exactly that
+nonce (zero fences → terminal `container_failure`; two or an
+unauthenticated/mis-nonced one → `malformed`, never scored). Disclosed shared
+responsibility [F-H1 follow-up]: because holdout tests **execute agent code
+inside the grading container**, that code shares the same captured stdout, so
+stdout-channel integrity is a contract *with the grader image*, not something
+the harness alone can guarantee. The host-side defenses — nonce authentication
+plus the single-fence ambiguity check — are necessary but not sufficient on
+their own: the grader image must run agent-executing tests in a **subprocess
+whose environment scrubs `VERDI_FENCE_NONCE`** so agent code cannot read the
+nonce and emit a competing valid fence. The scrub must be a *subprocess* one:
+dropping the variable from the current process's `os.environ` is not enough,
+because `unsetenv` does not clear `/proc/self/environ` (served from the
+exec-time block), so in-process or already-forked code can still recover the
+value — genuine isolation means launching the agent-executing code with a
+scrubbed `env=` so its own exec-time environment never held the nonce. (The
+shipped plugin entrypoint, `harness/grade/run_plugin.py`, only drops the
+variable from `os.environ` — a shallow defense-in-depth that suffices there
+because it runs trusted verdi graders, not agent code.) A grader image that
+leaks the nonce to agent-executing code re-opens the forge-a-single-fence path
+the nonce exists to close. Treat the grader image as a trusted component you
+build and validate, exactly as `deploy/metering-proxy/` is for egress.
+
 ### 2.5 `bench judge` — the blinded advisory tier
 
 `harness/judge/` assembles per-comparison packets (both arms' outputs for a

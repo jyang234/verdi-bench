@@ -127,8 +127,8 @@ def test_h1_plugin_results_ride_fenced_stdout_never_workspace(tmp_path, monkeypa
     from harness.grade.container import (
         DockerGradeRunner,
         GradingContainer,
-        PLUGIN_FENCE_BEGIN,
-        PLUGIN_FENCE_END,
+        NONCE_ENV,
+        plugin_fence,
     )
     from harness.grade.types import GradeTask
 
@@ -139,10 +139,14 @@ def test_h1_plugin_results_ride_fenced_stdout_never_workspace(tmp_path, monkeypa
     forged = [{"id": "rule-1", "source": "plugin:groundwork", "result": "pass"}]
 
     def fake_run(cmd, **k):
+        # the entrypoint reads the injected per-run nonce and stamps it into the
+        # fence (as run_plugin.py does); a forged file in the copy is never read.
+        nonce = next(a.split("=", 1)[1] for a in cmd if a.startswith(f"{NONCE_ENV}="))
         mount = next(a for a in cmd if a.endswith(":/workspace"))
         copy = Path(mount.rsplit(":", 1)[0])
         (copy / "plugin_results.json").write_text(json.dumps(forged), encoding="utf-8")
-        stdout = f"{PLUGIN_FENCE_BEGIN}\n{json.dumps(real)}\n{PLUGIN_FENCE_END}\n"
+        begin, end = plugin_fence(nonce)
+        stdout = f"{begin}\n{json.dumps(real)}\n{end}\n"
         return subprocess.CompletedProcess(cmd, 0, stdout, "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)

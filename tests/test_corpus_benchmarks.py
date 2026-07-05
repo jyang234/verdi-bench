@@ -320,9 +320,13 @@ def test_docker_grade_of_materialized_swebench_task(tmp_path):
     )
 
     # a tiny grader image that FAILS unless verdi mounted the holdout spec at
-    # /holdouts (read-only), then emits the resolved results on the V1 fenced
-    # stdout transport [F-H1] — the host reads no workspace file.
-    from harness.grade.container import RESULTS_FENCE_BEGIN, RESULTS_FENCE_END
+    # /holdouts (read-only), then emits the resolved results on the
+    # nonce-authenticated fenced stdout transport [F-H1] — the host reads no
+    # workspace file, and the grader stamps the per-run VERDI_FENCE_NONCE into
+    # its fence marker (shell expands ${VERDI_FENCE_NONCE} at runtime).
+    from harness.grade.container import holdout_fence
+
+    begin, end = holdout_fence("${VERDI_FENCE_NONCE}")
 
     img = tmp_path / "img"
     img.mkdir()
@@ -331,7 +335,7 @@ def test_docker_grade_of_materialized_swebench_task(tmp_path):
         "FROM busybox\n"
         "COPY results.json /results.json\n"
         'CMD ["sh", "-c", "test -f /holdouts/holdout.json && '
-        f'echo {RESULTS_FENCE_BEGIN} && cat /results.json && echo {RESULTS_FENCE_END}"]\n',
+        f'echo {begin} && cat /results.json && echo {end}"]\n',
         encoding="utf-8",
     )
     image = "verdi-bench/swebench-grader-e2e:latest"
