@@ -46,6 +46,7 @@ EXPECTED_ENTRYPOINTS = {
     "judge",
     "process",
     "forensics",
+    "review-batch",  # F-M-O2: the reviewed queue ledgered as a unit
     "review-build",
     "review-record",
     "review-reveal",

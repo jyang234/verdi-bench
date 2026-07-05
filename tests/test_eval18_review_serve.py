@@ -199,10 +199,21 @@ def test_ac2_capture_then_reveal_one_event_each(tmp_path):
         })
         assert code == 409
 
+        # F-M-O2: a reveal is refused while the QUEUE has un-verdicted items —
+        # unblinding one comparison unblinds the reviewer for the rest.
+        code, err = _post(base, "/api/reveal", {"comparison_id": cid})
+        assert code == 409 and err["error_class"] == "RevealError"
+        other = queue["pending"][1]["comparison_id"]
+        code, _ = _post(base, "/api/verdict", {
+            "comparison_id": other, "winner": "1", "reason": "response 1 is correct",
+            "arm_recognized": False,
+        })
+        assert code == 200
+
         # the reveal: its own explicit act, exactly one more event
         code, rev = _post(base, "/api/reveal", {"comparison_id": cid})
         assert code == 200 and set(rev["revealed"]) == {"judge_verdict_id", "arm_identities"}
-        assert len(read_events(ledger)) == before + 2
+        assert len(read_events(ledger)) == before + 3  # +2 verdicts, +1 reveal
         assert read_events(ledger)[-1]["event"] == "reveal"
         code, _ = _post(base, "/api/reveal", {"comparison_id": cid})
         assert code == 409  # one unblinding per comparison [RV-8]

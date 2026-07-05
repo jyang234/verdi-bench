@@ -482,6 +482,32 @@ REVEAL = register_event("reveal")
 REVIEW_PACKET_BUILT = register_event("review_packet_built")
 
 
+REVIEW_BATCH = register_event("review_batch")
+
+
+def record_review_batch(
+    ledger_path,
+    ctx: EventContext,
+    *,
+    batch_id: str,
+    comparison_ids: list,
+    seed: int,
+) -> dict:
+    """The reviewed QUEUE as a unit [F-M-O2] — the selected comparison ids one
+    ``bench review build`` invocation put in front of the reviewer. The reveal
+    gate refuses any reveal in a batch until EVERY batched comparison has a
+    human verdict, closing the per-item loophole where revealing item 1 (arm
+    identities + judge verdict) unblinds the reviewer for items 2..n. A **new
+    additive event kind** — comparisons on legacy chains belong to no batch
+    and keep per-item semantics, disclosed by absence."""
+    return emit(
+        ledger_path,
+        ctx,
+        REVIEW_BATCH,
+        {"batch_id": batch_id, "comparison_ids": list(comparison_ids), "seed": seed},
+    )
+
+
 def record_review_packet_built(
     ledger_path,
     ctx: EventContext,

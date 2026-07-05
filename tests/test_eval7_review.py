@@ -433,3 +433,65 @@ def test_reveal_refuses_tampered_chain(tmp_path):
 
     with pytest.raises(ChainIntegrityError):
         reveal_comparison(ledger, ctx, comparison_id="cmp-1")
+
+
+def test_m_o2_reveal_refused_until_the_whole_batch_is_verdicted(tmp_path):
+    """F-M-O2: reveal was gated per ITEM — a reviewer could reveal item 1 (arm
+    identities + judge verdict) and then record 'blinded' verdicts for the rest
+    of the queue. With the queue ledgered as a review_batch, any reveal is
+    refused until EVERY batched comparison carries its human verdict; legacy
+    unbatched comparisons keep per-item semantics."""
+    from harness.ledger.events import record_review_batch
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    for cid in ("cmp-1", "cmp-2"):
+        _seed_judge(ledger, ctx, cid)
+        _seed_packet_built(ledger, ctx, cid)
+    record_review_batch(ledger, ctx, batch_id="b1",
+                        comparison_ids=["cmp-1", "cmp-2"], seed=7)
+
+    record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"),
+                         arm_recognized=False, arm_guess=None)
+    with pytest.raises(RevealError, match="cmp-2"):
+        reveal_comparison(ledger, ctx, comparison_id="cmp-1")
+
+    record_human_verdict(ledger, ctx, verdict=_human("B", "cmp-2"),
+                         arm_recognized=False, arm_guess=None)
+    rec = reveal_comparison(ledger, ctx, comparison_id="cmp-1")
+    assert rec["event"] == "reveal"
+
+
+def test_m_o2_build_ledgers_the_batch_idempotently(tmp_path):
+    """The build verb ledgers the reviewed queue once; an identical re-build
+    appends nothing (7A-4 stays true)."""
+    import json
+
+    import yaml
+
+    from harness.ledger.query import find_events, read_events
+    from harness.review.build import build_review
+    from harness.schema.experiment import ExperimentSpec
+    from tests.fixtures.builders import write_experiment_yaml
+
+    expdir = tmp_path / "e"
+    expdir.mkdir()
+    write_experiment_yaml(expdir / "experiment.yaml")
+    spec = ExperimentSpec.from_yaml(expdir / "experiment.yaml")
+    ledger = expdir / "l.ndjson"
+    ctx = fixed_ctx()
+    _seed_judge(ledger, ctx, "cmp-t0-r0")
+    from tests.fixtures.builders import seed_trial_and_grade
+
+    for arm, passed in (("control", True), ("treatment", False)):
+        seed_trial_and_grade(ledger, ctx, trial_id=f"tr-{arm}", task_id="t0",
+                             arm=arm, passed=passed)
+    tasks = [{"id": "t0", "prompt": "p"}]
+    build_review(ledger, spec, tasks, ctx, seed=7)
+    batches = find_events(ledger, "review_batch")
+    assert len(batches) == 1
+    assert batches[0]["comparison_ids"] == ["cmp-t0-r0"]
+
+    before = len(read_events(ledger))
+    build_review(ledger, spec, tasks, ctx, seed=7)  # identical re-build
+    assert len(read_events(ledger)) == before  # zero new events

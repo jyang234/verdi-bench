@@ -10,13 +10,16 @@ consistently in one column; the recorded ``response_map`` is the only truth.
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 from ..blind.core import arm_canaries
 from ..judge.assemble import comparisons_from_ledger as assemble_comparisons
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..plan.seeds import sub_seed
 from .packet import ReviewPacketItem, ReviewResponse, build_review_packet
-from .record import review_packet_built_for
+from .record import events_of_batch, review_packet_built_for
 from .sample import comparisons_from_ledger as records_from_ledger
 from .sample import select_for_review
 
@@ -89,6 +92,22 @@ def build_review(ledger_path, spec, task_dicts, ctx: EventContext, *, seed: int)
                 response2=ReviewResponse(diff=second.diff, holdout_results=second.holdout_results),
             )
         )
+    # F-M-O2: ledger the reviewed queue as a unit, so the reveal gate can
+    # enforce capture-then-reveal per QUEUE, not per item. Idempotent like the
+    # packet events: an identical re-selection appends nothing (7A-4).
+    batch_ids = sorted(i.comparison_id for i in items)
+    if batch_ids:
+        batch_id = hashlib.sha256(
+            json.dumps([seed, batch_ids], separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        latest = None
+        for ev in events_of_batch(ledger_path):
+            latest = ev
+        if latest is None or latest["batch_id"] != batch_id:
+            events.record_review_batch(
+                ledger_path, ctx, batch_id=batch_id, comparison_ids=batch_ids,
+                seed=seed,
+            )
     return build_review_packet(items, canaries=canaries), len(items)
 
 
