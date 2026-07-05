@@ -41,6 +41,13 @@ HOLDOUT_RESULTS = "holdout_results.json"
 RESULTS_FENCE_BEGIN = "-----VERDI_HOLDOUT_RESULTS_V1_BEGIN-----"
 RESULTS_FENCE_END = "-----VERDI_HOLDOUT_RESULTS_V1_END-----"
 
+# Same transport for containerized plugin graders [F-H1 A.4] — plugins execute
+# rules over the agent-controlled workspace, so their results file was equally
+# forgeable in-run. Distinct sentinels: a holdout block can never be mistaken
+# for a plugin block.
+PLUGIN_FENCE_BEGIN = "-----VERDI_PLUGIN_RESULTS_V1_BEGIN-----"
+PLUGIN_FENCE_END = "-----VERDI_PLUGIN_RESULTS_V1_END-----"
+
 # Filename the containerized plugin runner writes its assertion list to [PRA-M6].
 # Same fresh-copy discipline: any agent-written copy is removed before the run.
 PLUGIN_RESULTS = "plugin_results.json"
@@ -74,32 +81,43 @@ class GradeRunner(Protocol):
     def run_holdouts(self, cmd: list[str], workspace: Path, holdouts_dir: str) -> HoldoutRun: ...
 
 
+def _extract_fence(stdout: str, begin: str, end: str) -> tuple[str, Optional[str]]:
+    """One fenced body from container stdout: ``("ok", body)``, or a fail-closed
+    status — ``"absent"`` (no fence at all) / ``"ambiguous"`` (more than one
+    fence, e.g. agent code printing its own forged block, or inverted markers).
+    """
+    begins, ends = stdout.count(begin), stdout.count(end)
+    if begins == 0 and ends == 0:
+        return "absent", None
+    if begins != 1 or ends != 1:
+        return "ambiguous", None
+    start = stdout.index(begin) + len(begin)
+    stop = stdout.index(end)
+    if stop < start:
+        return "ambiguous", None
+    return "ok", stdout[start:stop]
+
+
 def parse_fenced_stdout(stdout: str, exit_status: int = 0) -> HoldoutRun:
-    """Extract the grader's fenced results from container stdout [F-H1].
+    """Extract the grader's fenced holdout results from stdout [F-H1].
 
     Fail-closed by construction: zero fences → the grader produced no results
-    (terminal ``container_failure``, the old missing-file outcome); more than
-    one fence — e.g. agent code in the test subprocess printing its own forged
-    block — or unparseable JSON inside the fence → the malformed marker, so
-    the parser flags ``cant_grade(malformed_holdout_output)``. An ambiguous
-    channel is never scored.
+    (terminal ``container_failure``, the old missing-file outcome); an
+    ambiguous channel or unparseable JSON inside the fence → the malformed
+    marker, so the parser flags ``cant_grade(malformed_holdout_output)``. An
+    ambiguous channel is never scored.
     """
-    begins = stdout.count(RESULTS_FENCE_BEGIN)
-    ends = stdout.count(RESULTS_FENCE_END)
-    if begins == 0 and ends == 0:
+    status, body = _extract_fence(stdout, RESULTS_FENCE_BEGIN, RESULTS_FENCE_END)
+    if status == "absent":
         raise GradingContainerError(
             "grader emitted no fenced holdout results on stdout (expected one "
             f"{RESULTS_FENCE_BEGIN!r} block — a grader image predating the V1 "
             "stdout transport must be rebuilt; see docs/usage-guide.md)"
         )
-    if begins != 1 or ends != 1:
-        return HoldoutRun({"__malformed__": True}, exit_status)
-    start = stdout.index(RESULTS_FENCE_BEGIN) + len(RESULTS_FENCE_BEGIN)
-    end = stdout.index(RESULTS_FENCE_END)
-    if end < start:
+    if status != "ok":
         return HoldoutRun({"__malformed__": True}, exit_status)
     try:
-        raw = json.loads(stdout[start:end])
+        raw = json.loads(body or "")
     except json.JSONDecodeError:
         return HoldoutRun({"__malformed__": True}, exit_status)
     return HoldoutRun(raw, exit_status)
@@ -316,10 +334,23 @@ class GradingContainer:
                     f"plugin container exited {proc.returncode}"
                     + (f": {proc.stderr.strip()}" if proc.stderr.strip() else "")
                 )
-            results = copy / PLUGIN_RESULTS
-            if not results.exists():
-                raise GradingContainerError("plugin container produced no plugin_results.json")
-            raw = json.loads(results.read_text(encoding="utf-8"))
+            # F-H1 A.4: same trusted channel as holdouts — never a file from the
+            # agent-writable copy. Every failure mode is terminal here (it flows
+            # to cant_grade(plugin_error) in grade_trial), so no marker needed.
+            status, body = _extract_fence(proc.stdout, PLUGIN_FENCE_BEGIN, PLUGIN_FENCE_END)
+            if status == "absent":
+                raise GradingContainerError(
+                    "plugin container emitted no fenced results on stdout (an "
+                    "image predating the V1 transport must be rebuilt)"
+                )
+            if status != "ok":
+                raise GradingContainerError(
+                    "ambiguous plugin results channel: multiple or inverted fences"
+                )
+            try:
+                raw = json.loads(body or "")
+            except json.JSONDecodeError as e:
+                raise GradingContainerError(f"malformed fenced plugin results: {e}") from e
             return [Assertion(**a) for a in raw]
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
