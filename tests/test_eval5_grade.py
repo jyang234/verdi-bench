@@ -396,3 +396,17 @@ def test_grade_ignores_forged_results_and_protects_evidence(tmp_path):
     assert find_events(ledger, "grade")[0]["binary_score"] is False
     # the original workspace (ledgered evidence) is untouched
     assert json.loads((ws / "holdout_results.json").read_text()) == forged
+
+
+def test_m_i3_unknown_runner_refused_not_silently_docker(tmp_path):
+    """F-M-I3: a typo'd --runner (e.g. 'dcoker') must exit 2 naming the valid
+    set — previously anything but exactly 'local' silently selected docker."""
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    r = CliRunner().invoke(app, ["grade", str(expdir), "--runner", "dcoker"])
+    assert r.exit_code != 0
+    assert "docker or local" in (r.output + (r.stderr or ""))

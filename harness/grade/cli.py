@@ -146,6 +146,10 @@ def register(app: typer.Typer) -> None:
             grade_trial,
         )
 
+        # F-M-I3: a typo'd runner must refuse, never silently select docker —
+        # validated before any I/O, like analyze's flag validation.
+        if runner not in ("docker", "local"):
+            raise typer.BadParameter("--runner must be docker or local")
         experiment_dir = Path(experiment_dir)
         spec_path = experiment_dir / "experiment.yaml"
         ledger_path = experiment_dir / "ledger.ndjson"
