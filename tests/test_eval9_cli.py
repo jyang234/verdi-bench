@@ -138,8 +138,11 @@ def test_pr5_analyze_render_surfaces_kappa_and_correlations(tmp_path):
     proc = findings.process
     assert proc is not None
     # AC-5: per-dimension judge<->human kappa is present and computed over >=1 pair
+    # — and one pair honestly reads INSUFFICIENT under the F-M-S4 floor (20),
+    # instead of the old min_pairs=1 rendering a single pair as "sufficient".
     kappa = proc["kappa_by_dimension"]
-    assert kappa and any(k["sufficient"] for k in kappa.values())
+    assert kappa and all(k["n"] >= 1 for k in kappa.values())
+    assert not any(k["sufficient"] for k in kappa.values())
     # AC-7: score-vs-telemetry correlations + style_only key present
     assert "correlations" in proc and "style_only" in proc
     md = render_markdown(findings, ledger, "exploratory")

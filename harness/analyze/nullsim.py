@@ -84,6 +84,44 @@ def _insufficient(n_tasks: int, ci_level: float) -> CoverageSelection:
     )
 
 
+def coverage_of_method(
+    realized_deltas,
+    seed: int,
+    *,
+    method: str,
+    ci_level: float = 0.95,
+    n_sim: int = DEFAULT_N_SIM,
+    n_boot: int = DEFAULT_N_BOOT,
+) -> Optional[float]:
+    """Empirical coverage of ONE method under the recentered null [F-M-S1].
+
+    The selfcheck's validation pass: selection (:func:`coverage_from_deltas`)
+    and validation previously shared the same draws, so the winner's-curse on
+    the selected method's coverage biased the gate toward passing. Run this
+    with an INDEPENDENT seed (e.g. ``sub_seed(spec.seed, "selfcheck_validate")``)
+    to score the already-selected method on fresh draws. ``None`` when fewer
+    than two realized clusters exist.
+    """
+    deltas = np.asarray(list(realized_deltas), dtype=np.float64)
+    n = deltas.shape[0]
+    if n < 2:
+        return None
+    centered = deltas - deltas.mean()
+    hits = 0
+    data_rng = Generator(PCG64(sub_seed(seed, "nullsim_data")))
+    for s_i in range(n_sim):
+        sample = centered[data_rng.integers(0, n, size=n)]
+        boot_rng = Generator(PCG64(sub_seed(seed, f"nullsim_boot_{s_i}")))
+        idx = boot_rng.integers(0, n, size=(n_boot, n))
+        samples = sample[idx]
+        boot_means = samples.mean(axis=1)
+        boot_ses = samples.std(axis=1, ddof=1) / np.sqrt(n)
+        lo, hi, _ = resolve_ci_method(method).interval(sample, boot_means, boot_ses, ci_level)
+        if lo <= 0.0 <= hi:
+            hits += 1
+    return hits / n_sim
+
+
 def coverage_from_deltas(
     realized_deltas,
     seed: int,

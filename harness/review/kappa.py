@@ -134,6 +134,56 @@ def estimate_kappa(
     )
 
 
+def kish_effective_n(items: Sequence[ReviewedItem], floor_prob: float) -> float:
+    """Kish effective sample size under the IPW weights [F-M-S4]:
+    ``(Σw)² / Σw²`` with floor items at ``1/floor_prob``. A raw-count floor
+    ignores that a handful of heavily-reweighted floor items carry far less
+    chance-corrected information than their count suggests."""
+    if not items:
+        return 0.0
+    w = [1.0 / floor_prob if i.stratum == "floor" else 1.0 for i in items]
+    return (sum(w) ** 2) / sum(x * x for x in w)
+
+
+def bootstrap_kappa_interval(
+    items: Sequence[ReviewedItem],
+    *,
+    floor_prob: float,
+    seed: int,
+    n_boot: int = 500,
+    ci_level: float = 0.95,
+) -> Optional[tuple[float, float]]:
+    """Seeded percentile bootstrap interval for the IPW kappa [F-M-S4].
+
+    Resamples reviewed items with replacement; resamples whose marginals are
+    degenerate (kappa undefined) are skipped, never imputed. ``None`` when
+    fewer than two items exist or fewer than half the resamples yield a
+    defined kappa — an interval built on a sliver of usable resamples would
+    overstate precision.
+    """
+    import numpy as np
+    from numpy.random import PCG64, Generator
+
+    from ..plan.seeds import sub_seed
+
+    used = list(items)
+    n = len(used)
+    if n < 2:
+        return None
+    rng = Generator(PCG64(sub_seed(seed, "kappa_ci")))
+    estimates: list[float] = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        k = estimate_kappa([used[i] for i in idx], KappaEstimator.ipw, floor_prob=floor_prob)
+        if k is not None:
+            estimates.append(k)
+    if len(estimates) < n_boot // 2:
+        return None
+    alpha = (1.0 - ci_level) / 2.0
+    lo, hi = np.quantile(np.asarray(estimates), [alpha, 1.0 - alpha])
+    return float(lo), float(hi)
+
+
 @dataclass(frozen=True)
 class KeyedCalibration:
     """One key's judge↔human agreement gate result — the shared shape behind

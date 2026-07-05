@@ -9,6 +9,7 @@ operator quarantine excludes with disclosure [D007].
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import yaml
@@ -33,6 +34,7 @@ from harness.plan.interleave import Trial
 from harness.run.engines.fake import FakeEngine
 from harness.run.interleave import schedule
 from harness.run.types import RunConfig, Task
+from harness.run.workspace import WORKSPACE_WALK_VERSION, workspace_sha256
 from harness.schema.errors import SpecError
 from harness.schema.experiment import ExperimentSpec
 from tests.fixtures.builders import (
@@ -200,7 +202,8 @@ _NATIVE_WITH_TRAJECTORY = {
 }
 
 
-def _run_scan_experiment(tmp_path, *, tamper=False, absent_trajectory=False):
+def _run_scan_experiment(tmp_path, *, tamper=False, absent_trajectory=False,
+                         commit_workspace=True):
     """A locked experiment whose control-arm trials really ran (fake engine),
     with a tasks.yaml + holdout files so scan assembles real evidence."""
     ctx = fixed_ctx()
@@ -233,10 +236,19 @@ def _run_scan_experiment(tmp_path, *, tamper=False, absent_trajectory=False):
         cost_ceiling=100.0,
     )
     for rec in res.records:
+        # F-H3: real grades carry the workspace commitment; commit_workspace=False
+        # models a legacy chain whose grade events predate the field.
+        commitment = {}
+        if commit_workspace:
+            ws = Path(rec.artifacts_path).parent
+            commitment = {
+                "workspace_sha256": workspace_sha256(ws, artifacts_dir=rec.artifacts_path),
+                "workspace_walk_version": WORKSPACE_WALK_VERSION,
+            }
         record_grade(
             ledger, ctx, trial_id=rec.trial_id, task_sha="sha-task0",
             assertions=[{"id": "h1", "source": "holdout_test", "result": "pass"}],
-            binary_score=True,
+            binary_score=True, **commitment,
         )
     return spec, ledger, ctx
 
@@ -255,8 +267,9 @@ def test_scan_emits_one_event_with_metrics_and_version(tmp_path):
     assert report["coverage"]["covered"] == 1
     assert report["coverage"]["gaps"] == []
     assert set(report["coverage"]) == {
-        "trials", "covered", "gaps", "detail_by_arm", "detail_gaps"
+        "trials", "covered", "gaps", "detail_by_arm", "detail_gaps", "workspace_gaps"
     }
+    assert report["coverage"]["workspace_gaps"] == []  # committed + untampered
     assert report["flags"] == []  # honest trial: clean scan
 
 
@@ -270,6 +283,34 @@ def test_scan_flags_planted_tamper_and_absent_trajectory(tmp_path):
     assert report2["metrics"] == {}
     (gap,) = report2["coverage"]["gaps"]
     assert gap["reason"] == "absent"
+
+
+def test_h3_post_grade_workspace_tamper_is_disclosed_and_withheld(tmp_path):
+    """F-H3: after grading commits the workspace hash, a disk-level edit of the
+    workspace (deleting the incriminating bytes, planting exculpatory ones)
+    must surface as a named coverage gap — and the tampered bytes must produce
+    neither flags nor clean claims. Previously the scan read live disk with no
+    commitment anywhere and chain-anchored a 'clean' report over edited bytes."""
+    spec, ledger, ctx = _run_scan_experiment(tmp_path)
+    (trial_ev,) = find_events(ledger, "trial")
+    ws = Path(trial_ev["trial_record"]["artifacts_path"]).parent
+    (ws / "solution.py").write_text("# scrubbed after grade\n", encoding="utf-8")
+    report = run_forensics(tmp_path, ctx=ctx, review=False)
+    (gap,) = report["coverage"]["workspace_gaps"]
+    assert gap["reason"] == "sha_mismatch"
+    assert gap["trial_id"] == trial_ev["trial_record"]["trial_id"]
+    assert report["flags"] == []  # withheld evidence cannot frame an arm either
+
+
+def test_h3_legacy_grades_without_commitment_disclose_absent(tmp_path):
+    """F-H3: a chain whose grade events predate the workspace commitment scans
+    with legacy semantics (bytes still read) but the unverified evidence is a
+    disclosed gap, never silently full-authority."""
+    spec, ledger, ctx = _run_scan_experiment(tmp_path, commit_workspace=False)
+    report = run_forensics(tmp_path, ctx=ctx, review=False)
+    (gap,) = report["coverage"]["workspace_gaps"]
+    assert gap["reason"] == "absent"
+    assert report["flags"] == []  # legacy read path otherwise unchanged
 
 
 def test_scan_reviews_ride_the_report_and_fail_closed(tmp_path):

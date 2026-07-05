@@ -41,10 +41,14 @@ class FakeDockerRunner:
     def ensure_metered_network(self) -> None:
         self.metered_network_ensured = True
 
-    def resolve_digest(self, image: str) -> str:
+    def resolve_pinned(self, image: str):
         if "@sha256:" in image:
-            return image.split("@", 1)[1]
-        return self.digest
+            return image, image.split("@", 1)[1]
+        if self.digest is None:
+            return None  # unresolvable image: refused upstream [RN-12]
+        # tag path: the fake pins to its content-addressed Id, like docker's
+        # local-image fallback — the Id itself is the runnable ref [F-M-I2]
+        return self.digest, self.digest
 
     def run_container(self, cmd: list[str], timeout_s: int, env=None) -> RunOutput:
         self.last_cmd = cmd

@@ -247,9 +247,9 @@ def run_trial(
             flags.undeclared_model_egress = undeclared
     if result.proxy_metered_cost is not None:
         # Cross-check signal. Surfaced on the record so the cost guard can enforce
-        # on it when the arm can't self-report cost (telemetry null) [RN-2] — but
-        # it is NEVER written into telemetry.cost: nulls are flagged, not imputed
-        # [D004]. When both exist, also surface the delta; do NOT reconcile.
+        # on max(self-report, proxy) [RN-2, F-H4] — but it is NEVER written into
+        # telemetry.cost: nulls are flagged, not imputed [D004], and the recorded
+        # self-report is never reconciled. When both exist, also surface the delta.
         flags.proxy_metered_cost = result.proxy_metered_cost
         if telemetry.cost is not None:
             flags.proxy_cost_delta = round(result.proxy_metered_cost - telemetry.cost, 6)

@@ -73,12 +73,13 @@ def test_selfcheck_is_deterministic(tmp_path):
 
 def test_well_powered_fixture_passes(tmp_path):
     """A well-powered fixture with genuine per-task variation lands a selected
-    method whose empirical coverage falls within the Wilson band around 0.95."""
+    method whose empirical coverage falls within the Wilson band around 0.95 —
+    on the INDEPENDENT validation stream [F-M-S1], so the fixture must be
+    genuinely calibrated, not winner's-curse-flattered (16 clusters; the old
+    10-cluster fixture only passed on the shared draws, see the F-M-S1 test)."""
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    # 10 task clusters, control always passes, treatment alternates — enough
-    # non-degenerate deltas for a well-calibrated interval under the null.
-    for i in range(10):
+    for i in range(16):
         for r in range(2):
             seed_trial_and_grade(ledger, ctx, trial_id=f"c-{i}-{r}", task_id=f"t{i}",
                                  arm="control", repetition=r, passed=True)
@@ -216,3 +217,34 @@ def test_selfcheck_validates_the_deployed_method(tmp_path):
     res = run_selfcheck(ledger, spec, n_sim=40, n_boot=500)
     f = compute_findings(ledger, spec, spec.seed, coverage_n_sim=40, n_boot=500)
     assert res["selected_method"] == f.ci_selection["selected_method"]
+
+
+def test_m_s1_selfcheck_validates_on_a_fresh_stream(tmp_path):
+    """F-M-S1: selection and validation previously shared the same 200 draws,
+    so the coverage-closest-to-nominal winner was scored on the draws that
+    crowned it — a winner's-curse bias toward passing. The 10-cluster fixture
+    demonstrates it concretely: the selection-stream estimate sits inside the
+    Wilson band (the OLD gate passed), while the independent validation
+    estimate does not (the honest gate refuses)."""
+    from harness.analyze.selfcheck import run_selfcheck, wilson_interval
+
+    ctx = fixed_ctx()
+    spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
+    for i in range(10):
+        for r in range(2):
+            seed_trial_and_grade(ledger, ctx, trial_id=f"c-{i}-{r}", task_id=f"t{i}",
+                                 arm="control", repetition=r, passed=True)
+            seed_trial_and_grade(ledger, ctx, trial_id=f"x-{i}-{r}", task_id=f"t{i}",
+                                 arm="treatment", repetition=r, passed=(i % 2 == 0))
+    res = run_selfcheck(ledger, spec, n_sim=200, n_boot=800)
+    # the old shared-draw gate would have passed this fixture...
+    sel_lo, sel_hi = wilson_interval(res["coverage"], res["n_sim"])
+    assert sel_lo <= res["nominal"] <= sel_hi
+    # ...the independent validation stream refuses it, and the event carries
+    # both figures so the divergence is auditable.
+    assert res["passed"] is False
+    assert res["validation_coverage"] is not None
+    assert res["validation_n_sim"] == 400
+    assert res["validation_coverage"] != res["coverage"]
+    # deterministic: same ledger => byte-identical payload, fresh stream or not
+    assert run_selfcheck(ledger, spec, n_sim=200, n_boot=800) == res

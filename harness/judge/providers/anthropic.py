@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import Provider, ProviderError, ProviderRefusal
+from .base import MAX_OUTPUT_TOKENS, Provider, ProviderError, ProviderRefusal, normalize_usage
 from ._http import post_json, require_key
 
 
@@ -29,14 +29,17 @@ class AnthropicProvider(Provider):
         turns = [{"role": m["role"], "content": m["content"]} for m in messages if m["role"] != "system"]
         body = {
             "model": model,
-            "max_tokens": 2048,
+            "max_tokens": MAX_OUTPUT_TOKENS,
             "temperature": temperature,
             "system": system,
             "messages": turns,
         }
+        self.last_usage = None  # F-M-J3: reset so a failed call can't reuse stale usage
         resp = post_json(
             "https://api.anthropic.com/v1/messages",
             body,
             {"x-api-key": require_key("ANTHROPIC_API_KEY"), "anthropic-version": "2023-06-01"},
         )
+        usage = resp.get("usage") or {}
+        self.last_usage = normalize_usage(usage.get("input_tokens"), usage.get("output_tokens"))
         return _content(resp)

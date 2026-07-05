@@ -191,6 +191,18 @@ def official_fence_report(experiment_dir, *, corpus_manifest=None) -> dict:
         )
     )
 
+    # 8. insulation alarms [F-M-C3]: a holdout-leak breach on the latest probe
+    # refuses the official render, exactly as the render fence does.
+    alarms = (latest_probe(ledger_path) or {}).get("alarms") or []
+    items.append(
+        _item(
+            "insulation",
+            "no holdout-leak insulation alarms",
+            "ok" if not alarms else "failed",
+            "" if not alarms else f"{len(alarms)} insulation alarm(s)",
+        )
+    )
+
     return {
         "official_ready": all(i["state"] == "ok" for i in items),
         "items": items,

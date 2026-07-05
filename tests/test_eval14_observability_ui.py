@@ -324,6 +324,7 @@ def test_ac7_fence_checklist_and_artifacts(tmp_path):
     assert {i["id"]: i["state"] for i in report2["items"]} == {
         "chain": "ok", "lock": "ok", "corpus_identity": "ok", "corpus_coverage": "ok",
         "calibration": "ok", "rubric": "ok", "selfcheck": "ok", "contamination": "ok",
+        "insulation": "ok",  # F-M-C3
     }
     assert report2["official_ready"] is True
 

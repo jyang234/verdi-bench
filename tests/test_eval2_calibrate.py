@@ -1,13 +1,30 @@
-"""EVAL-2 AC-7 — kappa by class, human closes comparisons, escalation table."""
+"""EVAL-2 AC-7 — kappa by class, human closes comparisons, escalation table.
+
+F-L2: the raw-pooled ``kappa_by_class`` table was production-dead (superseded
+by the IPW seam); its escalation semantics are owned here through the LIVE
+shared gate (``review.kappa.keyed_kappa_gate``) instead."""
 
 from __future__ import annotations
 
 from harness.judge.calibrate import (
     cohens_kappa,
     comparison_closed,
-    kappa_by_class,
     pairs_from_ledger,
 )
+from harness.review.kappa import ReviewedItem, keyed_kappa_gate
+
+
+def _gate(pairs, **kw):
+    """Judge/human winner pairs → the live keyed gate, raw-pooled estimator."""
+    by_class: dict[str, list[ReviewedItem]] = {}
+    for pr in pairs:
+        by_class.setdefault(pr["task_class"], []).append(
+            ReviewedItem(pr["judge_winner"], pr["human_winner"], "mandatory")
+        )
+    kw.setdefault("kappa_threshold", 0.6)
+    return keyed_kappa_gate(by_class, weight="unweighted",
+                            categories=["A", "B", "TIE"],
+                            estimator="raw_pooled", **kw)
 from harness.judge.schema import Verdict, VerdictProvenance, Winner
 from harness.ledger import events
 from harness.ledger.events import append_human_verdict, append_verdict
@@ -36,7 +53,7 @@ def test_ac7_escalation_table():
         jw = "A" if i % 2 == 0 else "B"
         hw = "B" if i % 2 == 0 else "A"  # judge anti-correlated with human
         bad.append({"task_class": "hard", "judge_winner": jw, "human_winner": hw})
-    table = kappa_by_class(good + bad, kappa_threshold=0.6, min_human_verdicts=20)
+    table = _gate(good + bad, kappa_threshold=0.6, min_pairs=20)
     # D-5 (JD-4): the "easy" class is all-A/all-A — zero chance-corrected
     # information, so kappa is undefined and the class is insufficient (not
     # 1.0/sufficient, which over-credited the judge when there is no signal).
@@ -55,13 +72,13 @@ def test_jd4_degenerate_kappa_undefined_insufficient():
     assert weighted_kappa([3] * 10, [3] * 10, weight="quadratic",
                           categories=[1, 2, 3, 4, 5]) is None
     pairs = [{"task_class": "c", "judge_winner": "A", "human_winner": "A"} for _ in range(20)]
-    table = kappa_by_class(pairs, min_human_verdicts=1)
+    table = _gate(pairs, min_pairs=1)
     assert table["c"].kappa is None and table["c"].sufficient is False
 
 
 def test_ac7_insufficient_human_verdicts():
     items = [{"task_class": "rare", "judge_winner": "A", "human_winner": "A"} for _ in range(5)]
-    table = kappa_by_class(items, min_human_verdicts=20)
+    table = _gate(items, min_pairs=20)
     assert table["rare"].sufficient is False
     assert table["rare"].kappa is None
 

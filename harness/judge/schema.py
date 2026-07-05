@@ -76,12 +76,19 @@ class CantJudgeReason(str, Enum):
 
 
 # PRA-M13: reasons a re-run should re-attempt — the judge could not *run* the
-# comparison (a transient network/provider hiccup), mirroring grade's
-# TRANSIENT_CANT_GRADE. Everything else (context_overflow, parse, malformed,
+# comparison, mirroring grade's TRANSIENT_CANT_GRADE. ``parse`` joined the set
+# [F-M-J4]: a truncated or garbled reply is a property of one provider CALL
+# (sampling, truncation), not deterministic-for-a-fixed-packet the way an
+# identity leak is — permanently skipping the comparison over it was a
+# missing-data channel. Everything else (context_overflow, malformed,
 # identity/secret leak, refusal, judge_cant_judge) is deterministic for a fixed
 # packet, so retrying would only reproduce it — terminal, stays skipped.
 TRANSIENT_CANT_JUDGE = frozenset(
-    {CantJudgeReason.TIMEOUT.value, CantJudgeReason.PROVIDER_ERROR.value}
+    {
+        CantJudgeReason.TIMEOUT.value,
+        CantJudgeReason.PROVIDER_ERROR.value,
+        CantJudgeReason.PARSE.value,
+    }
 )
 
 
@@ -108,6 +115,11 @@ class VerdictProvenance(BaseModel):
     orders: str  # "both" | "single"
     temperature: float
     ts: str
+    # F-M-J3 (additive): provider-reported token usage summed over this
+    # verdict's calls — {input_tokens, output_tokens}, or None when the
+    # provider reports none (absence is honest, never zero-imputed). Feeds the
+    # judge-scoped token ceiling.
+    usage: Optional[dict] = None
 
 
 class Verdict(BaseModel):

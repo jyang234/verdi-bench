@@ -91,6 +91,20 @@ class AsymmetricContaminationError(AnalyzeError):
     invalid; exploratory still renders, watermarked [EVAL-10 AC-5, D001]."""
 
 
+class InsulationAlarmError(AnalyzeError):
+    """Official render requested while the latest contamination probe carries a
+    holdout-leak insulation alarm [F-M-C3, EVAL-4 AC-9] — an insulation
+    VIOLATION that must be investigated (and, if intentional, resolved through
+    the ledgered quarantine ceremony + re-scan), never rendered past."""
+
+
+class CorrectionMismatchError(AnalyzeError):
+    """Official render whose multi-arm correction differs from a prior official
+    render's recorded correction [F-H7] — one experiment, one pre-registered
+    decision procedure; a second official procedure is the post-hoc degree of
+    freedom the lock exists to prevent."""
+
+
 class CantAnalyzeReason(str, Enum):
     """Closed set of fail-closed analyze-refusal reasons [AN-3]."""
 
@@ -102,6 +116,8 @@ class CantAnalyzeReason(str, Enum):
     rubric_mismatch = "rubric_mismatch"
     selfcheck_required = "selfcheck_required"
     asymmetric_contamination = "asymmetric_contamination"
+    insulation_alarm = "insulation_alarm"
+    correction_mismatch = "correction_mismatch"
     analyze_error = "analyze_error"
 
 
@@ -122,6 +138,8 @@ def cant_analyze_reason(exc: AnalyzeError) -> CantAnalyzeReason:
         RubricMismatchError: CantAnalyzeReason.rubric_mismatch,
         SelfcheckRequiredError: CantAnalyzeReason.selfcheck_required,
         AsymmetricContaminationError: CantAnalyzeReason.asymmetric_contamination,
+        InsulationAlarmError: CantAnalyzeReason.insulation_alarm,
+        CorrectionMismatchError: CantAnalyzeReason.correction_mismatch,
     }.get(type(exc), CantAnalyzeReason.analyze_error)
 
 
@@ -165,6 +183,13 @@ class MDEBlock(BaseModel):
     value: Optional[float]
     assumption_based_mde: bool
     acknowledged_underpowered: bool
+    # F-M-S3: the plan-time MDE assumed the plan-time cluster count; when
+    # quarantines/missing grades shrank the realized N, quoting the plan figure
+    # overstates sensitivity. The achieved figure is a DISCLOSED 1/sqrt(n)
+    # scaling of the plan MDE at the realized N — present only when realized N
+    # is smaller than planned; the null phrasing then uses it.
+    achieved_value: Optional[float] = None
+    realized_n_tasks: Optional[int] = None
 
 
 class FindingsDocument(BaseModel):
@@ -194,6 +219,18 @@ class FindingsDocument(BaseModel):
     # EVAL-10 AC-5: per-arm contamination summary (tri-state counts + flagged
     # task ids + asymmetry) — disclosed in BOTH renders, fenced when asymmetric.
     contamination: dict = {}
+    # F-M-J1: judge coverage — terminal CANT_JUDGE comparisons are silently
+    # excluded from judge_preference and calibration (a biased missing-data
+    # channel when exclusions correlate with outcomes, e.g. a canary salted
+    # only on losing trials); the counts are disclosed in both renders.
+    judge_coverage: dict = {}
+    # F-L7: the render mode stamped INTO findings.json — the citable byte
+    # string was mode-ambiguous (nothing in the file said whether it was an
+    # official or exploratory computation), and exploratory JSON carried no
+    # watermark. Set by run_analyze before serialization, so findings_sha256
+    # covers it; None only on a bare compute_findings call that never renders.
+    mode: Optional[str] = None
+    watermark: Optional[str] = None
     # PRA-M4: multi-arm disclosure — {n_arms, correction, note}. Non-empty and
     # non-optional in the render whenever >2 arms were compared, so k-1
     # simultaneous decisions can never be presented without saying so.
@@ -499,7 +536,7 @@ def _lock_event(ledger_path) -> dict:
     return locks[0]
 
 
-def _mde_block(ledger_path) -> MDEBlock:
+def _mde_block(ledger_path, realized_n_tasks: Optional[int] = None) -> MDEBlock:
     lock = _lock_event(ledger_path)
     mde = lock.get("mde", {})
     # PL-14: the acknowledgment now rides inline on the lock event. A ledger locked
@@ -508,11 +545,31 @@ def _mde_block(ledger_path) -> MDEBlock:
     ack = bool(lock.get("acknowledged_underpowered")) or bool(
         find_events(ledger_path, "acknowledged_underpowered")
     )
+    value = mde.get("mde")
+    plan_n = mde.get("n_tasks")
+    achieved = None
+    if (
+        value is not None
+        and plan_n
+        and realized_n_tasks
+        and realized_n_tasks < plan_n
+    ):
+        # F-M-S3: MDE scales ~ 1/sqrt(n_clusters) under the paired cluster
+        # model — a disclosed first-order approximation, not a re-simulation.
+        achieved = round(value * (plan_n / realized_n_tasks) ** 0.5, 4)
     return MDEBlock(
-        value=mde.get("mde"),
+        value=value,
         assumption_based_mde="assumption_based_mde" in mde.get("flags", []),
         acknowledged_underpowered=ack,
+        achieved_value=achieved,
+        realized_n_tasks=realized_n_tasks,
     )
+
+
+def display_mde(mde: MDEBlock) -> Optional[float]:
+    """The sensitivity figure honest at the REALIZED N [F-M-S3]: the achieved
+    MDE when the realized cluster count fell below plan, else the plan MDE."""
+    return mde.achieved_value if mde.achieved_value is not None else mde.value
 
 
 def _claim_tag_for_metric(primary: str) -> str:
@@ -565,7 +622,9 @@ def _judge_calibration(ledger_path, spec, seed) -> Optional[dict]:
         "single_order_verdicts": single_order,
         "by_class": {
             c: {"kappa": v.kappa, "n": v.n, "sufficient": v.sufficient,
-                "escalate": v.escalate, "sensitivity": v.sensitivity}
+                "escalate": v.escalate, "sensitivity": v.sensitivity,
+                "kappa_ci": v.kappa_ci, "n_eff": v.n_eff,
+                "inconclusive": v.inconclusive}
             for c, v in sorted(cal.items())
         },
         "escalation_candidates": sorted(c for c, v in cal.items() if v.escalate),
@@ -837,10 +896,20 @@ def _two_sided_bootstrap_p(deltas, seed: int, n_boot: int) -> float:
     return (extreme + 1) / (n_boot + 1)
 
 
+# F-H7: no pair with fewer clusters is ever detected=True. A single task
+# cluster yields a zero-width bootstrap CI that trivially "excludes zero" (and
+# a Holm p of ~1/(n_boot+1)) — a degenerate resample, not evidence. Two is the
+# same threshold nullsim/selfcheck already treat as the insufficiency floor.
+MIN_DETECTION_CLUSTERS = 2
+
+
 def _apply_holm(comparisons, deltas_by_pair, parsed_rule, seed: int, *, n_boot: int, alpha: float) -> None:
     """Holm-Bonferroni step-down across the computable pairwise comparisons,
     rewriting each pair's decision in place [PRA-M4]. Non-computable pairs
-    (excluded / no data) are skipped. Every adjusted pair stays official."""
+    (excluded / no data) are skipped. Every adjusted pair stays official.
+    The minimum-cluster floor binds here too [F-H7]: the selfcheck's <2-cluster
+    gate only ever inspects the primary pair, so without it a single-task
+    secondary pair is declared an official detected effect at p≈1/(n_boot+1)."""
     idxs = [i for i, d in enumerate(deltas_by_pair) if d]
     pvals = {i: _two_sided_bootstrap_p(deltas_by_pair[i], seed, n_boot) for i in idxs}
     m = len(idxs)
@@ -855,12 +924,15 @@ def _apply_holm(comparisons, deltas_by_pair, parsed_rule, seed: int, *, n_boot: 
             reject[i] = True
     for i in idxs:
         cf = comparisons[i]
-        detected = bool(reject.get(i, False))
+        floored = len(deltas_by_pair[i]) < MIN_DETECTION_CLUSTERS
+        detected = bool(reject.get(i, False)) and not floored
         observed = cf.decision["observed_delta"]
         cf.decision["detected"] = detected
         cf.decision["decides_positive"] = detected and parsed_rule.decides_positive(observed)
         cf.decision["holm_p"] = pvals[i]
         cf.decision["correction"] = "holm"
+        if floored:
+            cf.decision["floor"] = "insufficient_clusters"
 
 
 def compute_findings(
@@ -871,19 +943,16 @@ def compute_findings(
     corpus_manifest=None,
     coverage_n_sim: int = 200,
     n_boot: int = 10_000,
-    multi_arm_correction: str = "none",
 ) -> FindingsDocument:
     """Compute the findings document — pure and reproducible in ``seed``.
 
-    ``multi_arm_correction`` [PRA-M4]: ``"none"`` (default) makes only the
-    primary pair official in a >2-arm design; ``"holm"`` makes every pair
-    official under a Holm-Bonferroni-adjusted family. Either way the >2-arm
-    comparison is disclosed.
+    The >2-arm decision policy comes from the sha-locked spec
+    (``spec.multi_arm_correction`` [F-H7, PRA-M4]): ``"none"`` makes only the
+    primary pair official; ``"holm"`` makes every pair official under a
+    Holm-Bonferroni-adjusted family. Either way the >2-arm comparison is
+    disclosed. It is not a parameter here — an analyze-time knob on an
+    official decision procedure is exactly what pre-registration forbids.
     """
-    if multi_arm_correction not in ("none", "holm"):
-        raise AnalyzeError(
-            f"unknown multi_arm_correction {multi_arm_correction!r} (none|holm)"
-        )
     primary = spec.primary_metric.value
 
     # metric → per-task per-arm value series
@@ -967,7 +1036,19 @@ def compute_findings(
         # AN-8: a decision is positive only when the effect is DETECTED (the CI
         # excludes 0) and the rule fires — never the raw rule on a null delta. The
         # artifact now matches the render, which already gates on detection.
-        detected = boot.excludes_zero()
+        # F-H7: below the cluster floor there is no detection at all — the
+        # decision names the floor so renders phrase it as structurally
+        # insufficient, distinct from a genuine null.
+        floored = boot.n_tasks < MIN_DETECTION_CLUSTERS
+        detected = boot.excludes_zero() and not floored
+        decision = {
+            "rule": parsed_rule.raw,
+            "observed_delta": observed,
+            "detected": detected,
+            "decides_positive": detected and parsed_rule.decides_positive(observed),
+        }
+        if floored:
+            decision["floor"] = "insufficient_clusters"
         comparisons.append(
             ComparisonFinding(
                 label=f"{arm_a} vs {arm_b}",
@@ -977,12 +1058,7 @@ def compute_findings(
                 stats=boot.as_dict(),
                 effect=eff.as_dict(),
                 claim_tag=claim_tag,
-                decision={
-                    "rule": parsed_rule.raw,
-                    "observed_delta": observed,
-                    "detected": detected,
-                    "decides_positive": detected and parsed_rule.decides_positive(observed),
-                },
+                decision=decision,
                 excluded_from_official=excluded,
                 exclusion_reason=(
                     f"telemetry field {metric_field!r} has asymmetric nulls; "
@@ -1001,7 +1077,7 @@ def compute_findings(
     multi_arm: dict = {}
     n_pairs = len(comparisons)
     if n_pairs > 1:
-        if multi_arm_correction == "holm":
+        if spec.multi_arm_correction == "holm":
             _apply_holm(comparisons, deltas_by_pair, parsed_rule, seed, n_boot=n_boot,
                         alpha=1.0 - DEFAULT_CI_LEVEL)
             multi_arm = {
@@ -1010,7 +1086,9 @@ def compute_findings(
                 "note": (
                     f"{n_pairs} pairwise comparisons against {arm_a}; every pair's "
                     "decision is Holm-Bonferroni-adjusted to control the family-wise "
-                    "error rate at the pre-registered level."
+                    "error rate at the pre-registered level. Decisions use "
+                    "Holm-adjusted recentered-bootstrap p-values; displayed intervals "
+                    "remain unadjusted per-comparison CIs [F-H6]."
                 ),
             }
         else:
@@ -1025,7 +1103,8 @@ def compute_findings(
                     f"pre-registered primary pair ({comparisons[0].label}) carries a "
                     "decision. The remaining pairs are exploratory (CI/effect shown, "
                     "no decision) — the spec pre-registers exactly one decision rule. "
-                    "Re-run with --multi-arm-correction=holm for a corrected family."
+                    "Pre-register multi_arm_correction: holm in the spec for a "
+                    "corrected family [F-H7]."
                 ),
             }
 
@@ -1050,7 +1129,12 @@ def compute_findings(
         decision_rule=parsed_rule.raw,
         spec_corpus={"id": spec.corpus.id, "version": spec.corpus.version},
         comparisons=comparisons,
-        mde=_mde_block(ledger_path),
+        mde=_mde_block(
+            ledger_path,
+            realized_n_tasks=(
+                comparisons[0].n_tasks if comparisons and comparisons[0].stats else None
+            ),
+        ),
         ci_selection=selection.as_dict(),
         confounds=flag_confounds(ledger_path, spec),
         secondary_metrics=_secondary_metrics(ledger_path, spec),
@@ -1060,12 +1144,73 @@ def compute_findings(
         overrides=_override_summary(ledger_path),
         rubric_committed=_lock_event(ledger_path).get("rubric_sha256") is not None,
         contamination=contamination_summary(ledger_path, spec, corpus_manifest),
+        judge_coverage=_judge_coverage(ledger_path),
         multi_arm=multi_arm,
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
         forensics=_forensics_section(ledger_path, spec),
         provenance=provenance,
     )
+
+
+def _judge_coverage(ledger_path) -> dict:
+    """CANT_JUDGE exposure [F-M-J1]: how many comparisons the judge attempted
+    and how many are terminally unjudgeable (permanently excluded from
+    judge_preference and calibration by the re-run skip), by reason."""
+    from ..judge.schema import TRANSIENT_CANT_JUDGE
+
+    cant: dict[str, int] = {}
+    # F-M-J2: identity_leak counts per task class — a scrub pattern that is
+    # over-broad for one class of tasks (e.g. every Google-API task) shows up
+    # as a concentrated leak rate there, so the corpus-wide FP pattern the
+    # narrowed corpus guards against stays visible if it ever recurs.
+    leak_by_class: dict[str, int] = {}
+    total = 0
+    for ev in find_events(ledger_path, events.JUDGE_VERDICT):
+        v = ev.get("verdict") or {}
+        total += 1
+        if v.get("winner") == "CANT_JUDGE":
+            reason = v.get("reason") or "unknown"
+            cant[reason] = cant.get(reason, 0) + 1
+            if reason == "identity_leak":
+                cls = v.get("task_class") or "default"
+                leak_by_class[cls] = leak_by_class.get(cls, 0) + 1
+    if not total:
+        return {}
+    return {
+        "verdicts": total,
+        "cant_judge": dict(sorted(cant.items())),
+        "terminal_cant_judge": sum(
+            n for r, n in cant.items() if r not in TRANSIENT_CANT_JUDGE
+        ),
+        "identity_leak_by_class": dict(sorted(leak_by_class.items())),
+    }
+
+
+def _judge_coverage_lines(findings: FindingsDocument) -> list[str]:
+    """Disclosure lines for terminal CANT_JUDGE exclusions [F-M-J1] — shared by
+    the markdown render and the dossier disclosure sections; [] when the judge
+    never ran or every comparison was judged."""
+    jc = findings.judge_coverage
+    if not jc or not jc.get("cant_judge"):
+        return []
+    detail = ", ".join(f"{r}: {n}" for r, n in jc["cant_judge"].items())
+    lines = [
+        f"- {jc['terminal_cant_judge']} of {jc['verdicts']} judged comparison(s) "
+        f"terminally unjudgeable ({detail}) — excluded from judge_preference and "
+        "calibration, never imputed. If exclusions correlate with outcomes "
+        "(e.g. an arm salting canaries on losing trials), judge_preference is "
+        "biased by this missing-data channel [F-M-J1]."
+    ]
+    leaks = jc.get("identity_leak_by_class") or {}
+    if leaks:
+        by_class = ", ".join(f"{cls}: {n}" for cls, n in leaks.items())
+        lines.append(
+            f"- identity_leak by task class ({by_class}) — a rate concentrated "
+            "in one class can signal an over-broad scrub pattern rather than a "
+            "real leak [F-M-J2]."
+        )
+    return lines
 
 
 # --- rendering + the fence -------------------------------------------------
@@ -1123,7 +1268,11 @@ def _comparison_lines(cf: ComparisonFinding, mde: MDEBlock) -> list[str]:
         return lines
     s = cf.stats
     ci = f"[{_fmt(s['ci_low'])}, {_fmt(s['ci_high'])}]"
-    detected = s["ci_low"] > 0.0 or s["ci_high"] < 0.0
+    # F-H6: branch on the computed decision — the same field the dossier's
+    # verdict layer reads — never a local re-derivation from the raw CI, which
+    # diverges from a Holm-rewritten decision and lets one analyze invocation
+    # emit two artifacts that disagree.
+    detected = bool(cf.decision.get("detected"))
     lines.append(f"- mean paired delta: {_fmt(cf.effect['mean_paired_delta'])}")
     lines.append(f"- Cliff's delta: {_fmt(cf.effect['cliffs_delta'])}")
     # PRA-M14: name the method that ACTUALLY produced the interval; if the
@@ -1135,7 +1284,7 @@ def _comparison_lines(cf: ComparisonFinding, mde: MDEBlock) -> list[str]:
     lines.append(
         f"- {int(s['ci_level'] * 100)}% CI ({method_label}, {s['n_boot']} resamples): {ci}"
     )
-    mde_val = _fmt(mde.value)
+    mde_val = _fmt(display_mde(mde))  # honest at the realized N [F-M-S3]
     if not cf.official_decision:
         # PRA-M4: a non-primary pair in a multi-arm design — CI/effect shown, but
         # no decision, because the spec pre-registers exactly one decision rule.
@@ -1144,6 +1293,16 @@ def _comparison_lines(cf: ComparisonFinding, mde: MDEBlock) -> list[str]:
         lines.append(
             f"- Exploratory pair (not the pre-registered primary): no decision"
             f"{extra}."
+        )
+    elif cf.decision.get("floor") == "insufficient_clusters":
+        # F-H7: structurally insufficient — distinct from a genuine null, which
+        # is a statement about the data, not about there being almost none.
+        holm_p = cf.decision.get("holm_p")
+        tag = f" (Holm p={_fmt(holm_p, 3)})" if holm_p is not None else ""
+        lines.append(
+            f"- Insufficient task clusters for any detection "
+            f"(n_tasks={cf.n_tasks} < {MIN_DETECTION_CLUSTERS}): no decision "
+            f"possible{tag} [F-H7]."
         )
     elif detected:
         decides = cf.decision["decides_positive"]
@@ -1262,6 +1421,12 @@ def _forensics_lines(findings: FindingsDocument) -> list[str]:
 
 def _mde_lines(mde: MDEBlock) -> list[str]:
     lines = [f"MDE = {_fmt(mde.value)}"]
+    if mde.achieved_value is not None:
+        lines.append(
+            f"  achieved at realized n_tasks={mde.realized_n_tasks}: "
+            f"\u2248{_fmt(mde.achieved_value)} (plan-time MDE scaled 1/\u221an — "
+            "quarantines/missing grades shrank the realized clusters) [F-M-S3]"
+        )
     if mde.assumption_based_mde:
         lines.append("  (assumption_based_mde: variance not yet calibrated)")
     if mde.acknowledged_underpowered:
@@ -1456,12 +1621,57 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
         findings.contamination or {}
     ).get("asymmetric", [])
     if asymmetric:
-        detail = "; ".join(_asymmetry_line(a) for a in asymmetric)
+        detail = "; ".join(asymmetry_line(a) for a in asymmetric)
         raise AsymmetricContaminationError(
             f"official render refused: asymmetric flagged contamination — "
             f"{detail}. The pairing is invalid for these tasks; exploratory "
             "still renders, watermarked, with the full summary [EVAL-10 AC-5]"
         )
+    # 8. holdout-leak insulation alarms [F-M-C3, EVAL-4 AC-9]: an alarm on the
+    # latest ledgered probe is an insulation VIOLATION — holdout content
+    # reproduced in a solution — and refuses the official render until it is
+    # investigated: quarantine the offending trial (ledgered), re-run the scan
+    # (quarantined trials are skipped, disclosed) and the probe.
+    _assert_no_insulation_alarms(ledger_path)
+    # 7. multi-arm correction consistency [F-H7]: one pre-registered decision
+    # procedure per experiment. The policy lives in the sha-locked spec, so two
+    # official renders cannot legitimately differ through the tool; this is
+    # defense in depth against a chain produced under a different policy.
+    _assert_correction_consistent(
+        (findings.multi_arm or {}).get("correction", "none"), ledger_path
+    )
+
+
+def _assert_no_insulation_alarms(ledger_path) -> None:
+    """Refuse an official render while the latest probe carries insulation
+    alarms [F-M-C3]. Probes predating the recorded field simply lack it."""
+    alarms = (latest_probe(ledger_path) or {}).get("alarms") or []
+    if alarms:
+        detail = "; ".join(alarms)
+        raise InsulationAlarmError(
+            f"official render refused: {len(alarms)} holdout-leak insulation "
+            f"alarm(s) on the latest contamination probe — {detail}. Investigate; "
+            "if intentional, quarantine the trial (ledgered) and re-run "
+            "`bench contamination probe` [F-M-C3, EVAL-4 AC-9]"
+        )
+
+
+def _assert_correction_consistent(correction: str, ledger_path) -> None:
+    """Refuse an official render whose applied multi-arm correction differs from
+    any prior official render's recorded correction [F-H7]. Render events that
+    predate the recorded field are skipped — a legacy chain is not refused on,
+    but the first post-field official render pins the procedure for the rest."""
+    for ev in find_events(ledger_path, events.FINDINGS_RENDERED):
+        if ev.get("mode") != "official":
+            continue
+        prior = ev.get("multi_arm_correction")
+        if prior is not None and prior != correction:
+            raise CorrectionMismatchError(
+                f"official render refused: a prior official render used "
+                f"multi-arm correction {prior!r}; this render would use "
+                f"{correction!r} — one pre-registered decision procedure per "
+                "experiment [F-H7]"
+            )
 
 
 def _override_lines(findings: FindingsDocument) -> list[str]:
@@ -1477,7 +1687,7 @@ def _override_lines(findings: FindingsDocument) -> list[str]:
     ]
 
 
-def _asymmetry_line(a: dict) -> str:
+def asymmetry_line(a: dict) -> str:
     """One asymmetric-contamination entry, worded identically in the official
     refusal and the exploratory disclosure so the two accounts reconcile."""
     return (
@@ -1516,7 +1726,7 @@ def _contamination_lines(findings: FindingsDocument) -> list[str]:
             "disclosed as unknown, never upgraded to clean [EVAL-10 AC-1]"
         )
     for a in c.get("asymmetric", []):
-        lines.append(f"- ⚠ ASYMMETRIC: {_asymmetry_line(a)} — pairing invalid")
+        lines.append(f"- ⚠ ASYMMETRIC: {asymmetry_line(a)} — pairing invalid")
     return lines
 
 
@@ -1555,6 +1765,9 @@ def _render_official_md(findings: FindingsDocument) -> str:
     override = _override_lines(findings)
     if override:
         out += ["", "## Terminal overrides", *override]
+    judge_cov = _judge_coverage_lines(findings)
+    if judge_cov:
+        out += ["", "## Judge coverage", *judge_cov]
     if not findings.rubric_committed:
         out += [
             "",
@@ -1631,6 +1844,9 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
     override = _override_lines(findings)
     if override:
         out += section("Terminal overrides", override)
+    judge_cov = _judge_coverage_lines(findings)
+    if judge_cov:
+        out += section("Judge coverage", judge_cov)
     out += section("CI method selection (coverage)", [f"- {findings.ci_selection}"])
     out += section("Provenance", _provenance_lines(findings))
     return "\n".join(out) + "\n"
@@ -1680,7 +1896,9 @@ def _judge_calibration_lines(findings: FindingsDocument) -> list[str]:
     jc = findings.judge_calibration
     lines = [
         f"- thresholds: kappa ≥ {jc['kappa_threshold']} at ≥ {jc['min_human_verdicts']} "
-        "human verdicts (below ⇒ flagged for panel escalation) [AC-7]"
+        "EFFECTIVE human verdicts (Kish, IPW-weighted); escalation fires when the "
+        "interval's UPPER bound is below threshold — a straddling interval is "
+        "INCONCLUSIVE, not silently fine [AC-7, F-M-S4]"
     ]
     if jc.get("single_order_verdicts"):
         lines.append(
@@ -1692,10 +1910,21 @@ def _judge_calibration_lines(findings: FindingsDocument) -> list[str]:
         return lines
     for cls, c in jc["by_class"].items():
         if not c["sufficient"]:
-            lines.append(f"- {cls}: n={c['n']} (insufficient for kappa)")
+            n_eff = c.get("n_eff")
+            eff = f", n_eff={_fmt(n_eff, 1)}" if n_eff is not None else ""
+            lines.append(f"- {cls}: n={c['n']}{eff} (insufficient for kappa)")
         else:
-            flag = " ESCALATE" if c["escalate"] else ""
-            lines.append(f"- {cls}: kappa={_fmt(c['kappa'], 3)} (n={c['n']}){flag}")
+            flag = (
+                " ESCALATE" if c["escalate"]
+                else (" INCONCLUSIVE (interval straddles threshold)"
+                      if c.get("inconclusive") else "")
+            )
+            ci = c.get("kappa_ci")
+            ci_txt = f" CI=[{_fmt(ci[0], 3)}, {_fmt(ci[1], 3)}]" if ci else ""
+            lines.append(
+                f"- {cls}: kappa={_fmt(c['kappa'], 3)}{ci_txt} "
+                f"(n={c['n']}, n_eff={_fmt(c.get('n_eff'), 1)}){flag}"
+            )
             # D-P7-4: the floor-only sensitivity beside the IPW headline, so the
             # reweighting's leverage on the headline is visible.
             sens = c.get("sensitivity")

@@ -161,3 +161,71 @@ def test_dp7_4_render_shows_ipw_and_floor_sensitivity():
     text = "\n".join(_judge_calibration_lines(_F()))
     assert "kappa=0.400" in text
     assert "sensitivity (floor-only): kappa=0.200" in text
+
+
+# --- F-M-S4: interval-gated escalation, Kish effective n ---------------------
+def test_m_s4_kish_effective_n():
+    """Kish n_eff: 6 unit weights + 2 floor items at 1/0.25=4 ⇒ (14)²/38."""
+    from harness.review.kappa import kish_effective_n
+
+    items = [ReviewedItem("A", "A", "mandatory")] * 6 + [ReviewedItem("A", "B", "floor")] * 2
+    assert abs(kish_effective_n(items, 0.25) - 196 / 38) < 1e-9
+    assert kish_effective_n([], 0.25) == 0.0
+
+
+def test_m_s4_bootstrap_interval_seeded_and_fail_closed():
+    from harness.review.kappa import bootstrap_kappa_interval
+
+    items = (
+        [ReviewedItem("A", "A", "mandatory")] * 8
+        + [ReviewedItem("B", "B", "mandatory")] * 8
+        + [ReviewedItem("A", "B", "floor")] * 4
+    )
+    ci = bootstrap_kappa_interval(items, floor_prob=0.25, seed=7)
+    assert ci is not None and ci[0] <= ci[1]
+    assert ci == bootstrap_kappa_interval(items, floor_prob=0.25, seed=7)  # seeded
+    assert bootstrap_kappa_interval(items[:1], floor_prob=0.25, seed=7) is None
+
+
+def test_m_s4_escalation_gates_on_interval_not_point(tmp_path):
+    """F-M-S4: escalation previously fired on the bare point estimate k < 0.6.
+    A confidently-bad class (upper bound below threshold) still escalates; a
+    noisy small-n class whose interval straddles the threshold is INCONCLUSIVE —
+    insufficient precision, disclosed, never silently fine."""
+    ledger = tmp_path / "bad.ndjson"
+    ctx = fixed_ctx()
+    # systematic judge-vs-human anti-agreement in both directions (and every
+    # comparison a judge-vs-holdout disagreement, so all are mandatory-reviewed):
+    # kappa confidently ~ -1
+    for i in range(8):
+        _seed_comparison(ledger, ctx, f"d{i}", control_pass=(i % 2 == 0),
+                         treatment_pass=(i % 2 == 1),
+                         judge_winner="B" if i % 2 == 0 else "A",
+                         human_winner="A" if i % 2 == 0 else "B")
+    cal = kappa_by_class_ipw(ledger, arm_a="control", arm_b="treatment", seed=7,
+                             min_human_verdicts=5)
+    c = cal["cls"]
+    assert c.sufficient and c.kappa is not None and c.kappa < 0.6
+    assert c.kappa_ci is not None and c.kappa_ci[1] < 0.6
+    assert c.escalate is True and c.inconclusive is False
+
+    # a small-n class whose interval straddles the threshold: the point
+    # estimate (0.83) previously read as silently fine; the interval says the
+    # precision is garbage ⇒ INCONCLUSIVE, disclosed, and never an escalation
+    ledger2 = tmp_path / "mixed.ndjson"
+    i = 0
+    for _ in range(6):
+        _seed_comparison(ledger2, ctx, f"a{i}", control_pass=True, treatment_pass=False,
+                         judge_winner="A", human_winner="A"); i += 1
+    for _ in range(6):
+        _seed_comparison(ledger2, ctx, f"b{i}", control_pass=False, treatment_pass=True,
+                         judge_winner="B", human_winner="B"); i += 1
+    _seed_comparison(ledger2, ctx, "d0", control_pass=True, treatment_pass=False,
+                     judge_winner="B", human_winner="A")
+    cal2 = kappa_by_class_ipw(ledger2, arm_a="control", arm_b="treatment", seed=7,
+                              min_human_verdicts=3)  # n_eff=3.4 here: gate on n_eff
+    c2 = cal2["cls"]
+    assert c2.sufficient and c2.kappa is not None
+    assert c2.kappa_ci is not None
+    assert c2.kappa_ci[0] < 0.6 <= c2.kappa_ci[1]  # straddles the threshold
+    assert c2.inconclusive is True and c2.escalate is False

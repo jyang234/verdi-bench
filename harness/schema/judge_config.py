@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .errors import AliasJudgeIdError
 
@@ -75,6 +75,13 @@ class JudgeConfig(BaseModel):
     temperature: float = 0.0
     panel: Optional[dict] = None  # v2; schema stubbed only
     escalation: EscalationConfig = EscalationConfig()
+    # F-M-J3 (approved): a judge-scoped spend ceiling, denominated in TOKENS —
+    # a USD ceiling would embed a mutable price table in a deterministic
+    # instrument. Total provider-reported tokens (input+output) across the
+    # experiment's verdicts; refuse-to-start, like the trial cost guard.
+    # Absent ⇒ unlimited (the pre-existing behavior). Rides the locked spec
+    # bytes, so it is pre-registered by construction.
+    token_ceiling: Optional[int] = Field(default=None, gt=0)
 
     @field_validator("model")
     @classmethod

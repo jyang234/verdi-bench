@@ -256,10 +256,11 @@ _PREF_ARMS = [
 ]
 
 
-def _pref_ledger(tmp_path, ctx, *, arms):
+def _pref_ledger(tmp_path, ctx, *, arms, **overrides):
     spec, _, ledger = locked_experiment(
         tmp_path / "e", ctx=ctx, arms=arms,
         primary_metric="judge_preference", decision_rule="delta_judge_preference > 0",
+        **overrides,
     )
     return spec, ledger
 
@@ -338,25 +339,225 @@ def test_m4_multi_arm_default_only_primary_pair_official(tmp_path):
 
 
 def test_m4_multi_arm_holm_makes_every_pair_official(tmp_path):
-    """PRA-M4: --multi-arm-correction=holm makes every pair official under a
-    Holm-adjusted family, stamping each decision with its Holm p-value."""
+    """PRA-M4: a spec-locked multi_arm_correction: holm makes every pair official
+    under a Holm-adjusted family, stamping each decision with its Holm p-value
+    [F-H7: the policy is pre-registered, not an analyze-time flag]."""
     ctx = fixed_ctx()
-    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS)
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
     ct = {"A": "control", "B": "treatment"}
     cc = {"A": "control", "B": "challenger"}
     for i in range(4):
         _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
         _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
-    f = compute_findings(ledger, spec, spec.seed, multi_arm_correction="holm", **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
     assert f.multi_arm["correction"] == "holm"
     for cf in f.comparisons:
         assert cf.official_decision is True
         assert "holm_p" in cf.decision and cf.decision["correction"] == "holm"
     # deterministic in seed: recomputing yields identical Holm p-values
-    f2 = compute_findings(ledger, spec, spec.seed, multi_arm_correction="holm", **_FAST)
+    f2 = compute_findings(ledger, spec, spec.seed, **_FAST)
     assert [c.decision["holm_p"] for c in f.comparisons] == [
         c.decision["holm_p"] for c in f2.comparisons
     ]
+
+
+def test_h7_correction_is_read_from_the_locked_spec(tmp_path):
+    """F-H7: the multi-arm decision policy rides the sha-locked spec bytes —
+    pre-registered, never an analyze-time knob. Absent field ⇒ 'none'."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
+    ct = {"A": "control", "B": "treatment"}
+    cc = {"A": "control", "B": "challenger"}
+    for i in range(4):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+        _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.multi_arm["correction"] == "holm"
+    for cf in f.comparisons:
+        assert cf.official_decision is True and "holm_p" in cf.decision
+
+
+def test_h7_single_task_pair_is_never_detected(tmp_path):
+    """F-H7 floor: one task cluster yields a zero-width CI that excludes zero —
+    that is not evidence. detected must be False with the floor named, and the
+    render must phrase it as structurally insufficient, not as a null result."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    _seed_pref_verdict(ledger, ctx, cid="c-0", task_id="t0", winner="A",
+                       arm_map={"A": "control", "B": "treatment"})
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    cf = f.comparisons[0]
+    assert cf.n_tasks == 1
+    assert cf.decision["detected"] is False
+    assert cf.decision["floor"] == "insufficient_clusters"
+    md = render_markdown(f, ledger, "exploratory")
+    block = _md_block(md, cf.label)
+    assert "Insufficient task clusters" in block
+    assert "Effect detected" not in block and "No effect ≥ MDE detected" not in block
+
+
+def test_h7_holm_single_task_secondary_pair_floored(tmp_path):
+    """F-H7: under Holm, a single-task secondary pair reached p≈1/(n_boot+1) and
+    was declared an official detected effect — the selfcheck's <2-cluster gate
+    only ever inspects the primary pair. The floor binds in the Holm path too."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
+    ct = {"A": "control", "B": "treatment"}
+    cc = {"A": "control", "B": "challenger"}
+    for i in range(8):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    _seed_pref_verdict(ledger, ctx, cid="cc-0", task_id="t0", winner="A", arm_map=cc)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    by_label = {cf.label: cf for cf in f.comparisons}
+    sec = by_label["control vs challenger"]
+    assert sec.n_tasks == 1
+    assert sec.decision["detected"] is False
+    assert sec.decision["floor"] == "insufficient_clusters"
+    assert sec.decision.get("holm_p") is not None  # p is disclosed; floor binds
+    # a 2-cluster pair with a real effect still detects: the floor is minimal
+    primary = by_label["control vs treatment"]
+    assert primary.n_tasks == 8 and primary.decision["detected"] is True
+
+
+def test_h7_render_event_records_the_applied_correction(tmp_path):
+    """F-H7 defense in depth: every findings_rendered event records the applied
+    multi-arm correction, so the chain shows which decision procedure produced
+    each render."""
+    from harness.analyze.cli import run_analyze
+    from harness.ledger.query import find_events
+
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
+    ct = {"A": "control", "B": "treatment"}
+    cc = {"A": "control", "B": "challenger"}
+    for i in range(3):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+        _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
+    out = run_analyze(tmp_path / "e", mode="exploratory", actor="tester")
+    assert out is not None
+    ev = find_events(ledger, "findings_rendered")[-1]
+    assert ev["multi_arm_correction"] == "holm"
+
+
+def test_h7_official_fence_refuses_correction_mismatch(tmp_path):
+    """F-H7: an official render whose correction differs from a prior official
+    render's recorded correction is refused with its own named reason — one
+    pre-registered decision procedure per experiment. Legacy render events
+    without the recorded field are skipped, never refused on."""
+    import pytest
+
+    from harness.analyze.report import (
+        CantAnalyzeReason,
+        CorrectionMismatchError,
+        _assert_correction_consistent,
+        cant_analyze_reason,
+    )
+    from harness.ledger.events import record_findings_rendered
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    record_findings_rendered(  # legacy official render: no recorded correction
+        ledger, ctx, mode="official", primary_metric="judge_preference",
+        ledger_head_hash="h" * 64, findings_sha256="f" * 64,
+    )
+    _assert_correction_consistent("holm", ledger)  # legacy events are skipped
+    record_findings_rendered(
+        ledger, ctx, mode="official", primary_metric="judge_preference",
+        ledger_head_hash="h" * 64, findings_sha256="f" * 64,
+        multi_arm_correction="none",
+    )
+    _assert_correction_consistent("none", ledger)  # matching passes
+    with pytest.raises(CorrectionMismatchError, match="one pre-registered decision"):
+        _assert_correction_consistent("holm", ledger)
+    assert (
+        cant_analyze_reason(CorrectionMismatchError("x"))
+        is CantAnalyzeReason.correction_mismatch
+    )
+
+
+def test_h7_analyze_flag_is_gone(tmp_path):
+    """F-H7: the analyze-time knob is removed — the policy is spec-locked."""
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+
+    r = CliRunner().invoke(app, ["analyze", str(tmp_path), "--multi-arm-correction", "holm"])
+    assert r.exit_code != 0
+
+
+def _holm_divergent_findings(tmp_path):
+    """A findings document where the primary pair's Holm decision and its raw
+    95% CI disagree: 21 wins / 9 losses puts the Holm p under the step-down
+    threshold (detected=True) while the deployed CI touches zero. The premise
+    is seed-pinned; if the bootstrap stream ever changes legitimately, the
+    premise asserts below fail loudly and the fixture needs re-tuning — the
+    parity assertion itself must hold for ANY configuration."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
+    ct = {"A": "control", "B": "treatment"}
+    cc = {"A": "control", "B": "challenger"}
+    for i in range(30):
+        _seed_pref_verdict(
+            ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}",
+            winner="A" if i < 21 else "B", arm_map=ct,
+        )
+        _seed_pref_verdict(  # secondary pair: mean-zero, Holm never rejects it
+            ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}",
+            winner="A" if i % 2 == 0 else "B", arm_map=cc,
+        )
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    return f, ledger
+
+
+def _md_block(md: str, label: str) -> str:
+    """The markdown lines for one comparison, up to the next comparison header."""
+    start = md.index(f"**Comparison: {label}**")
+    rest = md[start + 1:]
+    end = rest.find("**Comparison: ")
+    return md[start:] if end == -1 else md[start:start + 1 + end]
+
+
+def test_h6_markdown_verdict_follows_holm_decision(tmp_path):
+    """F-H6: markdown must branch on decision['detected'] (the Holm-rewritten,
+    dossier-visible decision), not re-derive detection from the unadjusted CI —
+    one analyze invocation must never emit two artifacts that disagree."""
+    f, ledger = _holm_divergent_findings(tmp_path)
+    cf = {c.label: c for c in f.comparisons}["control vs treatment"]
+    # premise: the divergence window (see _holm_divergent_findings docstring)
+    assert cf.decision["detected"] is True
+    assert cf.stats["ci_low"] <= 0.0  # raw CI does NOT exclude zero
+    md = render_markdown(f, ledger, "exploratory")
+    block = _md_block(md, "control vs treatment")
+    assert "Effect detected" in block
+    assert "No effect ≥ MDE detected" not in block
+
+
+def test_h6_dossier_verdict_layer_matches_markdown(tmp_path):
+    """F-H6 parity net: the dossier verdict layer and the markdown block state
+    the same detection verdict for every comparison under Holm."""
+    from harness.analyze.dossier import verdict_sentences
+
+    f, ledger = _holm_divergent_findings(tmp_path)
+    md = render_markdown(f, ledger, "exploratory")
+    for cf in f.comparisons:
+        block = _md_block(md, cf.label)
+        sentences = " ".join(verdict_sentences(f, cf))
+        md_detected = "Effect detected" in block
+        dossier_detected = "an effect was detected" in sentences
+        assert md_detected == dossier_detected, cf.label
+
+
+def test_h6_holm_estimator_split_disclosed_in_both_artifacts(tmp_path):
+    """F-H6: under Holm the decision (adjusted recentered-bootstrap p) and the
+    displayed interval (unadjusted per-comparison CI) use different procedures —
+    both artifacts must say so rather than imply one procedure."""
+    from harness.analyze.dossier import verdict_sentences
+
+    f, ledger = _holm_divergent_findings(tmp_path)
+    md = render_markdown(f, ledger, "exploratory")
+    assert "unadjusted per-comparison" in md
+    primary = f.comparisons[0]
+    assert any("unadjusted per-comparison" in s for s in verdict_sentences(f, primary))
 
 
 def test_an10_ci_selection_reports_deployed_n_boot(tmp_path):
@@ -997,3 +1198,130 @@ def test_analyze_one_render_event(tmp_path):
     assert result.exit_code == 0, result.output
     after = len(find_events(ledger, "findings_rendered"))
     assert after - before == 1
+
+
+def test_m_j1_terminal_cant_judge_exclusions_are_disclosed(tmp_path):
+    """F-M-J1: terminal CANT_JUDGE comparisons are permanently excluded from
+    judge_preference (excluded-never-imputed) — previously with zero disclosure,
+    a biased missing-data channel an arm can drive (canary salting, junk-file
+    context overflow). The counts now ride the findings and both renders."""
+    from harness.analyze.dossier import _disclosure_sections
+
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    for i in range(4):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    for i, reason in enumerate(("identity_leak", "identity_leak", "context_overflow")):
+        prov = VerdictProvenance(
+            judge_model="fake/judge-1", rubric_sha256="r" * 64, packet_sha256="p" * 64,
+            call_ids=["c1"], orders="both", temperature=0.0, ts="t",
+        )
+        v = Verdict(
+            winner=Winner("CANT_JUDGE"), reason=reason, evidence=[], provenance=prov,
+            comparison_id=f"cj-{i}", task_id=f"x{i}", task_class="cls", arm_map=ct,
+        )
+        append_verdict(ledger, ctx, verdict=v.model_dump(mode="json"))
+
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.judge_coverage["verdicts"] == 7
+    assert f.judge_coverage["cant_judge"] == {"context_overflow": 1, "identity_leak": 2}
+    assert f.judge_coverage["terminal_cant_judge"] == 3
+
+    md = render_markdown(f, ledger, "exploratory")
+    assert "Judge coverage" in md and "identity_leak: 2" in md
+    titles = [sec["title"] for sec in _disclosure_sections(f)]
+    assert "Judge coverage" in titles  # dossier parity
+
+
+def test_m_j1_full_judge_coverage_discloses_nothing(tmp_path):
+    """No CANT_JUDGE ⇒ no coverage section — disclosure is for exclusions."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    for i in range(3):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.judge_coverage["cant_judge"] == {}
+    assert "Judge coverage" not in render_markdown(f, ledger, "exploratory")
+
+
+def test_m_s3_achieved_mde_reconciled_to_realized_n(tmp_path):
+    """F-M-S3: the null phrasing previously interpolated the plan-time MDE even
+    when the realized cluster count fell below plan — overstating sensitivity.
+    When realized N < plan N, the findings carry a disclosed 1/√n-scaled
+    achieved MDE and the renders use it; at plan N the plan figure stands."""
+    from harness.analyze.report import display_mde
+    from harness.ledger.query import find_events
+
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    plan_n = find_events(ledger, "experiment_locked")[0]["mde"]["n_tasks"]
+    ct = {"A": "control", "B": "treatment"}
+    realized = 3
+    assert realized < plan_n  # the premise: fewer clusters than the plan assumed
+    for i in range(realized):  # a mean-zero pattern: the null phrasing renders
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}",
+                           winner="A" if i % 2 == 0 else "B", arm_map=ct)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    mde = f.mde
+    assert mde.realized_n_tasks == realized
+    assert mde.achieved_value is not None and mde.achieved_value > mde.value
+    expected = round(mde.value * (plan_n / realized) ** 0.5, 4)
+    assert abs(mde.achieved_value - expected) < 1e-9
+    assert display_mde(mde) == mde.achieved_value
+
+    md = render_markdown(f, ledger, "exploratory")
+    assert "achieved at realized n_tasks=3" in md
+    # the structural-null line quotes the achieved figure, not the plan figure
+    block = _md_block(md, f.comparisons[0].label)
+    if "No effect ≥ MDE detected" in block:
+        assert f"MDE={mde.achieved_value:.4f}" in block
+
+
+def test_m_j2_identity_leak_rate_disclosed_per_task_class(tmp_path):
+    """F-M-J2: identity_leak counts are surfaced per task class, so a scrub
+    pattern over-broad for one class (a corpus-wide FP pattern) is visible as a
+    concentrated rate rather than silently biasing judge_preference."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    for i in range(3):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    # two identity_leak CANT_JUDGE verdicts in the "google_api" class, one in "refactor"
+    for i, cls in enumerate(("google_api", "google_api", "refactor")):
+        prov = VerdictProvenance(
+            judge_model="fake/judge-1", rubric_sha256="r" * 64, packet_sha256="p" * 64,
+            call_ids=["c1"], orders="both", temperature=0.0, ts="t",
+        )
+        v = Verdict(
+            winner=Winner("CANT_JUDGE"), reason="identity_leak", evidence=[], provenance=prov,
+            comparison_id=f"cj-{i}", task_id=f"x{i}", task_class=cls, arm_map=ct,
+        )
+        append_verdict(ledger, ctx, verdict=v.model_dump(mode="json"))
+
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.judge_coverage["identity_leak_by_class"] == {"google_api": 2, "refactor": 1}
+    md = render_markdown(f, ledger, "exploratory")
+    assert "identity_leak by task class" in md and "google_api: 2" in md
+
+
+def test_l7_findings_json_carries_mode_and_watermark(tmp_path):
+    """F-L7: findings.json was mode-ambiguous and unwatermarked — nothing in
+    the citable bytes said whether the numbers were an official or exploratory
+    computation. The render mode (and, for exploratory, the watermark) is now
+    stamped into the JSON before findings_sha256 is computed."""
+    import json
+
+    from harness.analyze.cli import run_analyze
+
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    for i in range(3):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    out = run_analyze(tmp_path / "e", mode="exploratory", actor="tester")
+    assert out is not None
+    doc = json.loads((tmp_path / "e" / "findings.json").read_text(encoding="utf-8"))
+    assert doc["mode"] == "exploratory"
+    assert "EXPLORATORY" in doc["watermark"]

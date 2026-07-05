@@ -5,9 +5,11 @@ maps each rule verdict to an assertion with the **rule id preserved**. A
 ``NO-STRUCTURAL-SIGNAL`` verdict maps to ``result=abstain`` — **never** ``pass``
 [consistent with verdi-go epistemics, AC-4].
 
-The real implementation shells out to the groundwork tooling; here the rule
-verdicts are sourced from ``task.fake_plugin_output`` for deterministic tests,
-with the mapping logic identical to production.
+The rule verdicts are sourced from ``task.fake_plugin_output`` — this plugin
+is FIXTURE-ONLY until the real groundwork shell-out ships. A production task
+that declares the plugin without scripted output fails its grade closed
+(``cant_grade(plugin_error)``) rather than silently contributing zero
+assertions under a "graded with plugins" appearance [F-M-O1].
 """
 
 from __future__ import annotations
@@ -16,6 +18,11 @@ from ..plugins import GraderPlugin, register_plugin
 from ..types import Assertion, AssertionResult, GradeTask
 
 NO_STRUCTURAL_SIGNAL = "NO-STRUCTURAL-SIGNAL"
+
+
+class GroundworkUnavailableError(RuntimeError):
+    """The real groundwork tooling is not wired; grading a task that declares
+    the plugin must fail closed, never silently no-op [F-M-O1]."""
 
 _VERDICT_MAP = {
     "pass": AssertionResult.passed,
@@ -29,9 +36,18 @@ class GroundworkGrader(GraderPlugin):
     id = "groundwork"
 
     def _rule_verdicts(self, workspace, task: GradeTask) -> list[dict]:
-        # Production: run `verify`/fitness rules against `workspace`.
-        # Test/fixture: read scripted verdicts.
-        return (task.fake_plugin_output or {}).get("rules", [])
+        # F-M-O1: the real groundwork shell-out does not exist yet; a production
+        # task reaching this plugin without scripted output previously got an
+        # empty assertion list — a silent no-op wearing a plugin's name. Fail
+        # loud: grade_trial turns this into a terminal cant_grade(plugin_error).
+        if not task.fake_plugin_output:
+            raise GroundworkUnavailableError(
+                f"groundwork tooling is not wired for task {task.id!r}: the "
+                "plugin is fixture-only (fake_plugin_output) until the real "
+                "shell-out ships — refusing to contribute zero assertions "
+                "silently [F-M-O1]"
+            )
+        return task.fake_plugin_output.get("rules", [])
 
     def grade(self, workspace, task: GradeTask) -> list[Assertion]:
         assertions: list[Assertion] = []

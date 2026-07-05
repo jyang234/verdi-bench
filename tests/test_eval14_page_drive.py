@@ -84,7 +84,7 @@ def test_ac3_hash_routes_round_trip(tmp_path):
         assert out["trial"]["head"] == flagged and out["trial"]["gradeTabOn"] is True
         assert out["compare"]["exploratory"] is True
         assert out["compare"]["pairCards"] == 1  # only the disagreement pair renders
-        assert out["findings"]["items"] == 8
+        assert out["findings"]["items"] == 9  # +insulation [F-M-C3]
         assert out["__errors"] == []
     finally:
         srv.shutdown(); srv.server_close(); thread.join(timeout=5)

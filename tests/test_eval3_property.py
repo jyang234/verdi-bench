@@ -22,6 +22,7 @@ import harness.contamination.probe  # noqa: F401
 import harness.corpus.admit  # noqa: F401
 import harness.forensics.cli  # noqa: F401
 import harness.corpus.ledger_ops  # noqa: F401
+import harness.grade.baseline  # noqa: F401  (registers `corpus-baseline` [F-H2])
 import harness.grade.deterministic  # noqa: F401
 import harness.judge.client  # noqa: F401
 import harness.ledger.anchors  # noqa: F401  (registers the `anchor` entrypoint)
@@ -45,12 +46,14 @@ EXPECTED_ENTRYPOINTS = {
     "judge",
     "process",
     "forensics",
+    "review-batch",  # F-M-O2: the reviewed queue ledgered as a unit
     "review-build",
     "review-record",
     "review-reveal",
     "analyze",
     "selfcheck",  # EVAL-1-D008: the coverage selfcheck ledgers one event
     "corpus-admit",
+    "corpus-baseline",  # F-H2: the admission prerequisite's production producer
     "corpus-calibration-run",
     "corpus-subset-draw",
     "contamination-probe",

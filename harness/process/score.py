@@ -42,9 +42,10 @@ DEFAULT_MAX_CONTEXT_TOKENS = 100_000
 DEFAULT_MARGIN = 1.15  # conservative: assume the payload is 15% larger than counted
 
 
-class TranscriptPolicy(str, Enum):
-    full_or_cant_score = "full_or_cant_score"
-    # recorded_truncation would add a branch here [D004]; v1 does not truncate.
+# EVAL-9 D004: the transcript policy is full-or-CANT_SCORE — v1 never
+# truncates. A former ``policy`` parameter suggested a live seam, but nothing
+# ever read it [F-L4]; when a recorded-truncation mode is actually built, it
+# becomes a real branch here rather than a dead knob implying one exists.
 
 
 class CantScoreReason(str, Enum):
@@ -63,6 +64,7 @@ class CantScoreReason(str, Enum):
     judge_declared = "judge_declared"  # the judge replied the instructed "CANT_SCORE"
     out_of_range = "out_of_range"
     human_cant = "human_cant"
+    missing_transcript = "missing_transcript"  # F-M-O3: absent/empty, never scored
 
 
 # PRA-M13: reasons a re-run should re-attempt — the scorer could not *run*
@@ -70,7 +72,13 @@ class CantScoreReason(str, Enum):
 # and grade's TRANSIENT_CANT_GRADE. context_overflow/parse/etc. are
 # deterministic for a fixed transcript, so retrying reproduces them — terminal.
 TRANSIENT_CANT_SCORE = frozenset(
-    {CantScoreReason.timeout.value, CantScoreReason.provider_error.value}
+    {
+        CantScoreReason.timeout.value,
+        CantScoreReason.provider_error.value,
+        # F-M-J4: kept in sync with TRANSIENT_CANT_JUDGE — a truncated/garbled
+        # reply is call-specific, not deterministic for a fixed packet.
+        CantScoreReason.parse.value,
+    }
 )
 
 
@@ -193,7 +201,6 @@ def score_trial_process(
     token_counter: Callable[[str], int] = _heuristic_token_count,
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     margin: float = DEFAULT_MARGIN,
-    policy: TranscriptPolicy = TranscriptPolicy.full_or_cant_score,
     comparison_id: Optional[str] = None,
 ) -> ProcessScore:
     """Judge-score one trial's process. Always appends exactly one event [AC-4].
@@ -218,6 +225,12 @@ def score_trial_process(
             ProcessScore(trial_id=trial_id, rubric_version=rubric.rubric_version,
                          comparison_id=comparison_id, scores=scores, provenance=prov),
         )
+
+    # F-M-O3: a missing/empty transcript is fail-closed, exactly as the CLI
+    # docstring promises — the judge must never fabricate dimension scores from
+    # nothing. One event, no provider call.
+    if not transcript.strip():
+        return _score(_all_cant(rubric, CantScoreReason.missing_transcript))
 
     # PR-2: the redaction re-scan in build_process_packet raises RedactionLeakError;
     # it must fail closed to CANT_SCORE(redaction_leak) (mirroring judge's

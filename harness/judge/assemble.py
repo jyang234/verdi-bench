@@ -38,12 +38,23 @@ class Comparison:
     response_b: ResponseArtifacts
 
 
+# F-M-J1: a deterministic diff budget. Unbounded assembly let a gamed arm ship
+# a huge junk file only on trials it would lose, forcing a TERMINAL
+# CANT_JUDGE(context_overflow) that permanently excludes the comparison — a
+# missing-data lever. Truncation is deterministic (sorted walk, head-of-file,
+# fixed caps) so identical workspaces produce identical packets, and every cut
+# is disclosed in-packet, never silent.
+PER_FILE_DIFF_CAP = 64 * 1024
+TOTAL_DIFF_CAP = 512 * 1024
+
+
 def _read_workspace_diff(artifacts_path) -> str:
     """The agent's final workspace as a diff-from-empty: every agent-authored
     file under the trial workspace, excluding the ``artifacts/`` subtree (logs /
-    telemetry, not the solution) and the grader's holdout output. Redaction
-    already ran at trial time, so identity canaries are scrubbed; the packet
-    validator re-scans as belt-and-suspenders."""
+    telemetry, not the solution) and the grader's holdout output, under the
+    deterministic diff budget above [F-M-J1]. Redaction already ran at trial
+    time, so identity canaries are scrubbed; the packet validator re-scans as
+    belt-and-suspenders."""
     if not artifacts_path:
         return ""
     artifacts_dir = Path(artifacts_path)
@@ -60,6 +71,8 @@ def _read_workspace_diff(artifacts_path) -> str:
     # grade container's copytree(symlinks=True) no-follow stance.
     ws_real = workspace.resolve()
     parts: list[str] = []
+    total = 0
+    omitted = 0
     for p in sorted(workspace.rglob("*")):
         if p.is_symlink():
             continue
@@ -73,7 +86,22 @@ def _read_workspace_diff(artifacts_path) -> str:
             continue
         rel = p.relative_to(workspace).as_posix()
         content = p.read_text(encoding="utf-8", errors="replace")
-        parts.append(f"--- {rel} ---\n{content}")
+        if len(content) > PER_FILE_DIFF_CAP:
+            content = (
+                content[:PER_FILE_DIFF_CAP]
+                + f"\n[verdi: truncated at {PER_FILE_DIFF_CAP} chars — diff budget F-M-J1]"
+            )
+        entry = f"--- {rel} ---\n{content}"
+        if total + len(entry) > TOTAL_DIFF_CAP:
+            omitted += 1
+            continue
+        total += len(entry)
+        parts.append(entry)
+    if omitted:
+        parts.append(
+            f"--- [verdi: {omitted} file(s) omitted — total diff budget "
+            f"{TOTAL_DIFF_CAP} chars reached, F-M-J1] ---"
+        )
     return "\n".join(parts)
 
 

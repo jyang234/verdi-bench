@@ -1,14 +1,21 @@
-"""Flake baseline [EVAL-5 §M3, D001, AC-2].
+"""Flake baseline [EVAL-5 §M3, D001, AC-2; F-H2].
 
-Run each task's holdouts ``k=5`` against the **unmodified** workspace. Zero
-tolerance: any failure quarantines the task *version* and excludes it from run
-scheduling. The baseline is ledgered with the task sha. Invoked at
-corpus-admission time by EVAL-8 (a clean ledgered baseline is an admission
-prerequisite); the quarantine list is honored by EVAL-4's scheduler.
+Run each task's holdouts ``k=5`` against a defined workspace. Zero tolerance:
+any failure quarantines the task *version* and excludes it from run
+scheduling. The baseline is ledgered with the task sha. The production caller
+is ``bench corpus baseline`` [F-H2], whose workspace contract is the task's
+**reference-solution tree** (for fail-to-pass tasks the pre-fix workspace
+fails by construction — the flake question is "do the holdouts pass
+deterministically when the task is truly solved"); a clean ledgered baseline
+is EVAL-8's admission prerequisite, and the quarantine list is honored by
+EVAL-4's scheduler.
 
 The zero-tolerance policy is deliberate and cheap (no agent involved) — do not
 add a threshold "for pragmatism"; flake-rate policies are deferred until data
-argues otherwise.
+argues otherwise. Its disclosed operating characteristic: k zero-tolerance
+runs miss a per-run flake of rate p with probability (1-p)**k — ≈90% at
+p=0.02, k=5 — so raising ``--k`` (never loosening tolerance) is the lever
+when stronger detection is needed.
 """
 
 from __future__ import annotations
@@ -42,8 +49,14 @@ def flake_baseline(
     workspace,
     container: Optional[GradingContainer] = None,
     k: int = DEFAULT_K,
+    workspace_basis: Optional[str] = None,
 ) -> BaselineOutcome:
-    """Run holdouts k times on the unmodified workspace; quarantine on any fail."""
+    """Run holdouts k times on the given workspace; quarantine on any fail.
+
+    ``workspace_basis`` rides onto the ledgered event [F-H2] so a baseline that
+    actually ran against the contracted tree is distinguishable from a
+    fabricated event — ``bench corpus baseline`` stamps ``reference_solution``.
+    """
     if k < 1:
         raise ValueError(
             f"flake baseline needs k >= 1 (got {k}); a 'clean' verdict cannot come "
@@ -92,6 +105,7 @@ def flake_baseline(
         k=k,
         results=results,
         verdict=verdict,
+        workspace_basis=workspace_basis,
     )
     return BaselineOutcome(verdict=verdict, results=results, event=ev)
 
@@ -111,3 +125,34 @@ def load_quarantine(ledger_path) -> set[tuple[str, str]]:
     for ev in find_events(ledger_path, events.FLAKE_BASELINE):
         latest[(ev["task_id"], ev["task_sha"])] = ev  # append-order ⇒ last wins
     return {key for key, ev in latest.items() if ev["verdict"] == "quarantined"}
+
+
+# --- one-event property registration [EVAL-3 §M7] --------------------------
+def _baseline_entrypoint(ctx_dir: str) -> None:
+    import json
+
+    from .container import LocalGradeRunner
+
+    d = Path(ctx_dir)
+    ws = d / "ws"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "holdout_results.json").write_text(
+        json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
+    )
+    flake_baseline(
+        GradeTask(id="cand-prop", task_sha="deadbeef"),
+        d / "ledger.ndjson",
+        EventContext(experiment_id="prop"),
+        workspace=ws,
+        container=GradingContainer(runner=LocalGradeRunner()),
+        workspace_basis="reference_solution",
+    )
+
+
+def _register() -> None:
+    from ..entrypoints import register_entrypoint
+
+    register_entrypoint("corpus-baseline", _baseline_entrypoint)
+
+
+_register()

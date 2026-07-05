@@ -77,7 +77,7 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 All EVAL-1 child stories plus the Phase-7 roadmap stories (EVAL-10/11/12) and
 the operator/authoring/reviewer stories EVAL-13 through EVAL-21 are built. The
 fast suite (`uv run pytest -m "not docker"`) is green — over 700 tests — and
-`make verify` runs it plus the 7 import-linter contracts. Two more CI jobs cover
+`make verify` runs it plus the 8 import-linter contracts. Two more CI jobs cover
 what the fast suite cannot: a `docker`-marked suite of real-container tests (the
 grade container, a Harbor trial, redaction, digest-pinning, kill-on-timeout,
 network-less plugin isolation, metering-proxy egress attribution, and a
@@ -152,7 +152,7 @@ uv run bench judge  <experiment-dir>                          # identity-blind a
 uv run bench selfcheck <experiment-dir>                      # D008 coverage selfcheck (required before official)
 uv run bench analyze <experiment-dir> --exploratory                # watermarked findings
 uv run bench analyze <experiment-dir> --official --corpus m.json   # fenced official render (requires a passed selfcheck)
-uv run bench analyze <experiment-dir> --multi-arm-correction holm  # Holm-correct the secondary-arm family (default: none)
+# >2-arm decision policy: pre-register `multi_arm_correction: holm` in experiment.yaml before locking (default: none)
 #   every analyze invocation also writes the self-contained comparison dossier
 #   (findings.<mode>.dossier.html) beside the markdown — same fence, same
 #   single findings_rendered event, no network references or external assets
@@ -175,6 +175,7 @@ uv run bench corpus mine <mr.json> --ticket t.txt --out cand.json
 uv run bench corpus review <cand.json>                 # curation view
 uv run bench corpus approve <experiment-dir> --candidate-id c --task-sha s --signing-key k --approver alice
 uv run bench corpus calibrate <experiment-dir> --manifest m.json   # ledger a calibration_run from grades
+uv run bench corpus baseline <experiment-dir> --task-id c --task-sha s --workspace ref-solution/ --holdouts-dir holdouts/c   # run the admission-prerequisite flake baseline (k=5, reference solution, all-pass)
 uv run bench corpus admit <experiment-dir> --manifest m.json --candidate-id c --task-sha s --baseline-ref b --keyring keyring.json
 
 uv run bench review build  <experiment-dir>            # blinded human-review packet (idempotent)

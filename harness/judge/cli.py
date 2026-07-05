@@ -23,6 +23,9 @@ def register(app: typer.Typer) -> None:
     @app.command()
     def judge(
         experiment_dir: Path = typer.Argument(..., help="Directory with experiment.yaml"),
+        actor: str = typer.Option(
+            None, "--actor", help="Actor recorded on the verdict events [GR-12]"
+        ),
     ) -> None:
         """Judge every graded comparison; append one verdict each."""
         from ..blind.core import arm_canaries
@@ -90,7 +93,17 @@ def register(app: typer.Typer) -> None:
         task_classes = {t["id"]: t.get("task_class", "default") for t in task_dicts}
         prompts = {t["id"]: t.get("prompt", "") for t in task_dicts}
         canaries = arm_canaries(spec.arms)
-        ctx = EventContext(experiment_id=experiment_dir.name)
+        # F-L1/GR-12: the ledgered actor is resolved (flag, else OS user) and
+        # REFUSED when unresolvable — never silently defaulted to "local",
+        # matching every other ledgering verb and the README's claim.
+        from ..ledger.actor import ActorResolutionError, resolve_actor
+
+        try:
+            resolved_actor = resolve_actor(actor)
+        except ActorResolutionError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=resolved_actor)
 
         from .schema import TRANSIENT_CANT_JUDGE
 
@@ -111,23 +124,54 @@ def register(app: typer.Typer) -> None:
             for ev in find_events(ledger_path, events.JUDGE_VERDICT)
             if not _is_transient(ev["verdict"])
         }
+        # F-M-J3: the judge-scoped token ceiling (locked spec) — resume-aware:
+        # prior verdicts' provider-reported usage seeds the accumulator, so a
+        # re-run cannot reset the budget. Refuse-to-start, like the cost guard.
+        ceiling = spec.judge.token_ceiling
+
+        def _verdict_tokens(v: dict) -> int:
+            u = (v.get("provenance") or {}).get("usage") or {}
+            return int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0)
+
+        accumulated = sum(
+            _verdict_tokens(ev["verdict"])
+            for ev in find_events(ledger_path, events.JUDGE_VERDICT)
+        )
+        stopped_ceiling = False
         judged = 0
         for cmp in comparisons:
             if cmp.comparison_id in already:
                 continue
+            if ceiling is not None and accumulated >= ceiling:
+                events.record_judge_stopped_token_ceiling(
+                    ledger_path, ctx,
+                    accumulated_tokens=accumulated, ceiling=ceiling,
+                )
+                stopped_ceiling = True
+                break
             packet = build_packet(
                 cmp.response_a, cmp.response_b,
                 task_prompt=prompts.get(cmp.task_id, ""),
                 rubric=rubric,
             )
-            judge_pair(
+            verdict = judge_pair(
                 packet, spec.judge, ledger_path, ctx,
                 ts=ctx.clock(), canaries=canaries,
                 comparison_id=cmp.comparison_id, task_class=cmp.task_class,
                 arm_map=cmp.arm_map, task_id=cmp.task_id,
             )
+            usage = verdict.provenance.usage or {}
+            accumulated += int(usage.get("input_tokens") or 0) + int(
+                usage.get("output_tokens") or 0
+            )
             judged += 1
         typer.echo(f"judged {judged} comparison(s)")
+        if stopped_ceiling:
+            typer.echo(
+                f"stopped at the pre-registered judge token ceiling "
+                f"({accumulated} >= {ceiling}); remaining comparisons refused "
+                "[F-M-J3]", err=True,
+            )
 
         # Thread the locked EscalationConfig through calibration [JD-9, D006]:
         # per-class kappa against any human verdicts, through the D003 IPW seam
@@ -140,5 +184,8 @@ def register(app: typer.Typer) -> None:
             if not c.sufficient:
                 typer.echo(f"  class {cls}: n={c.n} (insufficient for kappa)")
             else:
-                flag = " ESCALATE" if c.escalate else ""
+                flag = (
+                    " ESCALATE" if c.escalate
+                    else (" INCONCLUSIVE" if c.inconclusive else "")
+                )
                 typer.echo(f"  class {cls}: n={c.n} kappa={c.kappa:.3f}{flag}")

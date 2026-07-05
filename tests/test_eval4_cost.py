@@ -102,6 +102,86 @@ def test_ac7_proxy_cost_enforced_when_telemetry_null(tmp_path):
     assert all(r.telemetry.cost is None for r in res.records)  # not imputed
 
 
+def test_ac7_underreported_cost_enforced_via_proxy_max(tmp_path):
+    """RN-2/F-H4: when both figures exist the guard enforces on the LARGER —
+    an arm self-reporting 0 cannot spend past the pre-registered ceiling while
+    the proxy meters real spend. The record's telemetry.cost stays exactly the
+    self-reported value (D004: enforcement never rewrites the record)."""
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={
+        "native_log": {"total_cost_usd": 0.0}, "proxy_metered_cost": 0.60,
+    })}
+    ledger = tmp_path / "l.ndjson"
+    order = [Trial(task_id="t", arm="A", repetition=r) for r in range(4)]
+    res = schedule(
+        order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+    )
+    assert res.stopped_cost_ceiling is True  # 0.60 * 2 >= 1.00 stops before all 4
+    assert len(res.records) < 4
+    assert all(r.telemetry.cost == 0.0 for r in res.records)  # self-report untouched
+    stops = find_events(ledger, "run_stopped_cost_ceiling")
+    assert len(stops) == 1 and stops[0]["accumulated_cost"] >= 1.00
+
+
+def test_ac7_honest_self_report_still_drives_enforcement(tmp_path):
+    """RN-2/F-H4: max() is a floor, not a replacement — when the self-report is
+    the larger figure it still drives the guard (no behavior change for honest
+    arms whose proxy meters less, e.g. cache-discounted spend)."""
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={
+        "native_log": {"total_cost_usd": 0.60}, "proxy_metered_cost": 0.10,
+    })}
+    ledger = tmp_path / "l.ndjson"
+    order = [Trial(task_id="t", arm="A", repetition=r) for r in range(4)]
+    res = schedule(
+        order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+    )
+    assert res.stopped_cost_ceiling is True  # 0.60 * 2 >= 1.00
+    assert len(res.records) == 2
+
+
+def test_ac7_underreported_spend_survives_resume(tmp_path):
+    """RN-1/F-H4: resume seeding rebuilds prior spend with the same max() rule,
+    so an under-reported first run cannot launder its real spend on re-run."""
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={
+        "native_log": {"total_cost_usd": 0.0}, "proxy_metered_cost": 0.60,
+    })}
+    ledger = tmp_path / "l.ndjson"
+    order = [Trial(task_id="t", arm="A", repetition=r) for r in range(4)]
+    kw = dict(
+        tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
+        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+    )
+    first = schedule(order, **kw)
+    assert first.stopped_cost_ceiling is True
+    second = schedule(order, **kw)
+    assert len(second.records) == 0  # prior proxy-metered spend still at/over ceiling
+    assert len(find_events(ledger, "trial")) == len(first.records)
+
+
+def test_ac7_proxy_cost_delta_recorded_when_both_figures_exist(tmp_path):
+    """The cross-check delta (proxy minus self-report) is surfaced on the record's
+    advisory flags channel when both figures exist — never written into
+    telemetry.cost (D004)."""
+    arms = {"A": _arm()}
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={
+        "native_log": {"total_cost_usd": 0.0}, "proxy_metered_cost": 0.60,
+    })}
+    order = [Trial(task_id="t", arm="A", repetition=0)]
+    res = schedule(
+        order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
+        ledger_path=tmp_path / "l.ndjson", ctx=fixed_ctx(),
+        config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
+    )
+    rec = res.records[0]
+    assert rec.flags.proxy_cost_delta == 0.60
+    assert rec.flags.proxy_metered_cost == 0.60
+    assert rec.telemetry.cost == 0.0
+
+
 def test_ac7_infra_failed_attempts_count_against_ceiling(tmp_path):
     """RN-3: spend from infra-failed attempts accumulates and the guard is checked
     inside the infra-rerun loop, so costly-but-failing attempts can't burn the

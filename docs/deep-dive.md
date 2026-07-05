@@ -137,7 +137,14 @@ arm insulation is verified by canary tests (`test_ac9_holdout_canaries_absent`,
 per-assertion results and a binary score) or **`cant_grade`** with a named
 reason — never a silent skip. Repeated-run flake measurement appends
 **`flake_baseline`** events; a flake baseline is an admission prerequisite for
-corpus tasks (§2.8).
+corpus tasks (§2.8), produced by `bench corpus baseline` against the task's
+**reference-solution tree** (all-pass required; a fail-to-pass task's pre-fix
+tree would always quarantine) and stamped `workspace_basis:
+reference_solution` so a ran baseline is distinguishable from a fabricated
+event [F-H2]. Disclosed operating characteristic: k zero-tolerance runs miss
+a per-run flake of rate p with probability (1−p)^k — ≈90% at p=2%, k=5 —
+so raise `--k` for stronger detection; the zero-tolerance rule itself is not
+loosened.
 
 The structural guarantee: `harness/grade/` cannot import an LLM client — an
 import-linter contract, not a review convention. The grade you see was
@@ -157,6 +164,10 @@ oversized packet lands in cleanly rather than escaping the handler with no event
 [PRA-H3]. Before any packet reaches the provider it is re-scanned for
 provider-key-shaped secrets as defense-in-depth behind capture-side redaction —
 a hit refuses as `secret_leak` rather than shipping the secret off-box [PRA-L4].
+Disclosed residual [F-L5]: both layers match literal values and key *shapes*,
+so a base64-, URL-encoded, or reversed copy of a key evades them — a narrow
+gap confined to the arm's own artifacts (each arm only ever holds its own
+keys, env-injected per trial).
 Only genuinely transient reasons (timeout, provider error) are re-attempted on a
 re-run; deterministic refusals stay terminal. Order
 consistency and judge↔deterministic agreement are computed as calibration
@@ -225,9 +236,20 @@ trajectory. Three parts, one **`forensics_report`** event per scan:
   confidence); a marker in a file the agent *did* edit but for which no
   pristine baseline exists is stamped `edited-file-only` and rendered
   low-confidence — flagged, not silently dropped, so a pre-existing marker in a
-  legitimately-edited file cannot masquerade as an insertion; and a change the
+  legitimately-edited file cannot masquerade as an insertion (note [F-L3]:
+  production currently materializes no pristine baselines — ``tasks.yaml``
+  carries no pristine workspace content — so every production attribution
+  today is ``edited-file-only`` or trajectory-attributed; the
+  ``pristine-diff`` tier activates when a corpus supplies pristine content
+  through the ``pristine_files`` seam); and a change the
   evidence cannot attribute to the agent at all stays silent, because a missed
-  flag is preferred to a fabricated accusation.
+  flag is preferred to a fabricated accusation. Known evasion/FP classes are
+  DISCLOSED rather than implied away [F-L6]: a deletion can register as an
+  insertion in diff attribution; a path-representation mismatch (absolute vs
+  relative) can null a ``holdout_tamper`` match; non-UTF-8 file content is
+  skipped by the text walk (an encoding-level evasion); and an ``xfail``
+  added at runtime is not distinguished from a skip by the test-skip
+  detector. Flags stay advisory precisely because these classes exist.
 - **Advisory review** (`review.py`): a blinded, context-isolated LLM pass
   narrating whether a trajectory shows shortcut behavior a regex cannot
   name. It fails closed to `CANT_REVIEW(reason)` on any fault — including
@@ -253,7 +275,11 @@ A sibling integrity tier is the **contamination sentinel**
 (`harness/contamination/`, EVAL-10): deterministic cutoff dating of task
 content against each arm's model (an honest tri-state — `predates_cutoff`,
 `postdates_cutoff`, `unknown` — never a guess), canaries embedded at
-admission and carried as `sha256(canary)` only outside task content,
+admission and carried as `sha256(canary)` only outside task content
+(disclosed limitation [F-M-C1]: the canary derives from the *published*
+`task_sha`, so a motivated human can pre-derive and plant one to manufacture
+an asymmetric flag — a denial-of-finding resolved through the ledgered
+quarantine ceremony, not a false membership proof about models),
 membership probes ledgered as one **`contamination_probe`** event per run
 (`bench contamination probe`), and solution/holdout fingerprint-overlap
 scanning. Its fence coupling is deliberately asymmetric: flagged
@@ -283,9 +309,11 @@ With more than two arms the spec still pre-registers exactly one
 simultaneous official decision without inflating the family-wise error rate
 [PRA-M4]. By default only the pre-registered primary pair carries a decision
 (`official_decision`); the remaining pairs render their CI and effect size but
-no decision, marked exploratory. `--multi-arm-correction=holm` instead keeps
-every pair official under a Holm-Bonferroni adjustment at the pre-registered
-level. Two render modes:
+no decision, marked exploratory. Pre-registering `multi_arm_correction: holm`
+in the locked spec instead keeps every pair official under a Holm-Bonferroni
+adjustment at the pre-registered level — the policy is part of the sha-locked
+decision rule, chosen before any trial runs, never at analyze time [F-H7].
+Two render modes:
 
 - `--exploratory`: watermarked on every layer.
 - `--official`: passes the **pre-registration fence** — locked spec, corpus
@@ -319,7 +347,7 @@ This section is the skeptic's index: claim → mechanism → owner.
 | No operation happened off the record | every verb routes through typed constructors in `events.py`; direct chain writes are contract-forbidden | one-event property sweep `test_ac7_one_event_per_operation` over the closed entrypoint registry |
 | The ledger you're shown is the ledger that was written | hash chain + optional external anchors | `test_eval3_chain.py`, `test_eval3_anchors.py` |
 | Arms never saw graders' answers | holdouts/rubrics outside trial workspaces; canary strings planted and asserted absent | `test_ac9_holdout_canaries_absent`, `test_ac1_holdouts_readonly` |
-| Grades are mechanical | no-LLM import contracts on `harness/grade/`, the `harness/forensics/` deterministic tier, and the `harness/contamination/` detectors | three of the seven import-linter contracts |
+| Grades are mechanical | no-LLM import contracts on `harness/grade/`, the `harness/forensics/` deterministic tier, and the `harness/contamination/` detectors | four of the eight import-linter contracts |
 | The judge can't favor a brand | identity scrub with per-experiment canaries; property tests plant canaries and assert absence from payloads | `test_ac1_scrub_canaries` and packet property tests |
 | Judge weight is earned, not assumed | order-consistency diagnostics; IPW kappa vs blinded humans; escalation gate at κ<0.6 | `test_eval2_calibrate.py`, `test_eval7_review.py` kappa suite |
 | Secrets don't leak into artifacts | capture-side redaction plus defense-in-depth rescans before any provider call; property tests with generated secrets | `test_ac2_capture_post_redaction`, redaction suites in eval4 |
@@ -328,10 +356,15 @@ This section is the skeptic's index: claim → mechanism → owner.
 | Nothing suppresses evidence | flags/confounds/quarantines render beside the comparison in *both* renders, non-suppressing | `test_ac5_flags_render_beside_comparison` |
 | Docs match the binary | README verb coverage and both this doc's and the README's spelled-out contract counts are tested; AC coverage is recomputed at collection | `test_readme_consistency.py`, `tests/ac_coverage.py` hook |
 
-Four structural contracts complete the set: Harbor is importable only through
+Five structural contracts complete the set: Harbor is importable only through
 the engine seam, ledger appends flow only through the typed constructors, the
-blinded reviewer surface never imports the unblinded operator tier, and
-read-only observability imports no LLM client.
+blinded reviewer surface never imports the unblinded operator tier, the
+authoring ceremony and reviewer surface name no LLM client, and read-only
+observability names no LLM client. Precision on the last two [truth-up]:
+those bans are on *direct* imports (a legitimate, never-executed transitive
+chain to the provider seam exists through analyze's advisory review); the
+grading/forensics/contamination-detector bans are fully transitive — no
+chain from those tiers reaches an LLM client at all.
 
 ---
 
@@ -368,7 +401,10 @@ Reading any module goes faster once you know the house rules:
 7. **Determinism by default.** No wall clock, no unseeded randomness, no
    dict-ordering dependence in anything rendered or ledgered; two renders of
    the same ledger are byte-identical (the dossier test asserts exactly
-   that).
+   that). One designated exception [F-L13]: trial ids use unseeded
+   ``uuid4`` — an *identifier* seam, where the requirement is uniqueness,
+   not reproducibility; nothing computed or rendered depends on the id
+   values, only on their distinctness.
 
 ---
 

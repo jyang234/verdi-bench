@@ -20,6 +20,7 @@ from typing import Mapping, Optional
 from ..ledger import events
 from ..ledger.query import find_events
 from ..run.seam import HoldoutLeakError
+from ..run.workspace import VERIFIED, resolve_workspace
 from .overlap import solution_overlap
 
 # The grader writes holdout results into the workspace; scanning them would
@@ -102,13 +103,48 @@ def scan_trials(
     (arm, task) OR-merge: one leaking repetition flags the pair.
     """
     report = ScanReport()
+    # F-H3: the grade-time workspace commitment (latest grade wins). A trial
+    # whose live bytes no longer match it is UNSCANNED — a post-grade edit
+    # could otherwise scrub a leak and launder a "clean" probe onto the chain.
+    # ABSENT commitments (legacy chains) scan with legacy semantics; the
+    # forensics report carries that disclosure.
+    workspace_sha_by_trial = {
+        gev["trial_id"]: gev.get("workspace_sha256")
+        for gev in find_events(ledger_path, events.GRADE)
+    }
+    # F-M-C3: a forensically-quarantined trial is excluded from ANALYSIS by a
+    # ledgered human decision — the scan honors the same decision (disclosed,
+    # never silent), so quarantining an intentional/false-positive leak and
+    # re-running scan+probe is a real resolution path for the insulation fence.
+    quarantined = {
+        qev["forensic_quarantine"]["trial_id"]
+        for qev in find_events(ledger_path, events.FORENSIC_QUARANTINE)
+    }
     for ev in find_events(ledger_path, events.TRIAL):
         rec = ev["trial_record"]
         task_id, arm, trial_id = rec["task_id"], rec["arm"], rec["trial_id"]
         refs = references.get(task_id)
         if refs is None or not refs.measurable():
             continue  # nothing the agent could not have produced — unmeasurable
-        solution = read_solution(rec.get("artifacts_path"))
+        if trial_id in quarantined:
+            report.skipped.append(
+                f"trial {trial_id} (task {task_id}, arm {arm}): forensically "
+                "quarantined (ledgered) — excluded from the scan [F-M-C3]"
+            )
+            continue
+        artifacts_path = rec.get("artifacts_path")
+        ledgered_sha = workspace_sha_by_trial.get(trial_id)
+        if ledgered_sha is not None and artifacts_path:
+            status = resolve_workspace(
+                Path(artifacts_path).parent, ledgered_sha, artifacts_dir=artifacts_path
+            )
+            if status != VERIFIED:
+                report.skipped.append(
+                    f"trial {trial_id} (task {task_id}, arm {arm}): workspace "
+                    f"failed chain verification ({status}) — UNSCANNED [F-H3]"
+                )
+                continue
+        solution = read_solution(artifacts_path)
         if solution is None:
             report.skipped.append(
                 f"trial {trial_id} (task {task_id}, arm {arm}): no readable "

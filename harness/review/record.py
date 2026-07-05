@@ -63,6 +63,21 @@ def _reveal_exists(ledger_path, comparison_id: str, *, evs=None) -> bool:
     )
 
 
+def events_of_batch(ledger_path, *, evs=None) -> list[dict]:
+    """All ``review_batch`` events in append order [F-M-O2]."""
+    return _of_type(ledger_path, events.REVIEW_BATCH, evs)
+
+
+def _batch_for(ledger_path, comparison_id: str, *, evs=None) -> Optional[dict]:
+    """The LATEST review batch containing ``comparison_id``, or None (legacy
+    chains / unbatched comparisons keep per-item semantics) [F-M-O2]."""
+    found = None
+    for ev in events_of_batch(ledger_path, evs=evs):
+        if comparison_id in ev.get("comparison_ids", []):
+            found = ev  # append order ⇒ last wins
+    return found
+
+
 def _judge_verdict_exists(ledger_path, comparison_id: str, *, evs=None) -> bool:
     """True if the judge produced a verdict for ``comparison_id`` — the review
     packet is built from judge verdicts, so a comparison a human can review must
@@ -181,6 +196,22 @@ def reveal_comparison(
             "Response↔arm map was never recorded, so it cannot be truthfully "
             "unblinded — run `review build` first [RV-2]"
         )
+    # F-M-O2: capture-then-reveal is enforced per QUEUE — revealing any item
+    # (arm identities + judge verdict) unblinds the reviewer for the rest of
+    # the batch, so every batched comparison must carry its verdict first.
+    batch = _batch_for(ledger_path, comparison_id, evs=evs)
+    if batch is not None:
+        missing = [
+            c for c in batch["comparison_ids"]
+            if human_verdict_exists(ledger_path, c, evs=evs) is None
+        ]
+        if missing:
+            raise RevealError(
+                f"cannot reveal comparison {comparison_id!r}: review batch "
+                f"{batch['batch_id']} still has {len(missing)} un-verdicted "
+                f"comparison(s) {missing} — a reveal unblinds the whole queue, "
+                "so record every verdict in the batch first [F-M-O2]"
+            )
     arm_identities = built["response_map"]
     # locate the advisory judge verdict for the same comparison (may be absent).
     # RV-9: last-wins on a duplicated ledger, matching both kappa joins
@@ -275,11 +306,23 @@ def _review_reveal_entrypoint(ctx_dir: str) -> None:
     )
 
 
+def _review_batch_entrypoint(ctx_dir: str) -> None:
+    from pathlib import Path
+
+    from ..ledger.events import EventContext
+
+    events.record_review_batch(
+        Path(ctx_dir) / "ledger.ndjson", EventContext(experiment_id="prop"),
+        batch_id="prop-batch", comparison_ids=[_PROP_CID], seed=1,
+    )
+
+
 def _register() -> None:
     from ..entrypoints import register_entrypoint
 
     register_entrypoint("review-record", _review_record_entrypoint, prepare=_seed_judge_verdict)
     register_entrypoint("review-reveal", _review_reveal_entrypoint, prepare=_prepare_reveal)
+    register_entrypoint("review-batch", _review_batch_entrypoint)
 
 
 _register()

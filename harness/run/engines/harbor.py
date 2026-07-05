@@ -101,7 +101,7 @@ class CommandRunner(Protocol):
         self, cmd: list[str], timeout_s: int, env: Optional[dict] = None
     ) -> RunOutput: ...
 
-    def resolve_digest(self, image: str) -> Optional[str]: ...
+    def resolve_pinned(self, image: str) -> Optional[tuple[str, str]]: ...
 
     def ensure_metered_network(self) -> None: ...
 
@@ -163,19 +163,27 @@ class DockerCliRunner:
             return True  # container is gone (--rm reaped it): confirmed not running
         return probe.stdout.strip() == "false"  # present but not Running ⇒ killed
 
-    def resolve_digest(self, image: str) -> Optional[str]:
+    def resolve_pinned(self, image: str) -> Optional[tuple[str, str]]:
+        """The runnable IMMUTABLE ref and its digest, or None (refused).
+
+        F-M-I2: the same immutable ref is recorded in provenance AND handed to
+        ``docker run`` — resolving a digest by ``inspect`` but running the tag
+        left a TOCTOU window where a repointed tag executed one image while
+        provenance recorded another.
+        """
         if "@sha256:" in image:
-            return image.split("@", 1)[1]
-        # a registry image carries a RepoDigest (the manifest digest)
+            return image, image.split("@", 1)[1]
+        # a registry image carries a RepoDigest (the manifest digest) — a
+        # runnable repo@sha256:... ref
         repo = self._inspect_format(image, "{{index .RepoDigests 0}}")
         if repo and "@" in repo:
-            return repo.split("@", 1)[1]
-        # a local/CI image (built, never pushed) has no RepoDigest — pin instead to
-        # its content-addressed image Id, which still identifies the exact image in
-        # provenance and satisfies D005 [RN-12]. An absent image resolves to None
-        # and is refused.
+            return repo, repo.split("@", 1)[1]
+        # a local/CI image (built, never pushed) has no RepoDigest — pin instead
+        # to its content-addressed image Id (itself runnable), which identifies
+        # the exact image in provenance and satisfies D005 [RN-12]. An absent
+        # image resolves to None and is refused.
         idv = self._inspect_format(image, "{{.Id}}")
-        return idv if idv and idv.startswith("sha256:") else None
+        return (idv, idv) if idv and idv.startswith("sha256:") else None
 
     @staticmethod
     def _inspect_format(image: str, fmt: str) -> Optional[str]:
@@ -287,11 +295,11 @@ class HarborEngine:
 
     def run(self, request: TrialRequest) -> EngineResult:
         image = request.image
-        digest = self._runner.resolve_digest(image)
+        pinned = self._runner.resolve_pinned(image)
         artifacts = Path(request.workspace) / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
 
-        if digest is None:
+        if pinned is None:
             # D005/RN-12: a trial must run a digest-pinned image. A tag-only or
             # otherwise unresolvable image fails the trial closed (infra_failed,
             # a real reason) rather than silently running an unpinned tag.
@@ -305,6 +313,7 @@ class HarborEngine:
                 executed_at=request.ts,
                 failure_reason="unpinned_image",
             )
+        pinned_ref, digest = pinned
 
         if request.proxy is not None:
             # ensure the restricted metering network exists before a trial joins
@@ -319,7 +328,8 @@ class HarborEngine:
             request_file.write_text(
                 json.dumps(self._trial_request_payload(request)), encoding="utf-8"
             )
-            cmd = self.build_run_command(request, image, request_file)
+            # F-M-I2: run the resolved immutable ref, never the mutable tag.
+            cmd = self.build_run_command(request, pinned_ref, request_file)
             result = self._runner.run_container(
                 cmd, request.timeout_s, env=request.provider_keys or {}
             )

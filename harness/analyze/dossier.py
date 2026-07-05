@@ -38,6 +38,8 @@ from .report import (
     _forensics_lines,
     _integrity_line,
     _judge_calibration_lines,
+    _judge_coverage_lines,
+    display_mde,
     _ledger_consistency_lines,
     _override_lines,
     _process_lines,
@@ -73,6 +75,12 @@ VERDICT_TEMPLATES: dict[str, str] = {
     ),
     # the pre-registered null phrasing — never "no difference" [AC-5]
     "outcome_null": "Outcome: No effect ≥ MDE detected (MDE={{ mde_value }}).",
+    # F-H7: below the cluster floor there is no detection at all — structurally
+    # insufficient, never phrased as a null result.
+    "outcome_insufficient_clusters": (
+        "Outcome: insufficient task clusters for any detection "
+        "(N={{ n_tasks }} paired task(s)); no decision possible."
+    ),
     "outcome_no_comparison": (
         "Outcome: no official comparison for {{ arm_a }} vs {{ arm_b }} — "
         "{{ exclusion_reason }}."
@@ -92,6 +100,12 @@ VERDICT_TEMPLATES: dict[str, str] = {
     ),
     "caveat_assumption_mde": (
         "Caveat: the MDE is assumption-based — variance not yet calibrated."
+    ),
+    # F-H6: under Holm the decision and the displayed interval use different
+    # procedures; the verdict layer says so instead of implying one estimator.
+    "caveat_holm": (
+        "Caveat: this decision is Holm-Bonferroni-adjusted (recentered-bootstrap "
+        "p-value); the interval above remains the unadjusted per-comparison CI."
     ),
 }
 
@@ -180,7 +194,7 @@ def _verdict_context(findings: FindingsDocument, cf: ComparisonFinding) -> dict:
         "primary_metric": findings.primary_metric,
         "decision_rule": findings.decision_rule,
         "observed_delta": _fmt(cf.decision.get("observed_delta")),
-        "mde_value": _fmt(findings.mde.value),
+        "mde_value": _fmt(display_mde(findings.mde)),  # realized-N honest [F-M-S3]
         "ci_low": _fmt(s.get("ci_low")),
         "ci_high": _fmt(s.get("ci_high")),
         "ci_level_pct": int(s["ci_level"] * 100) if "ci_level" in s else None,
@@ -199,6 +213,8 @@ def verdict_sentences(findings: FindingsDocument, cf: ComparisonFinding) -> list
     names = ["question", "rule"]
     if not cf.stats:
         names += ["outcome_no_comparison", "uncertainty_no_data"]
+    elif cf.decision.get("floor") == "insufficient_clusters":
+        names += ["outcome_insufficient_clusters", "uncertainty"]
     elif cf.decision.get("detected"):
         names.append(
             "outcome_met" if cf.decision.get("decides_positive") else "outcome_detected_not_met"
@@ -206,6 +222,8 @@ def verdict_sentences(findings: FindingsDocument, cf: ComparisonFinding) -> list
         names.append("uncertainty")
     else:
         names += ["outcome_null", "uncertainty"]
+    if cf.stats and cf.decision.get("correction") == "holm":
+        names.append("caveat_holm")
     if findings.mde.acknowledged_underpowered:
         names.append("caveat_underpowered")
     if findings.mde.assumption_based_mde:
@@ -398,6 +416,7 @@ def _disclosure_sections(findings: FindingsDocument) -> list[dict]:
     for title, lines in (
         ("Ledger consistency", _ledger_consistency_lines(findings)),
         ("Terminal overrides", _override_lines(findings)),
+        ("Judge coverage", _judge_coverage_lines(findings)),
     ):
         if lines:
             sections.append({"title": title, "body": _lines_html(lines)})

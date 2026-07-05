@@ -11,7 +11,9 @@ controlling the anchor store.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,7 +39,7 @@ class AnchorIntegrityError(RuntimeError):
     """
 
 
-def anchor_record(ledger_path, *, ts: str) -> dict:
+def anchor_record(ledger_path: Path | str, *, ts: str) -> dict:
     """Compute the ``{head_hash, height, ts}`` checkpoint for the current head —
     a pure read, no external write. ``ts`` is injected (no wall-clock here).
 
@@ -59,15 +61,27 @@ def anchor_record(ledger_path, *, ts: str) -> dict:
     return {"head_hash": head, "height": height, "ts": ts}
 
 
-def write_anchor(anchor_path, record: dict) -> None:
-    """Append one checkpoint ``record`` to the external anchor store."""
+def write_anchor(anchor_path: Path | str, record: dict) -> None:
+    """Append one checkpoint ``record`` to the external anchor store.
+
+    Exclusive-locked and fsync'd [F-M-O8], matching the ledger append
+    discipline: the anchor store is the tamper-evidence backstop, so a torn or
+    interleaved line from an unlocked buffered append would be a corruption in
+    exactly the artifact meant to survive corruption elsewhere."""
     anchor_path = Path(anchor_path)
     anchor_path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
     with open(anchor_path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            fh.write(line)
+            fh.flush()
+            os.fsync(fh.fileno())
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
-def anchor_head(ledger_path, anchor_path, *, ts: str) -> dict:
+def anchor_head(ledger_path: Path | str, anchor_path: Path | str, *, ts: str) -> dict:
     """Compute and externally record the current head checkpoint in one call.
 
     Convenience composition of :func:`anchor_record` + :func:`write_anchor`; the
@@ -89,7 +103,7 @@ class AnchorResult:
         return self.ok
 
 
-def verify_against_anchor(ledger_path, anchor_path) -> AnchorResult:
+def verify_against_anchor(ledger_path: Path | str, anchor_path: Path | str) -> AnchorResult:
     """Every recorded anchor must still match the ledger line at its height."""
     ledger_path = Path(ledger_path)
     anchor_path = Path(anchor_path)
@@ -107,12 +121,22 @@ def verify_against_anchor(ledger_path, anchor_path) -> AnchorResult:
         )
     lines = _ledger_lines(ledger_path)
     checked = 0
-    for raw in anchor_path.read_text(encoding="utf-8").splitlines():
+    for lineno, raw in enumerate(anchor_path.read_text(encoding="utf-8").splitlines(), 1):
         raw = raw.strip()
         if not raw:
             continue
-        rec = json.loads(raw)
-        height, expected = rec["height"], rec["head_hash"]
+        # F-M-O8: a corrupt/torn anchor line is a VERDICT, never a crash — the
+        # audit verb must always answer, and a store an attacker can corrupt
+        # into a traceback is a store they can silence.
+        try:
+            rec = json.loads(raw)
+            height, expected = rec["height"], rec["head_hash"]
+        except (ValueError, TypeError, KeyError):
+            return AnchorResult(
+                False,
+                f"anchor store corrupt at line {lineno}: not a well-formed "
+                "anchor record — cross-check impossible",
+            )
         if height == 0:
             continue
         if height > len(lines):
@@ -129,6 +153,15 @@ def verify_against_anchor(ledger_path, anchor_path) -> AnchorResult:
                 "— anchored history was rewritten",
             )
         checked += 1
+    if checked == 0:
+        # F-M-O8: an existing-but-empty store previously returned ok=True with
+        # "0 anchor(s) verified" — truncating the anchor file converted the
+        # cross-check into a pass. Zero checked anchors is fail-closed.
+        return AnchorResult(
+            False,
+            f"anchor store {anchor_path} exists but contains no checkable "
+            "anchors — cross-check impossible (truncated store?)",
+        )
     return AnchorResult(True, f"{checked} anchor(s) verified")
 
 

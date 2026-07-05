@@ -137,3 +137,75 @@ def test_jd13_packet_sha_covers_framing(monkeypatch):
     sha_before = build().packet_sha256
     monkeypatch.setattr(pk, "_SYSTEM_TEMPLATE", pk._SYSTEM_TEMPLATE + " CHANGED FRAMING")
     assert build().packet_sha256 != sha_before
+
+
+def test_m_j1_diff_budget_caps_oversize_workspaces_deterministically(tmp_path):
+    """F-M-J1: unbounded diff assembly let an arm force a terminal
+    CANT_JUDGE(context_overflow) with a huge junk file on trials it would lose.
+    The budget truncates deterministically and disclosed, never silently."""
+    from harness.judge.assemble import (
+        PER_FILE_DIFF_CAP,
+        TOTAL_DIFF_CAP,
+        _read_workspace_diff,
+    )
+
+    ws = tmp_path / "ws"
+    artifacts = ws / "artifacts"
+    artifacts.mkdir(parents=True)
+    (ws / "a_huge.py").write_text("x" * (PER_FILE_DIFF_CAP + 100), encoding="utf-8")
+    for i in range(16):
+        (ws / f"b_pad{i:02d}.py").write_text("y" * (PER_FILE_DIFF_CAP // 2), encoding="utf-8")
+    (ws / "z_last.py").write_text("z = 1", encoding="utf-8")
+
+    diff = _read_workspace_diff(str(artifacts))
+    assert len(diff) <= TOTAL_DIFF_CAP + 200  # bounded (marker line rides on top)
+    assert "truncated at" in diff             # per-file cut disclosed
+    assert "file(s) omitted" in diff          # total-budget cut disclosed
+    assert diff == _read_workspace_diff(str(artifacts))  # deterministic
+
+    small = tmp_path / "small"
+    (small / "artifacts").mkdir(parents=True)
+    (small / "solution.py").write_text("ok", encoding="utf-8")
+    sd = _read_workspace_diff(str(small / "artifacts"))
+    assert "truncated" not in sd and "omitted" not in sd  # under budget: untouched
+
+
+# --- F-M-J2: identity corpus scoping + product coverage ---------------------
+def test_m_j2_google_cloud_task_is_not_a_false_identity_leak():
+    """F-M-J2: bare `\\bgoogle\\b` terminally killed judgment on any Google-API
+    task (a false identity_leak permanently excludes the comparison from
+    judge_preference and calibration). The vendor's ACTUAL identity as a
+    contestant is scrubbed precisely via arm_canaries; ordinary Google-Cloud
+    task content no longer trips the generic corpus."""
+    pkt = make_packet(
+        diff_a="import google.cloud.storage\nclient = google.cloud.storage.Client()"
+    )
+    validate_identity_free(pkt)  # no raise — previously an IdentityLeakError
+
+
+def test_m_j2_prose_assistant_is_not_a_false_leak_but_a_role_label_is():
+    """F-M-J2: the transcript role markers are LINE-ANCHORED — ordinary prose
+    mentioning "the assistant:" no longer leaks, while an actual transcript
+    role label (line-start) still does."""
+    validate_identity_free(make_packet(diff_a="ask the assistant: it helps a lot"))
+    with pytest.raises(IdentityLeakError):
+        validate_identity_free(make_packet(diff_a="turn 1\nassistant: here is the fix"))
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["chatgpt", "grok", "deepseek", "qwen", "copilot", "cursor", "aider", "mistral", "llama"],
+)
+def test_m_j2_current_product_names_are_caught(name):
+    """F-M-J2: the 2024–2026 tooling landscape the old corpus omitted — each new
+    product tell now blocks a leaking packet."""
+    with pytest.raises(IdentityLeakError):
+        validate_identity_free(make_packet(diff_a=f"generated with {name} v2"))
+
+
+def test_m_j2_narrowed_vendor_tokens_still_catch_real_tells():
+    """F-M-J2: word-bounding claude/gemini did not lose the real identity tells
+    (a substring-in-a-word false positive is gone, the genuine name stays)."""
+    for tell in ("built by claude", "gemini-1.5-pro", "claude-3-5-sonnet"):
+        with pytest.raises(IdentityLeakError):
+            validate_identity_free(make_packet(diff_a=f"solution {tell} here"))

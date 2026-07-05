@@ -88,16 +88,69 @@ def _spec_acs(specs_dir: Path) -> tuple[dict[str, set[int]], list[str]]:
     return out, malformed
 
 
-def _is_unconditional_skip(node) -> bool:
-    """True if an AC test carries an UNCONDITIONAL ``@pytest.mark.skip`` (or a
-    bare ``@unittest.skip``) — the decorator that makes a named AC test satisfy
-    the presence gate while never executing anywhere [PRA-L7]. ``skipif`` is
-    deliberately NOT flagged: it is the legitimate way docker/browser-gated AC
-    tests opt out when their runtime is absent."""
-    for dec in node.decorator_list:
-        target = dec.func if isinstance(dec, ast.Call) else dec
-        if isinstance(target, ast.Attribute) and target.attr == "skip":
+def _skip_mark(expr) -> bool:
+    """True if a decorator/mark expression unconditionally disables a test: a
+    ``skip`` mark, or a ``skipif`` whose first argument is the literal ``True``
+    [F-M-T1]. A runtime-conditional ``skipif`` stays legitimate — it is how
+    docker/browser-gated AC tests opt out when their runtime is absent."""
+    target = expr.func if isinstance(expr, ast.Call) else expr
+    if not isinstance(target, ast.Attribute):
+        return False
+    if target.attr == "skip":
+        return True
+    if target.attr == "skipif" and isinstance(expr, ast.Call) and expr.args:
+        first = expr.args[0]
+        return isinstance(first, ast.Constant) and first.value is True
+    return False
+
+
+def _module_pytestmark_skips(tree) -> bool:
+    """True if a module-level ``pytestmark`` assignment carries an unconditional
+    skip — it disables every test in the file while each function's own
+    decorator list stays clean [F-M-T1]."""
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in stmt.targets):
+            continue
+        marks = stmt.value.elts if isinstance(stmt.value, ast.List) else [stmt.value]
+        if any(_skip_mark(m) for m in marks):
             return True
+    return False
+
+
+def _iter_test_functions(tree):
+    """Yield ``(function_node, context_skipped)`` for every function definition,
+    carrying module- and class-level unconditional-skip context so a mark on the
+    enclosing scope is attributed to the tests it disables [F-M-T1]."""
+    module_skip = _module_pytestmark_skips(tree)
+
+    def walk(body, ctx_skip):
+        for stmt in body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                yield stmt, ctx_skip
+            elif isinstance(stmt, ast.ClassDef):
+                cls_skip = ctx_skip or any(_skip_mark(d) for d in stmt.decorator_list)
+                yield from walk(stmt.body, cls_skip)
+
+    yield from walk(tree.body, module_skip)
+
+
+def _is_unconditional_skip(node, context_skipped: bool = False) -> bool:
+    """True if an AC test can NEVER run: an unconditional skip via its own
+    decorators, an enclosing module/class mark, a constant-true ``skipif``, or a
+    bare ``pytest.skip(...)`` statement at the top level of its body — every
+    variant satisfies the presence gate while executing nowhere
+    [PRA-L7/F-M-T1]."""
+    if context_skipped:
+        return True
+    if any(_skip_mark(dec) for dec in node.decorator_list):
+        return True
+    for stmt in node.body:  # unconditional body-level pytest.skip(...)
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            f = stmt.value.func
+            if isinstance(f, ast.Attribute) and f.attr == "skip":
+                return True
     return False
 
 
@@ -124,9 +177,7 @@ def _test_ac_defs(tests_dir: Path):
             tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
         except SyntaxError:
             continue
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+        for node, context_skipped in _iter_test_functions(tree):
             ac_m = _TEST_AC_RE.match(node.name)
             if not ac_m:
                 continue
@@ -135,7 +186,7 @@ def _test_ac_defs(tests_dir: Path):
                 duplicates.append((node.name, f"{seen[node.name]} and {where}"))
             else:
                 seen[node.name] = where
-            if _is_unconditional_skip(node):
+            if _is_unconditional_skip(node, context_skipped):
                 skipped.append((node.name, where))
             if story_m:
                 by_story.setdefault(f"eval{story_m.group(1)}", set()).add(int(ac_m.group(1)))
@@ -169,7 +220,9 @@ def check_ac_coverage(specs_dir: Path, tests_dir: Path) -> list[str]:
         # while never executing — the exact way "the spec is implemented" could be
         # a named-but-unverified claim. Refuse it.
         violations.append(
-            f"{name} ({where}) is an AC test with an unconditional @pytest.mark.skip; "
+            f"{name} ({where}) is an AC test with an unconditional skip "
+            f"(@pytest.mark.skip, module/class pytestmark, bare pytest.skip(), "
+            f"or skipif(True)); "
             "an AC test must run (use skipif for runtime-gated tests) [PRA-L7]"
         )
     for story in sorted(spec_acs, key=lambda s: int(s[4:])):

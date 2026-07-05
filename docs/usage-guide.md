@@ -156,13 +156,29 @@ scripts under it (an honest boundary documented in `harness/corpus/commit.py`).
 
 A holdout is an assertion your grader runs against the trial's final workspace.
 On the real (`--runner docker`) path, `holdouts_dir` is bind-mounted **read-only**
-at `/holdouts` inside a fresh, **network-less** container that runs over a copy
-of the workspace and writes `holdout_results.json`:
+at `/holdouts` inside a fresh, **network-less**, capability-dropped, non-root
+container that runs over a copy of the workspace and prints its results on
+**stdout** inside a one-per-run fence (the V1 transport [F-H1]):
 
-```json
+```
+-----VERDI_HOLDOUT_RESULTS_V1_BEGIN-----
 {"assertions": [{"id": "h1", "result": "pass"},
                 {"id": "h2", "result": "fail"}]}
+-----VERDI_HOLDOUT_RESULTS_V1_END-----
 ```
+
+The host scores nothing from `/workspace`: holdout tests import and execute
+agent code, so a workspace results file is forgeable by an `atexit` hook in
+the code under test — the fence is not. Your image's entrypoint should run
+the holdout tests in a **subprocess** (ideally under a separate non-privileged
+uid), collect their outcomes, and print exactly one fenced block itself; zero
+fences fail the grade closed as a container failure, and two or more (agent
+code printing its own forged block from the test subprocess) are refused as
+malformed, never scored. Images built for the pre-V1 workspace-file transport
+must be rebuilt. One honest residual boundary: `/holdouts` is readable by the
+process that executes the tests (the tests *are* the holdouts), so agent code
+running at grade time can read expected values — grade-time adaptation is
+mitigated by subprocess isolation, not eliminated.
 
 `result` is `pass` / `fail` / `abstain` (abstain does not count as a pass). The
 binary score is "all holdout assertions pass"; with `fractional_scoring` it is
@@ -282,10 +298,12 @@ Judge↔human agreement (IPW-corrected kappa) then appears in the findings.
 With more than two arms the spec still pre-registers exactly one decision rule,
 so only the **primary pair** carries an official decision by default; the other
 pairs render CI + effect size but no decision. To keep every pair official under
-a family-wise correction:
+a family-wise correction — pre-registered in the spec, not an analyze-time
+flag [F-H7]:
 
-```bash
-uv run bench analyze . --multi-arm-correction holm      # default: none
+```yaml
+# experiment.yaml (before locking)
+multi_arm_correction: holm      # default: none
 ```
 
 ---

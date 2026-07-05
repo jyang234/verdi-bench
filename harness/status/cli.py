@@ -98,6 +98,13 @@ def register(app: typer.Typer) -> None:
         """Lifecycle snapshot from the ledger + heartbeat (read-only) [EVAL-13]."""
         from .aggregate import compute_status
 
+        # F-M-T2: a nonexistent directory (a typo) must refuse — rendering it as
+        # a healthy "chain OK (empty) / not yet planned" experiment is a silently
+        # wrong answer from the observability verb. An EXISTING directory with no
+        # ledger legitimately renders the empty state (that IS "not yet planned").
+        if not Path(experiment_dir).is_dir():
+            typer.echo(f"no such experiment directory: {experiment_dir}", err=True)
+            raise typer.Exit(code=2)
         snap = compute_status(Path(experiment_dir))
         if as_json:
             typer.echo(json.dumps(snap, sort_keys=True))

@@ -10,6 +10,17 @@ scrub/assert surface (judge packets, review packets) kills it. This is a
 *different* canary corpus from the blinding canaries (§7.4) — separate
 namespace, separate purpose, one shared scrub. Deterministic by construction:
 a namespaced sub-hash of ``task_sha``, no randomness [§7.5].
+
+Disclosed limitation [F-M-C1]: the derivation input is not a secret — the
+namespace is a source constant and ``task_sha`` is published in findings/card
+provenance — so an adversary who knows a corpus's task shas can pre-derive a
+rival arm's canaries and plant them in public text that arm might quote,
+manufacturing an asymmetric flag that blocks the official render (a
+denial-of-finding, not a false membership proof: the near-zero-FP claim is
+about *models*, not motivated humans). The resolution path is the ledgered
+quarantine ceremony plus a re-scan/re-probe; a secret per-corpus salt is the
+stronger (and heavier) fix if hostile actors with publish access to corpus
+source text are in your threat model.
 """
 
 from __future__ import annotations

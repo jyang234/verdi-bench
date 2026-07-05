@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.grade.baseline import flake_baseline, load_quarantine
+from harness.grade.baseline import DEFAULT_K, flake_baseline, load_quarantine
 from harness.grade.container import GraderUnavailableError, GradingContainer, HoldoutRun
 from harness.grade.types import GradeTask
 from harness.ledger.query import find_events
@@ -200,3 +200,11 @@ def test_ac2_quarantine_without_task_sha_fails_loud(tmp_path):
                  ledger_path=tmp_path / "run.ndjson", ctx=fixed_ctx(),
                  config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
                  quarantined_tasks={("t1", "some-sha")})
+
+
+def test_h2_operating_characteristic_stays_documented():
+    """F-H2: the disclosed miss probability of zero-tolerance k-run baselining
+    ((1-p)^k, ≈90% at p=2% with the default k=5) must stay true of DEFAULT_K —
+    if the default changes, the docs in baseline.py / deep-dive.md change with it."""
+    assert DEFAULT_K == 5
+    assert abs((1 - 0.02) ** DEFAULT_K - 0.9039) < 5e-4

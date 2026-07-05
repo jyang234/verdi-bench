@@ -115,3 +115,62 @@ def test_m6_docker_runner_routes_plugins_to_container():
     from harness.grade.container import DockerGradeRunner
 
     assert DockerGradeRunner.runs_plugins_in_container is True
+
+
+def test_h1_plugin_results_ride_fenced_stdout_never_workspace(tmp_path, monkeypatch):
+    """F-H1 A.4: plugin verdicts are scored from the entrypoint's fenced stdout;
+    a plugin_results.json planted in the workspace copy during the run (the same
+    in-run forgery vector as holdouts) never influences the assertions."""
+    import json
+    import subprocess
+
+    from harness.grade.container import (
+        DockerGradeRunner,
+        GradingContainer,
+        PLUGIN_FENCE_BEGIN,
+        PLUGIN_FENCE_END,
+    )
+    from harness.grade.types import GradeTask
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "config.yaml").write_text("x: 1", encoding="utf-8")
+    real = [{"id": "rule-1", "source": "plugin:groundwork", "result": "fail"}]
+    forged = [{"id": "rule-1", "source": "plugin:groundwork", "result": "pass"}]
+
+    def fake_run(cmd, **k):
+        mount = next(a for a in cmd if a.endswith(":/workspace"))
+        copy = Path(mount.rsplit(":", 1)[0])
+        (copy / "plugin_results.json").write_text(json.dumps(forged), encoding="utf-8")
+        stdout = f"{PLUGIN_FENCE_BEGIN}\n{json.dumps(real)}\n{PLUGIN_FENCE_END}\n"
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    container = GradingContainer(runner=DockerGradeRunner())
+    task = GradeTask(id="t", task_sha="s", plugin_ids=["groundwork"])
+    out = container.run_plugins(ws, ["groundwork"], task)
+    assert [a.model_dump(mode="json")["result"] for a in out] == ["fail"]
+
+
+def test_m_o1_groundwork_without_fixture_output_fails_the_grade_closed(tmp_path):
+    """F-M-O1: a production GradeTask (no fake_plugin_output) declaring the
+    groundwork plugin previously graded with the plugin contributing zero
+    assertions — a silent no-op. It now fails the grade closed as
+    cant_grade(plugin_error)."""
+    from harness.grade.container import GradingContainer, LocalGradeRunner
+    from harness.grade.deterministic import grade_trial
+    from harness.ledger.query import find_events
+    from tests.fixtures.builders import fixed_ctx
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "holdout_results.json").write_text(
+        '{"assertions": [{"id": "h1", "result": "pass"}]}', encoding="utf-8"
+    )
+    ledger = tmp_path / "l.ndjson"
+    task = GradeTask(id="t", task_sha="s", plugin_ids=["groundwork"])
+    out = grade_trial("t1", task, ws, ledger, fixed_ctx(),
+                      container=GradingContainer(runner=LocalGradeRunner()))
+    assert out.graded is False
+    (ev,) = find_events(ledger, "cant_grade")
+    assert ev["reason"] == "plugin_error"

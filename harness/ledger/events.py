@@ -13,6 +13,7 @@ Later stories extend this module with their own event types by calling
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
@@ -78,7 +79,7 @@ def build_provenance(ctx: EventContext) -> dict:
     return prov.model_dump()
 
 
-def emit(ledger_path, ctx: EventContext, event_type: str, payload: dict) -> dict:
+def emit(ledger_path: Path | str, ctx: EventContext, event_type: str, payload: dict) -> dict:
     """Assemble → validate provenance → append. The single funnel."""
     if event_type not in REGISTERED_EVENTS:
         raise UnregisteredEventError(
@@ -103,7 +104,7 @@ CHAIN_ANCHOR = register_event("chain_anchor")
 
 
 def record_experiment_locked(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     spec_sha256: str,
@@ -238,7 +239,7 @@ FLAKE_BASELINE = register_event("flake_baseline")
 
 
 def record_grade(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     trial_id: str,
@@ -248,6 +249,8 @@ def record_grade(
     fractional_score: Optional[float] = None,
     grader: Optional[str] = None,
     override_of: Optional[str] = None,
+    workspace_sha256: Optional[str] = None,
+    workspace_walk_version: Optional[int] = None,
 ) -> dict:
     """``grader`` (additive field) records which grader produced the verdict —
     e.g. ``"docker"`` (a trusted network-less container) vs ``"local"`` (the
@@ -256,7 +259,13 @@ def record_grade(
 
     ``override_of`` (additive) is the sha256 line hash of a terminal
     ``cant_grade`` this grade re-attempts via ``bench grade --retry-terminal``,
-    so a manual override is visible in the event itself [D-P7-2]."""
+    so a manual override is visible in the event itself [D-P7-2].
+
+    ``workspace_sha256`` + ``workspace_walk_version`` (additive [F-H3]) commit
+    the graded workspace's solution bytes to the chain, so the forensic and
+    contamination scanners can verify the evidence they read instead of
+    trusting live disk — pre-existing chains simply lack them and degrade to
+    a disclosed coverage gap, never a hard failure."""
     payload = {
         "trial_id": trial_id,
         "task_sha": task_sha,
@@ -269,11 +278,15 @@ def record_grade(
         payload["grader"] = grader
     if override_of is not None:
         payload["override_of"] = override_of
+    if workspace_sha256 is not None:
+        payload["workspace_sha256"] = workspace_sha256
+    if workspace_walk_version is not None:
+        payload["workspace_walk_version"] = workspace_walk_version
     return emit(ledger_path, ctx, GRADE, payload)
 
 
 def record_cant_grade(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     trial_id: str,
@@ -291,7 +304,7 @@ def record_cant_grade(
 
 
 def record_flake_baseline(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     task_id: str,
@@ -299,7 +312,14 @@ def record_flake_baseline(
     k: int,
     results: list,
     verdict: str,
+    workspace_basis: Optional[str] = None,
 ) -> dict:
+    """``workspace_basis`` (additive [F-H2]) records WHAT was baselined —
+    ``"reference_solution"`` when produced by ``bench corpus baseline`` against
+    the task's reference-solution tree — so a baseline that actually ran is
+    distinguishable from a directly-fabricated event. Pre-existing chains
+    simply lack the field."""
+    payload = {"workspace_basis": workspace_basis} if workspace_basis is not None else {}
     return emit(
         ledger_path,
         ctx,
@@ -308,6 +328,7 @@ def record_flake_baseline(
             "task_id": task_id,
             "task_sha": task_sha,
             "k": k,
+            **payload,
             "results": results,
             "verdict": verdict,
         },
@@ -327,7 +348,7 @@ def append_verdict(ledger_path, ctx: EventContext, *, verdict: dict) -> dict:
 
 
 def append_human_verdict(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     verdict: dict,
@@ -363,7 +384,7 @@ SELFCHECK = register_event("selfcheck")
 
 
 def record_selfcheck(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     selected_method: str,
@@ -375,6 +396,8 @@ def record_selfcheck(
     n_tasks: int,
     null_model: str,
     passed: bool,
+    validation_coverage: Optional[float] = None,
+    validation_n_sim: Optional[int] = None,
 ) -> dict:
     """Harness self-validation result [EVAL-1-D008; master plan §7.7].
 
@@ -382,23 +405,28 @@ def record_selfcheck(
     under the recentered null at the realized N, its Monte-Carlo (Wilson 95%)
     interval, and whether the nominal level lies within it (``passed``). A **new
     additive event kind** — old ledgers simply lack it, so no existing hash chain
-    is invalidated. The official fence requires a ``passed=true`` selfcheck."""
-    return emit(
-        ledger_path,
-        ctx,
-        SELFCHECK,
-        {
-            "selected_method": selected_method,
-            "nominal": nominal,
-            "coverage": coverage,
-            "mc_interval": mc_interval,
-            "n_sim": n_sim,
-            "n_boot": n_boot,
-            "n_tasks": n_tasks,
-            "null_model": null_model,
-            "passed": passed,
-        },
-    )
+    is invalidated. The official fence requires a ``passed=true`` selfcheck.
+
+    ``validation_coverage`` / ``validation_n_sim`` (additive [F-M-S1]): the
+    selected method's coverage re-estimated on an independent sub-seeded
+    stream — the estimate the pass/fail gate actually uses; ``coverage``
+    remains the selection-stream figure. Pre-existing chains lack them."""
+    payload = {
+        "selected_method": selected_method,
+        "nominal": nominal,
+        "coverage": coverage,
+        "mc_interval": mc_interval,
+        "n_sim": n_sim,
+        "n_boot": n_boot,
+        "n_tasks": n_tasks,
+        "null_model": null_model,
+        "passed": passed,
+    }
+    if validation_coverage is not None:
+        payload["validation_coverage"] = validation_coverage
+    if validation_n_sim is not None:
+        payload["validation_n_sim"] = validation_n_sim
+    return emit(ledger_path, ctx, SELFCHECK, payload)
 
 
 def record_cant_analyze(
@@ -420,30 +448,32 @@ def record_cant_analyze(
 
 
 def record_findings_rendered(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     mode: str,
     primary_metric: str,
     ledger_head_hash: str,
     findings_sha256: str,
+    multi_arm_correction: Optional[str] = None,
 ) -> dict:
     """Provenance of a findings render [EVAL-6 §M6].
 
     ``analyze`` is a pure function of ``(ledger, seed)``; the CLI writes only the
     findings output and this single event recording what was rendered.
+    ``multi_arm_correction`` is an additive field [F-H7]: the applied >2-arm
+    decision policy, so the chain shows which decision procedure produced each
+    render — inserted only when present, so pre-existing chains keep their shape.
     """
-    return emit(
-        ledger_path,
-        ctx,
-        FINDINGS_RENDERED,
-        {
-            "mode": mode,
-            "primary_metric": primary_metric,
-            "rendered_head_hash": ledger_head_hash,
-            "findings_sha256": findings_sha256,
-        },
-    )
+    payload = {
+        "mode": mode,
+        "primary_metric": primary_metric,
+        "rendered_head_hash": ledger_head_hash,
+        "findings_sha256": findings_sha256,
+    }
+    if multi_arm_correction is not None:
+        payload["multi_arm_correction"] = multi_arm_correction
+    return emit(ledger_path, ctx, FINDINGS_RENDERED, payload)
 
 
 # ---------------------------------------------------------------------------
@@ -453,8 +483,51 @@ REVEAL = register_event("reveal")
 REVIEW_PACKET_BUILT = register_event("review_packet_built")
 
 
+JUDGE_STOPPED_TOKEN_CEILING = register_event("judge_stopped_token_ceiling")
+
+
+def record_judge_stopped_token_ceiling(
+    ledger_path, ctx: EventContext, *, accumulated_tokens: int, ceiling: int
+) -> dict:
+    """The judge batch refused further comparisons at the pre-registered
+    token ceiling [F-M-J3] — mirroring run_stopped_cost_ceiling: a
+    refuse-to-start, never a mid-verdict abort. Additive event kind."""
+    return emit(
+        ledger_path,
+        ctx,
+        JUDGE_STOPPED_TOKEN_CEILING,
+        {"accumulated_tokens": accumulated_tokens, "ceiling": ceiling},
+    )
+
+
+REVIEW_BATCH = register_event("review_batch")
+
+
+def record_review_batch(
+    ledger_path: Path | str,
+    ctx: EventContext,
+    *,
+    batch_id: str,
+    comparison_ids: list,
+    seed: int,
+) -> dict:
+    """The reviewed QUEUE as a unit [F-M-O2] — the selected comparison ids one
+    ``bench review build`` invocation put in front of the reviewer. The reveal
+    gate refuses any reveal in a batch until EVERY batched comparison has a
+    human verdict, closing the per-item loophole where revealing item 1 (arm
+    identities + judge verdict) unblinds the reviewer for items 2..n. A **new
+    additive event kind** — comparisons on legacy chains belong to no batch
+    and keep per-item semantics, disclosed by absence."""
+    return emit(
+        ledger_path,
+        ctx,
+        REVIEW_BATCH,
+        {"batch_id": batch_id, "comparison_ids": list(comparison_ids), "seed": seed},
+    )
+
+
 def record_review_packet_built(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     comparison_id: str,
@@ -487,7 +560,7 @@ def record_review_packet_built(
 
 
 def record_reveal(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     verdict_event_id: str,
@@ -517,7 +590,7 @@ SUBSET_DRAW = register_event("subset_draw")
 
 
 def record_task_admitted(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     candidate_id: str,
@@ -539,7 +612,7 @@ def record_task_admitted(
 
 
 def record_calibration_run(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     corpus_id: str,
@@ -562,7 +635,7 @@ def record_calibration_run(
 
 
 def record_subset_draw(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     corpus_id: str,
@@ -592,7 +665,7 @@ def record_subset_draw(
 
 
 def record_curation_approval(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     candidate_id: str,

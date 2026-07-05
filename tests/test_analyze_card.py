@@ -119,6 +119,61 @@ def test_card_discloses_forensic_quarantines(tmp_path):
     assert d["forensic_quarantines"] == []                   # none here, but the key is present
 
 
+def _append_post_render_grade(ledger):
+    """Simulate a post-render re-grade — the F-H5 staleness scenario."""
+    from harness.ledger.events import EventContext, record_grade
+
+    g = find_events(ledger, "grade")[-1]
+    record_grade(
+        ledger, EventContext(experiment_id="exp", actor="tester"),
+        trial_id=g["trial_id"], task_sha=g["task_sha"],
+        assertions=[{"id": "h1", "source": "holdout_test", "result": "pass", "detail": None}],
+        binary_score=True, override_of="a" * 64,
+    )
+
+
+def test_h5_card_refuses_events_appended_after_render(tmp_path):
+    """F-H5: the card certifies a rendered result — after any event is appended
+    past the last findings render (quarantine, re-grade, …), emitting a card
+    must refuse rather than stamp recomputed numbers with the stale mode."""
+    expdir, spec = _graded_analyzed(tmp_path)
+    _append_post_render_grade(expdir / "ledger.ndjson")
+    with pytest.raises(CardError, match="re-run `bench analyze`"):
+        _card(expdir, spec)
+
+
+def test_h5_card_carries_render_binding(tmp_path):
+    """F-H5: the card binds to the render event it certifies, so a third party
+    can check the card against the chain without recomputing."""
+    expdir, spec = _graded_analyzed(tmp_path)
+    card = _card(expdir, spec)
+    rendered = find_events(expdir / "ledger.ndjson", "findings_rendered")[-1]
+    assert card["provenance"]["rendered_head_hash"] == rendered["rendered_head_hash"]
+    assert card["provenance"]["findings_sha256"] == rendered["findings_sha256"]
+    assert card["schema_version"] == 2
+
+
+def test_h5_card_refuses_broken_chain(tmp_path):
+    """F-H5: parity with the render path's _assert_head_hash — a card is never
+    projected from a ledger whose chain does not verify."""
+    expdir, spec = _graded_analyzed(tmp_path)
+    ledger = expdir / "ledger.ndjson"
+    data = ledger.read_text(encoding="utf-8")
+    assert '"binary_score":true' in data
+    ledger.write_text(data.replace('"binary_score":true', '"binary_score":false', 1),
+                      encoding="utf-8")
+    with pytest.raises(CardError, match="chain"):
+        _card(expdir, spec)
+
+
+def test_h5_cli_emit_refuses_stale_render_exit_2(tmp_path):
+    expdir, _ = _graded_analyzed(tmp_path)
+    _append_post_render_grade(expdir / "ledger.ndjson")
+    r = runner.invoke(app, ["card", "emit", str(expdir)])
+    assert r.exit_code == 2
+    assert "analyze" in r.output
+
+
 def test_card_requires_a_prior_analyze(tmp_path):
     expdir = tmp_path / "exp"
     expdir.mkdir()
@@ -267,3 +322,39 @@ def test_swebench_card_has_corpus_battery_and_resolved_rates(tmp_path):
     by_arm = {a["name"]: a for a in card["arms"]}
     assert by_arm["control"]["absolute_score"] == 1.0     # resolved
     assert by_arm["treatment"]["absolute_score"] == 0.0   # not resolved
+
+
+def _with_asymmetric_contamination(card):
+    """Inject the real asymmetry shape (contamination/summary.py:probe_asymmetries)
+    into a built card — the renders are pure projections of the dict."""
+    card["disclosures"]["contamination"] = {
+        "probe_status": "complete",
+        "asymmetric": [{"task_id": "t1", "flagged_arms": ["control"],
+                        "unflagged_arms": ["treatment"]}],
+    }
+    return card
+
+
+def test_m_o4_markdown_render_survives_asymmetric_contamination(tmp_path):
+    """F-M-O4: `asymmetric` entries are dicts; the md render joined them as
+    strings — a TypeError whenever any asymmetric flag existed. It now renders
+    the same task/arm phrasing report.py uses."""
+    expdir, spec = _graded_analyzed(tmp_path)
+    md = render_card_markdown(_with_asymmetric_contamination(_card(expdir, spec)))
+    assert "task 't1'" in md and "['control']" in md
+
+
+def test_m_o5_html_card_carries_every_disclosure(tmp_path):
+    """F-M-O5: the HTML card (the shareable artifact) dropped the entire
+    Disclosures section the markdown card carries. Structural parity: every
+    disclosure category renders in both."""
+    expdir, spec = _graded_analyzed(tmp_path)
+    card = _with_asymmetric_contamination(_card(expdir, spec))
+    card["disclosures"]["forensic_quarantines"] = ["trial-q1"]
+    html = render_card_html(card)
+    md = render_card_markdown(card)
+    assert "Disclosures" in html
+    for needle in ("confounds", "task &#x27;t1&#x27;", "trial-q1", "excluded metrics"):
+        assert needle in html, needle
+    for needle in ("confounds", "task 't1'", "trial-q1", "excluded metrics"):
+        assert needle in md, needle

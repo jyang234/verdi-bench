@@ -40,12 +40,15 @@ def test_ac3_regurgitation_flags(tmp_path):
         ProbeTask(task_id="t-oracle", task_sha=_SHA_B,
                   prompt="Normalize the score vector.", oracle=_ORACLE),
     ]
-    # call order per arm: canary probe for t-canary, oracle probe for t-oracle
+    # call order per arm: canary probe (t-canary), then TRUE + CONTROL oracle
+    # probes (t-oracle) [F-M-C2: two calls per oracle task]
     provider = FakeProvider([
         f"…and the document continues: <!-- {canary_a} -->",  # regurgitation!
-        _ORACLE[len(_ORACLE) // 2 :],                          # verbatim continuation
+        _ORACLE[len(_ORACLE) // 2 :],                          # verbatim TRUE continuation
+        "pass  # nothing recalled for the perturbed prefix",   # CONTROL: no lift
         "I cannot recall that document.",                      # arm 2: negative
-        "def something_else(): return None  # unrelated guess in reply",
+        "def something_else(): return None  # unrelated guess",  # arm 2 TRUE
+        "pass  # arm 2 control",                               # arm 2 CONTROL
     ])
     event = run_memory_probe(
         ledger, fixed_ctx(),
@@ -58,6 +61,9 @@ def test_ac3_regurgitation_flags(tmp_path):
     assert control["outcomes"] == {"t-canary": "flagged", "t-oracle": "flagged"}
     assert control["evidence"]["t-canary"] == ["canary_regurgitation"]
     assert control["evidence"]["t-oracle"] == ["oracle_prefix"]
+    # F-M-C2: both conditions' scores + the margin ride the event
+    sc = control["oracle_scores"]["t-oracle"]
+    assert sc["true"] >= 0.5 and sc["margin"] >= 0.2
     treatment = probe["arms"]["treatment"]
     assert treatment["outcomes"] == {"t-canary": "negative", "t-oracle": "negative"}
     # the probe prompt never contained the canary — the model produced it
@@ -201,3 +207,90 @@ def test_probe_refuses_unfingerprintable_oracle(tmp_path):
     assert probe["status"] == "cant_probe"
     assert probe["reason"] == "oracle_unfingerprintable"
     assert probe["task_id"] == "t1"
+
+
+def test_m_c3_alarms_and_skipped_ride_the_probe_event(tmp_path):
+    """F-M-C3: insulation alarms and unscanned trials were stderr-only — a
+    holdout-leak breach or a wiped-workspace trial evaporated, indistinguishable
+    from scanned-clean downstream. They now ride the ledgered probe event."""
+    ledger = tmp_path / "l.ndjson"
+    ev = run_memory_probe(
+        ledger, fixed_ctx(),
+        arms=[_arm("control")],
+        tasks=[ProbeTask(task_id="t1", task_sha=_SHA_A, prompt="p", has_canary=True)],
+        provider=FakeProvider(["nothing memorized"]),
+        alarms=["trial x: holdout leak"], skipped=["trial y: UNSCANNED"],
+    )
+    probe = ev["probe"]
+    assert probe["alarms"] == ["trial x: holdout leak"]
+    assert probe["skipped"] == ["trial y: UNSCANNED"]
+
+
+def test_m_c3_official_fence_refuses_on_insulation_alarm(tmp_path):
+    """F-M-C3: an insulation alarm on the latest probe is a violation that must
+    be resolved (quarantine + re-scan/probe) — never rendered past. Named
+    cant_analyze reason; probes predating the field are skipped."""
+    import pytest
+
+    from harness.analyze.report import (
+        CantAnalyzeReason,
+        InsulationAlarmError,
+        _assert_no_insulation_alarms,
+        cant_analyze_reason,
+    )
+
+    ledger = tmp_path / "l.ndjson"
+    run_memory_probe(  # legacy-shaped probe: no alarms field -> no refusal
+        ledger, fixed_ctx(), arms=[_arm("control")],
+        tasks=[ProbeTask(task_id="t1", task_sha=_SHA_A, prompt="p", has_canary=True)],
+        provider=FakeProvider(["nothing"]),
+    )
+    _assert_no_insulation_alarms(ledger)
+    run_memory_probe(
+        ledger, fixed_ctx(), arms=[_arm("control")],
+        tasks=[ProbeTask(task_id="t1", task_sha=_SHA_A, prompt="p", has_canary=True)],
+        provider=FakeProvider(["nothing"]),
+        alarms=["trial x: holdout leak"],
+    )
+    with pytest.raises(InsulationAlarmError, match="quarantine"):
+        _assert_no_insulation_alarms(ledger)
+    assert (
+        cant_analyze_reason(InsulationAlarmError("x"))
+        is CantAnalyzeReason.insulation_alarm
+    )
+
+
+def test_m_c2_perturb_identifiers_is_deterministic():
+    from harness.contamination.probe import perturb_identifiers
+
+    out = perturb_identifiers(_ORACLE)
+    assert out == perturb_identifiers(_ORACLE)  # pure, no randomness
+    assert out != _ORACLE                       # identifiers actually renamed
+    assert "def " in out and "return" in out    # keywords/structure preserved
+
+
+def test_m_c2_formulaic_continuation_no_longer_flags(tmp_path):
+    """F-M-C2: formulaic code a clean model can legitimately continue tripped
+    the >=50% reconstruction test — and one false positive is asymmetric,
+    refusing the official render. A model that continues the PERTURBED control
+    prefix just as well (margin ~ 0) is now negative; only a memorization LIFT
+    over the control flags."""
+    from harness.contamination.probe import _split_oracle, perturb_identifiers
+
+    ledger = tmp_path / "ledger.ndjson"
+    _, true_remainder = _split_oracle(_ORACLE)
+    _, control_remainder = _split_oracle(perturb_identifiers(_ORACLE))
+    # a clean strong continuer: reconstructs formulaic code in BOTH conditions
+    provider = FakeProvider([true_remainder, control_remainder])
+    event = run_memory_probe(
+        ledger, fixed_ctx(), arms=[_arm("control")],
+        tasks=[ProbeTask(task_id="t-oracle", task_sha=_SHA_B,
+                         prompt="p", oracle=_ORACLE)],
+        provider=provider,
+    )
+    arm = event["probe"]["arms"]["control"]
+    assert arm["outcomes"] == {"t-oracle": "negative"}
+    sc = arm["oracle_scores"]["t-oracle"]
+    assert sc["true"] >= 0.5          # would have flagged pre-control
+    assert sc["control"] >= 0.5       # the control explains it away
+    assert sc["margin"] < 0.2
