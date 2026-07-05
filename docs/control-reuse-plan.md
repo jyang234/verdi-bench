@@ -161,23 +161,33 @@ grade payload, so only the diff string needs snapshotting.
 Alongside `assert_lock` / `assert_task_commitment`:
 
 1. Load the bundle; verify its self sha.
-2. Recompute the current experiment's fingerprint for the named control arm.
-3. Compare byte-for-byte to the bundle's recorded fingerprint. **Any mismatch →
-   refuse loudly** with a typed error naming *which* component drifted
-   (`ControlReuseFingerprintError: holdout scripts changed …`). This is the
-   "provably unchanged, else preflight fails" requirement.
-4. On match: append `control_reused`, then materialize the bundle's per-cell
-   data as `reused_trial` + `reused_grade` events and stash the diff snapshots
-   where the reused judge assembler reads them.
-5. **Scheduling:** drop the control arm's cells from the derived order before
-   `schedule()` — they are supplied by the bundle, not executed. `executed_order`
-   then reflects only the freshly-run contender cells. (A run-stage filter on
-   the derived order; the locked interleave property is untouched.)
+2. **Idempotency first:** if this bundle is already fully imported (its
+   `control_reused` marker exists), return before re-gating — a resume after a
+   gated drift (e.g. an instrument version bump) must not refuse data already on
+   the chain.
+3. Refuse loudly if the control arm is not in the pre-registered primary pair
+   (v1 reuses only a primary-pair control).
+4. Recompute the current experiment's fingerprint for the named control arm and
+   compare byte-for-byte to the bundle's. **Any mismatch → refuse loudly** with a
+   typed error naming *which* component drifted (`ControlReuseFingerprintError:
+   holdout scripts changed …`). This is the "provably unchanged, else preflight
+   fails" requirement.
+5. On match: append each cell's `reused_trial` + `reused_grade` (skipping cells
+   already on the chain) and stash each judged-diff snapshot with its
+   `diff_sha256`; append the `control_reused` summary **last**, as the completion
+   marker, so a crash mid-loop resumes instead of attesting a partial import.
+6. **Scheduling:** drop *every* arm named by a `control_reused` event from the
+   derived order before `schedule()` — read from the ledger, not just this
+   invocation's flag, so a resume that omits `--reuse-control` cannot run the
+   control fresh. `executed_order` then reflects only the freshly-run contender
+   cells. (A run-stage filter on the derived order; the locked interleave
+   property is untouched.)
 
 Config surface: reuse is *operational*, so it lives in `run.config.yaml`
-(`reuse_control: {bundle: <path>, arm: <name>}`) and/or a `bench run
---reuse-control <bundle> --control-arm <name>` flag — **never** in the
-sha-locked `experiment.yaml`.
+(`reuse_control: {bundle: <path>}`) and/or a `bench run --reuse-control <bundle>`
+flag — **never** in the sha-locked `experiment.yaml`. The control arm is read
+from the bundle, not passed separately. (`control-cache export` takes `--arm` to
+choose which arm to export.)
 
 ### 5. Reused judge assembly — `harness/judge/` (parallels `assemble.py`)
 
@@ -185,9 +195,17 @@ sha-locked `experiment.yaml`.
 `TRIAL` with the matching `reused_trial` control per `(task, rep)`; contender
 `ResponseArtifacts.diff` read live, control diff from the bundle snapshot,
 holdouts from `reused_grade`. Feed the existing identity-blind, order-debiased
-`judge_pair`; record `reused_judge_verdict`. The LLM call, blinding, and D003
+`judge_pair` (via an injected `append_verdict_fn` so the sink is the only thing
+that changes); record `reused_judge_verdict`. The LLM call, blinding, and D003
 order-swap are unchanged. `bench judge` learns to run this path when a
 `control_reused` event is present.
+
+Two hardening details (from code review): the control diff is read from the
+stashed snapshot and **verified against its recorded `diff_sha256`** before
+judging — a missing or tampered snapshot fails loudly, never judges empty bytes;
+and reuse judging draws on the **same locked judge token ceiling** as native
+judging (the budget is seeded from native + reused verdicts and reuse is skipped
+once native stopped), so it cannot spend past the pre-registered cap.
 
 ### 6. Analyze — exploratory reuse section — `harness/analyze/report.py`
 

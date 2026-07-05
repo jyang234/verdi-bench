@@ -257,12 +257,25 @@ def import_bundle(
 ) -> str:
     """Preflight-gate and import a control bundle into this experiment's ledger.
 
-    Verifies the bundle self-sha, then refuses loudly unless the current control
-    fingerprint matches the bundle's byte-for-byte (:func:`assert_fingerprint_match`
-    names any drift). On a match, appends the ``control_reused`` summary and, per
-    cell, a ``reused_trial`` + ``reused_grade``, stashing each judged-diff snapshot
-    beside the ledger. Idempotent across resume. Returns the reused control arm
-    name so the scheduler can drop its cells."""
+    Order matters for a correct resume:
+
+    1. verify the bundle self-sha (tamper-evidence);
+    2. return early if this bundle is already fully imported (the
+       ``control_reused`` marker exists) — *before* re-gating, so a resume after
+       a gated drift (e.g. an instrument git-sha bump) does not spuriously refuse
+       data already immutably on the chain;
+    3. refuse loudly if the control arm is not in the pre-registered primary pair
+       (v1 reuses only a primary-pair control);
+    4. refuse loudly unless the current control fingerprint matches the bundle's
+       byte-for-byte (:func:`assert_fingerprint_match` names any drift);
+    5. append each cell's ``reused_trial`` + ``reused_grade`` (skipping cells
+       already on the chain) and stash each judged-diff snapshot beside the
+       ledger with its ``diff_sha256``;
+    6. append the ``control_reused`` summary **last** — the completion marker, so
+       a crash mid-loop leaves it absent and the next resume completes the
+       missing cells instead of attesting a partial import as done.
+
+    Returns the reused control arm name."""
     experiment_dir = Path(experiment_dir)
     ledger = experiment_dir / "ledger.ndjson"
     verify_bundle(bundle)

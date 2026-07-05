@@ -492,6 +492,15 @@ itself, and so should its documentation:
 - **A/A selfcheck validates coverage, not ground truth.** The fence keeps a
   finding statistically honest relative to its pre-registration; it cannot
   make a badly designed experiment meaningful.
+- **A reused control is exploratory, never official.** To save cost while
+  iterating on a contender, `bench control-cache export` + `bench run
+  --reuse-control` lets an unchanged control be reused instead of re-run
+  (preflight refuses on any fingerprint drift — task/holdout bytes, arm def,
+  environment, grader, repetitions). But a reused control was *not* interleaved
+  with the contender, so its data lands under distinct `reused_*` ledger kinds
+  the official paired analysis cannot read: the reuse estimate is unpaired and
+  watermarked exploratory, and validation is always a fresh, fully interleaved
+  run. See usage-guide §12.
 - **Egress confinement is a shared responsibility with the deployment.** The
   engine attaches trials to a `--internal` docker network (no external route)
   and meters through a proxy, but the metering proxy itself is an external
