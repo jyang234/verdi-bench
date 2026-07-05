@@ -60,7 +60,77 @@ def test_unconditionally_skipped_ac_test_is_a_violation(tmp_path):
         encoding="utf-8",
     )
     v = check_ac_coverage(specs, tests)
-    assert any("unconditional @pytest.mark.skip" in m for m in v), v
+    assert any("unconditional skip" in m for m in v), v
+
+
+def _one_ac_story(tmp_path, test_source: str):
+    """A one-AC spec plus a test file with the given source [F-M-T1 harness]."""
+    specs, tests = tmp_path / "specs", tmp_path / "tests"
+    specs.mkdir(); tests.mkdir()
+    (specs / "eval3.spec.md").write_text(
+        'acceptance:\n  - id: "AC-1"\n    text: "x"\n', encoding="utf-8"
+    )
+    (tests / "test_eval3_story.py").write_text(test_source, encoding="utf-8")
+    return specs, tests
+
+
+def test_module_pytestmark_skip_is_a_violation(tmp_path):
+    """F-M-T1: `pytestmark = pytest.mark.skip` disables every AC test in the
+    file while each function's decorator list stays clean — flagged."""
+    specs, tests = _one_ac_story(
+        tmp_path,
+        "import pytest\n\npytestmark = pytest.mark.skip\n\n"
+        "def test_ac1_covered():\n    assert True\n",
+    )
+    v = check_ac_coverage(specs, tests)
+    assert any("unconditional skip" in m for m in v), v
+
+
+def test_class_level_skip_is_a_violation(tmp_path):
+    """F-M-T1: a skip mark on the enclosing class disables the AC test."""
+    specs, tests = _one_ac_story(
+        tmp_path,
+        "import pytest\n\n@pytest.mark.skip\nclass TestStory:\n"
+        "    def test_ac1_covered(self):\n        assert True\n",
+    )
+    v = check_ac_coverage(specs, tests)
+    assert any("unconditional skip" in m for m in v), v
+
+
+def test_bare_body_skip_is_a_violation(tmp_path):
+    """F-M-T1: an unconditional pytest.skip() call at the top of the body is
+    decorator-invisible but still never runs the assertions — flagged."""
+    specs, tests = _one_ac_story(
+        tmp_path,
+        "import pytest\n\ndef test_ac1_covered():\n"
+        "    pytest.skip('later')\n    assert True\n",
+    )
+    v = check_ac_coverage(specs, tests)
+    assert any("unconditional skip" in m for m in v), v
+
+
+def test_constant_true_skipif_is_a_violation(tmp_path):
+    """F-M-T1: skipif(True, ...) is an unconditional skip wearing skipif's
+    clothes — flagged; runtime-conditional skipif stays legitimate."""
+    specs, tests = _one_ac_story(
+        tmp_path,
+        "import pytest\n\n@pytest.mark.skipif(True, reason='r')\n"
+        "def test_ac1_covered():\n    assert True\n",
+    )
+    v = check_ac_coverage(specs, tests)
+    assert any("unconditional skip" in m for m in v), v
+
+
+def test_conditional_body_skip_is_not_flagged(tmp_path):
+    """F-M-T1: a pytest.skip() guarded by a runtime condition (inside an if) is
+    the legitimate runtime-gating pattern — not flagged."""
+    specs, tests = _one_ac_story(
+        tmp_path,
+        "import os\nimport pytest\n\ndef test_ac1_covered():\n"
+        "    if not os.environ.get('HAS_RUNTIME'):\n"
+        "        pytest.skip('runtime absent')\n    assert True\n",
+    )
+    assert check_ac_coverage(specs, tests) == []
 
 
 def test_skipif_ac_test_is_not_flagged(tmp_path):
