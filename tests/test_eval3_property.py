@@ -25,6 +25,7 @@ import harness.corpus.ledger_ops  # noqa: F401
 import harness.grade.baseline  # noqa: F401  (registers `corpus-baseline` [F-H2])
 import harness.grade.deterministic  # noqa: F401
 import harness.judge.client  # noqa: F401
+import harness.judge.reuse  # noqa: F401  (registers reused-judge-verdict)
 import harness.ledger.anchors  # noqa: F401  (registers the `anchor` entrypoint)
 import harness.plan.lock  # noqa: F401
 import harness.process.score  # noqa: F401
@@ -62,6 +63,7 @@ EXPECTED_ENTRYPOINTS = {
     "control-reused",  # control-reuse: the import summary is one event
     "reused-trial",  # control-reuse: one imported control trial
     "reused-grade",  # control-reuse: one imported control grade
+    "reused-judge-verdict",  # control-reuse: one reused-control judge verdict
 }
 
 

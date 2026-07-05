@@ -173,6 +173,18 @@ def register(app: typer.Typer) -> None:
                 "[F-M-J3]", err=True,
             )
 
+        # Control reuse [control-reuse plan]: also judge each fresh-contender vs
+        # reused-control pair, recording reused_judge_verdict (a distinct kind the
+        # official judge_preference / calibration never read). Exploratory-only.
+        from .reuse import judge_reused
+
+        n_reused = judge_reused(
+            ledger_path, experiment_dir, spec, ctx,
+            rubric=rubric, prompts=prompts, canaries=canaries, task_classes=task_classes,
+        )
+        if n_reused:
+            typer.echo(f"judged {n_reused} reused-control comparison(s) [exploratory]")
+
         # Thread the locked EscalationConfig through calibration [JD-9, D006]:
         # per-class kappa against any human verdicts, through the D003 IPW seam
         # (not raw pooled kappa over the disagreement-heavy reviewed set) [RV-4].
