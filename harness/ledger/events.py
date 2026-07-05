@@ -395,6 +395,8 @@ def record_selfcheck(
     n_tasks: int,
     null_model: str,
     passed: bool,
+    validation_coverage: Optional[float] = None,
+    validation_n_sim: Optional[int] = None,
 ) -> dict:
     """Harness self-validation result [EVAL-1-D008; master plan §7.7].
 
@@ -402,23 +404,28 @@ def record_selfcheck(
     under the recentered null at the realized N, its Monte-Carlo (Wilson 95%)
     interval, and whether the nominal level lies within it (``passed``). A **new
     additive event kind** — old ledgers simply lack it, so no existing hash chain
-    is invalidated. The official fence requires a ``passed=true`` selfcheck."""
-    return emit(
-        ledger_path,
-        ctx,
-        SELFCHECK,
-        {
-            "selected_method": selected_method,
-            "nominal": nominal,
-            "coverage": coverage,
-            "mc_interval": mc_interval,
-            "n_sim": n_sim,
-            "n_boot": n_boot,
-            "n_tasks": n_tasks,
-            "null_model": null_model,
-            "passed": passed,
-        },
-    )
+    is invalidated. The official fence requires a ``passed=true`` selfcheck.
+
+    ``validation_coverage`` / ``validation_n_sim`` (additive [F-M-S1]): the
+    selected method's coverage re-estimated on an independent sub-seeded
+    stream — the estimate the pass/fail gate actually uses; ``coverage``
+    remains the selection-stream figure. Pre-existing chains lack them."""
+    payload = {
+        "selected_method": selected_method,
+        "nominal": nominal,
+        "coverage": coverage,
+        "mc_interval": mc_interval,
+        "n_sim": n_sim,
+        "n_boot": n_boot,
+        "n_tasks": n_tasks,
+        "null_model": null_model,
+        "passed": passed,
+    }
+    if validation_coverage is not None:
+        payload["validation_coverage"] = validation_coverage
+    if validation_n_sim is not None:
+        payload["validation_n_sim"] = validation_n_sim
+    return emit(ledger_path, ctx, SELFCHECK, payload)
 
 
 def record_cant_analyze(

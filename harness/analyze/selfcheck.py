@@ -22,7 +22,8 @@ import math
 from typing import Optional
 
 from ..schema.metrics import PrimaryMetric
-from .nullsim import NULL_INSUFFICIENT, coverage_from_deltas
+from ..plan.seeds import sub_seed
+from .nullsim import NULL_INSUFFICIENT, coverage_from_deltas, coverage_of_method
 from .report import (
     _METRIC_TELEMETRY_FIELD,
     _comparison_series,
@@ -68,7 +69,8 @@ def _primary_comparison_deltas(ledger_path, spec):
 
 
 def run_selfcheck(
-    ledger_path, spec, *, n_sim: int = 200, n_boot: int = 10_000, ci_level: float = 0.95
+    ledger_path, spec, *, n_sim: int = 200, n_boot: int = 10_000, ci_level: float = 0.95,
+    validation_n_sim: int = 400,
 ) -> dict:
     """Compute the selfcheck result dict (the ``selfcheck`` event payload).
 
@@ -89,10 +91,24 @@ def run_selfcheck(
         return _result(sel.selected_method, ci_level, None, None, sel.n_sim,
                        sel.n_boot, sel.n_tasks, NULL_INSUFFICIENT, passed=False)
     coverage = sel.coverage[sel.selected_method]
-    lo, hi = wilson_interval(coverage, sel.n_sim)
+    # F-M-S1: the gate validates the SELECTED method on an INDEPENDENT
+    # sub-seeded stream. Selection and validation previously shared the same
+    # 200 draws, so the coverage-closest-to-nominal winner was scored on the
+    # draws that crowned it — a winner's-curse bias toward passing. Selection
+    # still uses spec.seed (the method must be exactly what the render
+    # deploys); only the pass/fail estimate moves to fresh draws.
+    validation = coverage_of_method(
+        deltas, sub_seed(spec.seed, "selfcheck_validate"),
+        method=sel.selected_method, ci_level=ci_level,
+        n_sim=validation_n_sim, n_boot=n_boot,
+    )
+    lo, hi = wilson_interval(validation, validation_n_sim)
     passed = lo <= ci_level <= hi
-    return _result(sel.selected_method, ci_level, coverage, [lo, hi], sel.n_sim,
-                   sel.n_boot, sel.n_tasks, null_model, passed=passed)
+    out = _result(sel.selected_method, ci_level, coverage, [lo, hi], sel.n_sim,
+                  sel.n_boot, sel.n_tasks, null_model, passed=passed)
+    out["validation_coverage"] = validation
+    out["validation_n_sim"] = validation_n_sim
+    return out
 
 
 def _result(selected_method, nominal, coverage, mc_interval, n_sim, n_boot,
