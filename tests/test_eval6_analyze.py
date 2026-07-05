@@ -1244,3 +1244,36 @@ def test_m_j1_full_judge_coverage_discloses_nothing(tmp_path):
     f = compute_findings(ledger, spec, spec.seed, **_FAST)
     assert f.judge_coverage["cant_judge"] == {}
     assert "Judge coverage" not in render_markdown(f, ledger, "exploratory")
+
+
+def test_m_s3_achieved_mde_reconciled_to_realized_n(tmp_path):
+    """F-M-S3: the null phrasing previously interpolated the plan-time MDE even
+    when the realized cluster count fell below plan — overstating sensitivity.
+    When realized N < plan N, the findings carry a disclosed 1/√n-scaled
+    achieved MDE and the renders use it; at plan N the plan figure stands."""
+    from harness.analyze.report import display_mde
+    from harness.ledger.query import find_events
+
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    plan_n = find_events(ledger, "experiment_locked")[0]["mde"]["n_tasks"]
+    ct = {"A": "control", "B": "treatment"}
+    realized = 3
+    assert realized < plan_n  # the premise: fewer clusters than the plan assumed
+    for i in range(realized):  # a mean-zero pattern: the null phrasing renders
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}",
+                           winner="A" if i % 2 == 0 else "B", arm_map=ct)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    mde = f.mde
+    assert mde.realized_n_tasks == realized
+    assert mde.achieved_value is not None and mde.achieved_value > mde.value
+    expected = round(mde.value * (plan_n / realized) ** 0.5, 4)
+    assert abs(mde.achieved_value - expected) < 1e-9
+    assert display_mde(mde) == mde.achieved_value
+
+    md = render_markdown(f, ledger, "exploratory")
+    assert "achieved at realized n_tasks=3" in md
+    # the structural-null line quotes the achieved figure, not the plan figure
+    block = _md_block(md, f.comparisons[0].label)
+    if "No effect ≥ MDE detected" in block:
+        assert f"MDE={mde.achieved_value:.4f}" in block

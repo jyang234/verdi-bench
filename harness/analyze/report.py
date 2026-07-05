@@ -183,6 +183,13 @@ class MDEBlock(BaseModel):
     value: Optional[float]
     assumption_based_mde: bool
     acknowledged_underpowered: bool
+    # F-M-S3: the plan-time MDE assumed the plan-time cluster count; when
+    # quarantines/missing grades shrank the realized N, quoting the plan figure
+    # overstates sensitivity. The achieved figure is a DISCLOSED 1/sqrt(n)
+    # scaling of the plan MDE at the realized N — present only when realized N
+    # is smaller than planned; the null phrasing then uses it.
+    achieved_value: Optional[float] = None
+    realized_n_tasks: Optional[int] = None
 
 
 class FindingsDocument(BaseModel):
@@ -522,7 +529,7 @@ def _lock_event(ledger_path) -> dict:
     return locks[0]
 
 
-def _mde_block(ledger_path) -> MDEBlock:
+def _mde_block(ledger_path, realized_n_tasks: Optional[int] = None) -> MDEBlock:
     lock = _lock_event(ledger_path)
     mde = lock.get("mde", {})
     # PL-14: the acknowledgment now rides inline on the lock event. A ledger locked
@@ -531,11 +538,31 @@ def _mde_block(ledger_path) -> MDEBlock:
     ack = bool(lock.get("acknowledged_underpowered")) or bool(
         find_events(ledger_path, "acknowledged_underpowered")
     )
+    value = mde.get("mde")
+    plan_n = mde.get("n_tasks")
+    achieved = None
+    if (
+        value is not None
+        and plan_n
+        and realized_n_tasks
+        and realized_n_tasks < plan_n
+    ):
+        # F-M-S3: MDE scales ~ 1/sqrt(n_clusters) under the paired cluster
+        # model — a disclosed first-order approximation, not a re-simulation.
+        achieved = round(value * (plan_n / realized_n_tasks) ** 0.5, 4)
     return MDEBlock(
-        value=mde.get("mde"),
+        value=value,
         assumption_based_mde="assumption_based_mde" in mde.get("flags", []),
         acknowledged_underpowered=ack,
+        achieved_value=achieved,
+        realized_n_tasks=realized_n_tasks,
     )
+
+
+def display_mde(mde: MDEBlock) -> Optional[float]:
+    """The sensitivity figure honest at the REALIZED N [F-M-S3]: the achieved
+    MDE when the realized cluster count fell below plan, else the plan MDE."""
+    return mde.achieved_value if mde.achieved_value is not None else mde.value
 
 
 def _claim_tag_for_metric(primary: str) -> str:
@@ -1095,7 +1122,12 @@ def compute_findings(
         decision_rule=parsed_rule.raw,
         spec_corpus={"id": spec.corpus.id, "version": spec.corpus.version},
         comparisons=comparisons,
-        mde=_mde_block(ledger_path),
+        mde=_mde_block(
+            ledger_path,
+            realized_n_tasks=(
+                comparisons[0].n_tasks if comparisons and comparisons[0].stats else None
+            ),
+        ),
         ci_selection=selection.as_dict(),
         confounds=flag_confounds(ledger_path, spec),
         secondary_metrics=_secondary_metrics(ledger_path, spec),
@@ -1227,7 +1259,7 @@ def _comparison_lines(cf: ComparisonFinding, mde: MDEBlock) -> list[str]:
     lines.append(
         f"- {int(s['ci_level'] * 100)}% CI ({method_label}, {s['n_boot']} resamples): {ci}"
     )
-    mde_val = _fmt(mde.value)
+    mde_val = _fmt(display_mde(mde))  # honest at the realized N [F-M-S3]
     if not cf.official_decision:
         # PRA-M4: a non-primary pair in a multi-arm design — CI/effect shown, but
         # no decision, because the spec pre-registers exactly one decision rule.
@@ -1364,6 +1396,12 @@ def _forensics_lines(findings: FindingsDocument) -> list[str]:
 
 def _mde_lines(mde: MDEBlock) -> list[str]:
     lines = [f"MDE = {_fmt(mde.value)}"]
+    if mde.achieved_value is not None:
+        lines.append(
+            f"  achieved at realized n_tasks={mde.realized_n_tasks}: "
+            f"\u2248{_fmt(mde.achieved_value)} (plan-time MDE scaled 1/\u221an — "
+            "quarantines/missing grades shrank the realized clusters) [F-M-S3]"
+        )
     if mde.assumption_based_mde:
         lines.append("  (assumption_based_mde: variance not yet calibrated)")
     if mde.acknowledged_underpowered:

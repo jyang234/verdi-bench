@@ -39,6 +39,7 @@ from .report import (
     _integrity_line,
     _judge_calibration_lines,
     _judge_coverage_lines,
+    display_mde,
     _ledger_consistency_lines,
     _override_lines,
     _process_lines,
@@ -193,7 +194,7 @@ def _verdict_context(findings: FindingsDocument, cf: ComparisonFinding) -> dict:
         "primary_metric": findings.primary_metric,
         "decision_rule": findings.decision_rule,
         "observed_delta": _fmt(cf.decision.get("observed_delta")),
-        "mde_value": _fmt(findings.mde.value),
+        "mde_value": _fmt(display_mde(findings.mde)),  # realized-N honest [F-M-S3]
         "ci_low": _fmt(s.get("ci_low")),
         "ci_high": _fmt(s.get("ci_high")),
         "ci_level_pct": int(s["ci_level"] * 100) if "ci_level" in s else None,
