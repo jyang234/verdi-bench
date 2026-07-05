@@ -828,7 +828,66 @@ exactly the dishonesty the instrument exists to prevent.
 
 ---
 
-## 12. Where to go next
+## 12. Reusing an unchanged control while iterating
+
+While you iterate on a *contender* stack against a fixed *control*, re-running
+the same control over the same task set every time is wasteful. You can export a
+completed control once and reuse it — but **only as an exploratory,
+cost-saving signal**. A reused control never backs an official decision;
+validation is always a fresh, fully interleaved run.
+
+```bash
+# 1. Export the control arm from a completed source run (do this while the
+#    source workspaces still exist — the export snapshots each control trial's
+#    judged diff so the bundle survives an ephemeral/reclaimed environment).
+uv run bench control-cache export ./source-exp --arm control --out control.bundle.json
+
+# 2. In your next iteration's experiment dir, reuse it instead of running control.
+#    Preflight refuses loudly on ANY drift (see below); the contender runs fresh.
+uv run bench run ./iter-exp --reuse-control control.bundle.json
+uv run bench judge ./iter-exp        # also judges contender-vs-reused-control pairs
+uv run bench analyze ./iter-exp --exploratory   # unpaired reuse section, watermarked
+```
+
+Or set it operationally in `run.config.yaml` (never the sha-locked
+`experiment.yaml`):
+
+```yaml
+reuse_control:
+  bundle: control.bundle.json
+```
+
+**What "provably unchanged" means.** Preflight computes a *control fingerprint*
+and refuses reuse unless it matches the bundle byte-for-byte, naming what
+drifted. The fingerprint covers: each task's definition **and** its holdout
+script bytes, the arm definition (model / payload / cutoff / aux / hosts), the
+pinned operational environment (engine, quotas, egress allowlist), the grader
+(plugin ids + the instrument version that versions the grader code), and
+`repetitions`. Change any of them and reuse is refused, not silently accepted.
+
+**Why it can't taint an official finding.** Reused data lands under distinct
+ledger event kinds (`reused_trial` / `reused_grade` / `reused_judge_verdict`)
+that the official paired analysis never reads — so an official render of a reuse
+run simply shows no fresh control to pair against. The reuse estimate is
+*unpaired* (a reused control was not interleaved with the contender), rendered
+only in the watermarked exploratory section with a disclosure block.
+
+**Guardrails worth knowing.**
+
+- A resume of `bench run` drops the reused control arm from the schedule **even
+  if you forget `--reuse-control`** — the control never runs fresh behind your
+  back.
+- Reuse judging draws on the same locked judge token ceiling as native judging;
+  it cannot spend past the pre-registered cap.
+- The judged-diff snapshot is verified against its recorded hash before judging;
+  a missing or tampered snapshot fails loudly rather than judging empty bytes.
+- v1 supports reuse only for a control that is one of the two pre-registered
+  primary-pair arms; a `judge_preference` win-rate is reported but reused
+  verdicts feed neither official calibration nor contamination/confound analysis.
+
+---
+
+## 13. Where to go next
 
 - **[deep-dive.md](deep-dive.md)** — what each stage writes to the ledger, the
   trust mechanism behind every claim, and the test that owns it.
