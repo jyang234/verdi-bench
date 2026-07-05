@@ -48,6 +48,17 @@ PER_FILE_DIFF_CAP = 64 * 1024
 TOTAL_DIFF_CAP = 512 * 1024
 
 
+def read_workspace_diff(artifacts_path) -> str:
+    """Public alias for :func:`_read_workspace_diff` — the agent's final
+    workspace as a bounded diff-from-empty.
+
+    Control-run reuse snapshots this exact string at export so a reused control
+    can be judged against a fresh contender after the source workspace is gone
+    (ephemeral containers). Sharing the one implementation guarantees the
+    snapshot is byte-identical to what the judge would read live."""
+    return _read_workspace_diff(artifacts_path)
+
+
 def _read_workspace_diff(artifacts_path) -> str:
     """The agent's final workspace as a diff-from-empty: every agent-authored
     file under the trial workspace, excluding the ``artifacts/`` subtree (logs /

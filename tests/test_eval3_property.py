@@ -25,12 +25,14 @@ import harness.corpus.ledger_ops  # noqa: F401
 import harness.grade.baseline  # noqa: F401  (registers `corpus-baseline` [F-H2])
 import harness.grade.deterministic  # noqa: F401
 import harness.judge.client  # noqa: F401
+import harness.judge.reuse  # noqa: F401  (registers reused-judge-verdict)
 import harness.ledger.anchors  # noqa: F401  (registers the `anchor` entrypoint)
 import harness.plan.lock  # noqa: F401
 import harness.process.score  # noqa: F401
 import harness.review.build  # noqa: F401
 import harness.review.record  # noqa: F401
 import harness.run.interleave  # noqa: F401
+import harness.run.reuse  # noqa: F401  (registers the control-reuse verbs)
 from harness.entrypoints import all_entrypoints
 from harness.ledger.query import read_events
 from tests.fixtures.builders import write_experiment_yaml
@@ -58,6 +60,10 @@ EXPECTED_ENTRYPOINTS = {
     "corpus-subset-draw",
     "contamination-probe",
     "anchor",  # PRA-L5: bench anchor appends exactly one chain_anchor event
+    "control-reused",  # control-reuse: the import summary is one event
+    "reused-trial",  # control-reuse: one imported control trial
+    "reused-grade",  # control-reuse: one imported control grade
+    "reused-judge-verdict",  # control-reuse: one reused-control judge verdict
 }
 
 

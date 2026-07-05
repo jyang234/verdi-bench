@@ -31,7 +31,8 @@ from pydantic import BaseModel, ConfigDict
 
 from ..contamination.summary import contamination_summary, latest_probe, probe_asymmetries
 from ..ledger import events
-from ..ledger.query import find_events, ledger_head_hash, verify
+from ..ledger.query import find_events, latest_event, ledger_head_hash, verify
+from ..run.control_reuse import primary_pair_contender
 from ..run.trajectory import resolve_trajectory
 from ..schema.metrics import PrimaryMetric
 from ..version import instrument_identity
@@ -240,6 +241,11 @@ class FindingsDocument(BaseModel):
     # EVAL-11: forensic flags/coverage/kappa + operator quarantines — additive,
     # disclosure-only (never a fence input, never a primary metric) [D004]
     forensics: Optional[dict] = None
+    # control-reuse plan: the EXPLORATORY, UNPAIRED reuse section — an imported
+    # control vs the fresh contender. Additive, None on non-reuse ledgers (so
+    # official output is byte-identical there); never an official decision, read
+    # from the reused_* kinds the official path cannot see.
+    reuse: Optional[dict] = None
     provenance: Provenance
 
 
@@ -935,6 +941,120 @@ def _apply_holm(comparisons, deltas_by_pair, parsed_rule, seed: int, *, n_boot: 
             cf.decision["floor"] = "insufficient_clusters"
 
 
+# --- control-reuse exploratory section [control-reuse plan] ----------------
+def _reused_holdout_by_task(ledger_path) -> dict[str, list[float]]:
+    """``task_id -> [binary pass]`` for the reused control, from reused_grade
+    joined to reused_trial (the reused_* kinds, never the native ones)."""
+    trials = {
+        e["trial_record"]["trial_id"]: e["trial_record"]
+        for e in find_events(ledger_path, events.REUSED_TRIAL)
+    }
+    acc: dict[str, list[float]] = defaultdict(list)
+    for e in find_events(ledger_path, events.REUSED_GRADE):
+        g = e["grade"]
+        tr = trials.get(g.get("trial_id"))
+        if tr is not None:
+            acc[tr["task_id"]].append(1.0 if g.get("binary_score") else 0.0)
+    return acc
+
+
+def _reused_telemetry_by_task(ledger_path, field: str) -> dict[str, list[float]]:
+    """``task_id -> [telemetry field]`` for the reused control's trials."""
+    acc: dict[str, list[float]] = defaultdict(list)
+    for e in find_events(ledger_path, events.REUSED_TRIAL):
+        tr = e["trial_record"]
+        val = (tr.get("telemetry") or {}).get(field)
+        if val is not None:
+            acc[tr["task_id"]].append(float(val))
+    return acc
+
+
+def _reuse_judge_winrate(ledger_path, contender_arm, control_arm) -> Optional[dict]:
+    """Contender win-rate over reused_judge_verdict — TIE/CANT excluded, never
+    imputed. None when the reused judge never produced a decided verdict."""
+    wins_contender = decided = 0
+    for ev in find_events(ledger_path, events.REUSED_JUDGE_VERDICT):
+        v = ev["verdict"]
+        w = v.get("winner")
+        if w not in ("A", "B"):
+            continue
+        winner_arm = (v.get("arm_map") or {}).get(w)
+        if winner_arm not in (contender_arm, control_arm):
+            continue  # unmapped or foreign arm — exclude, never count (native parity)
+        decided += 1
+        if winner_arm == contender_arm:
+            wins_contender += 1
+    if decided == 0:
+        return None
+    return {
+        "decided": decided,
+        "contender_arm": contender_arm,
+        "contender_win_rate": wins_contender / decided,
+    }
+
+
+def _reuse_section(ledger_path, spec) -> Optional[dict]:
+    """The EXPLORATORY, UNPAIRED reuse section, or None when no control was reused.
+
+    Computes an unpaired estimate (reused control group vs fresh contender group)
+    for the computed primary metrics, plus the reused judge win-rate — never a
+    paired bootstrap (whose matched-conditions assumption a reused control
+    violates), never an official decision. Reads only the reused_* kinds."""
+    ctrl_ev = latest_event(ledger_path, events.CONTROL_REUSED)
+    if ctrl_ev is None:
+        return None
+    control_arm = ctrl_ev["control_arm"]
+    primary = spec.primary_metric.value
+    contender_arm = primary_pair_contender(spec, control_arm)
+
+    computed = None
+    if contender_arm is not None and primary != PrimaryMetric.judge_preference.value:
+        if primary == PrimaryMetric.holdout_pass_rate.value:
+            control_by_task = _reused_holdout_by_task(ledger_path)
+            contender_all = _holdout_values(ledger_path)
+        else:  # cost_per_task / wall_time
+            field = _METRIC_TELEMETRY_FIELD[primary]
+            control_by_task = _reused_telemetry_by_task(ledger_path, field)
+            contender_all = _telemetry_values(ledger_path, field)
+        control_means = [_mean(v) for v in control_by_task.values() if v]
+        contender_means = [
+            _mean(v[contender_arm])
+            for v in contender_all.values()
+            if contender_arm in v and v[contender_arm]
+        ]
+        if control_means and contender_means:
+            c_mean, t_mean = _mean(control_means), _mean(contender_means)
+            computed = {
+                "metric": primary,
+                "control_mean": c_mean,
+                "control_n_tasks": len(control_means),
+                "contender_mean": t_mean,
+                "contender_n_tasks": len(contender_means),
+                "delta_contender_minus_control": t_mean - c_mean,
+                "paired": False,
+            }
+
+    return {
+        "exploratory": True,
+        "official_decision": False,
+        "control_arm": control_arm,
+        "contender_arm": contender_arm,
+        "source_experiment_id": ctrl_ev["source_experiment_id"],
+        "bundle_sha256": ctrl_ev["bundle_sha256"],
+        "fingerprint_digest": (ctrl_ev.get("fingerprint") or {}).get("digest"),
+        "computed": computed,
+        "judge_preference": _reuse_judge_winrate(ledger_path, contender_arm, control_arm),
+        "disclosure": (
+            "Reused control: the control arm was NOT freshly interleaved with the "
+            f"contender — it was imported from source experiment "
+            f"{ctrl_ev['source_experiment_id']} (fingerprint-matched). This estimate "
+            "is UNPAIRED and exploratory-only; it can never back an official "
+            "decision. Contamination, confound, and judge/human calibration are "
+            "not run over the reused arm."
+        ),
+    }
+
+
 def compute_findings(
     ledger_path,
     spec,
@@ -1149,6 +1269,7 @@ def compute_findings(
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
         forensics=_forensics_section(ledger_path, spec),
+        reuse=_reuse_section(ledger_path, spec),
         provenance=provenance,
     )
 
@@ -1416,6 +1537,35 @@ def _forensics_lines(findings: FindingsDocument) -> list[str]:
                 f"- ⚠ QUARANTINED by operator {q['actor']}: trial {q['trial_id']} — "
                 f"{q['reason']} (excluded from comparisons) [D007]"
             )
+    return lines
+
+
+def _reuse_lines(findings: FindingsDocument) -> list[str]:
+    """The control-reuse disclosure lines [control-reuse plan] — shared by both
+    renders. Always exploratory, always unpaired, never a decision."""
+    r = findings.reuse
+    if not r:
+        return []
+    lines = [
+        f"- ⚠ reused control arm {r['control_arm']!r} from source "
+        f"{r['source_experiment_id']} (fingerprint {str(r['fingerprint_digest'])[:12]}…) "
+        "— UNPAIRED, exploratory-only, never an official decision",
+    ]
+    comp = r.get("computed")
+    if comp:
+        lines.append(
+            f"- {comp['metric']} [unpaired]: control mean={_fmt(comp['control_mean'])} "
+            f"(n={comp['control_n_tasks']}), contender mean={_fmt(comp['contender_mean'])} "
+            f"(n={comp['contender_n_tasks']}), "
+            f"Δ(contender−control)={_fmt(comp['delta_contender_minus_control'])}"
+        )
+    jp = r.get("judge_preference")
+    if jp:
+        lines.append(
+            f"- judge preference [judgment, unpaired]: contender win-rate "
+            f"{_fmt(jp['contender_win_rate'])} over {jp['decided']} decided comparison(s)"
+        )
+    lines.append(f"- {r['disclosure']}")
     return lines
 
 
@@ -1795,6 +1945,12 @@ def _render_official_md(findings: FindingsDocument) -> str:
             "## Forensic flags (disclosed, non-suppressing)",
             *_forensics_lines(findings),
         ]
+    if findings.reuse is not None:
+        out += [
+            "",
+            "## Control reuse (disclosed — EXPLORATORY, never official)",
+            *_reuse_lines(findings),
+        ]
     out += ["", "## Provenance", *_provenance_lines(findings)]
     out += ["", f"CI method selected by coverage: {findings.ci_selection['selected_method']}"]
     return "\n".join(out) + "\n"
@@ -1823,6 +1979,8 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
             # EVAL-11 AC-5: flags render beside the comparison they affect
             + _forensic_flags_for_comparison(findings, cf),
         )
+    if findings.reuse is not None:
+        out += section("Control reuse (EXPLORATORY, unpaired)", _reuse_lines(findings))
     out += section("Secondary metrics (exploratory)", _secondary_lines(findings))
     if findings.judge_calibration is not None:
         out += section("Judge calibration (per class)", _judge_calibration_lines(findings))

@@ -133,9 +133,13 @@ def register(app: typer.Typer) -> None:
             u = (v.get("provenance") or {}).get("usage") or {}
             return int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0)
 
+        # Seed from BOTH native and reused verdicts so the shared judge budget is
+        # resume-safe: reused-control judging counts against the same locked
+        # ceiling and its prior spend is never forgotten on a re-run [F-M-J3].
         accumulated = sum(
             _verdict_tokens(ev["verdict"])
-            for ev in find_events(ledger_path, events.JUDGE_VERDICT)
+            for kind in (events.JUDGE_VERDICT, events.REUSED_JUDGE_VERDICT)
+            for ev in find_events(ledger_path, kind)
         )
         stopped_ceiling = False
         judged = 0
@@ -172,6 +176,23 @@ def register(app: typer.Typer) -> None:
                 f"({accumulated} >= {ceiling}); remaining comparisons refused "
                 "[F-M-J3]", err=True,
             )
+
+        # Control reuse [control-reuse plan]: also judge each fresh-contender vs
+        # reused-control pair, recording reused_judge_verdict (a distinct kind the
+        # official judge_preference / calibration never read). Exploratory-only,
+        # but it draws on the SAME locked judge token budget — skip it entirely
+        # once the ceiling has already stopped native judging, and thread the
+        # running total through so reuse cannot spend past the cap [F-M-J3].
+        if not stopped_ceiling:
+            from .reuse import judge_reused
+
+            n_reused = judge_reused(
+                ledger_path, experiment_dir, spec, ctx,
+                rubric=rubric, prompts=prompts, canaries=canaries,
+                task_classes=task_classes, ceiling=ceiling, accumulated=accumulated,
+            )
+            if n_reused:
+                typer.echo(f"judged {n_reused} reused-control comparison(s) [exploratory]")
 
         # Thread the locked EscalationConfig through calibration [JD-9, D006]:
         # per-class kappa against any human verdicts, through the D003 IPW seam

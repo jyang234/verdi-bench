@@ -43,6 +43,12 @@ def register(app: typer.Typer) -> None:
         actor: str = typer.Option(
             None, "--actor", help="Actor recorded on the trial events [GR-12]"
         ),
+        reuse_control: Path = typer.Option(
+            None,
+            "--reuse-control",
+            help="Path to a control bundle to reuse instead of running the "
+            "control arm (exploratory-only; preflight refuses on any drift)",
+        ),
     ) -> None:
         """Execute the locked experiment's interleaved trials."""
         from ..corpus.commit import (
@@ -129,6 +135,48 @@ def register(app: typer.Typer) -> None:
             raise typer.Exit(code=2)
         ctx = EventContext(experiment_id=experiment_dir.name, actor=resolved_actor)
 
+        # Operational reuse surface: --reuse-control, or a reuse_control.bundle key
+        # in run.config.yaml (operational config, never the sha-locked spec).
+        if reuse_control is None:
+            import yaml
+
+            rc_path = experiment_dir / "run.config.yaml"
+            if rc_path.exists():
+                rc = (yaml.safe_load(rc_path.read_text(encoding="utf-8")) or {}).get("reuse_control")
+                if isinstance(rc, dict) and rc.get("bundle"):
+                    b = Path(rc["bundle"])
+                    reuse_control = b if b.is_absolute() else experiment_dir / b
+
+        # Control reuse [control-reuse plan]: import the bundle's control-arm data
+        # under the reused_* kinds (preflight refuses on any fingerprint drift),
+        # then drop that arm's cells from the schedule — they are supplied by the
+        # bundle, not run. The official paired analysis then has no fresh control
+        # to pair against (honest: reuse is exploratory, validation is a full run).
+        if reuse_control is not None:
+            from .control_reuse import ControlReuseError
+            from .reuse import ControlBundleError, import_bundle, load_bundle
+
+            try:
+                bundle = load_bundle(reuse_control)
+                reused_arm = import_bundle(
+                    experiment_dir, bundle, ctx, engine=engine, spec=spec, settings=settings,
+                )
+            except (ControlReuseError, ControlBundleError) as e:
+                typer.echo(str(e), err=True)
+                raise typer.Exit(code=2)
+            typer.echo(f"reusing control arm {reused_arm!r} from bundle ({len(bundle['cells'])} cells)")
+
+        # Drop EVERY arm already imported as a reused control from the schedule —
+        # read from the LEDGER, not just this invocation's flag. A resume that
+        # omits --reuse-control must not run the control arm fresh: that would
+        # give the official paired analysis a control to pair against, from a
+        # non-interleaved cross-session schedule [control-reuse].
+        from .reuse import reused_arms
+
+        _reused = reused_arms(ledger_path)
+        if _reused:
+            order = [t for t in order if t.arm not in _reused]
+
         try:
             result = schedule(
                 order,
@@ -163,3 +211,35 @@ def register(app: typer.Typer) -> None:
                 err=True,
             )
             raise typer.Exit(code=2)
+
+    cache_app = typer.Typer(
+        help="Control-run reuse bundles [control-reuse plan].", no_args_is_help=True
+    )
+    app.add_typer(cache_app, name="control-cache")
+
+    @cache_app.command("export")
+    def control_cache_export(
+        experiment_dir: Path = typer.Argument(
+            ..., help="A completed source experiment directory to export from"
+        ),
+        arm: str = typer.Option(..., "--arm", help="The control arm to export"),
+        out: Path = typer.Option(..., "--out", help="Bundle output path"),
+    ) -> None:
+        """Export a completed run's control arm as a reusable bundle.
+
+        Snapshots each control trial's judged diff while the workspaces are still
+        readable, so the bundle survives the source environment being reclaimed.
+        """
+        from ..plan.lock import LockError
+        from .reuse import ControlBundleError, build_bundle, write_bundle
+
+        try:
+            bundle = build_bundle(experiment_dir, arm)
+        except (ControlBundleError, LockError) as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        write_bundle(bundle, out)
+        typer.echo(
+            f"exported control bundle: arm {arm!r}, {len(bundle['cells'])} cell(s) "
+            f"-> {out} (sha {bundle['bundle_sha256'][:12]}…)"
+        )

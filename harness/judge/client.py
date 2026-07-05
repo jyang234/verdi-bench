@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 from pydantic import BaseModel, ValidationError
 
@@ -110,6 +110,7 @@ def judge_pair(
     task_class: Optional[str] = None,
     arm_map: Optional[dict[str, str]] = None,
     task_id: Optional[str] = None,
+    append_verdict_fn: Optional[Callable] = None,
 ) -> Verdict:
     """Judge one comparison. Always appends exactly one verdict event.
 
@@ -117,7 +118,16 @@ def judge_pair(
     (kappa) can join judge and human verdicts by comparison [AC-7]. ``arm_map``
     records the A/B -> physical-arm assignment so the kappa join is frame-correct
     [D-P4-1].
+
+    ``append_verdict_fn`` overrides the ledger write (default
+    :func:`events.append_verdict` → ``judge_verdict``). Control-run reuse passes a
+    writer that records a ``reused_judge_verdict`` instead, so a reused-control
+    verdict runs the identical blinding + order-debiasing path but lands under the
+    distinct kind the official judge_preference / calibration never read.
     """
+    if append_verdict_fn is None:
+        def append_verdict_fn(lp, c, *, verdict):  # noqa: ANN001 — internal default
+            return events.append_verdict(lp, c, verdict=verdict)
     call_ids: list[str] = []
     usages: list[dict] = []
     single_order = config.orders == "single"
@@ -155,7 +165,7 @@ def judge_pair(
             single_order=single_order,
             task_id=task_id,
         )
-        events.append_verdict(ledger_path, ctx, verdict=v.model_dump(mode="json"))
+        append_verdict_fn(ledger_path, ctx, verdict=v.model_dump(mode="json"))
         return v
 
     # JD-2: resolve the provider *inside* the fail-closed envelope. An unknown
@@ -251,7 +261,7 @@ def judge_pair(
         # e.g. a substantive winner with no evidence ⇒ malformed
         return _cant(CantJudgeReason.MALFORMED)
 
-    events.append_verdict(ledger_path, ctx, verdict=verdict.model_dump(mode="json"))
+    append_verdict_fn(ledger_path, ctx, verdict=verdict.model_dump(mode="json"))
     return verdict
 
 

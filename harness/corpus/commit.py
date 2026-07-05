@@ -21,6 +21,7 @@ the task definitions, so plan/run/grade compute an identical commitment.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import yaml
@@ -45,6 +46,44 @@ def task_content_sha(task: dict) -> str:
     primitive so the lock commitment and the manifest sha cannot drift.
     """
     return content_sha(task)
+
+
+def holdout_content_sha(holdouts_dir) -> str:
+    """sha256 over the on-disk holdout files the grader mounts under
+    ``holdouts_dir`` — the bytes this module's commitment deliberately does NOT
+    cover (see the coverage boundary above).
+
+    Control-run reuse needs the *actual holdout script bytes* in its fingerprint
+    (a stale control graded by a silently-changed holdout would be worthless), so
+    this hashes what ``bench grade`` mounts read-only. Canonical over
+    ``{relpath: sha256(bytes)}`` in sorted order, so identical trees on two
+    machines hash identically; an absent or empty directory is a stable empty
+    hash. Symlinks are skipped and reads are confined to the resolved tree — an
+    agent/operator-planted link cannot pull foreign bytes into the fingerprint
+    (the same no-follow stance the judge diff and grade container take).
+    """
+    root = Path(holdouts_dir)
+    if not root.exists():
+        return content_sha({})  # a task with no holdouts: the honest empty hash
+    if not root.is_dir():
+        # A holdouts_dir that resolves to a file or broken symlink is a
+        # misconfiguration, not "no holdouts" — collapsing it to the empty hash
+        # would let reuse pass across a silently mis-shaped holdout tree. Fail
+        # loudly instead (the module's fail-loudly stance).
+        raise TaskCommitmentError(
+            f"holdouts_dir {root} exists but is not a directory; a mis-shaped "
+            "holdout tree must fail loudly, not hash as empty"
+        )
+    root_real = root.resolve()
+    files: dict[str, str] = {}
+    for p in sorted(root.rglob("*")):
+        if p.is_symlink() or not p.is_file():
+            continue
+        if not p.resolve().is_relative_to(root_real):
+            continue  # reached through a symlinked directory into another tree
+        rel = p.relative_to(root).as_posix()
+        files[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+    return content_sha(files)
 
 
 def load_task_dicts(experiment_dir) -> list[dict]:
