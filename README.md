@@ -175,6 +175,7 @@ uv run bench corpus mine <mr.json> --ticket t.txt --out cand.json
 uv run bench corpus review <cand.json>                 # curation view
 uv run bench corpus approve <experiment-dir> --candidate-id c --task-sha s --signing-key k --approver alice
 uv run bench corpus calibrate <experiment-dir> --manifest m.json   # ledger a calibration_run from grades
+uv run bench corpus baseline <experiment-dir> --task-id c --task-sha s --workspace ref-solution/ --holdouts-dir holdouts/c   # run the admission-prerequisite flake baseline (k=5, reference solution, all-pass)
 uv run bench corpus admit <experiment-dir> --manifest m.json --candidate-id c --task-sha s --baseline-ref b --keyring keyring.json
 
 uv run bench review build  <experiment-dir>            # blinded human-review packet (idempotent)

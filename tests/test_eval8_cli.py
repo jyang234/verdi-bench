@@ -105,6 +105,130 @@ def test_co8_mine_approve_admit_cli_flow(tmp_path):
     assert len(find_events(ledger, "task_admitted")) == 1
 
 
+def test_h2_baseline_verb_flow_no_fabrication(tmp_path):
+    """F-H2: the full admission flow through CLI verbs only — mine → approve →
+    `corpus baseline` → admit — with no direct record_flake_baseline call. The
+    verb runs flake_baseline() against the reference-solution tree and ledgers
+    the basis, so the prerequisite is executable through the tool's surface."""
+    manifest = CorpusManifest(corpus_id="internal-b", semver="1.0.0", kind="internal",
+                              boundary_path=str(tmp_path / "boundary"))
+    mpath = tmp_path / "manifest.json"
+    manifest.save(mpath)
+    mr = tmp_path / "mr.json"
+    mr.write_text(json.dumps({
+        "parent_sha": "a" * 40,
+        "files": [{"path": "tests/test_x.py", "change": "added",
+                   "content": "def test_x():\n    assert feature() == 1"}],
+    }), encoding="utf-8")
+    ticket = tmp_path / "ticket.txt"
+    ticket.write_text("Implement feature X", encoding="utf-8")
+    out = tmp_path / "cand-b.json"
+    r = runner.invoke(app, [
+        "corpus", "mine", str(mr), "--ticket", str(ticket), "--out", str(out),
+        "--miner", "bob", "--manifest", str(mpath), "--task-id", "cand-b",
+    ])
+    assert r.exit_code == 0, r.output
+    sha = CorpusManifest.load(mpath).task("cand-b").sha
+
+    keyfile = tmp_path / "alice.key"
+    keyfile.write_text(_CURATOR_PRIV, encoding="utf-8")
+    keyring = tmp_path / "keyring.json"
+    keyring.write_text(json.dumps({"alice": _CURATOR_PUB}), encoding="utf-8")
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    ledger = expdir / "ledger.ndjson"
+    ra = runner.invoke(app, [
+        "corpus", "approve", str(expdir), "--candidate-id", "cand-b", "--task-sha", sha,
+        "--signing-key", str(keyfile), "--approver", "alice",
+    ])
+    assert ra.exit_code == 0, ra.output
+
+    # the reference-solution tree: holdouts pass deterministically when solved
+    ws = tmp_path / "ref-solution"
+    ws.mkdir()
+    (ws / "holdout_results.json").write_text(
+        json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
+    )
+    holdouts = tmp_path / "holdouts"
+    holdouts.mkdir()
+    rb = runner.invoke(app, [
+        "corpus", "baseline", str(expdir), "--task-id", "cand-b", "--task-sha", sha,
+        "--workspace", str(ws), "--holdouts-dir", str(holdouts), "--runner", "local",
+        "--actor", "alice",
+    ])
+    assert rb.exit_code == 0, rb.output
+    (ev,) = find_events(ledger, "flake_baseline")
+    assert ev["verdict"] == "clean"
+    assert ev["workspace_basis"] == "reference_solution"
+    assert ev["k"] == 5 and len(ev["results"]) == 5
+
+    rad = runner.invoke(app, [
+        "corpus", "admit", str(expdir), "--manifest", str(mpath),
+        "--candidate-id", "cand-b", "--task-sha", sha, "--baseline-ref", "b1",
+        "--keyring", str(keyring),
+    ])
+    assert rad.exit_code == 0, rad.output
+    assert CorpusManifest.load(mpath).is_schedulable("cand-b") is True
+
+
+def test_h2_baseline_verb_quarantines_on_failure(tmp_path):
+    """F-H2: a failing run through the verb quarantines (exit 1) and the event
+    carries the auditable per-run results."""
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    ws = tmp_path / "ref-solution"
+    ws.mkdir()
+    (ws / "holdout_results.json").write_text(
+        json.dumps({"assertions": [{"id": "h1", "result": "fail"}]}), encoding="utf-8"
+    )
+    holdouts = tmp_path / "holdouts"
+    holdouts.mkdir()
+    r = runner.invoke(app, [
+        "corpus", "baseline", str(expdir), "--task-id", "t", "--task-sha", "s" * 64,
+        "--workspace", str(ws), "--holdouts-dir", str(holdouts), "--runner", "local",
+        "--actor", "alice",
+    ])
+    assert r.exit_code == 1, r.output
+    (ev,) = find_events(expdir / "ledger.ndjson", "flake_baseline")
+    assert ev["verdict"] == "quarantined"
+
+
+def test_h2_baseline_verb_outage_is_inconclusive(tmp_path, monkeypatch):
+    """F-H2/GR-8: a grader outage through the verb is inconclusive — non-zero
+    exit, NOTHING ledgered, no quarantine."""
+    import subprocess
+
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    def daemon_down(*a, **k):
+        return subprocess.CompletedProcess(a[0] if a else k.get("args"), 1, "", "no daemon")
+
+    monkeypatch.setattr(subprocess, "run", daemon_down)
+    r = runner.invoke(app, [
+        "corpus", "baseline", str(expdir), "--task-id", "t", "--task-sha", "s" * 64,
+        "--workspace", str(ws), "--holdouts-dir", str(tmp_path), "--runner", "docker",
+        "--actor", "alice",
+    ])
+    assert r.exit_code == 2, r.output
+    assert not (expdir / "ledger.ndjson").exists() or \
+        find_events(expdir / "ledger.ndjson", "flake_baseline") == []
+
+
+def test_h2_baseline_verb_rejects_unknown_runner(tmp_path):
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    r = runner.invoke(app, [
+        "corpus", "baseline", str(expdir), "--task-id", "t", "--task-sha", "s" * 64,
+        "--workspace", str(tmp_path), "--holdouts-dir", str(tmp_path),
+        "--runner", "dcoker", "--actor", "alice",
+    ])
+    assert r.exit_code != 0
+    assert "docker or local" in (r.output + (r.stderr or ""))
+
+
 def test_co4_calibrate_ledgers_run_from_grades(tmp_path):
     """The run-path calibration hook derives p / n_tasks from a completed run's
     grades and ledgers a calibration_run, advancing the manifest [CO-4]."""

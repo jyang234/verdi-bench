@@ -401,4 +401,72 @@ def register(app: typer.Typer) -> None:
             raise typer.Exit(code=1)
         typer.echo(f"admitted {candidate_id} (sha={task_sha[:12]}…)")
 
+    @corpus_app.command("baseline")
+    def corpus_baseline(
+        experiment_dir: Path = typer.Argument(..., help="Dir with ledger.ndjson"),
+        task_id: str = typer.Option(..., "--task-id"),
+        task_sha: str = typer.Option(..., "--task-sha"),
+        workspace: Path = typer.Option(
+            ..., "--workspace",
+            help="The task's REFERENCE-SOLUTION tree (the contract: holdouts "
+            "must pass deterministically when the task is truly solved — a "
+            "fail-to-pass task's pre-fix tree would always quarantine) [F-H2]",
+        ),
+        holdouts_dir: Path = typer.Option(..., "--holdouts-dir"),
+        k: int = typer.Option(None, "--k", help="Zero-tolerance runs (default 5); "
+                              "raise for stronger flake detection — miss rate is (1-p)^k"),
+        runner: str = typer.Option(
+            "docker", "--runner", help="docker (real container) | local (no-daemon fake/test)"
+        ),
+        actor: str = typer.Option(None, "--actor", help="Actor recorded on the baseline [GR-12]"),
+    ) -> None:
+        """Run the flake baseline a candidate needs for admission [F-H2].
+
+        Ledgers exactly one flake_baseline event (verdict clean|quarantined) on
+        completion; a transient grader outage is inconclusive — non-zero exit,
+        nothing ledgered, no quarantine.
+        """
+        from ..grade.baseline import DEFAULT_K, flake_baseline
+        from ..grade.container import (
+            DockerGradeRunner,
+            GraderUnavailableError,
+            GradingContainer,
+            LocalGradeRunner,
+        )
+        from ..grade.types import GradeTask
+        from ..ledger.events import EventContext
+
+        if runner not in ("docker", "local"):
+            raise typer.BadParameter("--runner must be docker or local")
+        ledger_path = experiment_dir / "ledger.ndjson"
+        ctx = EventContext(
+            experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor)
+        )
+        container = GradingContainer(
+            runner=LocalGradeRunner() if runner == "local" else DockerGradeRunner()
+        )
+        task = GradeTask(id=task_id, task_sha=task_sha, holdouts_dir=str(holdouts_dir))
+        try:
+            outcome = flake_baseline(
+                task, ledger_path, ctx,
+                workspace=workspace, container=container,
+                k=k if k is not None else DEFAULT_K,
+                workspace_basis="reference_solution",
+            )
+        except GraderUnavailableError as e:
+            typer.echo(
+                f"baseline inconclusive (nothing ledgered): grader unavailable — {e}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        except ValueError as e:  # k < 1 [GR-10]
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        typer.echo(
+            f"baseline {outcome.verdict}: {task_id} (sha={task_sha[:12]}…) "
+            f"over k={outcome.event['k']} run(s)"
+        )
+        if outcome.verdict != "clean":
+            raise typer.Exit(code=1)
+
     app.add_typer(corpus_app, name="corpus")

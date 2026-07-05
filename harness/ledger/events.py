@@ -311,7 +311,14 @@ def record_flake_baseline(
     k: int,
     results: list,
     verdict: str,
+    workspace_basis: Optional[str] = None,
 ) -> dict:
+    """``workspace_basis`` (additive [F-H2]) records WHAT was baselined —
+    ``"reference_solution"`` when produced by ``bench corpus baseline`` against
+    the task's reference-solution tree — so a baseline that actually ran is
+    distinguishable from a directly-fabricated event. Pre-existing chains
+    simply lack the field."""
+    payload = {"workspace_basis": workspace_basis} if workspace_basis is not None else {}
     return emit(
         ledger_path,
         ctx,
@@ -320,6 +327,7 @@ def record_flake_baseline(
             "task_id": task_id,
             "task_sha": task_sha,
             "k": k,
+            **payload,
             "results": results,
             "verdict": verdict,
         },

@@ -137,7 +137,14 @@ arm insulation is verified by canary tests (`test_ac9_holdout_canaries_absent`,
 per-assertion results and a binary score) or **`cant_grade`** with a named
 reason — never a silent skip. Repeated-run flake measurement appends
 **`flake_baseline`** events; a flake baseline is an admission prerequisite for
-corpus tasks (§2.8).
+corpus tasks (§2.8), produced by `bench corpus baseline` against the task's
+**reference-solution tree** (all-pass required; a fail-to-pass task's pre-fix
+tree would always quarantine) and stamped `workspace_basis:
+reference_solution` so a ran baseline is distinguishable from a fabricated
+event [F-H2]. Disclosed operating characteristic: k zero-tolerance runs miss
+a per-run flake of rate p with probability (1−p)^k — ≈90% at p=2%, k=5 —
+so raise `--k` for stronger detection; the zero-tolerance rule itself is not
+loosened.
 
 The structural guarantee: `harness/grade/` cannot import an LLM client — an
 import-linter contract, not a review convention. The grade you see was
