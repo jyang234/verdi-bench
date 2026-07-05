@@ -1,0 +1,90 @@
+"""The multi-turn reference image emits a verdi-compliant, agent-attributed log.
+
+Validates ``images/multi-agent-reference/agent.py``'s PURE ``build_agent_log``
+against the real verdi parsers — proving the reference is harbor/EVAL-21/EVAL-24
+compliant without docker or real keys. [images/multi-agent-reference/README.md]
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from collections import Counter
+from pathlib import Path
+
+from harness.adapters.generic import GenericAdapter, normalize_generic_by_model
+from harness.run.flight_recorder import FlightRecorder, slice_reasoning_by_agent
+
+_AGENT = Path(__file__).resolve().parents[1] / "images" / "multi-agent-reference" / "agent.py"
+_MODEL = "anthropic/claude-haiku-4-5-20251001"
+
+
+def _load_agent():
+    spec = importlib.util.spec_from_file_location("_ma_ref_agent", _AGENT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # import-safe: main() is guarded, build_agent_log is pure
+    return mod
+
+
+def _sample_log():
+    agent = _load_agent()
+    # an ordered multi-turn run: planner → worker drafts+revises → critic → orchestrator
+    turns = [
+        {"agent": "planner", "reasoning": "decompose: add, then palindrome", "kind": "message",
+         "detail": "plan: add | is_palindrome", "tokens": 20, "model": _MODEL},
+        {"agent": "worker-1", "reasoning": "draft: add returns a + b", "kind": "file_edit",
+         "detail": "def add(a,b): return a+b", "files": ["solution.py"], "tokens": 15, "model": _MODEL},
+        {"agent": "worker-1", "reasoning": "revise: no edge cases needed", "kind": "file_edit",
+         "detail": "def add(a, b):\n    return a + b", "files": ["solution.py"], "tokens": 12, "model": _MODEL},
+        {"agent": "worker-2", "reasoning": "draft: palindrome via slicing", "kind": "file_edit",
+         "detail": "def is_palindrome(s): return s==s[::-1]", "files": ["solution.py"], "tokens": 18, "model": _MODEL},
+        {"agent": "worker-2", "reasoning": "revise: normalize case", "kind": "file_edit",
+         "detail": "def is_palindrome(s):\n    return s.lower()==s.lower()[::-1]",
+         "files": ["solution.py"], "tokens": 14, "model": _MODEL},
+        {"agent": "critic", "reasoning": "checks out; no bugs", "kind": "message",
+         "detail": "looks correct", "tokens": 10, "model": _MODEL},
+        {"agent": "orchestrator", "reasoning": "aggregated 2 revised worker outputs",
+         "kind": "test_run", "command": "python -c 'import solution'", "detail": "wrote solution.py"},
+    ]
+    return agent.build_agent_log(model=_MODEL, turns=turns)
+
+
+def test_reference_log_is_multi_turn_agent_attributed_and_compliant():
+    log = _sample_log()
+    adapter = GenericAdapter()
+
+    # reasoning is agent-attributed AND multi-turn: each worker appears TWICE
+    # (draft + revise), so the iteration is visible [EVAL-24 AC-6].
+    entries = adapter.normalize_reasoning(log)
+    by_role = Counter(e.agent for e in entries)
+    assert by_role["worker-1"] == 2 and by_role["worker-2"] == 2
+    assert set(by_role) == {"planner", "worker-1", "worker-2", "critic", "orchestrator"}
+
+    # trajectory: agent-attributed steps that carry the turn's RESPONSE in detail
+    # (the code a worker wrote), not just "a file was edited" [EVAL-21].
+    steps = adapter.normalize_trajectory(log)
+    file_edits = [s for s in steps if s.kind == "file_edit"]
+    assert len(file_edits) == 4 and all(s.detail for s in file_edits)
+    assert {s.agent for s in steps} == {"planner", "worker-1", "worker-2", "critic", "orchestrator"}
+
+    # telemetry_by_model summed across all the turns
+    by_model = normalize_generic_by_model(log, [_MODEL])
+    assert by_model is not None and by_model[_MODEL].tokens_out == 20 + 15 + 12 + 18 + 14 + 10
+
+    # the flight recorder slices reasoning by sub-agent, preserving per-turn order
+    rec = FlightRecorder(trial_id="t", platform="generic", entries=entries)
+    groups = slice_reasoning_by_agent(rec)
+    assert len(groups["worker-1"]) == 2 and groups["worker-1"][0].content.startswith("draft")
+
+
+def test_reference_log_survives_the_persist_redaction_door(tmp_path):
+    """A leaked key in a worker's reasoning is scrubbed by the real recorder door."""
+    from harness.run.flight_recorder import persist_flight_recorder, resolve_flight_recorder
+
+    log = _sample_log()
+    log["reasoning"][1]["content"] += " (used sk-ant-api03-" + "A" * 90 + ")"
+    entries = GenericAdapter().normalize_reasoning(log)
+    rec = FlightRecorder(trial_id="t", platform="generic", entries=entries)
+    sha = persist_flight_recorder(rec, tmp_path)
+    text = (tmp_path / "flight_recorder.json").read_text(encoding="utf-8")
+    assert "sk-ant-api03-AAAA" not in text and "REDACTED" in text
+    assert resolve_flight_recorder(str(tmp_path), sha)[0] == "verified"

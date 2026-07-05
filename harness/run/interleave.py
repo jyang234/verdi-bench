@@ -33,6 +33,7 @@ from ..ledger.query import find_events
 from ..plan.interleave import Trial
 from ..schema.experiment import Arm
 from .budget import CostGuard, enforcement_cost
+from .flight_recorder import FlightRecorderCorruptError
 from .heartbeat import RunHeartbeat
 from .redact import RedactionError
 from .seam import HoldoutLeakError, new_trial_id, run_trial
@@ -55,6 +56,7 @@ _PER_TRIAL_REASONS: dict[type, str] = {
     GenericLogError: "generic_log_error",
     RedactionError: "redaction_error",
     TrajectoryCorruptError: "trajectory_corrupt",
+    FlightRecorderCorruptError: "flight_recorder_corrupt",
 }
 
 

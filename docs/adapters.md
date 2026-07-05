@@ -137,6 +137,37 @@ schema (`harness/run/trajectory.py`, schema v3):
 - Only label a step `test_run` when your harness *knows* it ran tests;
   inferring it from command text is estimation, not measurement.
 
+### `reasoning` (optional list, any version) [EVAL-24]
+
+The **flight recorder**: the chain of thought by which the arm reached its
+answer, as an ordered list of entries. Optional at any declared version
+(absent = no reasoning, honest — distinct from `[]`); logs without it parse
+unchanged.
+
+```json
+{
+  "verdi_log_version": 1,
+  "reasoning": [
+    {"content": "plan: solve add first, then the palindrome task", "agent": "planner"},
+    {"content": "add(a, b) returns a + b; handled the overflow case", "agent": "worker-1", "tokens": 90}
+  ]
+}
+```
+
+Each entry carries `content` (str, required — the reasoning text) and the
+optional, null-honest `tokens` (int) and `cost` (float). An optional `agent`
+role [EVAL-24] attributes the reasoning to a sub-agent of a multi-agent
+workflow, over the **same** closed role vocabulary as trajectory steps
+(`planner`/`worker-2`/…); `null` = unattributed (single-agent reasoning). An
+out-of-vocabulary label is refused loudly, exactly like a step's `agent`.
+Reasoning persists as a **separate**
+artifact (`artifacts/flight_recorder.json`) bound to the chain by an additive
+`flight_recorder_sha`, and is **operator-tier** — it feeds the read-only
+compare view and the blinded advisory forensic review, and is invisible by
+construction to the judge, the deterministic grade, and the official fence. A
+malformed `reasoning` block is refused loudly (`GenericLogError`), like any
+declared block.
+
 ### Failure semantics, end to end
 
 | condition                                        | result                                     |

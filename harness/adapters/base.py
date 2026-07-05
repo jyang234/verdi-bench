@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Optional
 from pydantic import BaseModel, ConfigDict, model_validator
 
 if TYPE_CHECKING:  # runtime import stays in the concrete adapters
+    from ..run.flight_recorder import ReasoningEntry
     from ..run.trajectory import TrajectoryStep
 
 ADVISORY = "ADVISORY"
@@ -102,6 +103,11 @@ class TrialRecord(BaseModel):
     # hoists it to the top-level additive event field [EVAL-12-D001], so the
     # embedded trial_record payload keeps its pre-EVAL-12 shape.
     trajectory_sha: Optional[str] = None
+    # EVAL-24 AC-1: sha256 of the persisted flight_recorder artifact (per-trial
+    # reasoning). None when the trial captured no reasoning. Transport only —
+    # record_trial hoists it to the top-level additive event field, the
+    # trajectory_sha precedent [EVAL-24-D001]; readers take it from the EVENT.
+    flight_recorder_sha: Optional[str] = None
 
     @model_validator(mode="after")
     def _nulls_match_telemetry(self) -> "TrialRecord":
@@ -131,6 +137,7 @@ class TrialRecord(BaseModel):
         flags: Optional[Flags] = None,
         artifacts_path: Optional[str] = None,
         trajectory_sha: Optional[str] = None,
+        flight_recorder_sha: Optional[str] = None,
     ) -> "TrialRecord":
         return cls(
             trial_id=trial_id,
@@ -145,6 +152,7 @@ class TrialRecord(BaseModel):
             provenance=provenance,
             artifacts_path=artifacts_path,
             trajectory_sha=trajectory_sha,
+            flight_recorder_sha=flight_recorder_sha,
         )
 
 
@@ -191,3 +199,25 @@ class Adapter:
         from .generic import normalize_generic_trajectory  # runtime import stays lazy
 
         return normalize_generic_trajectory(native_log)
+
+    def normalize_reasoning(self, native_log: dict) -> Optional[list["ReasoningEntry"]]:
+        """Map the log to ordered reasoning entries
+        (``list[harness.run.flight_recorder.ReasoningEntry]``) [EVAL-24 AC-1].
+
+        Default: parse the verdi normalized log's optional ``reasoning`` list;
+        override for a platform's native format. Returns ``None`` when the log
+        carries no reasoning at all — the honest absent state, distinct from an
+        empty list [AC-4]. Reasoning is operator-tier and advisory-review-fed
+        only; it never enters the graded or judged path (EVAL-24 AC-2).
+
+        A native-format adapter (``speaks_generic_format=False``) that does not
+        override this captures no reasoning — verdi-format semantics are never
+        applied to a log the platform never claimed, so a colliding
+        ``verdi_log_version`` in agent-controlled native content cannot fail the
+        trial [EVAL-21 native-collision lineage].
+        """
+        if not self.speaks_generic_format:
+            return None
+        from .generic import normalize_generic_reasoning  # runtime import stays lazy
+
+        return normalize_generic_reasoning(native_log)

@@ -3,8 +3,9 @@
 ``judge_vendor_overlap`` (EVAL-2) derives the vendor from each model-id prefix.
 ``flag_confounds`` (EVAL-6) emits the auto confound-flag set [EVAL-6-D002]:
 ``interleave_imbalance``, ``provider_error_asymmetry``,
-``telemetry_null_asymmetry``, ``egress_violations``, ``version_drift`` — plus
-``judge_vendor_overlap``. Flags **ride** findings; they never suppress them
+``telemetry_null_asymmetry``, ``egress_violations``, ``version_drift``,
+``reasoning_capture_asymmetry`` [EVAL-24 AC-4] — plus ``judge_vendor_overlap``.
+Flags **ride** findings; they never suppress them
 (disclosure over suppression). A constructed fixture that exhibits exactly one
 condition yields exactly that flag; a clean fixture yields none.
 """
@@ -224,6 +225,33 @@ def _flag_version_drift(ledger_path) -> dict | None:
     return None
 
 
+def _flag_reasoning_capture_asymmetry(ledger_path) -> dict | None:
+    """Flight-recorder (reasoning) capture present in one arm but not another
+    [EVAL-24 AC-4]. Cross-arm asymmetry in reasoning capture is a confound the
+    operator must see before comparing how the arms reasoned — disclosed, never
+    imputed. The reasoning is operator-tier; only the per-arm presence of the
+    additive ``flight_recorder_sha`` (a top-level trial-event field) is read here.
+    """
+    captured: dict[str, int] = defaultdict(int)
+    arms: set[str] = set()
+    for ev in find_events(ledger_path, events.TRIAL):
+        arm = ev["trial_record"]["arm"]
+        arms.add(arm)
+        if ev.get("flight_recorder_sha") is not None:
+            captured[arm] += 1
+    if len(arms) < 2:
+        return None
+    per_arm = {a: captured.get(a, 0) for a in arms}
+    has = {a for a, n in per_arm.items() if n > 0}
+    # asymmetric iff at least one arm captured reasoning and at least one did not
+    if has and has != arms:
+        return {
+            "flag": "reasoning_capture_asymmetry",
+            "reasoning_trials_by_arm": dict(sorted(per_arm.items())),
+        }
+    return None
+
+
 def flag_confounds(ledger_path, spec) -> list[dict]:
     """Emit exactly the [D002] confound-flag set present in this experiment.
 
@@ -240,6 +268,7 @@ def flag_confounds(ledger_path, spec) -> list[dict]:
         _flag_telemetry_null_asymmetry,
         _flag_egress_violations,
         _flag_version_drift,
+        _flag_reasoning_capture_asymmetry,
     ):
         flag = detector(ledger_path)
         if flag is not None:

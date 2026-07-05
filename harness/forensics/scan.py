@@ -99,6 +99,7 @@ def run_forensics(
     from ..ledger import events
     from ..ledger.query import find_events
     from ..plan.lock import assert_lock
+    from ..run.flight_recorder import DEFAULT_REASONING_BUDGET_BYTES, resolve_flight_recorder
     from ..run.trajectory import resolve_trajectory
     from ..run.workspace import ABSENT, VERIFIED, resolve_workspace
     from .review import forensic_review
@@ -214,12 +215,30 @@ def run_forensics(
             )
 
         if review:
+            transcript = _read_transcript(artifacts_path)
+            # Reasoning is the richest pathology signal: the advisory review reads
+            # the flight recorder (blinded, fail-closed, byte-bounded) ahead of the
+            # transcript [EVAL-24 AC-3]. resolve_flight_recorder verifies the sha —
+            # unverified reasoning is never fed, exactly like the trajectory.
+            _fr_status, fr_record = resolve_flight_recorder(
+                artifacts_path, ev.get("flight_recorder_sha")
+            )
+            max_reasoning_bytes = None
+            if fr_record is not None:
+                reasoning_text = fr_record.as_transcript()
+                transcript = (
+                    f"{reasoning_text}\n\n{transcript}" if transcript.strip() else reasoning_text
+                )
+                # D003: bound only when reasoning is present, so non-reasoning
+                # trials keep their existing review behavior exactly.
+                max_reasoning_bytes = DEFAULT_REASONING_BUDGET_BYTES
             reviews[trial_id] = forensic_review(
                 trial_id,
-                _read_transcript(artifacts_path),
+                transcript,
                 canaries=canaries,
                 provider=provider,
                 provider_model=provider_model or spec.judge.model,
+                max_reasoning_bytes=max_reasoning_bytes,
             ).model_dump(mode="json")
 
     report = {

@@ -142,6 +142,12 @@ OPERATOR_PAGE = """<!doctype html>
           line-height: 1.55; color: var(--ink-2); overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
   .code .add { background: var(--add); color: var(--ink-1); }
   .code .del { background: var(--del); color: var(--ink-1); }
+  .rz .role { font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; margin: 8px 0 3px; }
+  .rz .role:first-child { margin-top: 0; }
+  .rz .reason { font-size: 12px; line-height: 1.5; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; margin-bottom: 5px; }
+  .rz .none { color: var(--ink-3); font-size: 12px; }
+  .armhead { display: grid; grid-template-columns: 1fr 1fr; margin: 2px 0 4px; }
+  .armhead > div { font-size: 11px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.04em; padding: 0 2px; }
   .kbdrow { color: var(--ink-3); font-size: 12px; }
   kbd { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; border: 1px solid var(--hairline);
         border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface-1); color: var(--ink-2); }
@@ -933,6 +939,31 @@ function renderTrial(app) {
   app.append(card);
 }
 
+function armHead(c) {
+  // label the two-column layout so it's unambiguous which side is arm A vs B
+  return h("div", { class: "armhead" },
+    h("div", { text: "A \\u00b7 " + c.arm_a }),
+    h("div", { text: "B \\u00b7 " + c.arm_b }));
+}
+
+function reasoningCol(entries) {
+  // Flight recorder (reasoning), grouped by sub-agent role — the client-side
+  // mirror of slice_reasoning_by_agent [EVAL-24 AC-6], order preserved.
+  const col = h("div", {});
+  if (!entries || !entries.length) { col.append(h("div", { class: "none", text: "no reasoning captured" })); return col; }
+  const order = [], groups = {};
+  for (const e of entries) {
+    const role = e.agent || "unattributed";
+    if (!(role in groups)) { groups[role] = []; order.push(role); }
+    groups[role].push(e);
+  }
+  for (const role of order) {
+    col.append(h("div", { class: "role", text: role }));
+    for (const e of groups[role]) col.append(h("div", { class: "reason", text: e.content }));
+  }
+  return col;
+}
+
 function renderCompare(app) {
   const st = expState(S.route.exp);
   const c = st.compare;
@@ -1002,6 +1033,7 @@ function renderCompare(app) {
     if (p.judge) bar.append(h("span", { class: "chip", text: "judge: " + p.judge.winner + " (ADVISORY)" }));
     if (p.disagreement) bar.append(h("span", { class: "chip", text: "disagreement" }));
     card.append(bar);
+    card.append(armHead(c));
     const diff = h("div", { class: "diff2" });
     const left = h("div", {}, h("div", { class: "code" })), right = h("div", {}, h("div", { class: "code" }));
     for (const seg of p.segments) {
@@ -1015,6 +1047,13 @@ function renderCompare(app) {
     diff.append(left, right);
     card.append(diff);
     if (p.judge && p.judge.reason) card.append(h("div", { class: "dim3", style: "margin-top:6px", text: "judge reason: " + p.judge.reason }));
+    if ((p.a.reasoning && p.a.reasoning.length) || (p.b.reasoning && p.b.reasoning.length)) {
+      card.append(h("div", { class: "dim", style: "margin-top:10px;margin-bottom:4px", text: "Flight recorder \\u00b7 reasoning (operator-tier, unblinded)" }));
+      card.append(armHead(c));
+      const rz = h("div", { class: "diff2 rz" });
+      rz.append(reasoningCol(p.a.reasoning), reasoningCol(p.b.reasoning));
+      card.append(rz);
+    }
     app.append(card);
   }
 }
