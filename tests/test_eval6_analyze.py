@@ -1277,3 +1277,30 @@ def test_m_s3_achieved_mde_reconciled_to_realized_n(tmp_path):
     block = _md_block(md, f.comparisons[0].label)
     if "No effect ≥ MDE detected" in block:
         assert f"MDE={mde.achieved_value:.4f}" in block
+
+
+def test_m_j2_identity_leak_rate_disclosed_per_task_class(tmp_path):
+    """F-M-J2: identity_leak counts are surfaced per task class, so a scrub
+    pattern over-broad for one class (a corpus-wide FP pattern) is visible as a
+    concentrated rate rather than silently biasing judge_preference."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    for i in range(3):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    # two identity_leak CANT_JUDGE verdicts in the "google_api" class, one in "refactor"
+    for i, cls in enumerate(("google_api", "google_api", "refactor")):
+        prov = VerdictProvenance(
+            judge_model="fake/judge-1", rubric_sha256="r" * 64, packet_sha256="p" * 64,
+            call_ids=["c1"], orders="both", temperature=0.0, ts="t",
+        )
+        v = Verdict(
+            winner=Winner("CANT_JUDGE"), reason="identity_leak", evidence=[], provenance=prov,
+            comparison_id=f"cj-{i}", task_id=f"x{i}", task_class=cls, arm_map=ct,
+        )
+        append_verdict(ledger, ctx, verdict=v.model_dump(mode="json"))
+
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.judge_coverage["identity_leak_by_class"] == {"google_api": 2, "refactor": 1}
+    md = render_markdown(f, ledger, "exploratory")
+    assert "identity_leak by task class" in md and "google_api: 2" in md

@@ -1153,6 +1153,11 @@ def _judge_coverage(ledger_path) -> dict:
     from ..judge.schema import TRANSIENT_CANT_JUDGE
 
     cant: dict[str, int] = {}
+    # F-M-J2: identity_leak counts per task class — a scrub pattern that is
+    # over-broad for one class of tasks (e.g. every Google-API task) shows up
+    # as a concentrated leak rate there, so the corpus-wide FP pattern the
+    # narrowed corpus guards against stays visible if it ever recurs.
+    leak_by_class: dict[str, int] = {}
     total = 0
     for ev in find_events(ledger_path, events.JUDGE_VERDICT):
         v = ev.get("verdict") or {}
@@ -1160,6 +1165,9 @@ def _judge_coverage(ledger_path) -> dict:
         if v.get("winner") == "CANT_JUDGE":
             reason = v.get("reason") or "unknown"
             cant[reason] = cant.get(reason, 0) + 1
+            if reason == "identity_leak":
+                cls = v.get("task_class") or "default"
+                leak_by_class[cls] = leak_by_class.get(cls, 0) + 1
     if not total:
         return {}
     return {
@@ -1168,6 +1176,7 @@ def _judge_coverage(ledger_path) -> dict:
         "terminal_cant_judge": sum(
             n for r, n in cant.items() if r not in TRANSIENT_CANT_JUDGE
         ),
+        "identity_leak_by_class": dict(sorted(leak_by_class.items())),
     }
 
 
@@ -1179,13 +1188,22 @@ def _judge_coverage_lines(findings: FindingsDocument) -> list[str]:
     if not jc or not jc.get("cant_judge"):
         return []
     detail = ", ".join(f"{r}: {n}" for r, n in jc["cant_judge"].items())
-    return [
+    lines = [
         f"- {jc['terminal_cant_judge']} of {jc['verdicts']} judged comparison(s) "
         f"terminally unjudgeable ({detail}) — excluded from judge_preference and "
         "calibration, never imputed. If exclusions correlate with outcomes "
         "(e.g. an arm salting canaries on losing trials), judge_preference is "
         "biased by this missing-data channel [F-M-J1]."
     ]
+    leaks = jc.get("identity_leak_by_class") or {}
+    if leaks:
+        by_class = ", ".join(f"{cls}: {n}" for cls, n in leaks.items())
+        lines.append(
+            f"- identity_leak by task class ({by_class}) — a rate concentrated "
+            "in one class can signal an over-broad scrub pattern rather than a "
+            "real leak [F-M-J2]."
+        )
+    return lines
 
 
 # --- rendering + the fence -------------------------------------------------

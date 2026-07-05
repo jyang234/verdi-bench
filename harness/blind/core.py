@@ -72,19 +72,42 @@ def _compile(raw: list[str], *, flags: int = re.IGNORECASE) -> list[re.Pattern]:
 # ---------------------------------------------------------------------------
 # Identity canary corpus — who produced an artifact.
 # ---------------------------------------------------------------------------
+# F-M-J2: the generic identity corpus scrubs product/vendor names that would
+# leak WHO produced an artifact into a blind packet. Two disciplines balance:
+# a name must be a real tell (over-broad tokens are a denial-of-judgment
+# channel — a false identity_leak is terminal, permanently excluding the
+# comparison from judge_preference and calibration), yet the 2024–2026 tooling
+# landscape must be covered (an unlisted product is an under-inclusive gap).
+# The *contestants'* exact identities — declared model ids, arm names,
+# platforms — are scrubbed separately and precisely via ``arm_canaries`` from
+# the locked spec; this corpus is the vendor/product backstop, so a bare
+# vendor word like "google" (which any Google-API task would trip) is left to
+# those per-experiment literals rather than terminally killing judgment here.
 _IDENTITY_NAME_PATTERNS = [
     r"claude[-_ ]?code",
     r"\bcodex\b",
     r"\bopencode\b",
-    r"claude(?:-[a-z0-9.]+)?",
+    r"\bclaude\b(?:-[a-z0-9.]+)?",
     r"\bgpt-[0-9][a-z0-9.\-]*",
-    r"gemini(?:-[a-z0-9.]+)?",
+    r"\bgemini\b(?:-[a-z0-9.]+)?",
     r"\banthropic\b",
     r"\bopenai\b",
-    r"\bgoogle\b",
-    # transcript role markers that would leak the harness/agent identity
-    r"\bassistant:\s",
-    r"\bhuman:\s",
+    # product/agent names in the current landscape (F-M-J2): word-bounded so an
+    # ordinary word is not mistaken for an identity tell.
+    r"\bchatgpt\b",
+    r"\bgrok\b",
+    r"\bdeepseek\b",
+    r"\bqwen\b",
+    r"\bcopilot\b",
+    r"\bcursor\b",
+    r"\baider\b",
+    r"\bmistral\b",
+    r"\bllama\b",
+    # transcript role markers that would leak the harness/agent identity —
+    # LINE-ANCHORED (F-M-J2) so ordinary prose ("ask the assistant: it helps")
+    # is not a false leak, only an actual transcript role label is.
+    r"(?m)^\s*assistant:\s",
+    r"(?m)^\s*human:\s",
     # EVAL-10 AC-2: contamination-canary values (markers embedded in task
     # content). A canary that reaches any published surface — judge packet,
     # review packet, render — is evidentially dead, so the shared scrub kills
