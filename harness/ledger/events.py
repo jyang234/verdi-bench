@@ -801,3 +801,89 @@ def record_contamination_probe(
     carries ``sha256(canary)`` only [AC-2]. Additive event type — old ledgers
     simply lack it, no chain invalidated."""
     return emit(ledger_path, ctx, CONTAMINATION_PROBE, {"probe": probe})
+
+
+# ---------------------------------------------------------------------------
+# Control-run reuse events [control-reuse plan]
+# ---------------------------------------------------------------------------
+# Reused control data lands under these DISTINCT event kinds — never the native
+# trial / grade / judge_verdict. The official analyze path queries only the
+# native kinds, so a reused control is excluded from every official decision by
+# construction (structural, not a flag), the same insulation-by-signature the
+# rest of the instrument uses. All additive: legacy ledgers simply lack them.
+CONTROL_REUSED = register_event("control_reused")
+REUSED_TRIAL = register_event("reused_trial")
+REUSED_GRADE = register_event("reused_grade")
+REUSED_JUDGE_VERDICT = register_event("reused_judge_verdict")
+
+
+def record_control_reused(
+    ledger_path: Path | str,
+    ctx: EventContext,
+    *,
+    source_experiment_id: str,
+    source_ledger_head_hash: str,
+    bundle_sha256: str,
+    fingerprint: dict,
+    control_arm: str,
+    cells: list,
+) -> dict:
+    """Summary of one control-bundle import [control-reuse plan].
+
+    Records, in the importing ledger's own chain, exactly what was pulled and
+    from where: the source experiment id + its ledger head hash, the imported
+    bundle's self sha, the matched control fingerprint, the control arm name, and
+    the ``[{task_id, repetition}]`` cells materialized. This is the auditable
+    attestation that a set of ``reused_trial`` / ``reused_grade`` events came from
+    a provably-unchanged source, not fabricated. Exactly one per import."""
+    return emit(
+        ledger_path,
+        ctx,
+        CONTROL_REUSED,
+        {
+            "source_experiment_id": source_experiment_id,
+            "source_ledger_head_hash": source_ledger_head_hash,
+            "bundle_sha256": bundle_sha256,
+            "fingerprint": fingerprint,
+            "control_arm": control_arm,
+            "cells": list(cells),
+        },
+    )
+
+
+def record_reused_trial(
+    ledger_path: Path | str, ctx: EventContext, *, trial_record: dict, reused_from: dict
+) -> dict:
+    """A control trial imported from a bundle, verbatim, tagged ``reused_from``
+    ``{source_experiment_id, bundle_sha256}``. A DISTINCT kind from ``trial`` so
+    the official paired path (which reads ``trial``) never sees it; only the
+    exploratory reuse path does. Exactly one per imported cell."""
+    return emit(
+        ledger_path, ctx, REUSED_TRIAL,
+        {"trial_record": trial_record, "reused_from": reused_from},
+    )
+
+
+def record_reused_grade(
+    ledger_path: Path | str, ctx: EventContext, *, grade: dict, reused_from: dict
+) -> dict:
+    """A control grade imported from a bundle, verbatim, tagged ``reused_from``.
+    Distinct from ``grade`` for the same structural-exclusion reason. Exactly one
+    per imported cell."""
+    return emit(
+        ledger_path, ctx, REUSED_GRADE,
+        {"grade": grade, "reused_from": reused_from},
+    )
+
+
+def append_reused_verdict(
+    ledger_path: Path | str, ctx: EventContext, *, verdict: dict, reused_from: dict
+) -> dict:
+    """A fresh judge verdict over a (fresh contender, reused control) pair, tagged
+    ``reused_from``. Distinct from ``judge_verdict`` so official judge_preference
+    and calibration (which read ``judge_verdict``) never see it — a reused-control
+    verdict is exploratory-only. Exactly one per judged comparison."""
+    return emit(
+        ledger_path, ctx, REUSED_JUDGE_VERDICT,
+        {"verdict": verdict, "reused_from": reused_from},
+    )
