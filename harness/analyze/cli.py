@@ -78,6 +78,13 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False,
     suffix = "html" if html else "md"
     out_json = experiment_dir / "findings.json"
     out_render = experiment_dir / f"findings.{mode}.{suffix}"
+    # F-L7: stamp the mode (and the exploratory watermark) into the JSON
+    # artifact itself BEFORE hashing, so the citable bytes are unambiguous.
+    findings.mode = mode
+    if mode != "official":
+        from .report import _WATERMARK
+
+        findings.watermark = _WATERMARK
     findings_json = findings.model_dump_json()
 
     # AN-3: ledger the render *before* writing the files, so an interrupted write

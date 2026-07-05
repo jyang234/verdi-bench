@@ -224,6 +224,13 @@ class FindingsDocument(BaseModel):
     # channel when exclusions correlate with outcomes, e.g. a canary salted
     # only on losing trials); the counts are disclosed in both renders.
     judge_coverage: dict = {}
+    # F-L7: the render mode stamped INTO findings.json — the citable byte
+    # string was mode-ambiguous (nothing in the file said whether it was an
+    # official or exploratory computation), and exploratory JSON carried no
+    # watermark. Set by run_analyze before serialization, so findings_sha256
+    # covers it; None only on a bare compute_findings call that never renders.
+    mode: Optional[str] = None
+    watermark: Optional[str] = None
     # PRA-M4: multi-arm disclosure — {n_arms, correction, note}. Non-empty and
     # non-optional in the render whenever >2 arms were compared, so k-1
     # simultaneous decisions can never be presented without saying so.
