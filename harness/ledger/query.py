@@ -20,7 +20,7 @@ from .chain import (
 )
 
 
-def ledger_head_hash(path) -> str:
+def ledger_head_hash(path: Path | str) -> str:
     """Read-side re-export: the current chain head hash.
 
     Non-ledger stages (e.g. EVAL-6 analyze) need the head hash and chain
@@ -31,7 +31,7 @@ def ledger_head_hash(path) -> str:
     return head_hash(Path(path))
 
 
-def verify(path) -> ChainResult:
+def verify(path: Path | str) -> ChainResult:
     """Read-side re-export of :func:`harness.ledger.chain.verify_chain`."""
     return verify_chain(path)
 
@@ -60,7 +60,7 @@ class ChainIntegrityError(RuntimeError):
     """
 
 
-def assert_chain(path) -> None:
+def assert_chain(path: Path | str) -> None:
     """Fail closed unless the ledger's hash chain verifies.
 
     The chain is tamper-*evident* only if something actually consults it; the
@@ -83,7 +83,7 @@ def assert_chain(path) -> None:
         )
 
 
-def iter_events(path) -> Iterator[dict]:
+def iter_events(path: Path | str) -> Iterator[dict]:
     path = Path(path)
     if not path.exists():
         return
@@ -98,15 +98,15 @@ def iter_events(path) -> Iterator[dict]:
             yield json.loads(line)
 
 
-def read_events(path) -> list[dict]:
+def read_events(path: Path | str) -> list[dict]:
     return list(iter_events(path))
 
 
-def find_events(path, event_type: str) -> list[dict]:
+def find_events(path: Path | str, event_type: str) -> list[dict]:
     return [e for e in iter_events(path) if e.get("event") == event_type]
 
 
-def latest_event(path, event_type: str) -> Optional[dict]:
+def latest_event(path: Path | str, event_type: str) -> Optional[dict]:
     found = find_events(path, event_type)
     return found[-1] if found else None
 
@@ -120,7 +120,7 @@ class TailOffsetError(ValueError):
     [EVAL-13 AC-2]."""
 
 
-def tail_events(path, offset: int = 0) -> tuple[list[dict], int]:
+def tail_events(path: Path | str, offset: int = 0) -> tuple[list[dict], int]:
     """Incremental read: complete events from byte ``offset``, plus the next cursor.
 
     Because ``append_event`` writes each event as one newline-terminated line in

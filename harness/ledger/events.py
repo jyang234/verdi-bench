@@ -13,6 +13,7 @@ Later stories extend this module with their own event types by calling
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
@@ -78,7 +79,7 @@ def build_provenance(ctx: EventContext) -> dict:
     return prov.model_dump()
 
 
-def emit(ledger_path, ctx: EventContext, event_type: str, payload: dict) -> dict:
+def emit(ledger_path: Path | str, ctx: EventContext, event_type: str, payload: dict) -> dict:
     """Assemble → validate provenance → append. The single funnel."""
     if event_type not in REGISTERED_EVENTS:
         raise UnregisteredEventError(
@@ -103,7 +104,7 @@ CHAIN_ANCHOR = register_event("chain_anchor")
 
 
 def record_experiment_locked(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     spec_sha256: str,
@@ -238,7 +239,7 @@ FLAKE_BASELINE = register_event("flake_baseline")
 
 
 def record_grade(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     trial_id: str,
@@ -285,7 +286,7 @@ def record_grade(
 
 
 def record_cant_grade(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     trial_id: str,
@@ -303,7 +304,7 @@ def record_cant_grade(
 
 
 def record_flake_baseline(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     task_id: str,
@@ -347,7 +348,7 @@ def append_verdict(ledger_path, ctx: EventContext, *, verdict: dict) -> dict:
 
 
 def append_human_verdict(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     verdict: dict,
@@ -383,7 +384,7 @@ SELFCHECK = register_event("selfcheck")
 
 
 def record_selfcheck(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     selected_method: str,
@@ -447,7 +448,7 @@ def record_cant_analyze(
 
 
 def record_findings_rendered(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     mode: str,
@@ -503,7 +504,7 @@ REVIEW_BATCH = register_event("review_batch")
 
 
 def record_review_batch(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     batch_id: str,
@@ -526,7 +527,7 @@ def record_review_batch(
 
 
 def record_review_packet_built(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     comparison_id: str,
@@ -559,7 +560,7 @@ def record_review_packet_built(
 
 
 def record_reveal(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     verdict_event_id: str,
@@ -589,7 +590,7 @@ SUBSET_DRAW = register_event("subset_draw")
 
 
 def record_task_admitted(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     candidate_id: str,
@@ -611,7 +612,7 @@ def record_task_admitted(
 
 
 def record_calibration_run(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     corpus_id: str,
@@ -634,7 +635,7 @@ def record_calibration_run(
 
 
 def record_subset_draw(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     corpus_id: str,
@@ -664,7 +665,7 @@ def record_subset_draw(
 
 
 def record_curation_approval(
-    ledger_path,
+    ledger_path: Path | str,
     ctx: EventContext,
     *,
     candidate_id: str,

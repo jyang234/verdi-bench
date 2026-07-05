@@ -39,7 +39,7 @@ class AnchorIntegrityError(RuntimeError):
     """
 
 
-def anchor_record(ledger_path, *, ts: str) -> dict:
+def anchor_record(ledger_path: Path | str, *, ts: str) -> dict:
     """Compute the ``{head_hash, height, ts}`` checkpoint for the current head —
     a pure read, no external write. ``ts`` is injected (no wall-clock here).
 
@@ -61,7 +61,7 @@ def anchor_record(ledger_path, *, ts: str) -> dict:
     return {"head_hash": head, "height": height, "ts": ts}
 
 
-def write_anchor(anchor_path, record: dict) -> None:
+def write_anchor(anchor_path: Path | str, record: dict) -> None:
     """Append one checkpoint ``record`` to the external anchor store.
 
     Exclusive-locked and fsync'd [F-M-O8], matching the ledger append
@@ -81,7 +81,7 @@ def write_anchor(anchor_path, record: dict) -> None:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
-def anchor_head(ledger_path, anchor_path, *, ts: str) -> dict:
+def anchor_head(ledger_path: Path | str, anchor_path: Path | str, *, ts: str) -> dict:
     """Compute and externally record the current head checkpoint in one call.
 
     Convenience composition of :func:`anchor_record` + :func:`write_anchor`; the
@@ -103,7 +103,7 @@ class AnchorResult:
         return self.ok
 
 
-def verify_against_anchor(ledger_path, anchor_path) -> AnchorResult:
+def verify_against_anchor(ledger_path: Path | str, anchor_path: Path | str) -> AnchorResult:
     """Every recorded anchor must still match the ledger line at its height."""
     ledger_path = Path(ledger_path)
     anchor_path = Path(anchor_path)
