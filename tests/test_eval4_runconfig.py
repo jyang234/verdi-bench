@@ -181,3 +181,14 @@ def test_m2_arm_missing_from_allowlist_fails_loud(tmp_path):
     )
     with pytest.raises(MissingProviderKeyError):
         run_trial(Task(id="t", prompt="p"), _arm(), tmp_path / "ws", cfg)
+
+
+def test_m_i2_run_command_uses_resolved_immutable_ref(tmp_path):
+    """F-M-I2: docker runs the resolved immutable ref, never the mutable tag —
+    a tag repointed between the digest inspect and the run cannot make the
+    executed image diverge from the provenance digest."""
+    task = Task(id="t", prompt="p", image="verdi-bench/agent:latest")
+    runner = FakeDockerRunner(native_log={})
+    rec = run_trial(task, _arm(), tmp_path / "ws", RunConfig(engine=HarborEngine(runner=runner)))
+    assert "verdi-bench/agent:latest" not in runner.last_cmd  # never the tag
+    assert rec.provenance.image_digest in runner.last_cmd     # the pinned ref runs
