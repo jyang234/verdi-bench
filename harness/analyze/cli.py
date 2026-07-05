@@ -19,7 +19,7 @@ import typer
 
 
 def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False,
-                actor: str = "unknown", multi_arm_correction: str = "none"):
+                actor: str = "unknown"):
     """Render findings, ledgering exactly one event either way [EVAL-6 §M6, AN-3].
 
     Returns the render path on success (after emitting ``findings_rendered``), or
@@ -60,10 +60,9 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False,
                 manifest = CorpusManifest.load(corpus)
             except Exception as e:  # bad path / malformed manifest JSON
                 raise AnalyzeError(f"could not load corpus manifest {corpus}: {e}") from e
-        findings = compute_findings(
-            ledger_path, spec, spec.seed, corpus_manifest=manifest,
-            multi_arm_correction=multi_arm_correction,
-        )
+        # F-H7: the multi-arm decision policy comes from the sha-locked spec —
+        # there is deliberately no analyze-time knob for it.
+        findings = compute_findings(ledger_path, spec, spec.seed, corpus_manifest=manifest)
         renderer = render_html if html else render_markdown
         rendered = renderer(findings, ledger_path, mode, corpus_manifest=manifest)
         # EVAL-12 AC-7/D004: the dossier rides the same invocation as a third
@@ -90,6 +89,9 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False,
         primary_metric=findings.primary_metric,
         ledger_head_hash=findings.provenance.ledger_head_hash,
         findings_sha256=hashlib.sha256(findings_json.encode("utf-8")).hexdigest(),
+        # F-H7: the APPLIED policy — "none" when there is no multi-arm family
+        # (n_pairs == 1), the spec-locked value otherwise.
+        multi_arm_correction=(findings.multi_arm or {}).get("correction", "none"),
     )
     out_json.write_text(findings_json, encoding="utf-8")
     out_render.write_text(rendered, encoding="utf-8")
@@ -155,11 +157,6 @@ def register(app: typer.Typer) -> None:
             None, "--corpus", help="Corpus manifest.json for provenance + calibration gate"
         ),
         html: bool = typer.Option(False, "--html", help="Render HTML instead of markdown"),
-        multi_arm_correction: str = typer.Option(
-            "none", "--multi-arm-correction",
-            help="Multi-arm (>2) decision policy: none (primary pair official) "
-            "or holm (Holm-Bonferroni family) [PRA-M4]",
-        ),
         actor: str = typer.Option(
             None, "--actor", help="Actor recorded on the findings event [GR-12]"
         ),
@@ -169,8 +166,6 @@ def register(app: typer.Typer) -> None:
 
         if official and exploratory:
             raise typer.BadParameter("choose at most one of --official/--exploratory")
-        if multi_arm_correction not in ("none", "holm"):
-            raise typer.BadParameter("--multi-arm-correction must be none or holm")
         mode = "official" if official else "exploratory"
         try:
             resolved_actor = resolve_actor(actor)
@@ -178,7 +173,7 @@ def register(app: typer.Typer) -> None:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
         out = run_analyze(experiment_dir, mode=mode, corpus=corpus, html=html,
-                          actor=resolved_actor, multi_arm_correction=multi_arm_correction)
+                          actor=resolved_actor)
         if out is None:
             typer.echo(f"refused {mode} render; recorded cant_analyze", err=True)
             raise typer.Exit(code=2)

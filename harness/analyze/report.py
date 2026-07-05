@@ -91,6 +91,13 @@ class AsymmetricContaminationError(AnalyzeError):
     invalid; exploratory still renders, watermarked [EVAL-10 AC-5, D001]."""
 
 
+class CorrectionMismatchError(AnalyzeError):
+    """Official render whose multi-arm correction differs from a prior official
+    render's recorded correction [F-H7] — one experiment, one pre-registered
+    decision procedure; a second official procedure is the post-hoc degree of
+    freedom the lock exists to prevent."""
+
+
 class CantAnalyzeReason(str, Enum):
     """Closed set of fail-closed analyze-refusal reasons [AN-3]."""
 
@@ -102,6 +109,7 @@ class CantAnalyzeReason(str, Enum):
     rubric_mismatch = "rubric_mismatch"
     selfcheck_required = "selfcheck_required"
     asymmetric_contamination = "asymmetric_contamination"
+    correction_mismatch = "correction_mismatch"
     analyze_error = "analyze_error"
 
 
@@ -122,6 +130,7 @@ def cant_analyze_reason(exc: AnalyzeError) -> CantAnalyzeReason:
         RubricMismatchError: CantAnalyzeReason.rubric_mismatch,
         SelfcheckRequiredError: CantAnalyzeReason.selfcheck_required,
         AsymmetricContaminationError: CantAnalyzeReason.asymmetric_contamination,
+        CorrectionMismatchError: CantAnalyzeReason.correction_mismatch,
     }.get(type(exc), CantAnalyzeReason.analyze_error)
 
 
@@ -837,10 +846,20 @@ def _two_sided_bootstrap_p(deltas, seed: int, n_boot: int) -> float:
     return (extreme + 1) / (n_boot + 1)
 
 
+# F-H7: no pair with fewer clusters is ever detected=True. A single task
+# cluster yields a zero-width bootstrap CI that trivially "excludes zero" (and
+# a Holm p of ~1/(n_boot+1)) — a degenerate resample, not evidence. Two is the
+# same threshold nullsim/selfcheck already treat as the insufficiency floor.
+MIN_DETECTION_CLUSTERS = 2
+
+
 def _apply_holm(comparisons, deltas_by_pair, parsed_rule, seed: int, *, n_boot: int, alpha: float) -> None:
     """Holm-Bonferroni step-down across the computable pairwise comparisons,
     rewriting each pair's decision in place [PRA-M4]. Non-computable pairs
-    (excluded / no data) are skipped. Every adjusted pair stays official."""
+    (excluded / no data) are skipped. Every adjusted pair stays official.
+    The minimum-cluster floor binds here too [F-H7]: the selfcheck's <2-cluster
+    gate only ever inspects the primary pair, so without it a single-task
+    secondary pair is declared an official detected effect at p≈1/(n_boot+1)."""
     idxs = [i for i, d in enumerate(deltas_by_pair) if d]
     pvals = {i: _two_sided_bootstrap_p(deltas_by_pair[i], seed, n_boot) for i in idxs}
     m = len(idxs)
@@ -855,12 +874,15 @@ def _apply_holm(comparisons, deltas_by_pair, parsed_rule, seed: int, *, n_boot: 
             reject[i] = True
     for i in idxs:
         cf = comparisons[i]
-        detected = bool(reject.get(i, False))
+        floored = len(deltas_by_pair[i]) < MIN_DETECTION_CLUSTERS
+        detected = bool(reject.get(i, False)) and not floored
         observed = cf.decision["observed_delta"]
         cf.decision["detected"] = detected
         cf.decision["decides_positive"] = detected and parsed_rule.decides_positive(observed)
         cf.decision["holm_p"] = pvals[i]
         cf.decision["correction"] = "holm"
+        if floored:
+            cf.decision["floor"] = "insufficient_clusters"
 
 
 def compute_findings(
@@ -871,19 +893,16 @@ def compute_findings(
     corpus_manifest=None,
     coverage_n_sim: int = 200,
     n_boot: int = 10_000,
-    multi_arm_correction: str = "none",
 ) -> FindingsDocument:
     """Compute the findings document — pure and reproducible in ``seed``.
 
-    ``multi_arm_correction`` [PRA-M4]: ``"none"`` (default) makes only the
-    primary pair official in a >2-arm design; ``"holm"`` makes every pair
-    official under a Holm-Bonferroni-adjusted family. Either way the >2-arm
-    comparison is disclosed.
+    The >2-arm decision policy comes from the sha-locked spec
+    (``spec.multi_arm_correction`` [F-H7, PRA-M4]): ``"none"`` makes only the
+    primary pair official; ``"holm"`` makes every pair official under a
+    Holm-Bonferroni-adjusted family. Either way the >2-arm comparison is
+    disclosed. It is not a parameter here — an analyze-time knob on an
+    official decision procedure is exactly what pre-registration forbids.
     """
-    if multi_arm_correction not in ("none", "holm"):
-        raise AnalyzeError(
-            f"unknown multi_arm_correction {multi_arm_correction!r} (none|holm)"
-        )
     primary = spec.primary_metric.value
 
     # metric → per-task per-arm value series
@@ -967,7 +986,19 @@ def compute_findings(
         # AN-8: a decision is positive only when the effect is DETECTED (the CI
         # excludes 0) and the rule fires — never the raw rule on a null delta. The
         # artifact now matches the render, which already gates on detection.
-        detected = boot.excludes_zero()
+        # F-H7: below the cluster floor there is no detection at all — the
+        # decision names the floor so renders phrase it as structurally
+        # insufficient, distinct from a genuine null.
+        floored = boot.n_tasks < MIN_DETECTION_CLUSTERS
+        detected = boot.excludes_zero() and not floored
+        decision = {
+            "rule": parsed_rule.raw,
+            "observed_delta": observed,
+            "detected": detected,
+            "decides_positive": detected and parsed_rule.decides_positive(observed),
+        }
+        if floored:
+            decision["floor"] = "insufficient_clusters"
         comparisons.append(
             ComparisonFinding(
                 label=f"{arm_a} vs {arm_b}",
@@ -977,12 +1008,7 @@ def compute_findings(
                 stats=boot.as_dict(),
                 effect=eff.as_dict(),
                 claim_tag=claim_tag,
-                decision={
-                    "rule": parsed_rule.raw,
-                    "observed_delta": observed,
-                    "detected": detected,
-                    "decides_positive": detected and parsed_rule.decides_positive(observed),
-                },
+                decision=decision,
                 excluded_from_official=excluded,
                 exclusion_reason=(
                     f"telemetry field {metric_field!r} has asymmetric nulls; "
@@ -1001,7 +1027,7 @@ def compute_findings(
     multi_arm: dict = {}
     n_pairs = len(comparisons)
     if n_pairs > 1:
-        if multi_arm_correction == "holm":
+        if spec.multi_arm_correction == "holm":
             _apply_holm(comparisons, deltas_by_pair, parsed_rule, seed, n_boot=n_boot,
                         alpha=1.0 - DEFAULT_CI_LEVEL)
             multi_arm = {
@@ -1027,7 +1053,8 @@ def compute_findings(
                     f"pre-registered primary pair ({comparisons[0].label}) carries a "
                     "decision. The remaining pairs are exploratory (CI/effect shown, "
                     "no decision) — the spec pre-registers exactly one decision rule. "
-                    "Re-run with --multi-arm-correction=holm for a corrected family."
+                    "Pre-register multi_arm_correction: holm in the spec for a "
+                    "corrected family [F-H7]."
                 ),
             }
 
@@ -1150,6 +1177,16 @@ def _comparison_lines(cf: ComparisonFinding, mde: MDEBlock) -> list[str]:
         lines.append(
             f"- Exploratory pair (not the pre-registered primary): no decision"
             f"{extra}."
+        )
+    elif cf.decision.get("floor") == "insufficient_clusters":
+        # F-H7: structurally insufficient — distinct from a genuine null, which
+        # is a statement about the data, not about there being almost none.
+        holm_p = cf.decision.get("holm_p")
+        tag = f" (Holm p={_fmt(holm_p, 3)})" if holm_p is not None else ""
+        lines.append(
+            f"- Insufficient task clusters for any detection "
+            f"(n_tasks={cf.n_tasks} < {MIN_DETECTION_CLUSTERS}): no decision "
+            f"possible{tag} [F-H7]."
         )
     elif detected:
         decides = cf.decision["decides_positive"]
@@ -1468,6 +1505,31 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
             f"{detail}. The pairing is invalid for these tasks; exploratory "
             "still renders, watermarked, with the full summary [EVAL-10 AC-5]"
         )
+    # 7. multi-arm correction consistency [F-H7]: one pre-registered decision
+    # procedure per experiment. The policy lives in the sha-locked spec, so two
+    # official renders cannot legitimately differ through the tool; this is
+    # defense in depth against a chain produced under a different policy.
+    _assert_correction_consistent(
+        (findings.multi_arm or {}).get("correction", "none"), ledger_path
+    )
+
+
+def _assert_correction_consistent(correction: str, ledger_path) -> None:
+    """Refuse an official render whose applied multi-arm correction differs from
+    any prior official render's recorded correction [F-H7]. Render events that
+    predate the recorded field are skipped — a legacy chain is not refused on,
+    but the first post-field official render pins the procedure for the rest."""
+    for ev in find_events(ledger_path, events.FINDINGS_RENDERED):
+        if ev.get("mode") != "official":
+            continue
+        prior = ev.get("multi_arm_correction")
+        if prior is not None and prior != correction:
+            raise CorrectionMismatchError(
+                f"official render refused: a prior official render used "
+                f"multi-arm correction {prior!r}; this render would use "
+                f"{correction!r} — one pre-registered decision procedure per "
+                "experiment [F-H7]"
+            )
 
 
 def _override_lines(findings: FindingsDocument) -> list[str]:

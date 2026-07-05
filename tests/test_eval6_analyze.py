@@ -256,10 +256,11 @@ _PREF_ARMS = [
 ]
 
 
-def _pref_ledger(tmp_path, ctx, *, arms):
+def _pref_ledger(tmp_path, ctx, *, arms, **overrides):
     spec, _, ledger = locked_experiment(
         tmp_path / "e", ctx=ctx, arms=arms,
         primary_metric="judge_preference", decision_rule="delta_judge_preference > 0",
+        **overrides,
     )
     return spec, ledger
 
@@ -338,25 +339,150 @@ def test_m4_multi_arm_default_only_primary_pair_official(tmp_path):
 
 
 def test_m4_multi_arm_holm_makes_every_pair_official(tmp_path):
-    """PRA-M4: --multi-arm-correction=holm makes every pair official under a
-    Holm-adjusted family, stamping each decision with its Holm p-value."""
+    """PRA-M4: a spec-locked multi_arm_correction: holm makes every pair official
+    under a Holm-adjusted family, stamping each decision with its Holm p-value
+    [F-H7: the policy is pre-registered, not an analyze-time flag]."""
     ctx = fixed_ctx()
-    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS)
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
     ct = {"A": "control", "B": "treatment"}
     cc = {"A": "control", "B": "challenger"}
     for i in range(4):
         _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
         _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
-    f = compute_findings(ledger, spec, spec.seed, multi_arm_correction="holm", **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
     assert f.multi_arm["correction"] == "holm"
     for cf in f.comparisons:
         assert cf.official_decision is True
         assert "holm_p" in cf.decision and cf.decision["correction"] == "holm"
     # deterministic in seed: recomputing yields identical Holm p-values
-    f2 = compute_findings(ledger, spec, spec.seed, multi_arm_correction="holm", **_FAST)
+    f2 = compute_findings(ledger, spec, spec.seed, **_FAST)
     assert [c.decision["holm_p"] for c in f.comparisons] == [
         c.decision["holm_p"] for c in f2.comparisons
     ]
+
+
+def test_h7_correction_is_read_from_the_locked_spec(tmp_path):
+    """F-H7: the multi-arm decision policy rides the sha-locked spec bytes —
+    pre-registered, never an analyze-time knob. Absent field ⇒ 'none'."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
+    ct = {"A": "control", "B": "treatment"}
+    cc = {"A": "control", "B": "challenger"}
+    for i in range(4):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+        _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.multi_arm["correction"] == "holm"
+    for cf in f.comparisons:
+        assert cf.official_decision is True and "holm_p" in cf.decision
+
+
+def test_h7_single_task_pair_is_never_detected(tmp_path):
+    """F-H7 floor: one task cluster yields a zero-width CI that excludes zero —
+    that is not evidence. detected must be False with the floor named, and the
+    render must phrase it as structurally insufficient, not as a null result."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    _seed_pref_verdict(ledger, ctx, cid="c-0", task_id="t0", winner="A",
+                       arm_map={"A": "control", "B": "treatment"})
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    cf = f.comparisons[0]
+    assert cf.n_tasks == 1
+    assert cf.decision["detected"] is False
+    assert cf.decision["floor"] == "insufficient_clusters"
+    md = render_markdown(f, ledger, "exploratory")
+    block = _md_block(md, cf.label)
+    assert "Insufficient task clusters" in block
+    assert "Effect detected" not in block and "No effect ≥ MDE detected" not in block
+
+
+def test_h7_holm_single_task_secondary_pair_floored(tmp_path):
+    """F-H7: under Holm, a single-task secondary pair reached p≈1/(n_boot+1) and
+    was declared an official detected effect — the selfcheck's <2-cluster gate
+    only ever inspects the primary pair. The floor binds in the Holm path too."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
+    ct = {"A": "control", "B": "treatment"}
+    cc = {"A": "control", "B": "challenger"}
+    for i in range(8):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    _seed_pref_verdict(ledger, ctx, cid="cc-0", task_id="t0", winner="A", arm_map=cc)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    by_label = {cf.label: cf for cf in f.comparisons}
+    sec = by_label["control vs challenger"]
+    assert sec.n_tasks == 1
+    assert sec.decision["detected"] is False
+    assert sec.decision["floor"] == "insufficient_clusters"
+    assert sec.decision.get("holm_p") is not None  # p is disclosed; floor binds
+    # a 2-cluster pair with a real effect still detects: the floor is minimal
+    primary = by_label["control vs treatment"]
+    assert primary.n_tasks == 8 and primary.decision["detected"] is True
+
+
+def test_h7_render_event_records_the_applied_correction(tmp_path):
+    """F-H7 defense in depth: every findings_rendered event records the applied
+    multi-arm correction, so the chain shows which decision procedure produced
+    each render."""
+    from harness.analyze.cli import run_analyze
+    from harness.ledger.query import find_events
+
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
+    ct = {"A": "control", "B": "treatment"}
+    cc = {"A": "control", "B": "challenger"}
+    for i in range(3):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+        _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
+    out = run_analyze(tmp_path / "e", mode="exploratory", actor="tester")
+    assert out is not None
+    ev = find_events(ledger, "findings_rendered")[-1]
+    assert ev["multi_arm_correction"] == "holm"
+
+
+def test_h7_official_fence_refuses_correction_mismatch(tmp_path):
+    """F-H7: an official render whose correction differs from a prior official
+    render's recorded correction is refused with its own named reason — one
+    pre-registered decision procedure per experiment. Legacy render events
+    without the recorded field are skipped, never refused on."""
+    import pytest
+
+    from harness.analyze.report import (
+        CantAnalyzeReason,
+        CorrectionMismatchError,
+        _assert_correction_consistent,
+        cant_analyze_reason,
+    )
+    from harness.ledger.events import record_findings_rendered
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    record_findings_rendered(  # legacy official render: no recorded correction
+        ledger, ctx, mode="official", primary_metric="judge_preference",
+        ledger_head_hash="h" * 64, findings_sha256="f" * 64,
+    )
+    _assert_correction_consistent("holm", ledger)  # legacy events are skipped
+    record_findings_rendered(
+        ledger, ctx, mode="official", primary_metric="judge_preference",
+        ledger_head_hash="h" * 64, findings_sha256="f" * 64,
+        multi_arm_correction="none",
+    )
+    _assert_correction_consistent("none", ledger)  # matching passes
+    with pytest.raises(CorrectionMismatchError, match="one pre-registered decision"):
+        _assert_correction_consistent("holm", ledger)
+    assert (
+        cant_analyze_reason(CorrectionMismatchError("x"))
+        is CantAnalyzeReason.correction_mismatch
+    )
+
+
+def test_h7_analyze_flag_is_gone(tmp_path):
+    """F-H7: the analyze-time knob is removed — the policy is spec-locked."""
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+
+    r = CliRunner().invoke(app, ["analyze", str(tmp_path), "--multi-arm-correction", "holm"])
+    assert r.exit_code != 0
 
 
 def _holm_divergent_findings(tmp_path):
@@ -367,7 +493,7 @@ def _holm_divergent_findings(tmp_path):
     premise asserts below fail loudly and the fixture needs re-tuning — the
     parity assertion itself must hold for ANY configuration."""
     ctx = fixed_ctx()
-    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS)
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
     ct = {"A": "control", "B": "treatment"}
     cc = {"A": "control", "B": "challenger"}
     for i in range(30):
@@ -379,7 +505,7 @@ def _holm_divergent_findings(tmp_path):
             ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}",
             winner="A" if i % 2 == 0 else "B", arm_map=cc,
         )
-    f = compute_findings(ledger, spec, spec.seed, multi_arm_correction="holm", **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
     return f, ledger
 
 

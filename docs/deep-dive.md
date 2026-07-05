@@ -283,9 +283,11 @@ With more than two arms the spec still pre-registers exactly one
 simultaneous official decision without inflating the family-wise error rate
 [PRA-M4]. By default only the pre-registered primary pair carries a decision
 (`official_decision`); the remaining pairs render their CI and effect size but
-no decision, marked exploratory. `--multi-arm-correction=holm` instead keeps
-every pair official under a Holm-Bonferroni adjustment at the pre-registered
-level. Two render modes:
+no decision, marked exploratory. Pre-registering `multi_arm_correction: holm`
+in the locked spec instead keeps every pair official under a Holm-Bonferroni
+adjustment at the pre-registered level — the policy is part of the sha-locked
+decision rule, chosen before any trial runs, never at analyze time [F-H7].
+Two render modes:
 
 - `--exploratory`: watermarked on every layer.
 - `--official`: passes the **pre-registration fence** — locked spec, corpus

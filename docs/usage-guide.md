@@ -282,10 +282,12 @@ Judge↔human agreement (IPW-corrected kappa) then appears in the findings.
 With more than two arms the spec still pre-registers exactly one decision rule,
 so only the **primary pair** carries an official decision by default; the other
 pairs render CI + effect size but no decision. To keep every pair official under
-a family-wise correction:
+a family-wise correction — pre-registered in the spec, not an analyze-time
+flag [F-H7]:
 
-```bash
-uv run bench analyze . --multi-arm-correction holm      # default: none
+```yaml
+# experiment.yaml (before locking)
+multi_arm_correction: holm      # default: none
 ```
 
 ---

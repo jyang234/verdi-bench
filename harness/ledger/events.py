@@ -427,23 +427,25 @@ def record_findings_rendered(
     primary_metric: str,
     ledger_head_hash: str,
     findings_sha256: str,
+    multi_arm_correction: Optional[str] = None,
 ) -> dict:
     """Provenance of a findings render [EVAL-6 §M6].
 
     ``analyze`` is a pure function of ``(ledger, seed)``; the CLI writes only the
     findings output and this single event recording what was rendered.
+    ``multi_arm_correction`` is an additive field [F-H7]: the applied >2-arm
+    decision policy, so the chain shows which decision procedure produced each
+    render — inserted only when present, so pre-existing chains keep their shape.
     """
-    return emit(
-        ledger_path,
-        ctx,
-        FINDINGS_RENDERED,
-        {
-            "mode": mode,
-            "primary_metric": primary_metric,
-            "rendered_head_hash": ledger_head_hash,
-            "findings_sha256": findings_sha256,
-        },
-    )
+    payload = {
+        "mode": mode,
+        "primary_metric": primary_metric,
+        "rendered_head_hash": ledger_head_hash,
+        "findings_sha256": findings_sha256,
+    }
+    if multi_arm_correction is not None:
+        payload["multi_arm_correction"] = multi_arm_correction
+    return emit(ledger_path, ctx, FINDINGS_RENDERED, payload)
 
 
 # ---------------------------------------------------------------------------

@@ -152,7 +152,7 @@ uv run bench judge  <experiment-dir>                          # identity-blind a
 uv run bench selfcheck <experiment-dir>                      # D008 coverage selfcheck (required before official)
 uv run bench analyze <experiment-dir> --exploratory                # watermarked findings
 uv run bench analyze <experiment-dir> --official --corpus m.json   # fenced official render (requires a passed selfcheck)
-uv run bench analyze <experiment-dir> --multi-arm-correction holm  # Holm-correct the secondary-arm family (default: none)
+# >2-arm decision policy: pre-register `multi_arm_correction: holm` in experiment.yaml before locking (default: none)
 #   every analyze invocation also writes the self-contained comparison dossier
 #   (findings.<mode>.dossier.html) beside the markdown — same fence, same
 #   single findings_rendered event, no network references or external assets

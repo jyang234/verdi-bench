@@ -73,6 +73,12 @@ VERDICT_TEMPLATES: dict[str, str] = {
     ),
     # the pre-registered null phrasing — never "no difference" [AC-5]
     "outcome_null": "Outcome: No effect ≥ MDE detected (MDE={{ mde_value }}).",
+    # F-H7: below the cluster floor there is no detection at all — structurally
+    # insufficient, never phrased as a null result.
+    "outcome_insufficient_clusters": (
+        "Outcome: insufficient task clusters for any detection "
+        "(N={{ n_tasks }} paired task(s)); no decision possible."
+    ),
     "outcome_no_comparison": (
         "Outcome: no official comparison for {{ arm_a }} vs {{ arm_b }} — "
         "{{ exclusion_reason }}."
@@ -205,6 +211,8 @@ def verdict_sentences(findings: FindingsDocument, cf: ComparisonFinding) -> list
     names = ["question", "rule"]
     if not cf.stats:
         names += ["outcome_no_comparison", "uncertainty_no_data"]
+    elif cf.decision.get("floor") == "insufficient_clusters":
+        names += ["outcome_insufficient_clusters", "uncertainty"]
     elif cf.decision.get("detected"):
         names.append(
             "outcome_met" if cf.decision.get("decides_positive") else "outcome_detected_not_met"

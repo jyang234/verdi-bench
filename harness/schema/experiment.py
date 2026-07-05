@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import yaml
 from pydantic import (
@@ -260,6 +260,12 @@ class ExperimentSpec(BaseModel):
     # pre-registered by construction. Absent block ⇒ the module default applies
     # (itself a fixed constant, still not post-hoc tunable).
     contamination: Optional[ContaminationConfig] = None
+    # F-H7 [REVIEW-D-P8-1]: the >2-arm decision policy is a decision-rule
+    # component, so it rides the locked spec bytes — pre-registered, never an
+    # analyze-time knob. Absent field ⇒ "none" (only the primary pair carries a
+    # decision), the pre-existing default, so legacy locked specs parse and
+    # analyze unchanged. Inert for 2-arm designs (n_pairs == 1).
+    multi_arm_correction: Literal["none", "holm"] = "none"
     # EVAL-20 AC-6 [D005: experiment-level-shared]: non-model egress hosts
     # (package registries, mirrors), declared once for ALL arms so both face
     # identical infrastructure — per-arm infra could masquerade as a treatment
