@@ -91,7 +91,10 @@ def _map_call(raw: RawVerdict, order: str) -> tuple[str, list[Evidence], str]:
 def _call(provider: Provider, model: str, packet: Packet, order: str, temperature: float):
     call_id = f"call-{uuid.uuid4().hex[:12]}"
     text = provider.complete(model, packet.render(order), temperature)
-    return _parse_raw(text), call_id
+    # F-M-J3: provider-reported usage for THIS call, read before parsing so a
+    # parse failure still accounts for the spend the call incurred.
+    usage = getattr(provider, "last_usage", None)
+    return _parse_raw(text), call_id, usage
 
 
 def judge_pair(
@@ -116,7 +119,16 @@ def judge_pair(
     [D-P4-1].
     """
     call_ids: list[str] = []
+    usages: list[dict] = []
     single_order = config.orders == "single"
+
+    def _usage() -> Optional[dict]:
+        if not usages:
+            return None
+        return {
+            "input_tokens": sum(u["input_tokens"] for u in usages),
+            "output_tokens": sum(u["output_tokens"] for u in usages),
+        }
 
     def _provenance() -> VerdictProvenance:
         return VerdictProvenance(
@@ -127,6 +139,7 @@ def judge_pair(
             orders=config.orders,
             temperature=config.temperature,
             ts=ts,
+            usage=_usage(),
         )
 
     def _cant(reason: CantJudgeReason) -> Verdict:
@@ -176,7 +189,9 @@ def judge_pair(
     raw_confidences: list[float] = []
     for order in orders_to_run:
         try:
-            raw, call_id = _call(provider, config.model, packet, order, config.temperature)
+            raw, call_id, usage = _call(provider, config.model, packet, order, config.temperature)
+            if usage is not None:
+                usages.append(usage)
         except ProviderError as e:
             # timeout / refusal / provider_error via one shared mapper so judge and
             # process cannot drift on the classification [carry-forward].

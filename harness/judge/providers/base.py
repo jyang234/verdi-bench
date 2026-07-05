@@ -30,6 +30,14 @@ class ProviderRefusal(ProviderError):
 MAX_OUTPUT_TOKENS = 4096
 
 
+def normalize_usage(inp, out) -> "dict | None":
+    """One usage shape for every vendor [F-M-J3]; None when either side is
+    unreported — absence is honest, never zero-imputed (the D004 posture)."""
+    if not isinstance(inp, int) or not isinstance(out, int):
+        return None
+    return {"input_tokens": inp, "output_tokens": out}
+
+
 class ProviderContextOverflow(ProviderError):
     """The provider rejected the request as over its context window [PR-9].
 

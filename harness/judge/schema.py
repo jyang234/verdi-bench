@@ -115,6 +115,11 @@ class VerdictProvenance(BaseModel):
     orders: str  # "both" | "single"
     temperature: float
     ts: str
+    # F-M-J3 (additive): provider-reported token usage summed over this
+    # verdict's calls — {input_tokens, output_tokens}, or None when the
+    # provider reports none (absence is honest, never zero-imputed). Feeds the
+    # judge-scoped token ceiling.
+    usage: Optional[dict] = None
 
 
 class Verdict(BaseModel):

@@ -482,6 +482,23 @@ REVEAL = register_event("reveal")
 REVIEW_PACKET_BUILT = register_event("review_packet_built")
 
 
+JUDGE_STOPPED_TOKEN_CEILING = register_event("judge_stopped_token_ceiling")
+
+
+def record_judge_stopped_token_ceiling(
+    ledger_path, ctx: EventContext, *, accumulated_tokens: int, ceiling: int
+) -> dict:
+    """The judge batch refused further comparisons at the pre-registered
+    token ceiling [F-M-J3] — mirroring run_stopped_cost_ceiling: a
+    refuse-to-start, never a mid-verdict abort. Additive event kind."""
+    return emit(
+        ledger_path,
+        ctx,
+        JUDGE_STOPPED_TOKEN_CEILING,
+        {"accumulated_tokens": accumulated_tokens, "ceiling": ceiling},
+    )
+
+
 REVIEW_BATCH = register_event("review_batch")
 
 

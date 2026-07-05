@@ -229,3 +229,52 @@ def test_jd11_single_order_flagged_through_verb(tmp_path):
     assert r.exit_code == 0, r.output
     v = find_events(ledger, "judge_verdict")[0]["verdict"]
     assert v["single_order"] is True
+
+
+def test_m_j3_token_ceiling_refuses_further_judging(tmp_path):
+    """F-M-J3: judge spend was invisible and unbounded — the experiment
+    cost_ceiling governs only trials. With judge.token_ceiling in the locked
+    spec, the judge verb refuses further comparisons once prior verdicts'
+    provider-reported usage reaches the ceiling (resume-aware: seeded from the
+    ledger, so a re-run cannot reset the budget) and ledgers one typed stop."""
+    from harness.judge.schema import Verdict, VerdictProvenance, Winner
+    from harness.ledger.events import append_verdict
+
+    judge = dict(_FAKE_JUDGE)
+    judge["token_ceiling"] = 1000
+    expdir = tmp_path / "exp"
+    ledger = _setup(expdir, judge=judge)
+    ctx = fixed_ctx(experiment_id="exp")
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-a", task_id="t1", arm="control", passed=True)
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-b", task_id="t1", arm="treatment", passed=False)
+    # a prior verdict for ANOTHER comparison already spent past the ceiling
+    prior = Verdict(
+        winner=Winner.A, reason="r", evidence=[{"kind": "diff", "response": "A", "hunk": "h"}],
+        provenance=VerdictProvenance(
+            judge_model=judge["model"], rubric_sha256="r" * 64, packet_sha256="p" * 64,
+            call_ids=["c1", "c2"], orders="both", temperature=0.0, ts="t",
+            usage={"input_tokens": 900, "output_tokens": 200},
+        ),
+        comparison_id="cmp-old", task_class="cls",
+    )
+    append_verdict(ledger, ctx, verdict=prior.model_dump(mode="json"))
+
+    r = runner.invoke(app, ["judge", str(expdir)])
+    assert r.exit_code == 0, r.output
+    assert "judged 0 comparison(s)" in r.output
+    assert "token ceiling" in (r.output + (r.stderr or ""))
+    stops = find_events(ledger, "judge_stopped_token_ceiling")
+    assert len(stops) == 1
+    assert stops[0]["accumulated_tokens"] == 1100 and stops[0]["ceiling"] == 1000
+
+
+def test_m_j3_no_ceiling_means_unlimited(tmp_path):
+    """Absent token_ceiling ⇒ the pre-existing behavior, no stop event."""
+    expdir = tmp_path / "exp"
+    ledger = _setup(expdir)
+    ctx = fixed_ctx(experiment_id="exp")
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-a", task_id="t1", arm="control", passed=True)
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-b", task_id="t1", arm="treatment", passed=False)
+    r = runner.invoke(app, ["judge", str(expdir)])
+    assert r.exit_code == 0, r.output
+    assert find_events(ledger, "judge_stopped_token_ceiling") == []

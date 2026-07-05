@@ -233,3 +233,50 @@ def test_m_j4_parse_is_transient_for_reruns():
     assert "parse" in TRANSIENT_CANT_JUDGE
     assert "parse" in TRANSIENT_CANT_SCORE
     assert "identity_leak" not in TRANSIENT_CANT_JUDGE  # blinding stays terminal
+
+
+def test_m_j3_provider_usage_extracted_and_normalized(monkeypatch):
+    """F-M-J3: every provider previously discarded the response's usage block.
+    Each now records normalized {input_tokens, output_tokens} on last_usage;
+    an unreported usage stays None — honest absence, never zero-imputed."""
+    import harness.judge.providers.anthropic as a_mod
+    import harness.judge.providers.google as g_mod
+    import harness.judge.providers.openai as o_mod
+    from harness.judge.providers.base import normalize_usage
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("GOOGLE_API_KEY", "k")
+
+    monkeypatch.setattr(a_mod, "post_json", lambda *a, **k: {
+        "content": [{"type": "text", "text": "x"}],
+        "usage": {"input_tokens": 10, "output_tokens": 3},
+    })
+    p = a_mod.AnthropicProvider()
+    p.complete("anthropic/m", [{"role": "user", "content": "p"}], 0.0)
+    assert p.last_usage == {"input_tokens": 10, "output_tokens": 3}
+
+    monkeypatch.setattr(o_mod, "post_json", lambda *a, **k: {
+        "choices": [{"message": {"content": "x"}}],
+        "usage": {"prompt_tokens": 7, "completion_tokens": 2},
+    })
+    p = o_mod.OpenAIProvider()
+    p.complete("openai/m", [{"role": "user", "content": "p"}], 0.0)
+    assert p.last_usage == {"input_tokens": 7, "output_tokens": 2}
+
+    monkeypatch.setattr(g_mod, "post_json", lambda *a, **k: {
+        "candidates": [{"content": {"parts": [{"text": "x"}]}}],
+        "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 1},
+    })
+    p = g_mod.GoogleProvider()
+    p.complete("google/m", [{"role": "user", "content": "p"}], 0.0)
+    assert p.last_usage == {"input_tokens": 5, "output_tokens": 1}
+
+    # unreported usage is honest absence
+    monkeypatch.setattr(o_mod, "post_json", lambda *a, **k: {
+        "choices": [{"message": {"content": "x"}}],
+    })
+    p = o_mod.OpenAIProvider()
+    p.complete("openai/m", [{"role": "user", "content": "p"}], 0.0)
+    assert p.last_usage is None
+    assert normalize_usage(None, 5) is None and normalize_usage(3, None) is None

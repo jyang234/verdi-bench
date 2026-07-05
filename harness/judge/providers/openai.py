@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import MAX_OUTPUT_TOKENS, Provider, ProviderContextOverflow, ProviderError
+from .base import MAX_OUTPUT_TOKENS, Provider, ProviderContextOverflow, ProviderError, normalize_usage
 from ._http import post_json, require_key
 
 
@@ -31,9 +31,12 @@ class OpenAIProvider(Provider):
         model = model_id.split("/", 1)[1]
         body = {"model": model, "temperature": temperature, "messages": messages,
                 "max_tokens": MAX_OUTPUT_TOKENS}  # uniform cap [F-M-J4]
+        self.last_usage = None  # F-M-J3
         resp = post_json(
             "https://api.openai.com/v1/chat/completions",
             body,
             {"authorization": f"Bearer {require_key('OPENAI_API_KEY')}"},
         )
+        usage = resp.get("usage") or {}
+        self.last_usage = normalize_usage(usage.get("prompt_tokens"), usage.get("completion_tokens"))
         return _content(resp)
