@@ -116,3 +116,120 @@ def test_non_timeout_urlerror_classifies_as_provider_error():
     classified = _classify_urlerror(err)
     assert isinstance(classified, ProviderError)
     assert not isinstance(classified, ProviderTimeout)
+
+
+def test_m_j4_transient_http_faults_retry_bounded(monkeypatch):
+    """F-M-J4: a single 429/5xx/timeout previously failed the whole call (and
+    the batch) closed. Retryable faults now back off (fixed 2s/4s) and succeed;
+    non-retryable client errors still fail immediately with zero sleeps."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    import harness.judge.providers._http as http_mod
+    from harness.judge.providers._http import post_json
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(http_mod.time, "sleep", sleeps.append)
+
+    calls = {"n": 0}
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def flaky(req, timeout):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise urllib.error.HTTPError(req.full_url, 429, "rate limited", {}, None)
+        return _Resp(b'{"ok": true}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    assert post_json("https://x.test/v1", {}, {}) == {"ok": True}
+    assert calls["n"] == 3 and sleeps == [2.0, 4.0]
+
+    # a non-retryable 400 fails immediately, no backoff
+    sleeps.clear()
+    calls["n"] = 0
+
+    def bad_request(req, timeout):
+        calls["n"] += 1
+        raise urllib.error.HTTPError(req.full_url, 400, "bad request", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", bad_request)
+    with pytest.raises(ProviderError):
+        post_json("https://x.test/v1", {}, {})
+    assert calls["n"] == 1 and sleeps == []
+
+
+def test_m_j4_exhausted_retries_fail_closed(monkeypatch):
+    """Persistent 429s exhaust the bounded attempts and fail closed."""
+    import urllib.error
+    import urllib.request
+
+    import harness.judge.providers._http as http_mod
+    from harness.judge.providers._http import RETRY_ATTEMPTS, post_json
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(http_mod.time, "sleep", sleeps.append)
+    calls = {"n": 0}
+
+    def always_429(req, timeout):
+        calls["n"] += 1
+        raise urllib.error.HTTPError(req.full_url, 429, "rate limited", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", always_429)
+    with pytest.raises(ProviderError, match="429"):
+        post_json("https://x.test/v1", {}, {})
+    assert calls["n"] == RETRY_ATTEMPTS
+
+
+def test_m_j4_uniform_output_cap_across_providers(monkeypatch):
+    """F-M-J4: Anthropic hardcoded max_tokens=2048 while OpenAI/Google set no
+    cap — a truncated verdict JSON became CANT_JUDGE(parse) on one vendor only.
+    All three now send the shared MAX_OUTPUT_TOKENS."""
+    import harness.judge.providers.anthropic as a_mod
+    import harness.judge.providers.google as g_mod
+    import harness.judge.providers.openai as o_mod
+    from harness.judge.providers.base import MAX_OUTPUT_TOKENS
+
+    bodies: dict[str, dict] = {}
+
+    def capture(name, reply):
+        def _post(url, payload, headers, **kw):
+            bodies[name] = payload
+            return reply
+        return _post
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("GOOGLE_API_KEY", "k")
+    monkeypatch.setattr(a_mod, "post_json",
+                        capture("anthropic", {"content": [{"type": "text", "text": "x"}]}))
+    monkeypatch.setattr(o_mod, "post_json",
+                        capture("openai", {"choices": [{"message": {"content": "x"}}]}))
+    monkeypatch.setattr(g_mod, "post_json",
+                        capture("google", {"candidates": [{"content": {"parts": [{"text": "x"}]}}]}))
+
+    a_mod.AnthropicProvider().complete("anthropic/m", [{"role": "user", "content": "p"}], 0.0)
+    o_mod.OpenAIProvider().complete("openai/m", [{"role": "user", "content": "p"}], 0.0)
+    g_mod.GoogleProvider().complete("google/m", [{"role": "user", "content": "p"}], 0.0)
+
+    assert bodies["anthropic"]["max_tokens"] == MAX_OUTPUT_TOKENS
+    assert bodies["openai"]["max_tokens"] == MAX_OUTPUT_TOKENS
+    assert bodies["google"]["generationConfig"]["maxOutputTokens"] == MAX_OUTPUT_TOKENS
+
+
+def test_m_j4_parse_is_transient_for_reruns():
+    """F-M-J4: a truncated/garbled reply is a property of one provider call,
+    not of the packet — a parse CANT_JUDGE is re-attempted on re-run instead of
+    permanently excluding the comparison (a missing-data channel)."""
+    from harness.judge.schema import TRANSIENT_CANT_JUDGE
+    from harness.process.score import TRANSIENT_CANT_SCORE
+
+    assert "parse" in TRANSIENT_CANT_JUDGE
+    assert "parse" in TRANSIENT_CANT_SCORE
+    assert "identity_leak" not in TRANSIENT_CANT_JUDGE  # blinding stays terminal

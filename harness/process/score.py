@@ -71,7 +71,13 @@ class CantScoreReason(str, Enum):
 # and grade's TRANSIENT_CANT_GRADE. context_overflow/parse/etc. are
 # deterministic for a fixed transcript, so retrying reproduces them — terminal.
 TRANSIENT_CANT_SCORE = frozenset(
-    {CantScoreReason.timeout.value, CantScoreReason.provider_error.value}
+    {
+        CantScoreReason.timeout.value,
+        CantScoreReason.provider_error.value,
+        # F-M-J4: kept in sync with TRANSIENT_CANT_JUDGE — a truncated/garbled
+        # reply is call-specific, not deterministic for a fixed packet.
+        CantScoreReason.parse.value,
+    }
 )
 
 

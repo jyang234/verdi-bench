@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import Provider, ProviderError
+from .base import MAX_OUTPUT_TOKENS, Provider, ProviderError
 from ._http import post_json, require_key
 
 
@@ -35,7 +35,8 @@ class GoogleProvider(Provider):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         resp = post_json(
             url,
-            {"contents": contents, "generationConfig": {"temperature": temperature}},
+            {"contents": contents, "generationConfig": {"temperature": temperature,
+                                                        "maxOutputTokens": MAX_OUTPUT_TOKENS}},
             {"x-goog-api-key": key},
         )
         return _content(resp)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import Provider, ProviderContextOverflow, ProviderError
+from .base import MAX_OUTPUT_TOKENS, Provider, ProviderContextOverflow, ProviderError
 from ._http import post_json, require_key
 
 
@@ -29,7 +29,8 @@ def _content(resp: dict) -> str:
 class OpenAIProvider(Provider):
     def complete(self, model_id: str, messages: list[dict], temperature: float) -> str:
         model = model_id.split("/", 1)[1]
-        body = {"model": model, "temperature": temperature, "messages": messages}
+        body = {"model": model, "temperature": temperature, "messages": messages,
+                "max_tokens": MAX_OUTPUT_TOKENS}  # uniform cap [F-M-J4]
         resp = post_json(
             "https://api.openai.com/v1/chat/completions",
             body,

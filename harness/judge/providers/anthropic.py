@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import Provider, ProviderError, ProviderRefusal
+from .base import MAX_OUTPUT_TOKENS, Provider, ProviderError, ProviderRefusal
 from ._http import post_json, require_key
 
 
@@ -29,7 +29,7 @@ class AnthropicProvider(Provider):
         turns = [{"role": m["role"], "content": m["content"]} for m in messages if m["role"] != "system"]
         body = {
             "model": model,
-            "max_tokens": 2048,
+            "max_tokens": MAX_OUTPUT_TOKENS,
             "temperature": temperature,
             "system": system,
             "messages": turns,

@@ -23,6 +23,13 @@ class ProviderRefusal(ProviderError):
     """The model refused → CANT_JUDGE(refusal)."""
 
 
+# F-M-J4: one output cap for every provider. Anthropic hardcoded 2048 while
+# OpenAI/Google set none — a truncated verdict JSON became a CANT_JUDGE(parse)
+# on one vendor only, an asymmetric failure mode. Sized generously for the
+# verdict JSON (a few hundred tokens) plus reasoning preamble.
+MAX_OUTPUT_TOKENS = 4096
+
+
 class ProviderContextOverflow(ProviderError):
     """The provider rejected the request as over its context window [PR-9].
 
