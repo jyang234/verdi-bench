@@ -20,6 +20,9 @@ values are unrepresentable in the event: hash-only [AC-2].
 
 from __future__ import annotations
 
+import keyword
+import re
+
 from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
@@ -62,6 +65,40 @@ def _canary_probe_body(task: ProbeTask) -> str:
     return strip_canary(task.prompt, derive_canary(task.task_sha))
 
 
+# F-M-C2 (approved): the oracle-prefix channel flags only when the TRUE
+# prefix outperforms a perturbed CONTROL prefix by at least this margin.
+# Without a control, formulaic code a clean model can legitimately continue
+# tripped the >=threshold reconstruction test — and one false positive is
+# asymmetric, refusing the official render.
+ORACLE_CONTROL_MARGIN = 0.2
+
+_IDENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{3,}\b")
+_CONTROL_STOPWORDS = frozenset(keyword.kwlist) | {
+    "self", "None", "True", "False", "print", "return", "import", "from",
+}
+
+
+def perturb_identifiers(text: str) -> str:
+    """The control-condition transform [F-M-C2]: rename identifiers to
+    position-derived names (first-appearance order — pure and deterministic,
+    no randomness). Renaming breaks the verbatim-recall key a memorizer needs
+    while preserving the surface structure a clean model continues from; the
+    control completion is scored against the identically-perturbed remainder,
+    so a formulaic continuer scores HIGH in both conditions (margin ~ 0) and
+    only genuine memorization lifts the true condition above the control."""
+    mapping: dict[str, str] = {}
+
+    def _sub(m: "re.Match[str]") -> str:
+        tok = m.group(0)
+        if tok in _CONTROL_STOPWORDS:
+            return tok
+        if tok not in mapping:
+            mapping[tok] = f"qv{len(mapping)}"
+        return mapping[tok]
+
+    return _IDENT_RE.sub(_sub, text)
+
+
 def _split_oracle(oracle: str) -> tuple[str, str]:
     """Token-boundary prefix/remainder split — a character midpoint would
     bisect a token and corrupt both halves' fingerprints."""
@@ -86,6 +123,11 @@ def _preflight(tasks: Sequence[ProbeTask]) -> Optional[dict]:
         if task.oracle is not None:
             prefix, remainder = _split_oracle(task.oracle)
             if not prefix or not fingerprintable(remainder):
+                return {"reason": "oracle_unfingerprintable", "task_id": task.task_id}
+            # F-M-C2: the control condition must be measurable too, checked
+            # before any provider call is burned.
+            c_prefix, c_remainder = _split_oracle(perturb_identifiers(task.oracle))
+            if not c_prefix or not fingerprintable(c_remainder):
                 return {"reason": "oracle_unfingerprintable", "task_id": task.task_id}
     return None
 
@@ -153,6 +195,7 @@ def run_memory_probe(
         arms_out: dict[str, dict] = {}
         for arm in arms:
             prov = provider if provider is not None else get_provider(arm.model)
+            oracle_scores: dict[str, dict] = {}
             outcomes: dict[str, str] = {}
             evidence: dict[str, list[str]] = {}
             for task in tasks:
@@ -182,11 +225,39 @@ def run_memory_probe(
                         ),
                         0.0,
                     )
+                    # F-M-C2: the CONTROL condition — the same ask over the
+                    # identifier-perturbed prefix, scored against the
+                    # identically-perturbed remainder. Doubles the provider
+                    # calls per (arm, oracle-task); the disclosed cost of a
+                    # false-positive channel that refuses official renders.
+                    c_prefix, c_remainder = _split_oracle(
+                        perturb_identifiers(task.oracle)
+                    )
+                    control_completion = prov.complete(
+                        arm.model,
+                        _probe_messages(
+                            "Continue this solution exactly, byte for byte:",
+                            c_prefix,
+                        ),
+                        0.0,
+                    )
                     measured = True
                     continuation = solution_overlap(
                         completion, oracle=remainder, threshold=resolved_threshold
                     )
-                    if continuation.flagged:
+                    control = solution_overlap(
+                        control_completion, oracle=c_remainder,
+                        threshold=resolved_threshold,
+                    )
+                    true_score = continuation.oracle_score or 0.0
+                    control_score = control.oracle_score or 0.0
+                    margin = round(true_score - control_score, 4)
+                    oracle_scores[task.task_id] = {
+                        "true": round(true_score, 4),
+                        "control": round(control_score, 4),
+                        "margin": margin,
+                    }
+                    if continuation.flagged and margin >= ORACLE_CONTROL_MARGIN:
                         hits.append("oracle_prefix")
                 scanned = overlap_flags.get(arm.name, {})
                 if task.task_id in scanned:
@@ -205,6 +276,8 @@ def run_memory_probe(
                 "outcomes": outcomes,
                 "evidence": evidence,
             }
+            if oracle_scores:  # additive [F-M-C2]: true/control/margin per task
+                arms_out[arm.name]["oracle_scores"] = oracle_scores
     except ProviderError as e:
         probe = {
             "status": "cant_probe",
