@@ -43,6 +43,12 @@ def register(app: typer.Typer) -> None:
         actor: str = typer.Option(
             None, "--actor", help="Actor recorded on the trial events [GR-12]"
         ),
+        reuse_control: Path = typer.Option(
+            None,
+            "--reuse-control",
+            help="Path to a control bundle to reuse instead of running the "
+            "control arm (exploratory-only; preflight refuses on any drift)",
+        ),
     ) -> None:
         """Execute the locked experiment's interleaved trials."""
         from ..corpus.commit import (
@@ -128,6 +134,26 @@ def register(app: typer.Typer) -> None:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
         ctx = EventContext(experiment_id=experiment_dir.name, actor=resolved_actor)
+
+        # Control reuse [control-reuse plan]: import the bundle's control-arm data
+        # under the reused_* kinds (preflight refuses on any fingerprint drift),
+        # then drop that arm's cells from the schedule — they are supplied by the
+        # bundle, not run. The official paired analysis then has no fresh control
+        # to pair against (honest: reuse is exploratory, validation is a full run).
+        if reuse_control is not None:
+            from .control_reuse import ControlReuseError
+            from .reuse import ControlBundleError, filter_reused_cells, import_bundle, load_bundle
+
+            try:
+                bundle = load_bundle(reuse_control)
+                reused_arm = import_bundle(
+                    experiment_dir, bundle, ctx, engine=engine, spec=spec, settings=settings,
+                )
+            except (ControlReuseError, ControlBundleError) as e:
+                typer.echo(str(e), err=True)
+                raise typer.Exit(code=2)
+            order = filter_reused_cells(order, reused_arm)
+            typer.echo(f"reusing control arm {reused_arm!r} from bundle ({len(bundle['cells'])} cells)")
 
         try:
             result = schedule(

@@ -852,16 +852,25 @@ def record_control_reused(
 
 
 def record_reused_trial(
-    ledger_path: Path | str, ctx: EventContext, *, trial_record: dict, reused_from: dict
+    ledger_path: Path | str,
+    ctx: EventContext,
+    *,
+    trial_record: dict,
+    reused_from: dict,
+    diff_sha256: Optional[str] = None,
 ) -> dict:
     """A control trial imported from a bundle, verbatim, tagged ``reused_from``
     ``{source_experiment_id, bundle_sha256}``. A DISTINCT kind from ``trial`` so
     the official paired path (which reads ``trial``) never sees it; only the
-    exploratory reuse path does. Exactly one per imported cell."""
-    return emit(
-        ledger_path, ctx, REUSED_TRIAL,
-        {"trial_record": trial_record, "reused_from": reused_from},
-    )
+    exploratory reuse path does. Exactly one per imported cell.
+
+    ``diff_sha256`` (additive, insert-when-present) binds the judged-diff snapshot
+    stashed on disk at import to the chain — the trajectory_sha precedent: the
+    large diff lives beside the ledger, its hash inside it."""
+    payload: dict = {"trial_record": trial_record, "reused_from": reused_from}
+    if diff_sha256 is not None:
+        payload["diff_sha256"] = diff_sha256
+    return emit(ledger_path, ctx, REUSED_TRIAL, payload)
 
 
 def record_reused_grade(

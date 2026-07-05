@@ -15,19 +15,27 @@ snapshot reuses the judge's own read-only assembler, which touches no model.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
 from ..corpus.commit import load_task_dicts
 from ..corpus.public import content_sha
 from ..ledger import events
+from ..ledger.events import EventContext
 from ..ledger.query import find_events, ledger_head_hash
 from ..plan.lock import assert_lock
 from ..schema.experiment import Arm
-from .control_reuse import ControlReuseError, compute_fingerprint
+from ..version import instrument_identity
+from .control_reuse import ControlReuseError, assert_fingerprint_match, compute_fingerprint
 from .settings import load_run_settings
 
 BUNDLE_VERSION = 1
+
+# Judged-diff snapshots are stashed beside the ledger at import (large; the chain
+# carries only their sha, the trajectory_sha precedent). The reused judge
+# assembler reads them from here.
+REUSED_DIFF_SUBDIR = "reused_control/diffs"
 
 # Grade-event envelope keys that are ledger transport, not grade content — a
 # reused bundle carries the grade payload, not the source chain's provenance.
@@ -157,6 +165,22 @@ def build_bundle(source_experiment_dir, control_arm: str) -> dict:
     return payload
 
 
+def write_bundle(payload: dict, path) -> Path:
+    """Persist a bundle as canonical JSON."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def load_bundle(path) -> dict:
+    """Read a bundle file (its self-sha is checked by :func:`verify_bundle`)."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 def bundle_sha(payload: dict) -> str:
     """Recompute a bundle's self sha over everything but the sha field."""
     return content_sha({k: v for k, v in payload.items() if k != "bundle_sha256"})
@@ -177,3 +201,148 @@ def verify_bundle(payload: dict) -> None:
             f"bundle_version {payload.get('bundle_version')} != {BUNDLE_VERSION}; "
             "re-export with the current instrument"
         )
+
+
+# --- import into a target experiment ----------------------------------------
+def reused_diff_path(experiment_dir, trial_id: str) -> Path:
+    """Where the judged-diff snapshot for a reused control trial is stashed —
+    shared by import (write) and the reused judge assembler (read)."""
+    return Path(experiment_dir) / REUSED_DIFF_SUBDIR / f"{trial_id}.txt"
+
+
+def current_fingerprint(
+    experiment_dir, spec, control_arm: str, *, engine: str, settings
+) -> dict:
+    """The control fingerprint for THIS experiment's ``control_arm``, computed
+    from the current spec / tasks / holdouts / run.config + instrument version —
+    the side compared against a bundle's recorded fingerprint at preflight."""
+    arm = next((a for a in spec.arms if a.name == control_arm), None)
+    if arm is None:
+        raise ControlBundleError(
+            f"reuse names control arm {control_arm!r}, absent from this experiment's "
+            f"arms {[a.name for a in spec.arms]}"
+        )
+    return _control_fingerprint(
+        arm=arm,
+        task_dicts=load_task_dicts(experiment_dir),
+        experiment_dir=Path(experiment_dir),
+        engine=engine,
+        settings=settings,
+        spec=spec,
+        instrument_git_sha=instrument_identity()["git_sha"],
+    )
+
+
+def already_imported(ledger_path, bundle_sha256: str) -> bool:
+    """Whether this bundle was already imported into the target ledger — makes a
+    ``bench run`` resume re-invocation idempotent instead of double-importing."""
+    return any(
+        ev["bundle_sha256"] == bundle_sha256
+        for ev in find_events(ledger_path, events.CONTROL_REUSED)
+    )
+
+
+def import_bundle(
+    experiment_dir,
+    bundle: dict,
+    ctx: EventContext,
+    *,
+    engine: str,
+    spec,
+    settings,
+) -> str:
+    """Preflight-gate and import a control bundle into this experiment's ledger.
+
+    Verifies the bundle self-sha, then refuses loudly unless the current control
+    fingerprint matches the bundle's byte-for-byte (:func:`assert_fingerprint_match`
+    names any drift). On a match, appends the ``control_reused`` summary and, per
+    cell, a ``reused_trial`` + ``reused_grade``, stashing each judged-diff snapshot
+    beside the ledger. Idempotent across resume. Returns the reused control arm
+    name so the scheduler can drop its cells."""
+    experiment_dir = Path(experiment_dir)
+    ledger = experiment_dir / "ledger.ndjson"
+    verify_bundle(bundle)
+    control_arm = bundle["control_arm"]
+
+    current = current_fingerprint(
+        experiment_dir, spec, control_arm, engine=engine, settings=settings
+    )
+    assert_fingerprint_match(current, bundle["fingerprint"])
+
+    if already_imported(ledger, bundle["bundle_sha256"]):
+        return control_arm  # resume: the reused_* events are already on the chain
+
+    reused_from = {
+        "source_experiment_id": bundle["source_experiment_id"],
+        "bundle_sha256": bundle["bundle_sha256"],
+    }
+    events.record_control_reused(
+        ledger,
+        ctx,
+        source_experiment_id=bundle["source_experiment_id"],
+        source_ledger_head_hash=bundle["source_ledger_head_hash"],
+        bundle_sha256=bundle["bundle_sha256"],
+        fingerprint=bundle["fingerprint"],
+        control_arm=control_arm,
+        cells=[{"task_id": c["task_id"], "repetition": c["repetition"]} for c in bundle["cells"]],
+    )
+    for cell in bundle["cells"]:
+        tr = cell["trial_record"]
+        diff = cell.get("diff") or ""
+        path = reused_diff_path(experiment_dir, tr["trial_id"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(diff, encoding="utf-8")
+        events.record_reused_trial(
+            ledger, ctx, trial_record=tr, reused_from=reused_from,
+            diff_sha256=content_sha(diff),
+        )
+        if cell.get("grade") is not None:
+            events.record_reused_grade(
+                ledger, ctx, grade=cell["grade"], reused_from=reused_from
+            )
+    return control_arm
+
+
+def filter_reused_cells(order: list, control_arm: str) -> list:
+    """Drop the reused control arm's cells from a derived schedule — they are
+    supplied by the bundle, not executed. The realized order of the fresh
+    contender cells is preserved."""
+    return [t for t in order if t.arm != control_arm]
+
+
+# --- one-event property registration ----------------------------------------
+def _reused_entrypoint(kind: str):
+    def fn(ctx_dir: str) -> None:
+        d = Path(ctx_dir)
+        ledger = d / "ledger.ndjson"
+        ctx = EventContext(experiment_id="prop")
+        reused_from = {"source_experiment_id": "src", "bundle_sha256": "sha"}
+        if kind == "control-reused":
+            events.record_control_reused(
+                ledger, ctx, source_experiment_id="src", source_ledger_head_hash="h",
+                bundle_sha256="sha", fingerprint={"digest": "d"}, control_arm="control",
+                cells=[{"task_id": "t", "repetition": 0}],
+            )
+        elif kind == "reused-trial":
+            events.record_reused_trial(
+                ledger, ctx,
+                trial_record={"trial_id": "tr", "task_id": "t", "arm": "control", "repetition": 0},
+                reused_from=reused_from,
+            )
+        elif kind == "reused-grade":
+            events.record_reused_grade(
+                ledger, ctx,
+                grade={"trial_id": "tr", "task_sha": "s", "assertions": [], "binary_score": True},
+                reused_from=reused_from,
+            )
+    return fn
+
+
+def _register() -> None:
+    from ..entrypoints import register_entrypoint
+
+    for kind in ("control-reused", "reused-trial", "reused-grade"):
+        register_entrypoint(kind, _reused_entrypoint(kind))
+
+
+_register()
