@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .seeds import index_at, sub_seed
+from .seeds import seeded_shuffle, sub_seed
 
 
 @dataclass(frozen=True)
@@ -38,15 +38,12 @@ def enumerate_trials(tasks: list[str], arms: list[str], repetitions: int) -> lis
 def derive_schedule(seed: int, trials: list[Trial]) -> list[Trial]:
     """Fisher–Yates shuffle of ``trials`` under a namespaced sub-seed.
 
-    Pure and reproducible: no global RNG, no wall clock. Each swap index is drawn
-    from the full-width bits of a per-step SHA-256 (``index_at``) rather than the
-    low bits of an LCG — the latter have very short periods and would bias a
-    schedule whose whole job is to decorrelate arm/order effects. The result
-    depends only on ``(seed, trials)``.
+    Pure and reproducible: no global RNG, no wall clock. Each swap index is
+    drawn from the full-width bits of a per-step SHA-256 (``seeded_shuffle`` /
+    ``index_at``) rather than the low bits of an LCG — the latter have very
+    short periods and would bias a schedule whose whole job is to decorrelate
+    arm/order effects. The result depends only on ``(seed, trials)``.
     """
-    out = list(trials)
-    base = sub_seed(seed, "interleave")
-    for i in range(len(out) - 1, 0, -1):
-        j = index_at(base, i, i + 1)
-        out[i], out[j] = out[j], out[i]
-    return out
+    # F-L9: the one seeded-shuffle primitive — the former inline copy of the
+    # same loop could silently diverge from review/stratification draws.
+    return seeded_shuffle(list(trials), sub_seed(seed, "interleave"))

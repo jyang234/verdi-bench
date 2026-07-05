@@ -12,11 +12,13 @@ paired-bootstrap decision procedure EVAL-6 will use. The variance source is
   EVAL-8 slice A has produced one.
 
 [plan choice] The power sim's resampler is deliberately separate from EVAL-6's
-``analyze.stats.paired_bootstrap``: this one performs a recentered-null *reject*
-decision (does the design detect an effect at the swept size?), while the
-analysis path computes a *confidence interval* over observed deltas. They are
-different statistics over the same clustering model, not a duplicated CI, so they
-are not merged.
+``analyze.stats.paired_bootstrap``: this one performs a plain percentile-
+bootstrap *reject* decision — the interval over resampled means excludes zero
+(``_paired_bootstrap_rejects``; no null recentering, the simulated effect IS
+the alternative) — while the analysis path computes a *confidence interval*
+over observed deltas [F-L8: the old docstring mislabeled this as
+"recentered-null"]. They are different statistics over the same clustering
+model, not a duplicated CI, so they are not merged.
 """
 
 from __future__ import annotations

@@ -140,3 +140,19 @@ def test_ac4_power_increases_with_effect():
     powers = [pt["power"] for pt in res["power_curve"]]
     # monotone-ish: the largest effect should have power >= the smallest
     assert powers[-1] >= powers[0]
+
+
+def test_l9_schedule_order_pinned_across_shuffle_refactor():
+    """F-L9: derive_schedule now delegates to the shared seeded_shuffle
+    primitive — the realized order is seed-visible, so this pins the exact
+    pre-refactor order for a fixed (seed, trials): any drift in the shuffle
+    draw is a schedule change, not a cleanup."""
+    from harness.plan.interleave import derive_schedule, enumerate_trials
+
+    trials = enumerate_trials(["t1", "t2", "t3"], ["control", "treatment"], 2)
+    out = [t.key() for t in derive_schedule(1234, trials)]
+    assert out == [
+        "t3|control|0", "t1|control|1", "t1|treatment|0", "t2|treatment|0",
+        "t3|treatment|1", "t2|treatment|1", "t3|control|1", "t2|control|1",
+        "t2|control|0", "t1|treatment|1", "t1|control|0", "t3|treatment|0",
+    ]
