@@ -50,6 +50,21 @@ class ControlReuseFingerprintError(ControlReuseError):
     Reuse is refused: a reused control is only valid when provably unchanged."""
 
 
+def primary_pair_contender(spec, control_arm: str) -> Optional[str]:
+    """The contender arm for a reused control: the *other* member of the
+    pre-registered primary pair (``spec.arms[0]``/``[1]``), or ``None`` when the
+    control is not in that pair.
+
+    The single source of truth for "which arm is the contender" — the judge
+    assembly, the analyze reuse section, and the import gate all read it here so
+    they cannot drift on the >2-arm case (v1 reuses only a primary-pair control).
+    """
+    names = [spec.arms[0].name, spec.arms[1].name]
+    if control_arm not in names:
+        return None
+    return names[1] if control_arm == names[0] else names[0]
+
+
 def _env_component(
     *,
     engine: str,

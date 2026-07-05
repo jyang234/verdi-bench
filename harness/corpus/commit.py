@@ -63,8 +63,17 @@ def holdout_content_sha(holdouts_dir) -> str:
     (the same no-follow stance the judge diff and grade container take).
     """
     root = Path(holdouts_dir)
+    if not root.exists():
+        return content_sha({})  # a task with no holdouts: the honest empty hash
     if not root.is_dir():
-        return content_sha({})
+        # A holdouts_dir that resolves to a file or broken symlink is a
+        # misconfiguration, not "no holdouts" — collapsing it to the empty hash
+        # would let reuse pass across a silently mis-shaped holdout tree. Fail
+        # loudly instead (the module's fail-loudly stance).
+        raise TaskCommitmentError(
+            f"holdouts_dir {root} exists but is not a directory; a mis-shaped "
+            "holdout tree must fail loudly, not hash as empty"
+        )
     root_real = root.resolve()
     files: dict[str, str] = {}
     for p in sorted(root.rglob("*")):

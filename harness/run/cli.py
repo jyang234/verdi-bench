@@ -154,7 +154,7 @@ def register(app: typer.Typer) -> None:
         # to pair against (honest: reuse is exploratory, validation is a full run).
         if reuse_control is not None:
             from .control_reuse import ControlReuseError
-            from .reuse import ControlBundleError, filter_reused_cells, import_bundle, load_bundle
+            from .reuse import ControlBundleError, import_bundle, load_bundle
 
             try:
                 bundle = load_bundle(reuse_control)
@@ -164,8 +164,18 @@ def register(app: typer.Typer) -> None:
             except (ControlReuseError, ControlBundleError) as e:
                 typer.echo(str(e), err=True)
                 raise typer.Exit(code=2)
-            order = filter_reused_cells(order, reused_arm)
             typer.echo(f"reusing control arm {reused_arm!r} from bundle ({len(bundle['cells'])} cells)")
+
+        # Drop EVERY arm already imported as a reused control from the schedule —
+        # read from the LEDGER, not just this invocation's flag. A resume that
+        # omits --reuse-control must not run the control arm fresh: that would
+        # give the official paired analysis a control to pair against, from a
+        # non-interleaved cross-session schedule [control-reuse].
+        from .reuse import reused_arms
+
+        _reused = reused_arms(ledger_path)
+        if _reused:
+            order = [t for t in order if t.arm not in _reused]
 
         try:
             result = schedule(

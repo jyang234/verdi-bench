@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict
 from ..contamination.summary import contamination_summary, latest_probe, probe_asymmetries
 from ..ledger import events
 from ..ledger.query import find_events, latest_event, ledger_head_hash, verify
+from ..run.control_reuse import primary_pair_contender
 from ..run.trajectory import resolve_trajectory
 from ..schema.metrics import PrimaryMetric
 from ..version import instrument_identity
@@ -978,6 +979,8 @@ def _reuse_judge_winrate(ledger_path, contender_arm, control_arm) -> Optional[di
         if w not in ("A", "B"):
             continue
         winner_arm = (v.get("arm_map") or {}).get(w)
+        if winner_arm not in (contender_arm, control_arm):
+            continue  # unmapped or foreign arm — exclude, never count (native parity)
         decided += 1
         if winner_arm == contender_arm:
             wins_contender += 1
@@ -1002,10 +1005,7 @@ def _reuse_section(ledger_path, spec) -> Optional[dict]:
         return None
     control_arm = ctrl_ev["control_arm"]
     primary = spec.primary_metric.value
-    arm_a, arm_b = spec.arms[0].name, spec.arms[1].name
-    contender_arm = (
-        arm_b if control_arm == arm_a else arm_a if control_arm == arm_b else None
-    )
+    contender_arm = primary_pair_contender(spec, control_arm)
 
     computed = None
     if contender_arm is not None and primary != PrimaryMetric.judge_preference.value:

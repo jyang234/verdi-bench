@@ -12,12 +12,11 @@ import yaml
 
 from harness.ledger import events
 from harness.ledger.query import find_events
-from harness.plan.interleave import Trial
 from harness.run.control_reuse import ControlReuseFingerprintError
 from harness.run.reuse import (
     build_bundle,
-    filter_reused_cells,
     import_bundle,
+    reused_arms,
     reused_diff_path,
 )
 from harness.run.settings import load_run_settings
@@ -103,12 +102,11 @@ def test_engine_drift_refuses_import(tmp_path):
                       engine="harbor", spec=spec, settings=settings)
 
 
-def test_filter_drops_reused_arm_cells():
-    order = [
-        Trial(task_id="t1", arm="control", repetition=0),
-        Trial(task_id="t1", arm="treatment", repetition=0),
-        Trial(task_id="t2", arm="control", repetition=0),
-        Trial(task_id="t2", arm="treatment", repetition=0),
-    ]
-    filtered = filter_reused_cells(order, "control")
-    assert [t.arm for t in filtered] == ["treatment", "treatment"]
+def test_reused_arms_reflects_imported_control(tmp_path):
+    bundle = build_bundle(_source(tmp_path), "control")
+    tgt, spec, ledger = _target(tmp_path)
+    settings = load_run_settings(tgt, spec=spec)
+    import_bundle(tgt, bundle, fixed_ctx(experiment_id="tgt-exp"),
+                  engine="fake", spec=spec, settings=settings)
+    # the scheduler drops these arms on every run (resume-safe, flag-independent)
+    assert reused_arms(ledger) == {"control"}

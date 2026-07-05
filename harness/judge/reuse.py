@@ -12,10 +12,13 @@ judge_preference / calibration never see it). Exploratory-only by construction.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
+from ..corpus.public import content_sha
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import find_events, latest_event
+from ..run.control_reuse import ControlReuseError, primary_pair_contender
 from ..run.reuse import reused_diff_path
 from .assemble import (
     Comparison,
@@ -52,15 +55,22 @@ def comparisons_from_reuse(ledger_path, experiment_dir, spec, *, task_classes=No
     control_arm = reused_control_arm(ledger_path)
     if control_arm is None:
         return []
-    arm_a, arm_b = spec.arms[0], spec.arms[1]
-    if control_arm not in (arm_a.name, arm_b.name):
+    contender_arm = primary_pair_contender(spec, control_arm)
+    if contender_arm is None:
         return []
-    contender_arm = arm_b.name if control_arm == arm_a.name else arm_a.name
+    arm_a, arm_b = spec.arms[0], spec.arms[1]
     experiment_dir = Path(experiment_dir)
 
+    reused_trial_events = find_events(ledger_path, events.REUSED_TRIAL)
     reused_trials = {
         (e["trial_record"]["task_id"], e["trial_record"]["repetition"]): e["trial_record"]
-        for e in find_events(ledger_path, events.REUSED_TRIAL)
+        for e in reused_trial_events
+    }
+    # diff snapshots live beside the ledger, outside the hash chain — their sha
+    # was recorded on the reused_trial event at import so the judge can verify the
+    # bytes it reads are the ones that were imported (fail loudly on tamper).
+    reused_diff_sha = {
+        e["trial_record"]["trial_id"]: e.get("diff_sha256") for e in reused_trial_events
     }
     reused_grades = {
         e["grade"]["trial_id"]: e["grade"] for e in find_events(ledger_path, events.REUSED_GRADE)
@@ -74,10 +84,24 @@ def comparisons_from_reuse(ledger_path, experiment_dir, spec, *, task_classes=No
 
     def _control(task_id, rep) -> ResponseArtifacts:
         tr = reused_trials[(task_id, rep)]
-        path = reused_diff_path(experiment_dir, tr["trial_id"])
-        diff = path.read_text(encoding="utf-8") if path.exists() else ""
+        trial_id = tr["trial_id"]
+        path = reused_diff_path(experiment_dir, trial_id)
+        if not path.exists():
+            raise ControlReuseError(
+                f"reused control diff snapshot missing for trial {trial_id} at "
+                f"{path}; the control bundle must be imported into this experiment "
+                "dir (bench run --reuse-control) before judging"
+            )
+        diff = path.read_text(encoding="utf-8")
+        recorded = reused_diff_sha.get(trial_id)
+        if recorded is not None and content_sha(diff) != recorded:
+            raise ControlReuseError(
+                f"reused control diff snapshot for trial {trial_id} does not match "
+                "its recorded diff_sha256 — the snapshot was modified after import; "
+                "refusing to judge tampered evidence"
+            )
         return ResponseArtifacts(
-            diff=diff, holdout_results=_holdout_results(reused_grades.get(tr["trial_id"]))
+            diff=diff, holdout_results=_holdout_results(reused_grades.get(trial_id))
         )
 
     def _contender(task_id, rep) -> ResponseArtifacts:
@@ -117,12 +141,25 @@ def judge_reused(
     prompts: dict,
     canaries: list,
     task_classes: dict,
+    ceiling: Optional[int] = None,
+    accumulated: int = 0,
 ) -> int:
     """Judge every reused (contender vs reused-control) comparison, recording one
-    ``reused_judge_verdict`` each. Idempotent: skips comparisons already judged.
-    Returns the number newly judged. No-op when nothing was reused."""
+    ``reused_judge_verdict`` each. Returns the number newly judged; no-op when
+    nothing was reused.
+
+    Idempotent: skips comparisons that already carry a NON-transient reused
+    verdict, so a transient CANT_JUDGE (timeout / provider_error) is retried on a
+    re-run — matching the native path's ``_is_transient`` semantics.
+
+    Honors the same locked judge token ceiling as native judging [F-M-J3]:
+    ``accumulated`` seeds the budget with prior spend (native + reused verdicts,
+    so a re-run cannot reset it) and reused verdicts count against it — reuse
+    cannot spend past the pre-registered cap. A refuse-to-start at the ceiling,
+    like the cost guard."""
     from .client import judge_pair
     from .packet import build_packet
+    from .schema import TRANSIENT_CANT_JUDGE
 
     comparisons = comparisons_from_reuse(ledger_path, experiment_dir, spec, task_classes=task_classes)
     if not comparisons:
@@ -132,24 +169,36 @@ def judge_reused(
     def _append(lp, c, *, verdict):
         return events.append_reused_verdict(lp, c, verdict=verdict, reused_from=reused_from)
 
+    def _is_transient(v: dict) -> bool:
+        return v.get("winner") == "CANT_JUDGE" and v.get("reason") in TRANSIENT_CANT_JUDGE
+
     already = {
-        ev["verdict"]["comparison_id"] for ev in find_events(ledger_path, events.REUSED_JUDGE_VERDICT)
+        ev["verdict"]["comparison_id"]
+        for ev in find_events(ledger_path, events.REUSED_JUDGE_VERDICT)
+        if not _is_transient(ev["verdict"])
     }
     judged = 0
     for cmp in comparisons:
         if cmp.comparison_id in already:
             continue
+        if ceiling is not None and accumulated >= ceiling:
+            events.record_judge_stopped_token_ceiling(
+                ledger_path, ctx, accumulated_tokens=accumulated, ceiling=ceiling
+            )
+            break
         packet = build_packet(
             cmp.response_a, cmp.response_b,
             task_prompt=prompts.get(cmp.task_id, ""), rubric=rubric,
         )
-        judge_pair(
+        verdict = judge_pair(
             packet, spec.judge, ledger_path, ctx,
             ts=ctx.clock(), canaries=canaries,
             comparison_id=cmp.comparison_id, task_class=cmp.task_class,
             arm_map=cmp.arm_map, task_id=cmp.task_id,
             append_verdict_fn=_append,
         )
+        usage = verdict.provenance.usage or {}
+        accumulated += int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
         judged += 1
     return judged
 

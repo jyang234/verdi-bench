@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 from ..corpus.commit import load_task_dicts
 from ..corpus.public import content_sha
@@ -27,7 +26,12 @@ from ..ledger.query import find_events, ledger_head_hash
 from ..plan.lock import assert_lock
 from ..schema.experiment import Arm
 from ..version import instrument_identity
-from .control_reuse import ControlReuseError, assert_fingerprint_match, compute_fingerprint
+from .control_reuse import (
+    ControlReuseError,
+    assert_fingerprint_match,
+    compute_fingerprint,
+    primary_pair_contender,
+)
 from .settings import load_run_settings
 
 BUNDLE_VERSION = 1
@@ -264,30 +268,44 @@ def import_bundle(
     verify_bundle(bundle)
     control_arm = bundle["control_arm"]
 
+    # Idempotency FIRST: a completed import is marked by its control_reused event
+    # (appended last, below). Returning here before the fingerprint gate makes a
+    # resume robust — re-asserting the gate over data already immutably on the
+    # chain is redundant and would spuriously refuse after any gated drift (e.g.
+    # an instrument git-sha bump moves the grader component).
+    if already_imported(ledger, bundle["bundle_sha256"]):
+        return control_arm
+
+    # v1 reuses only a control that is one of the pre-registered primary pair
+    # (arms[0]/arms[1]); a >2-arm control has no defined contender. Refuse loudly
+    # at import rather than silently degrade downstream (empty judgment / half
+    # exploratory section).
+    if primary_pair_contender(spec, control_arm) is None:
+        raise ControlBundleError(
+            f"control arm {control_arm!r} is not in the pre-registered primary pair "
+            f"({[spec.arms[0].name, spec.arms[1].name]}); reuse of a non-primary-pair "
+            "control is not supported [v1]"
+        )
+
     current = current_fingerprint(
         experiment_dir, spec, control_arm, engine=engine, settings=settings
     )
     assert_fingerprint_match(current, bundle["fingerprint"])
 
-    if already_imported(ledger, bundle["bundle_sha256"]):
-        return control_arm  # resume: the reused_* events are already on the chain
-
     reused_from = {
         "source_experiment_id": bundle["source_experiment_id"],
         "bundle_sha256": bundle["bundle_sha256"],
     }
-    events.record_control_reused(
-        ledger,
-        ctx,
-        source_experiment_id=bundle["source_experiment_id"],
-        source_ledger_head_hash=bundle["source_ledger_head_hash"],
-        bundle_sha256=bundle["bundle_sha256"],
-        fingerprint=bundle["fingerprint"],
-        control_arm=control_arm,
-        cells=[{"task_id": c["task_id"], "repetition": c["repetition"]} for c in bundle["cells"]],
-    )
+    # Per-cell idempotency: a partial import (killed mid-loop, before the
+    # control_reused marker) resumes by writing only the cells not yet on the
+    # chain — never a duplicate reused_trial.
+    already_cells = {
+        e["trial_record"]["trial_id"] for e in find_events(ledger, events.REUSED_TRIAL)
+    }
     for cell in bundle["cells"]:
         tr = cell["trial_record"]
+        if tr["trial_id"] in already_cells:
+            continue
         diff = cell.get("diff") or ""
         path = reused_diff_path(experiment_dir, tr["trial_id"])
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -300,14 +318,31 @@ def import_bundle(
             events.record_reused_grade(
                 ledger, ctx, grade=cell["grade"], reused_from=reused_from
             )
+    # LAST: the control_reused summary is the completion marker. Appending it only
+    # after every cell is written means already_imported() is true iff the whole
+    # import finished — a crash mid-loop leaves it absent and the resume above
+    # completes the missing cells instead of attesting a partial import as done.
+    events.record_control_reused(
+        ledger,
+        ctx,
+        source_experiment_id=bundle["source_experiment_id"],
+        source_ledger_head_hash=bundle["source_ledger_head_hash"],
+        bundle_sha256=bundle["bundle_sha256"],
+        fingerprint=bundle["fingerprint"],
+        control_arm=control_arm,
+        cells=[{"task_id": c["task_id"], "repetition": c["repetition"]} for c in bundle["cells"]],
+    )
     return control_arm
 
 
-def filter_reused_cells(order: list, control_arm: str) -> list:
-    """Drop the reused control arm's cells from a derived schedule — they are
-    supplied by the bundle, not executed. The realized order of the fresh
-    contender cells is preserved."""
-    return [t for t in order if t.arm != control_arm]
+def reused_arms(ledger_path) -> set[str]:
+    """Every control arm imported as a reused control on this ledger.
+
+    The scheduler drops these arms on EVERY run — not just the invocation that
+    passed ``--reuse-control`` — so a resume that omits the flag cannot silently
+    run the control arm fresh (which would let the official paired path compare
+    non-interleaved arms)."""
+    return {ev["control_arm"] for ev in find_events(ledger_path, events.CONTROL_REUSED)}
 
 
 # --- one-event property registration ----------------------------------------
