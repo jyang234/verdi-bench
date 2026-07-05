@@ -146,6 +146,8 @@ loudly rather than defaulted to `unknown` when the OS user is unresolvable).
 uv sync
 uv run bench plan   experiment.yaml --ledger ledger.ndjson   # validate + lock (commits rubric hash)
 uv run bench run    <experiment-dir>                          # execute trials
+uv run bench run    <experiment-dir> --reuse-control <bundle> # reuse an unchanged control (exploratory; preflight refuses on drift)
+uv run bench control-cache export <experiment-dir> --arm control --out control.bundle.json   # export a control arm for reuse
 uv run bench grade  <experiment-dir>                          # deterministic grades
 uv run bench grade  <experiment-dir> --retry-terminal <trial-id>   # ledgered terminal-cant_grade override
 uv run bench judge  <experiment-dir>                          # identity-blind advisory verdicts (idempotent)
