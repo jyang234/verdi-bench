@@ -278,3 +278,25 @@ def test_m_j3_no_ceiling_means_unlimited(tmp_path):
     r = runner.invoke(app, ["judge", str(expdir)])
     assert r.exit_code == 0, r.output
     assert find_events(ledger, "judge_stopped_token_ceiling") == []
+
+
+def test_l1_judge_actor_flag_recorded_and_refused_when_unresolvable(tmp_path, monkeypatch):
+    """F-L1/GR-12: bench judge takes --actor like every other ledgering verb —
+    recorded on the verdict events, and REFUSED (exit 2) when unresolvable,
+    never silently defaulted to 'local'."""
+    expdir = tmp_path / "exp"
+    ledger = _setup(expdir)
+    ctx = fixed_ctx(experiment_id="exp")
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-a", task_id="t1", arm="control", passed=True)
+    seed_trial_and_grade(ledger, ctx, trial_id="tr-b", task_id="t1", arm="treatment", passed=False)
+
+    r = runner.invoke(app, ["judge", str(expdir), "--actor", "judge-alice"])
+    assert r.exit_code == 0, r.output
+    verdicts = find_events(ledger, "judge_verdict")
+    assert verdicts and all(v["provenance"]["actor"] == "judge-alice" for v in verdicts)
+
+    import getpass
+
+    monkeypatch.setattr(getpass, "getuser", lambda: (_ for _ in ()).throw(OSError("no user")))
+    r2 = runner.invoke(app, ["judge", str(expdir)])
+    assert r2.exit_code == 2

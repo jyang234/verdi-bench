@@ -23,6 +23,9 @@ def register(app: typer.Typer) -> None:
     @app.command()
     def judge(
         experiment_dir: Path = typer.Argument(..., help="Directory with experiment.yaml"),
+        actor: str = typer.Option(
+            None, "--actor", help="Actor recorded on the verdict events [GR-12]"
+        ),
     ) -> None:
         """Judge every graded comparison; append one verdict each."""
         from ..blind.core import arm_canaries
@@ -90,7 +93,17 @@ def register(app: typer.Typer) -> None:
         task_classes = {t["id"]: t.get("task_class", "default") for t in task_dicts}
         prompts = {t["id"]: t.get("prompt", "") for t in task_dicts}
         canaries = arm_canaries(spec.arms)
-        ctx = EventContext(experiment_id=experiment_dir.name)
+        # F-L1/GR-12: the ledgered actor is resolved (flag, else OS user) and
+        # REFUSED when unresolvable — never silently defaulted to "local",
+        # matching every other ledgering verb and the README's claim.
+        from ..ledger.actor import ActorResolutionError, resolve_actor
+
+        try:
+            resolved_actor = resolve_actor(actor)
+        except ActorResolutionError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=resolved_actor)
 
         from .schema import TRANSIENT_CANT_JUDGE
 
