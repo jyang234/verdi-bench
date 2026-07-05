@@ -141,3 +141,18 @@ source_modules =
 forbidden_modules =
     harness.judge.providers
     harness.judge.client
+
+[importlinter:contract:authoring-and-review-llm-free]
+name = The authoring ceremony and reviewer surface import no LLM client [F-M-T3]
+# Direct-import ban (same mode as observability-llm-free): the mutating
+# pre-registration surface (author) and the blinded reviewer surface (review)
+# have no business naming an LLM client — a future import would silently give
+# a judge model a hand in pre-registration or blinded review.
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    harness.author
+    harness.review
+forbidden_modules =
+    harness.judge.providers
+    harness.judge.client

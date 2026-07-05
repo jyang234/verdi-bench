@@ -22,6 +22,8 @@ _LINT = Path(sys.executable).parent / "lint-imports"
 _CASES = [
     ("harness/run/redact.py", "import harness.run.engines.harbor", "harbor"),
     ("harness/blind/core.py", "import harness.ledger.chain", "ledger.chain"),
+    # F-M-T3: the reviewer surface must not grow an LLM client
+    ("harness/review/scrub.py", "import harness.judge.client", "judge.client"),
 ]
 
 
