@@ -248,6 +248,8 @@ def record_grade(
     fractional_score: Optional[float] = None,
     grader: Optional[str] = None,
     override_of: Optional[str] = None,
+    workspace_sha256: Optional[str] = None,
+    workspace_walk_version: Optional[int] = None,
 ) -> dict:
     """``grader`` (additive field) records which grader produced the verdict —
     e.g. ``"docker"`` (a trusted network-less container) vs ``"local"`` (the
@@ -256,7 +258,13 @@ def record_grade(
 
     ``override_of`` (additive) is the sha256 line hash of a terminal
     ``cant_grade`` this grade re-attempts via ``bench grade --retry-terminal``,
-    so a manual override is visible in the event itself [D-P7-2]."""
+    so a manual override is visible in the event itself [D-P7-2].
+
+    ``workspace_sha256`` + ``workspace_walk_version`` (additive [F-H3]) commit
+    the graded workspace's solution bytes to the chain, so the forensic and
+    contamination scanners can verify the evidence they read instead of
+    trusting live disk — pre-existing chains simply lack them and degrade to
+    a disclosed coverage gap, never a hard failure."""
     payload = {
         "trial_id": trial_id,
         "task_sha": task_sha,
@@ -269,6 +277,10 @@ def record_grade(
         payload["grader"] = grader
     if override_of is not None:
         payload["override_of"] = override_of
+    if workspace_sha256 is not None:
+        payload["workspace_sha256"] = workspace_sha256
+    if workspace_walk_version is not None:
+        payload["workspace_walk_version"] = workspace_walk_version
     return emit(ledger_path, ctx, GRADE, payload)
 
 

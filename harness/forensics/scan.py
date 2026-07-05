@@ -100,6 +100,7 @@ def run_forensics(
     from ..ledger.query import find_events
     from ..plan.lock import assert_lock
     from ..run.trajectory import resolve_trajectory
+    from ..run.workspace import ABSENT, VERIFIED, resolve_workspace
     from .review import forensic_review
 
     experiment_dir = Path(experiment_dir)
@@ -111,6 +112,12 @@ def run_forensics(
 
     passed_by_trial: dict[str, bool] = {
         ev["trial_id"]: bool(ev["binary_score"])
+        for ev in find_events(ledger_path, events.GRADE)
+    }
+    # F-H3: the grade-time workspace commitment (latest grade wins, matching
+    # passed_by_trial). Legacy grades lack the field → None → ABSENT below.
+    workspace_sha_by_trial: dict[str, Optional[str]] = {
+        ev["trial_id"]: ev.get("workspace_sha256")
         for ev in find_events(ledger_path, events.GRADE)
     }
     # assertion values depend only on the task's holdout dir — extract once
@@ -126,6 +133,7 @@ def run_forensics(
     # scrutiny is a disclosed measurement condition, never silent.
     detail_by_arm: dict[str, dict] = {}
     detail_gaps: list[dict] = []
+    workspace_gaps: list[dict] = []
     trial_events = find_events(ledger_path, events.TRIAL)
     for ev in trial_events:
         rec = ev["trial_record"]
@@ -146,6 +154,23 @@ def run_forensics(
         if holdout_root is not None and holdouts_dir not in assertion_cache:
             assertion_cache[holdouts_dir] = _holdout_assertion_values(holdout_root)
         workspace_root = Path(artifacts_path).parent if artifacts_path else None
+        # F-H3: end-state evidence is chain-verified before it is trusted.
+        # verified → read, full authority. ABSENT (legacy chain / fabricated
+        # grade) → read for legacy utility, but disclosed as an unverified-
+        # evidence gap. Any mismatch/missing → WITHHELD: tampered bytes must
+        # neither produce flags (framing) nor clean claims (laundering).
+        ws_status = resolve_workspace(
+            workspace_root,
+            workspace_sha_by_trial.get(trial_id),
+            artifacts_dir=Path(artifacts_path) if artifacts_path else None,
+        )
+        if ws_status not in (VERIFIED,):
+            workspace_gaps.append({"trial_id": trial_id, "reason": ws_status})
+        workspace_files = (
+            _read_text_files(workspace_root)
+            if ws_status in (VERIFIED, ABSENT)
+            else {}
+        )
         evidence = TrialEvidence(
             trial_id=trial_id,
             task_id=rec["task_id"],
@@ -155,7 +180,7 @@ def run_forensics(
             # resolved to a full path: detectors match by prefix, never by a
             # bare segment name a workspace dir could share
             holdout_paths=(holdout_root.as_posix(),) if holdout_root else (),
-            workspace_files=_read_text_files(workspace_root),
+            workspace_files=workspace_files,
             # tasks.yaml carries no pristine workspace content; detectors fall
             # back to trajectory-attributed edits and stay silent when neither
             # can attribute [plan §4.3]
@@ -209,6 +234,9 @@ def run_forensics(
             # ledgers simply lack them, the report stays one event
             "detail_by_arm": {arm: detail_by_arm[arm] for arm in sorted(detail_by_arm)},
             "detail_gaps": detail_gaps,
+            # F-H3 (additive): trials whose end-state evidence could not be
+            # verified against the grade-time workspace commitment.
+            "workspace_gaps": workspace_gaps,
         },
     }
     if review:

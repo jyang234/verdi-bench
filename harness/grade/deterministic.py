@@ -17,6 +17,7 @@ from typing import Optional
 
 from ..ledger import events
 from ..ledger.events import EventContext
+from ..run.workspace import WORKSPACE_WALK_VERSION, workspace_sha256
 from .container import GradingContainer, GradingContainerError, GraderUnavailableError
 from .types import Assertion, AssertionResult, GradeTask
 
@@ -161,7 +162,12 @@ def grade_trial(
     except Exception:  # noqa: BLE001 - fail-closed by design
         return _cant(REASON_PLUGIN)
 
-    # 4. Score and record.
+    # 4. Score and record. The grade also commits the workspace's solution
+    # bytes to the chain [F-H3] — grading is the moment the workspace becomes
+    # evidence, and the scanners verify against this commitment instead of
+    # trusting live disk. Hashed over the ORIGINAL workspace (grading ran on a
+    # fresh copy, GR-1), with the same canonical walk the verifiers use. A
+    # read error here propagates: a crash beats an unverifiable commitment.
     binary = compute_binary_score(assertions)
     frac = compute_fractional_score(assertions) if fractional else None
     ev = events.record_grade(
@@ -174,6 +180,8 @@ def grade_trial(
         fractional_score=frac,
         grader=container.grader_name,
         override_of=override_of,
+        workspace_sha256=workspace_sha256(workspace),
+        workspace_walk_version=WORKSPACE_WALK_VERSION,
     )
     return GradeOutcome(event=ev, graded=True)
 

@@ -58,6 +58,52 @@ def _workspace(tmp_path, name, *, solution, logs="transcript noise"):
     return str(artifacts)
 
 
+def test_h3_tampered_workspace_is_unscanned_never_clean(tmp_path):
+    """F-H3: a workspace edited after grading committed its hash must be
+    UNSCANNED — a post-grade scrub of leaked oracle bytes previously scanned
+    'clean' and laundered that verdict onto the chain-anchored probe."""
+    from pathlib import Path
+
+    from harness.ledger.events import record_grade
+    from harness.run.workspace import workspace_sha256
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    refs = {"task0": TaskReferences(oracle=_ORACLE)}
+    leaked = _workspace(tmp_path, "ws-leak", solution=_ORACLE)
+    _seed_trial(ledger, ctx, trial_id="c-1", task_id="task0", arm="control",
+                artifacts_path=leaked)
+    ws = Path(leaked).parent
+    record_grade(
+        ledger, ctx, trial_id="c-1", task_sha="s",
+        assertions=[{"id": "h1", "source": "holdout_test", "result": "pass"}],
+        binary_score=True,
+        workspace_sha256=workspace_sha256(ws, artifacts_dir=leaked),
+        workspace_walk_version=1,
+    )
+    (ws / "solution.py").write_text(_INDEPENDENT, encoding="utf-8")  # the scrub
+    report = scan_trials(ledger, refs)
+    assert report.overlap_flags == {}  # not scanned-clean
+    (skip,) = report.skipped
+    assert "sha_mismatch" in skip and "c-1" in skip
+
+    # untampered control: the same commitment verifies and the leak flags
+    ledger2 = tmp_path / "l2.ndjson"
+    leaked2 = _workspace(tmp_path, "ws-leak2", solution=_ORACLE)
+    _seed_trial(ledger2, ctx, trial_id="c-2", task_id="task0", arm="control",
+                artifacts_path=leaked2)
+    record_grade(
+        ledger2, ctx, trial_id="c-2", task_sha="s",
+        assertions=[{"id": "h1", "source": "holdout_test", "result": "pass"}],
+        binary_score=True,
+        workspace_sha256=workspace_sha256(Path(leaked2).parent, artifacts_dir=leaked2),
+        workspace_walk_version=1,
+    )
+    report2 = scan_trials(ledger2, refs)
+    assert report2.overlap_flags == {"control": {"task0": True}}
+    assert report2.skipped == []
+
+
 def test_scan_flags_workspace_solution_not_logs(tmp_path):
     """The scan reads the workspace solution (the judge's solution definition)
     and ignores the artifacts/ log tree: a verbatim oracle in the solution
