@@ -25,7 +25,7 @@ from typing import Optional
 from ..corpus.commit import content_sha
 from ..ledger import events
 from ..ledger.query import find_events, read_events, verify
-from .report import compute_findings, per_arm_absolute_scores
+from .report import asymmetry_line, compute_findings, per_arm_absolute_scores
 
 CARD_SCHEMA_VERSION = 2
 
@@ -319,9 +319,13 @@ def render_card_markdown(card: dict) -> str:
     lines.append("")
     lines.append(f"- confounds: {', '.join(d['confounds']) or 'none'}")
     contam = d.get("contamination") or {}
+    # F-M-O4: asymmetric entries are dicts ({task_id, flagged_arms,
+    # unflagged_arms}) — rendered with the same phrasing report.py uses, never
+    # joined as strings (that was a TypeError whenever any asymmetry existed).
+    asym = contam.get("asymmetric") or []
     lines.append(
         f"- contamination: probe {contam.get('probe_status', 'n/a')}; "
-        f"asymmetric: {', '.join(contam.get('asymmetric', [])) or 'none'}"
+        f"asymmetric: {'; '.join(asymmetry_line(a) for a in asym) or 'none'}"
     )
     lines.append(
         f"- forensic quarantines: {', '.join(d.get('forensic_quarantines', [])) or 'none'}"
@@ -367,6 +371,21 @@ def render_card_html(card: dict) -> str:
     )
     dataset = b.get("dataset")
     ds = f" &middot; dataset {esc(dataset['name'])}@{esc(dataset['version'])}" if dataset else ""
+    # F-M-O5: content parity with the markdown card's Disclosures section — the
+    # shareable artifact must not be the disclosure-free one.
+    d = card["disclosures"]
+    contam = d.get("contamination") or {}
+    asym = contam.get("asymmetric") or []
+    disclosures = "".join(
+        f"<li>{esc(item)}</li>"
+        for item in (
+            f"confounds: {', '.join(d['confounds']) or 'none'}",
+            f"contamination: probe {contam.get('probe_status', 'n/a')}; asymmetric: "
+            + ("; ".join(asymmetry_line(a) for a in asym) or "none"),
+            f"forensic quarantines: {', '.join(d.get('forensic_quarantines', [])) or 'none'}",
+            f"excluded metrics: {', '.join(d['excluded_metrics']) or 'none'}",
+        )
+    )
     style = (
         "body{font:14px system-ui,sans-serif;margin:2rem;max-width:52rem}"
         "table{border-collapse:collapse;width:100%;margin:.5rem 0}"
@@ -389,6 +408,7 @@ def render_card_html(card: dict) -> str:
         f"<h2>Provenance</h2><p class=sha>spec {esc(prov.get('spec_sha256'))}<br>"
         f"ledger head {esc(prov.get('ledger_head'))} (chain {'ok' if prov.get('chain_ok') else 'BROKEN'}) "
         f"&middot; selfcheck {esc(prov.get('selfcheck'))}</p>"
+        f"<h2>Disclosures</h2><ul>{disclosures}</ul>"
         f"<p class=stamp>Instrument {esc(inst['version'])}. ADVISORY: a comparable number, "
         "not an authoritative leaderboard entry.</p>"
         "</body></html>"

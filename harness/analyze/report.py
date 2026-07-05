@@ -1499,7 +1499,7 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
         findings.contamination or {}
     ).get("asymmetric", [])
     if asymmetric:
-        detail = "; ".join(_asymmetry_line(a) for a in asymmetric)
+        detail = "; ".join(asymmetry_line(a) for a in asymmetric)
         raise AsymmetricContaminationError(
             f"official render refused: asymmetric flagged contamination — "
             f"{detail}. The pairing is invalid for these tasks; exploratory "
@@ -1545,7 +1545,7 @@ def _override_lines(findings: FindingsDocument) -> list[str]:
     ]
 
 
-def _asymmetry_line(a: dict) -> str:
+def asymmetry_line(a: dict) -> str:
     """One asymmetric-contamination entry, worded identically in the official
     refusal and the exploratory disclosure so the two accounts reconcile."""
     return (
@@ -1584,7 +1584,7 @@ def _contamination_lines(findings: FindingsDocument) -> list[str]:
             "disclosed as unknown, never upgraded to clean [EVAL-10 AC-1]"
         )
     for a in c.get("asymmetric", []):
-        lines.append(f"- ⚠ ASYMMETRIC: {_asymmetry_line(a)} — pairing invalid")
+        lines.append(f"- ⚠ ASYMMETRIC: {asymmetry_line(a)} — pairing invalid")
     return lines
 
 

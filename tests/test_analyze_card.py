@@ -322,3 +322,39 @@ def test_swebench_card_has_corpus_battery_and_resolved_rates(tmp_path):
     by_arm = {a["name"]: a for a in card["arms"]}
     assert by_arm["control"]["absolute_score"] == 1.0     # resolved
     assert by_arm["treatment"]["absolute_score"] == 0.0   # not resolved
+
+
+def _with_asymmetric_contamination(card):
+    """Inject the real asymmetry shape (contamination/summary.py:probe_asymmetries)
+    into a built card — the renders are pure projections of the dict."""
+    card["disclosures"]["contamination"] = {
+        "probe_status": "complete",
+        "asymmetric": [{"task_id": "t1", "flagged_arms": ["control"],
+                        "unflagged_arms": ["treatment"]}],
+    }
+    return card
+
+
+def test_m_o4_markdown_render_survives_asymmetric_contamination(tmp_path):
+    """F-M-O4: `asymmetric` entries are dicts; the md render joined them as
+    strings — a TypeError whenever any asymmetric flag existed. It now renders
+    the same task/arm phrasing report.py uses."""
+    expdir, spec = _graded_analyzed(tmp_path)
+    md = render_card_markdown(_with_asymmetric_contamination(_card(expdir, spec)))
+    assert "task 't1'" in md and "['control']" in md
+
+
+def test_m_o5_html_card_carries_every_disclosure(tmp_path):
+    """F-M-O5: the HTML card (the shareable artifact) dropped the entire
+    Disclosures section the markdown card carries. Structural parity: every
+    disclosure category renders in both."""
+    expdir, spec = _graded_analyzed(tmp_path)
+    card = _with_asymmetric_contamination(_card(expdir, spec))
+    card["disclosures"]["forensic_quarantines"] = ["trial-q1"]
+    html = render_card_html(card)
+    md = render_card_markdown(card)
+    assert "Disclosures" in html
+    for needle in ("confounds", "task &#x27;t1&#x27;", "trial-q1", "excluded metrics"):
+        assert needle in html, needle
+    for needle in ("confounds", "task 't1'", "trial-q1", "excluded metrics"):
+        assert needle in md, needle
