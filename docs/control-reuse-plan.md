@@ -1,8 +1,11 @@
 # Control-run reuse (scoped-B) — implementation plan
 
-Status: **proposal, awaiting sign-off.** Touches two versioned contracts (the
-experiment/run config surface and the hash-chained ledger); per `CLAUDE.md`
-those need explicit human approval and a compatibility story before code lands.
+Status: **implemented and green** (approved 2026-07-05). Built in the documented
+order across 7 slices; `make verify` passes (full suite + 8 import contracts).
+The two versioned-contract additions (four additive `reused_*`/`control_reused`
+ledger events; the `--reuse-control` / `run.config.yaml reuse_control` surface)
+are additive — legacy ledgers render byte-identically. This document is retained
+as the design record; the sections below describe the shipped design.
 
 ## Goal
 
