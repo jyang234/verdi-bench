@@ -203,6 +203,11 @@ class FindingsDocument(BaseModel):
     # EVAL-10 AC-5: per-arm contamination summary (tri-state counts + flagged
     # task ids + asymmetry) — disclosed in BOTH renders, fenced when asymmetric.
     contamination: dict = {}
+    # F-M-J1: judge coverage — terminal CANT_JUDGE comparisons are silently
+    # excluded from judge_preference and calibration (a biased missing-data
+    # channel when exclusions correlate with outcomes, e.g. a canary salted
+    # only on losing trials); the counts are disclosed in both renders.
+    judge_coverage: dict = {}
     # PRA-M4: multi-arm disclosure — {n_arms, correction, note}. Non-empty and
     # non-optional in the render whenever >2 arms were compared, so k-1
     # simultaneous decisions can never be presented without saying so.
@@ -1089,12 +1094,55 @@ def compute_findings(
         overrides=_override_summary(ledger_path),
         rubric_committed=_lock_event(ledger_path).get("rubric_sha256") is not None,
         contamination=contamination_summary(ledger_path, spec, corpus_manifest),
+        judge_coverage=_judge_coverage(ledger_path),
         multi_arm=multi_arm,
         process=_process_section(ledger_path, spec, seed),
         judge_calibration=_judge_calibration(ledger_path, spec, seed),
         forensics=_forensics_section(ledger_path, spec),
         provenance=provenance,
     )
+
+
+def _judge_coverage(ledger_path) -> dict:
+    """CANT_JUDGE exposure [F-M-J1]: how many comparisons the judge attempted
+    and how many are terminally unjudgeable (permanently excluded from
+    judge_preference and calibration by the re-run skip), by reason."""
+    from ..judge.schema import TRANSIENT_CANT_JUDGE
+
+    cant: dict[str, int] = {}
+    total = 0
+    for ev in find_events(ledger_path, events.JUDGE_VERDICT):
+        v = ev.get("verdict") or {}
+        total += 1
+        if v.get("winner") == "CANT_JUDGE":
+            reason = v.get("reason") or "unknown"
+            cant[reason] = cant.get(reason, 0) + 1
+    if not total:
+        return {}
+    return {
+        "verdicts": total,
+        "cant_judge": dict(sorted(cant.items())),
+        "terminal_cant_judge": sum(
+            n for r, n in cant.items() if r not in TRANSIENT_CANT_JUDGE
+        ),
+    }
+
+
+def _judge_coverage_lines(findings: FindingsDocument) -> list[str]:
+    """Disclosure lines for terminal CANT_JUDGE exclusions [F-M-J1] — shared by
+    the markdown render and the dossier disclosure sections; [] when the judge
+    never ran or every comparison was judged."""
+    jc = findings.judge_coverage
+    if not jc or not jc.get("cant_judge"):
+        return []
+    detail = ", ".join(f"{r}: {n}" for r, n in jc["cant_judge"].items())
+    return [
+        f"- {jc['terminal_cant_judge']} of {jc['verdicts']} judged comparison(s) "
+        f"terminally unjudgeable ({detail}) — excluded from judge_preference and "
+        "calibration, never imputed. If exclusions correlate with outcomes "
+        "(e.g. an arm salting canaries on losing trials), judge_preference is "
+        "biased by this missing-data channel [F-M-J1]."
+    ]
 
 
 # --- rendering + the fence -------------------------------------------------
@@ -1623,6 +1671,9 @@ def _render_official_md(findings: FindingsDocument) -> str:
     override = _override_lines(findings)
     if override:
         out += ["", "## Terminal overrides", *override]
+    judge_cov = _judge_coverage_lines(findings)
+    if judge_cov:
+        out += ["", "## Judge coverage", *judge_cov]
     if not findings.rubric_committed:
         out += [
             "",
@@ -1699,6 +1750,9 @@ def _render_exploratory_md(findings: FindingsDocument) -> str:
     override = _override_lines(findings)
     if override:
         out += section("Terminal overrides", override)
+    judge_cov = _judge_coverage_lines(findings)
+    if judge_cov:
+        out += section("Judge coverage", judge_cov)
     out += section("CI method selection (coverage)", [f"- {findings.ci_selection}"])
     out += section("Provenance", _provenance_lines(findings))
     return "\n".join(out) + "\n"

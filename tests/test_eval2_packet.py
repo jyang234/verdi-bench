@@ -137,3 +137,34 @@ def test_jd13_packet_sha_covers_framing(monkeypatch):
     sha_before = build().packet_sha256
     monkeypatch.setattr(pk, "_SYSTEM_TEMPLATE", pk._SYSTEM_TEMPLATE + " CHANGED FRAMING")
     assert build().packet_sha256 != sha_before
+
+
+def test_m_j1_diff_budget_caps_oversize_workspaces_deterministically(tmp_path):
+    """F-M-J1: unbounded diff assembly let an arm force a terminal
+    CANT_JUDGE(context_overflow) with a huge junk file on trials it would lose.
+    The budget truncates deterministically and disclosed, never silently."""
+    from harness.judge.assemble import (
+        PER_FILE_DIFF_CAP,
+        TOTAL_DIFF_CAP,
+        _read_workspace_diff,
+    )
+
+    ws = tmp_path / "ws"
+    artifacts = ws / "artifacts"
+    artifacts.mkdir(parents=True)
+    (ws / "a_huge.py").write_text("x" * (PER_FILE_DIFF_CAP + 100), encoding="utf-8")
+    for i in range(16):
+        (ws / f"b_pad{i:02d}.py").write_text("y" * (PER_FILE_DIFF_CAP // 2), encoding="utf-8")
+    (ws / "z_last.py").write_text("z = 1", encoding="utf-8")
+
+    diff = _read_workspace_diff(str(artifacts))
+    assert len(diff) <= TOTAL_DIFF_CAP + 200  # bounded (marker line rides on top)
+    assert "truncated at" in diff             # per-file cut disclosed
+    assert "file(s) omitted" in diff          # total-budget cut disclosed
+    assert diff == _read_workspace_diff(str(artifacts))  # deterministic
+
+    small = tmp_path / "small"
+    (small / "artifacts").mkdir(parents=True)
+    (small / "solution.py").write_text("ok", encoding="utf-8")
+    sd = _read_workspace_diff(str(small / "artifacts"))
+    assert "truncated" not in sd and "omitted" not in sd  # under budget: untouched

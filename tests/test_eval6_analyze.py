@@ -1198,3 +1198,49 @@ def test_analyze_one_render_event(tmp_path):
     assert result.exit_code == 0, result.output
     after = len(find_events(ledger, "findings_rendered"))
     assert after - before == 1
+
+
+def test_m_j1_terminal_cant_judge_exclusions_are_disclosed(tmp_path):
+    """F-M-J1: terminal CANT_JUDGE comparisons are permanently excluded from
+    judge_preference (excluded-never-imputed) — previously with zero disclosure,
+    a biased missing-data channel an arm can drive (canary salting, junk-file
+    context overflow). The counts now ride the findings and both renders."""
+    from harness.analyze.dossier import _disclosure_sections
+
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    for i in range(4):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    for i, reason in enumerate(("identity_leak", "identity_leak", "context_overflow")):
+        prov = VerdictProvenance(
+            judge_model="fake/judge-1", rubric_sha256="r" * 64, packet_sha256="p" * 64,
+            call_ids=["c1"], orders="both", temperature=0.0, ts="t",
+        )
+        v = Verdict(
+            winner=Winner("CANT_JUDGE"), reason=reason, evidence=[], provenance=prov,
+            comparison_id=f"cj-{i}", task_id=f"x{i}", task_class="cls", arm_map=ct,
+        )
+        append_verdict(ledger, ctx, verdict=v.model_dump(mode="json"))
+
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.judge_coverage["verdicts"] == 7
+    assert f.judge_coverage["cant_judge"] == {"context_overflow": 1, "identity_leak": 2}
+    assert f.judge_coverage["terminal_cant_judge"] == 3
+
+    md = render_markdown(f, ledger, "exploratory")
+    assert "Judge coverage" in md and "identity_leak: 2" in md
+    titles = [sec["title"] for sec in _disclosure_sections(f)]
+    assert "Judge coverage" in titles  # dossier parity
+
+
+def test_m_j1_full_judge_coverage_discloses_nothing(tmp_path):
+    """No CANT_JUDGE ⇒ no coverage section — disclosure is for exclusions."""
+    ctx = fixed_ctx()
+    spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
+    ct = {"A": "control", "B": "treatment"}
+    for i in range(3):
+        _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
+    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    assert f.judge_coverage["cant_judge"] == {}
+    assert "Judge coverage" not in render_markdown(f, ledger, "exploratory")

@@ -38,6 +38,7 @@ from .report import (
     _forensics_lines,
     _integrity_line,
     _judge_calibration_lines,
+    _judge_coverage_lines,
     _ledger_consistency_lines,
     _override_lines,
     _process_lines,
@@ -414,6 +415,7 @@ def _disclosure_sections(findings: FindingsDocument) -> list[dict]:
     for title, lines in (
         ("Ledger consistency", _ledger_consistency_lines(findings)),
         ("Terminal overrides", _override_lines(findings)),
+        ("Judge coverage", _judge_coverage_lines(findings)),
     ):
         if lines:
             sections.append({"title": title, "body": _lines_html(lines)})
