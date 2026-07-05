@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from ..judge.calibrate import ClassCalibration
-from .kappa import kappa_report
+from .kappa import bootstrap_kappa_interval, kappa_report, kish_effective_n
 from .sample import (
     comparisons_from_ledger,
     realized_floor_prob,
@@ -61,8 +61,14 @@ def kappa_by_class_ipw(
     out: dict[str, ClassCalibration] = {}
     for cls, cls_items in by_class.items():
         n = len(cls_items)
-        if n < min_human_verdicts:
-            out[cls] = ClassCalibration(cls, n, kappa=None, sufficient=False, escalate=False)
+        # F-M-S4: sufficiency is gated on the Kish EFFECTIVE sample size — a
+        # raw count floor let a handful of 5×-reweighted floor items masquerade
+        # as twenty items' worth of information.
+        n_eff = kish_effective_n(cls_items, floor_prob)
+        if n_eff < min_human_verdicts:
+            out[cls] = ClassCalibration(
+                cls, n, kappa=None, sufficient=False, escalate=False, n_eff=n_eff
+            )
             continue
         # D-P7-4: compute the IPW headline AND the floor-only sensitivity through
         # kappa_report (its production caller), so the render can show both.
@@ -71,10 +77,21 @@ def kappa_by_class_ipw(
         if k is None:
             # D-5: degenerate marginals ⇒ no chance-corrected information;
             # insufficient, not perfect, and cannot escalate on undefined.
-            out[cls] = ClassCalibration(cls, n, kappa=None, sufficient=False, escalate=False)
+            out[cls] = ClassCalibration(
+                cls, n, kappa=None, sufficient=False, escalate=False, n_eff=n_eff
+            )
             continue
+        # F-M-S4: escalation gates on the INTERVAL, not the point estimate —
+        # escalate only when the judge is confidently below threshold (upper
+        # bound < threshold); an interval that straddles it (or no usable
+        # interval) is INCONCLUSIVE: enough data to gate, not enough precision
+        # to decide, rendered as such rather than silently not-escalated.
+        ci = bootstrap_kappa_interval(cls_items, floor_prob=floor_prob, seed=seed)
+        escalate = ci is not None and ci[1] < kappa_threshold
+        inconclusive = ci is None or (ci[0] < kappa_threshold <= ci[1])
         out[cls] = ClassCalibration(
-            cls, n, kappa=k, sufficient=True, escalate=k < kappa_threshold,
+            cls, n, kappa=k, sufficient=True, escalate=escalate,
             sensitivity=report.sensitivity,
+            kappa_ci=ci, n_eff=n_eff, inconclusive=inconclusive,
         )
     return out

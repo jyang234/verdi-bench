@@ -588,7 +588,9 @@ def _judge_calibration(ledger_path, spec, seed) -> Optional[dict]:
         "single_order_verdicts": single_order,
         "by_class": {
             c: {"kappa": v.kappa, "n": v.n, "sufficient": v.sufficient,
-                "escalate": v.escalate, "sensitivity": v.sensitivity}
+                "escalate": v.escalate, "sensitivity": v.sensitivity,
+                "kappa_ci": v.kappa_ci, "n_eff": v.n_eff,
+                "inconclusive": v.inconclusive}
             for c, v in sorted(cal.items())
         },
         "escalation_candidates": sorted(c for c, v in cal.items() if v.escalate),
@@ -1831,7 +1833,9 @@ def _judge_calibration_lines(findings: FindingsDocument) -> list[str]:
     jc = findings.judge_calibration
     lines = [
         f"- thresholds: kappa ≥ {jc['kappa_threshold']} at ≥ {jc['min_human_verdicts']} "
-        "human verdicts (below ⇒ flagged for panel escalation) [AC-7]"
+        "EFFECTIVE human verdicts (Kish, IPW-weighted); escalation fires when the "
+        "interval's UPPER bound is below threshold — a straddling interval is "
+        "INCONCLUSIVE, not silently fine [AC-7, F-M-S4]"
     ]
     if jc.get("single_order_verdicts"):
         lines.append(
@@ -1843,10 +1847,21 @@ def _judge_calibration_lines(findings: FindingsDocument) -> list[str]:
         return lines
     for cls, c in jc["by_class"].items():
         if not c["sufficient"]:
-            lines.append(f"- {cls}: n={c['n']} (insufficient for kappa)")
+            n_eff = c.get("n_eff")
+            eff = f", n_eff={_fmt(n_eff, 1)}" if n_eff is not None else ""
+            lines.append(f"- {cls}: n={c['n']}{eff} (insufficient for kappa)")
         else:
-            flag = " ESCALATE" if c["escalate"] else ""
-            lines.append(f"- {cls}: kappa={_fmt(c['kappa'], 3)} (n={c['n']}){flag}")
+            flag = (
+                " ESCALATE" if c["escalate"]
+                else (" INCONCLUSIVE (interval straddles threshold)"
+                      if c.get("inconclusive") else "")
+            )
+            ci = c.get("kappa_ci")
+            ci_txt = f" CI=[{_fmt(ci[0], 3)}, {_fmt(ci[1], 3)}]" if ci else ""
+            lines.append(
+                f"- {cls}: kappa={_fmt(c['kappa'], 3)}{ci_txt} "
+                f"(n={c['n']}, n_eff={_fmt(c.get('n_eff'), 1)}){flag}"
+            )
             # D-P7-4: the floor-only sensitivity beside the IPW headline, so the
             # reweighting's leverage on the headline is visible.
             sens = c.get("sensitivity")

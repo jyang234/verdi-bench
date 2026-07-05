@@ -341,7 +341,9 @@ def test_ac5_weighted_kappa():
             ReviewedItem(3, 2, "mandatory"), ReviewedItem(3, 3, "mandatory"),
         ]
     }
-    cal = process_kappa_by_dimension(items, kappa_threshold=0.6)
+    # min_pairs=4: this test owns the ESTIMATOR math, not the production
+    # sufficiency floor (min_pairs defaults to 20 per F-M-S4)
+    cal = process_kappa_by_dimension(items, kappa_threshold=0.6, min_pairs=4)
     assert abs(cal["planning_quality"].kappa - 2 / 3) < 1e-9
     assert cal["planning_quality"].escalate is False  # 0.667 >= 0.6
 
@@ -352,12 +354,23 @@ def test_ac5_per_dimension_gates():
     bad = [ReviewedItem(1, 5, "mandatory"), ReviewedItem(5, 1, "mandatory"),
            ReviewedItem(1, 5, "mandatory"), ReviewedItem(5, 1, "mandatory")]  # anti ⇒ low
     cal = process_kappa_by_dimension(
-        {"good_dim": good, "bad_dim": bad}, kappa_threshold=0.6
+        {"good_dim": good, "bad_dim": bad}, kappa_threshold=0.6, min_pairs=4
     )
     assert cal["good_dim"].escalate is False
     assert cal["bad_dim"].escalate is True
     # gates are independent — good_dim is unaffected by bad_dim
     assert cal["good_dim"].kappa == 1.0
+
+
+def test_m_s4_one_pair_is_never_sufficient():
+    """F-M-S4: the production default floor — a single reviewed pair previously
+    rendered a process dimension as 'sufficient' and could escalate on one data
+    point. The default now matches the outcome tier's floor of 20."""
+    cal = process_kappa_by_dimension(
+        {"planning_quality": [ReviewedItem(1, 1, "mandatory")]}, kappa_threshold=0.6
+    )
+    c = cal["planning_quality"]
+    assert c.sufficient is False and c.escalate is False and c.kappa is None
 
 
 # --- AC-6: metric firewall + exploratory rendering --------------------------

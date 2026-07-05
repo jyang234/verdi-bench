@@ -211,8 +211,10 @@ def test_jd9_escalation_config_threaded(tmp_path):
     r = runner.invoke(app, ["judge", str(expdir)])
     assert r.exit_code == 0, r.output
     # sufficient at min_human_verdicts=1 (would be insufficient at the default 20);
-    # kappa is defined (0.000) and below threshold ⇒ escalate
-    assert "class refactor: n=1 kappa=0.000 ESCALATE" in r.output
+    # kappa is defined (0.000) and below threshold, but one verdict supports no
+    # interval ⇒ INCONCLUSIVE, never a confident escalation [F-M-S4] — the config
+    # threading this test owns is still visible: the class gates at n=1 at all.
+    assert "class refactor: n=1 kappa=0.000 INCONCLUSIVE" in r.output
 
 
 def test_jd11_single_order_flagged_through_verb(tmp_path):

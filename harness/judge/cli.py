@@ -140,5 +140,8 @@ def register(app: typer.Typer) -> None:
             if not c.sufficient:
                 typer.echo(f"  class {cls}: n={c.n} (insufficient for kappa)")
             else:
-                flag = " ESCALATE" if c.escalate else ""
+                flag = (
+                    " ESCALATE" if c.escalate
+                    else (" INCONCLUSIVE" if c.inconclusive else "")
+                )
                 typer.echo(f"  class {cls}: n={c.n} kappa={c.kappa:.3f}{flag}")

@@ -42,7 +42,9 @@ def process_kappa_by_dimension(
     items_by_dim: dict[str, Sequence[ReviewedItem]],
     *,
     kappa_threshold: float = DEFAULT_KAPPA_THRESHOLD,
-    min_pairs: int = 1,
+    # F-M-S4: aligned with the outcome tier's escalation floor — one reviewed
+    # pair must never render a dimension as 'sufficient'.
+    min_pairs: int = 20,
     estimator: KappaEstimator | str = KappaEstimator.ipw,
     floor_prob: float = FLOOR_INCLUSION_PROB,
 ) -> dict[str, DimensionCalibration]:

@@ -55,6 +55,13 @@ class ClassCalibration:
     # rendered so the IPW reweighting's leverage is visible, not hidden. None when
     # there are no floor items (or on a raw, non-IPW calibration path).
     sensitivity: Optional[float] = None
+    # F-M-S4: the seeded bootstrap interval behind the escalation gate, the Kish
+    # effective sample size the sufficiency floor uses, and the inconclusive
+    # state (interval straddles the threshold, or no usable interval): enough
+    # data to gate, not enough precision to decide either way.
+    kappa_ci: Optional[tuple[float, float]] = None
+    n_eff: Optional[float] = None
+    inconclusive: bool = False
 
 
 def kappa_by_class(
