@@ -87,9 +87,9 @@ subsystem:
 
 | Component | Source | New work? |
 |---|---|---|
-| Task content (prompt, canaries, plugins, holdouts_dir path) | `corpus.commit.task_content_sha` (per task) | reuse existing |
-| **Holdout script bytes** | corpus cache content hash (corpus subsystem) | **confirm exposure; add hash in `corpus/` if absent** |
-| **Grader plugin identity/version** | grade subsystem | **confirm exposure; add version hash in `grade/` if absent** |
+| Task content (prompt, canaries, plugin ids, holdouts_dir path) | `corpus.commit.task_content_sha` (per task) | reuse existing |
+| **Holdout script bytes** | hash on-disk `holdouts_dir` bytes via `corpus.public.content_sha` | **small helper in `corpus/`** (see note) |
+| **Grader plugin version** | committed `plugin_ids` (already in task hash) + `harness.version.instrument_identity()` git sha | **none — pure composition** (see note) |
 | Arm definition | canonical serialize of `Arm` (name, platform, model, payload, training_cutoff, aux_models, model_hosts) | new (small) |
 | Execution env | `image` digest, `engine`, `harbor_version`, `quotas`, proxy `allowlist` + `infra_hosts` | new (small) |
 | `repetitions` | spec | new (small) |
@@ -101,10 +101,31 @@ control-arm definition + current corpus/holdouts/grader + current
 source-recorded — the current environment must be able to run the control arm
 identically or preflight refuses.
 
-> Before coding, confirm where holdout-script and grader-plugin hashes already
-> live. If they aren't exposed, the hash functions are added in `corpus/` and
-> `grade/` respectively (owning subsystems), not in `run/` — the fingerprint
-> only *composes* them.
+> **Loose-end verification (done — read-only survey of `corpus/` + `grade/`):**
+>
+> - *Holdout bytes.* A harbor task's content dict carries the `holdout` key
+>   inline (`materialize.py`), and `CorpusManifest.TaskEntry.sha =
+>   content_sha(content)` hashes the whole dict — so a materialized corpus's
+>   `task_shas()` *already covers* holdout bytes. But two gaps mean we should
+>   not rely on it alone: the lock-time `task_commitment` (`corpus/commit.py`)
+>   explicitly excludes holdout script bytes, and a hand-authored `holdouts/`
+>   dir has no manifest. Robust approach: the fingerprint hashes the on-disk
+>   `holdouts_dir` bytes directly (what grade actually mounts read-only) via a
+>   small `holdout_content_sha(holdouts_dir)` helper in `corpus/`, reusing the
+>   existing `content_sha` primitive. Honest regardless of provenance.
+> - *Grader plugin version.* No per-plugin content/version hash exists — plugins
+>   are verdi-authored code registered by id (`grade/plugins/`). The identity is
+>   already available by composition: `plugin_ids` are committed inside the task
+>   hash, and the plugin *code* version is `harness.version.instrument_identity()`
+>   (git sha), already stamped in every provenance block. **No new `grade/`
+>   code.** Caveat: the git sha is coarse (moves on any instrument commit, not
+>   just grader changes), so the gate refuses reuse across instrument versions
+>   even when the grader is unchanged — conservative/fail-safe, the right default
+>   for a "provably unchanged" gate. A finer per-plugin content hash is a
+>   possible follow-up if that proves too strict during iteration.
+>
+> Net: the fingerprint is almost entirely composition of existing primitives
+> plus the one small `holdout_content_sha` helper in `corpus/`.
 
 ### 2. Ledger events *(seam change — needs approval)* — `harness/ledger/events.py`
 
