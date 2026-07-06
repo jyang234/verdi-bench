@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>verdi-bench — blinded review</title>
+<style>
+__TOKENS_CSS__  * { box-sizing: border-box; margin: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--plane); color: var(--ink-1); padding: 18px; font-size: 14px; line-height: 1.5; }
+  main { max-width: 980px; margin: 0 auto; display: grid; gap: 12px; }
+  .banner { background: var(--surface-1); border: 1px solid var(--border);
+            border-left: 3px solid var(--warning); border-radius: 6px; padding: 9px 14px;
+            color: var(--ink-2); font-size: 13px; }
+  .banner strong { color: var(--ink-1); }
+  header.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  header.bar h1 { font-size: 16px; font-weight: 650; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px; border-radius: 999px;
+          border: 1px solid var(--border); background: var(--surface-1); color: var(--ink-2);
+          font-size: 12px; white-space: nowrap; }
+  .chip.ok { color: var(--good); }
+  .spacer { flex: 1; }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
+  h2 { font-size: 13px; font-weight: 650; color: var(--ink-2); margin-bottom: 8px; }
+  .btn { font: inherit; font-size: 12.5px; color: var(--ink-2); border: 1px solid var(--border);
+         border-radius: 6px; padding: 4px 12px; background: var(--surface-1); cursor: pointer; }
+  .btn:hover { border-color: var(--ink-3); color: var(--ink-1); }
+  .btn.primary { color: var(--surface-1); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .btn.pick { min-width: 108px; }
+  .btn.on { background: var(--soft); border-color: var(--accent); color: var(--ink-1); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  input.field { font: inherit; font-size: 13px; color: var(--ink-1); background: var(--surface-1);
+                border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--ink-3); font-size: 11.5px; font-weight: 500;
+       border-bottom: 1px solid var(--hairline); padding: 4px 8px 6px 0; }
+  td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--hairline); }
+  tr:last-child td { border-bottom: none; }
+  tr.row { cursor: pointer; } tr.row:hover td, tr.sel td { background: var(--soft); }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+  .dim { color: var(--ink-2); } .dim3 { color: var(--ink-3); }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  label.q { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--ink-2); }
+  pre.msg { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; color: var(--ink-2);
+            white-space: pre-wrap; word-break: break-word; background: var(--plane);
+            border: 1px solid var(--hairline); border-radius: 6px; padding: 8px 10px; }
+  kbd { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; border: 1px solid var(--hairline);
+        border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface-1); color: var(--ink-2); }
+  .kbdrow { color: var(--ink-3); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="banner">&#9888;&#65039; <strong>Blinded reviewer surface.</strong>
+    You see Response 1 and Response 2 — never arms, models, or the judge's
+    verdict — until you record yours and explicitly reveal. <strong>Do not open
+    the operator view</strong> for experiments you review: it is unblinded and
+    watching it disqualifies you. Your verdict and the reveal are each one
+    ledgered event under your name.</div>
+  <header class="bar" id="bar"></header>
+  <div id="app"></div>
+  <div class="kbdrow"><kbd>j</kbd>/<kbd>k</kbd> queue &#183; <kbd>1</kbd>/<kbd>2</kbd>/<kbd>t</kbd>/<kbd>c</kbd> winner &#183;
+    <kbd>enter</kbd> record &amp; advance &#183; the packet opens in its own tab</div>
+</main>
+
+<script>
+__APP_JS__
+</script>
+</body>
+</html>
