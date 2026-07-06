@@ -136,16 +136,11 @@ def register(app: typer.Typer) -> None:
         ctx = EventContext(experiment_id=experiment_dir.name, actor=resolved_actor)
 
         # Operational reuse surface: --reuse-control, or a reuse_control.bundle key
-        # in run.config.yaml (operational config, never the sha-locked spec).
+        # in run.config.yaml (operational config, never the sha-locked spec). The
+        # bundle path was already parsed+resolved by load_run_settings above — no
+        # second raw read of the same file [refactor 04 §4].
         if reuse_control is None:
-            import yaml
-
-            rc_path = experiment_dir / "run.config.yaml"
-            if rc_path.exists():
-                rc = (yaml.safe_load(rc_path.read_text(encoding="utf-8")) or {}).get("reuse_control")
-                if isinstance(rc, dict) and rc.get("bundle"):
-                    b = Path(rc["bundle"])
-                    reuse_control = b if b.is_absolute() else experiment_dir / b
+            reuse_control = settings.reuse_control_bundle
 
         # Control reuse [control-reuse plan]: import the bundle's control-arm data
         # under the reused_* kinds (preflight refuses on any fingerprint drift),

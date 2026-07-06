@@ -15,6 +15,12 @@ from ..schema.experiment import Arm
 
 DEFAULT_TIMEOUT_S = 1800  # 30 minutes [D002]
 
+# The single default trial resource envelope [refactor 04 §4]. Pinned per trial
+# and recorded in provenance so both arms face identical quotas (D003/AC-6). One
+# definition, referenced by RunConfig and RunSettings and the run.config.yaml
+# null-fallback — previously restated at three sites that could silently drift.
+DEFAULT_QUOTAS = Quotas(cpus=2.0, mem="4g")
+
 
 @dataclass
 class Task:
@@ -115,7 +121,7 @@ class Engine(Protocol):
 class RunConfig:
     engine: Engine
     default_timeout_s: int = DEFAULT_TIMEOUT_S
-    quotas: Quotas = field(default_factory=lambda: Quotas(cpus=2.0, mem="4g"))
+    quotas: Quotas = field(default_factory=lambda: DEFAULT_QUOTAS.model_copy())
     proxy: Optional[ProxyConfig] = None
     redact_extra_patterns: list[str] = field(default_factory=list)
     provider_keys: dict = field(default_factory=dict)
