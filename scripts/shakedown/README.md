@@ -2,9 +2,12 @@
 
 A known-answer acceptance suite for verdi-bench: positive controls the
 instrument must **recover** and adversarial negatives every fence must
-**refuse**. It drives real `bench` verbs end-to-end and asserts each guarantee
-fires. See [`docs/design/shakedown.md`](../../docs/design/shakedown.md) for the
-full design, the capability→vector map, and the honest caveats.
+**refuse**. The hermetic scripts author + drive experiments in-process through
+`harness.sdk` (builders + `ExperimentWorkspace`), asserting each guarantee
+fires; the pre-registration refusals still exercise the installed `bench plan`
+console script (their point is the CLI's refusal→exit-code mapping). See
+[`docs/design/shakedown.md`](../../docs/design/shakedown.md) for the full
+design, the capability→vector map, and the honest caveats.
 
 ## Hermetic gate (no keys, no Docker)
 
@@ -46,8 +49,9 @@ Generated run state lands in `_run/` (git-ignored); committed inputs are under
 
 | Path | Role |
 |---|---|
-| `_harness.py` | portable helpers — runs the `bench` console script, reads the ledger |
-| `golden.py` · `tripwires.py` | hermetic acceptance (L1, L3) |
-| `official.py` · `harbor.py` | opt-in real-fidelity layers (L2, L6) |
-| `assets/golden/` | the committed golden vectors (experiment.yaml, tasks.yaml, rubric.md) |
+| `_harness.py` | script-local helpers — `Tally`, `_run/` staging, the one `bench` console-script driver (pre-registration vectors) + ANSI strip; the `events`/`dump_yaml`/`ASSETS` helpers linger only for the not-yet-converted harbor scripts (Phase 3) |
+| `golden.py` · `tripwires.py` | hermetic acceptance (L1, L3), authored + driven through `harness.sdk` |
+| `official.py` | opt-in real-judge layer (L2), on `harness.sdk` |
+| `harbor.py` · `harbor_multiagent.py` | opt-in real-container layers (L6); convert to the SDK in Phase 3 |
+| `assets/golden/` | the committed golden vectors (still pinned by a schema test) |
 | `assets/harbor/` | the real trial-agent image + minimal metering CONNECT proxy |

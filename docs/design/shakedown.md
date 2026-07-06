@@ -35,6 +35,14 @@ make shakedown        # L1 golden path + L3 tripwire matrix (no keys, no Docker)
 L0, L1, L3 are hermetic. L2/L6 need provider keys (`.env`); L4/L6 need Docker;
 L5 needs a host node + Playwright + Chromium.
 
+Since the Phase-2 SDK (refactor 02/08), the hermetic scripts (`golden.py`,
+`tripwires.py`) and the real-judge `official.py` author + drive experiments
+in-process through `harness.sdk` — no hand-built spec dicts, no `bench`
+subprocess for the pipeline, ledger reads through `LedgerView`. The one
+console-script survivor is the pre-registration refusal matrix (L3 #1–7), whose
+point is the installed `bench plan` exit-code mapping. The harbor real-container
+layers (L6) convert in Phase 3.
+
 ## L3 — the tripwire matrix (18 vectors)
 
 Each row is an adversarial input; the fence must produce the exact disposition.

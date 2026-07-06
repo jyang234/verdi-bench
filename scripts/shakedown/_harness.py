@@ -1,13 +1,22 @@
 """Portable helpers for the shakedown acceptance scripts.
 
-Drives the installed ``bench`` console script (sibling to the venv python) as a
-subprocess so every step exercises the real CLI, and reads the ledger through
-``harness.ledger.query``. Generated run state goes under ``_run/`` (git-ignored);
-committed inputs live under ``assets/``.
+After the Phase-2 SDK conversion (refactor 08 §1) the hermetic scripts
+(golden/official/tripwires) author + drive experiments in-process through
+``harness.sdk`` — no hand-built spec dicts, no ``inject_grades``, and reads go
+through ``LedgerView`` — so what stays here is genuinely script-local: the
+``Tally``, ``_run/`` staging, and the one ``bench`` subprocess driver kept for
+the vectors whose *point* is the installed console script (the pre-registration
+refusals exercise the CLI's refusal→exit-code mapping).
+
+The ``events``/``event_counts``/``dump_yaml``/``ASSETS`` helpers remain only
+because the not-yet-converted harbor scripts (``harbor.py`` /
+``harbor_multiagent.py``, which graduate in Phase 3) still import them; the
+hermetic scripts no longer touch them. Scripts import ``harness.*`` freely but
+never ``tests.*``.
 """
 from __future__ import annotations
 
-import json
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +29,15 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 ASSETS = HERE / "assets"
 RUN = HERE / "_run"
+
+# Strip terminal color so substring assertions on captured CLI output are stable
+# under FORCE_COLOR (typer/rich emit SGR escapes that otherwise break matches) —
+# the sanctioned fix for the known FORCE_COLOR shakedown flake (refactor 08 §1).
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def strip_ansi(s: str) -> str:
+    return _ANSI.sub("", s or "")
 
 
 def _bench_bin() -> str:
@@ -39,9 +57,10 @@ BENCH = _bench_bin()
 
 
 def bench(*args, check=True, env=None) -> subprocess.CompletedProcess:
-    """Invoke ``bench <args>``; echo the command + output tail."""
+    """Invoke ``bench <args>``; echo the command + output tail (ANSI-stripped)."""
     cmd = [BENCH, *(str(a) for a in args)]
     r = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True, env=env)
+    r.stdout, r.stderr = strip_ansi(r.stdout), strip_ansi(r.stderr)
     print("$ bench " + " ".join(str(a) for a in args))
     for line in ((r.stdout or "") + (r.stderr or "")).strip().splitlines():
         print("    " + line)
@@ -60,41 +79,12 @@ def event_counts(ledger) -> dict:
     return dict(sorted(Counter(e.get("event") for e in events(ledger)).items()))
 
 
-def stage(name: str, template: str = "golden") -> Path:
-    """Fresh ``_run/<name>`` seeded from ``assets/<template>``; returns the dir."""
-    d = RUN / name
-    if d.exists():
-        shutil.rmtree(d)
-    d.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(ASSETS / template, d)
-    return d
-
-
 def empty_dir(name: str) -> Path:
     d = RUN / name
     if d.exists():
         shutil.rmtree(d)
     d.mkdir(parents=True)
     return d
-
-
-def inject_grades(ledger, passes) -> int:
-    """Write per-arm ``holdout_results.json`` into each trial workspace — the
-    operator step the arm-blind fake engine needs for a decisive A/B."""
-    n = 0
-    for ev in events(ledger, "trial"):
-        rec = ev["trial_record"]
-        ws = Path(rec["artifacts_path"]).parent
-        ws.mkdir(parents=True, exist_ok=True)
-        result = "pass" if passes(rec["arm"], rec["task_id"]) else "fail"
-        (ws / "holdout_results.json").write_text(
-            json.dumps({"assertions": [{"id": "h1", "result": result}]}), encoding="utf-8")
-        n += 1
-    return n
-
-
-def load_yaml(path):
-    return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
 
 
 def dump_yaml(path, data):
