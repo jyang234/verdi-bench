@@ -17,24 +17,29 @@ Route errors are *served*, not dropped: a failing read returns its message
 as a 500 JSON body — surfaced to the observer while the server keeps
 answering other requests. An invalid tail cursor (the ledger shrank —
 rewrite evidence) is 409, distinct from a merely malformed offset (400).
+
+[refactor 07 §4] The mechanical transport — the ``_send``/``_json`` plumbing,
+the host guard, route-table dispatch, the ``RouteError`` → status mapping, and
+the ``type("Bound…Handler", …)`` factory — comes from the tier-neutral
+:class:`harness.webkit.http.JsonRouteHandler`. This module keeps its own route
+table, GET-only posture, artifact allowlist, and unblinded-operator semantics.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import re
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from ..analyze.fence import official_fence_report
 from ..analyze.timeline import trial_timeline
-from ..http_guard import ForbiddenError, check_host
 from ..ledger.query import TailOffsetError, tail_events, verify
 from ..status.aggregate import compute_status
 from ..status.trial import trial_detail
+from ..webkit.http import ChainBroken, JsonRouteHandler, NotFound, bind_handler, default_error
 from .compare import paired_comparisons
 from .page import OPERATOR_PAGE
 from .workspace import scan_workspace
@@ -58,16 +63,16 @@ _ARTIFACT_TYPES = {
 }
 
 
-class _NotFound(Exception):
+class _NotFound(NotFound):
     """Route-level 404 with a message the observer can act on."""
 
 
-class _ChainBroken(Exception):
+class _ChainBroken(ChainBroken):
     """Route-level 409: the ledger's chain does not verify, so no ledger-reading
     route may render its (tampered) content [PRA-M10]."""
 
 
-class ObserverHandler(BaseHTTPRequestHandler):
+class ObserverHandler(JsonRouteHandler):
     """GET-only routes over one experiment dir or a workspace root."""
 
     experiment_dir: Optional[Path]  # single mode (bound by make_server)
@@ -76,58 +81,40 @@ class ObserverHandler(BaseHTTPRequestHandler):
     _verify_cache: dict = {}  # (path -> (content_sha256, ChainResult)) [PRA-M10/F-M-I1]
 
     server_version = "verdi-bench-observer"
-    sys_version = ""
-    protocol_version = "HTTP/1.1"
 
     # -- routes ---------------------------------------------------------------
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
-        parsed = urlparse(self.path)
-        q = parse_qs(parsed.query)
-        try:
-            check_host(self.headers, self.server.server_address)  # PRA-M16
-            if parsed.path == "/":
-                self._send(200, OPERATOR_PAGE.encode("utf-8"), "text/html; charset=utf-8")
-            elif parsed.path == "/favicon.ico":
-                # Browsers request this unprompted; a <link> tag would break the
-                # page's no-external-references property, so answer empty here.
-                self._send(204, b"", "image/x-icon")
-            elif parsed.path == "/api/experiments":
-                self._json(200, {"experiments": self._experiments()})
-            elif parsed.path == "/api/status":
-                self._json(200, compute_status(self._dir(q)))
-            elif parsed.path == "/api/events":
-                self._events(q)
-            elif parsed.path == "/api/timeline":
-                self._json(200, trial_timeline(self._verified_dir(q) / "ledger.ndjson"))
-            elif parsed.path == "/api/trial":
-                self._trial(q)
-            elif parsed.path == "/api/compare":
-                self._json(
-                    200,
-                    paired_comparisons(
-                        self._verified_dir(q), corpus_manifest=self.corpus_manifest
-                    ),
-                )
-            elif parsed.path == "/api/fence":
-                self._json(
-                    200,
-                    official_fence_report(self._dir(q), corpus_manifest=self.corpus_manifest),
-                )
-            elif parsed.path == "/artifact":
-                self._artifact(q)
-            else:
-                self._json(404, {"error": f"unknown path {parsed.path!r}"})
-        except ForbiddenError as e:
-            self._json(403, {"error": str(e)})
-        except _ChainBroken as e:
-            self._json(409, {"error": str(e)})
-        except _NotFound as e:
-            self._json(404, {"error": str(e)})
-        except Exception as e:  # noqa: BLE001 — surfaced as a served 500, so one
-            # failing read cannot take the observer down for other requests; the
-            # message travels to the client instead of vanishing into a dropped
-            # connection. Nothing is retried or defaulted.
-            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+        q = parse_qs(urlparse(self.path).query)
+        table = {
+            "/": lambda: self._send(200, OPERATOR_PAGE.encode("utf-8"), "text/html; charset=utf-8"),
+            # Browsers request /favicon.ico unprompted; a <link> tag would break
+            # the page's no-external-references property, so answer empty here.
+            "/favicon.ico": lambda: self._send(204, b"", "image/x-icon"),
+            "/api/experiments": lambda: self._json(200, {"experiments": self._experiments()}),
+            "/api/status": lambda: self._json(200, compute_status(self._dir(q))),
+            "/api/events": lambda: self._events(q),
+            "/api/timeline": lambda: self._json(
+                200, trial_timeline(self._verified_dir(q) / "ledger.ndjson")
+            ),
+            "/api/trial": lambda: self._trial(q),
+            "/api/compare": lambda: self._json(
+                200,
+                paired_comparisons(self._verified_dir(q), corpus_manifest=self.corpus_manifest),
+            ),
+            "/api/fence": lambda: self._json(
+                200,
+                official_fence_report(self._dir(q), corpus_manifest=self.corpus_manifest),
+            ),
+            "/artifact": lambda: self._artifact(q),
+        }
+        # ForbiddenError → 403 (host guard); _ChainBroken → 409, _NotFound → 404
+        # (default_error); any other read failure → a served 500 [PRA-M16].
+        self.dispatch(
+            table,
+            guard=self._guard_host,
+            unknown=lambda p: (404, {"error": f"unknown path {p!r}"}),
+            error=default_error,
+        )
 
     # -- experiment resolution --------------------------------------------------
     def _experiments(self) -> list[dict]:
@@ -232,41 +219,15 @@ class ObserverHandler(BaseHTTPRequestHandler):
         self._send(200, path.read_bytes(), content_type)
 
     # -- non-GET methods are refused, naming the one allowed method ------------
-    def _method_not_allowed(self) -> None:
-        body = json.dumps({"error": "read-only observer: GET only"}).encode("utf-8")
-        self.send_response(405)
-        self.send_header("Allow", "GET")
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    def _refuse_method(self) -> None:
+        self._method_not_allowed("GET", "read-only observer: GET only")
 
-    do_POST = _method_not_allowed  # noqa: N815 - BaseHTTPRequestHandler contract
-    do_PUT = _method_not_allowed  # noqa: N815
-    do_DELETE = _method_not_allowed  # noqa: N815
-    do_PATCH = _method_not_allowed  # noqa: N815
-    do_HEAD = _method_not_allowed  # noqa: N815 - 405+Allow, not stdlib's 501 [PRA-L10]
-    do_OPTIONS = _method_not_allowed  # noqa: N815
-
-    # -- plumbing ---------------------------------------------------------------
-    def _send(self, status: int, body: bytes, content_type: str) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")  # live data, never cached
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _json(self, status: int, payload) -> None:
-        self._send(
-            status,
-            json.dumps(payload, sort_keys=True).encode("utf-8"),
-            "application/json",
-        )
-
-    def log_message(self, format: str, *args) -> None:  # noqa: A002 - stdlib name
-        """Quiet per-request stderr noise: the CLI prints the one line that
-        matters (where the observer is), and every request is a read."""
+    do_POST = _refuse_method  # noqa: N815 - BaseHTTPRequestHandler contract
+    do_PUT = _refuse_method  # noqa: N815
+    do_DELETE = _refuse_method  # noqa: N815
+    do_PATCH = _refuse_method  # noqa: N815
+    do_HEAD = _refuse_method  # noqa: N815 - 405+Allow, not stdlib's 501 [PRA-L10]
+    do_OPTIONS = _refuse_method  # noqa: N815
 
 
 def make_server(
@@ -286,13 +247,11 @@ def make_server(
     """
     if (experiment_dir is None) == (root is None):
         raise ValueError("pass exactly one of experiment_dir or root")
-    handler = type(
+    handler = bind_handler(
+        ObserverHandler,
         "BoundObserverHandler",
-        (ObserverHandler,),
-        {
-            "experiment_dir": Path(experiment_dir) if experiment_dir is not None else None,
-            "workspace_root": Path(root) if root is not None else None,
-            "corpus_manifest": corpus_manifest,
-        },
+        experiment_dir=Path(experiment_dir) if experiment_dir is not None else None,
+        workspace_root=Path(root) if root is not None else None,
+        corpus_manifest=corpus_manifest,
     )
     return ThreadingHTTPServer((host, port), handler)
