@@ -371,3 +371,11 @@ def test_sdk_refuses_both_inline_holdout_and_holdouts_dir(tmp_path):
                       holdout=AssertionHoldout(expression="assert True"))
     with pytest.raises(ValueError, match="both"):
         exp.write(tmp_path / "exp")
+
+
+# --- the single-sourced holdout_results.json constant ----------------------
+def test_holdout_results_filename_is_single_sourced():
+    from harness.grade.container import HOLDOUT_RESULTS
+    from harness.judge.assemble import HOLDOUT_RESULTS as JUDGE_HOLDOUT_RESULTS
+
+    assert JUDGE_HOLDOUT_RESULTS is HOLDOUT_RESULTS == "holdout_results.json"

@@ -19,7 +19,10 @@ from .packet import ResponseArtifacts
 
 # The grader writes holdout results into the workspace; they are grader output,
 # not agent-authored solution content, so they are excluded from the judged diff.
-_GRADER_OUTPUT = "holdout_results.json"
+# Single-sourced from grade (the owner of the grading transport): judge -> grade
+# is an allowed import direction (no contract forbids it), so the filename lives
+# in exactly one place [refactor 05 §1].
+from ..grade.container import HOLDOUT_RESULTS
 
 
 def comparison_id_for(task_id: str, repetition: int) -> str:
@@ -94,7 +97,7 @@ def _read_workspace_diff(artifacts_path) -> str:
             continue  # reached through a symlinked directory into another tree
         if artifacts_dir in p.parents:
             continue
-        if p.name == _GRADER_OUTPUT:
+        if p.name == HOLDOUT_RESULTS:
             continue
         # Generated/compiled trees and binary files are not a legible diff for a
         # human or the judge — a .pyc rendered byte-by-byte is noise, and an agent
