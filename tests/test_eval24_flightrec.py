@@ -231,6 +231,9 @@ def test_ac5_recorder_operator_tier_exploratory(tmp_path):
         "provenance": {"judge_model": "google/gemini-1.5-pro-002", "rubric_sha256": "s"}})
 
     c = paired_comparisons(tmp_path)
+    # the compare payload names the models each arm actually ran (UI clarity)
+    assert c["arm_a_model"] == "anthropic/claude-haiku-4-5-20251001"
+    assert c["arm_b_model"] == "openai/gpt-4.1-mini-2025-04-14"
     pair = c["pairs"][0]
     # the compare view surfaces per-arm reasoning, unblinded (operator tier),
     # carrying the per-entry sub-agent role the UI groups by [AC-6]

@@ -67,8 +67,11 @@ def proxy_down():
 
 def run_holdout(ws: Path, task_id: str) -> bool:
     try:
+        # PYTHONDONTWRITEBYTECODE: importing solution.py must not leave a
+        # __pycache__/*.pyc behind in the graded workspace (it would pollute the diff).
+        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
         r = subprocess.run([sys.executable, "-c", TASKS[task_id]["holdout"]], cwd=str(ws),
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, timeout=15, env=env)
         return r.returncode == 0
     except Exception:
         return False

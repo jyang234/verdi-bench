@@ -290,6 +290,7 @@ def test_compare_renders_flight_recorder_reasoning_by_role(tmp_path):
     roles: [...document.querySelectorAll('.rz .role')].map(e => e.textContent),
     hasContent: document.body.textContent.includes('decompose into add'),
     armheads: [...document.querySelectorAll('.armhead')].map(e => e.textContent),
+    body: document.body.textContent,
   }));
 """
         out = drive(base, body, tmp_path)
@@ -299,6 +300,10 @@ def test_compare_renders_flight_recorder_reasoning_by_role(tmp_path):
         assert out["rz"]["hasContent"] is True          # reasoning content shown
         # the columns are labeled with the arms (A · control / B · treatment)
         assert any("control" in a and "treatment" in a for a in out["rz"]["armheads"])
+        # model names surfaced, plain-language result banner, and a diff legend
+        assert "claude-haiku" in out["rz"]["body"]
+        assert "Primary (holdout pass)" in out["rz"]["body"]
+        assert "red: only in A" in out["rz"]["body"]
         assert out["__errors"] == []
     finally:
         srv.shutdown(); srv.server_close(); thread.join(timeout=5)

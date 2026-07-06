@@ -39,6 +39,25 @@ def test_m5_symlink_escape_excluded_from_workspace_diff(tmp_path):
     assert "sk-not-yours" not in diff
 
 
+def test_binary_and_pycache_excluded_from_workspace_diff(tmp_path):
+    """A .pyc / binary file (an agent that imports or builds produces them) is not
+    a legible diff — a byte-by-byte render is noise for a human and the judge — so
+    it is excluded and disclosed, keeping the diff to agent-authored text."""
+    from harness.judge.assemble import _read_workspace_diff
+
+    ws = tmp_path / "ws"
+    (ws / "artifacts").mkdir(parents=True)
+    (ws / "solution.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (ws / "__pycache__").mkdir()
+    (ws / "__pycache__" / "solution.cpython-311.pyc").write_bytes(b"\x00\x0fmagic\x00bytecode")
+    (ws / "data.bin").write_bytes(b"PK\x03\x04\x00\x00binary blob")  # NUL byte ⇒ binary
+
+    diff = _read_workspace_diff(str(ws / "artifacts"))
+    assert "def add(a, b)" in diff  # the agent-authored text survives
+    assert "\x00" not in diff and ".pyc" not in diff  # no binary bytes rendered
+    assert "2 binary/generated file(s) excluded" in diff  # disclosed, never silent
+
+
 def test_l4_secret_in_packet_blocks_send():
     """PRA-L4: a provider-key-shaped secret in the packet fails closed before any
     provider call (defense-in-depth over trial-time redaction)."""

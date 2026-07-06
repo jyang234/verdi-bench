@@ -59,6 +59,7 @@ def paired_comparisons(experiment_dir, *, corpus_manifest=None) -> dict:
         return {"error": f"cannot compare without a readable spec: {e}", "pairs": []}
 
     arm_a, arm_b = spec.arms[0].name, spec.arms[1].name
+    arm_a_model, arm_b_model = spec.arms[0].model, spec.arms[1].model
     grades = _binary_by_trial(ledger_path)
     verdicts = {
         (ev.get("verdict") or {}).get("comparison_id"): ev["verdict"]
@@ -129,6 +130,8 @@ def paired_comparisons(experiment_dir, *, corpus_manifest=None) -> dict:
     return {
         "arm_a": arm_a,
         "arm_b": arm_b,
+        "arm_a_model": arm_a_model,
+        "arm_b_model": arm_b_model,
         "official_ready": fence["official_ready"],
         "summary": {
             "pairs": len(pairs),
