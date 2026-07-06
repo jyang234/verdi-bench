@@ -1806,6 +1806,20 @@ def _assert_no_insulation_alarms(ledger_path) -> None:
         )
 
 
+def effective_multi_arm_correction(spec) -> str:
+    """The multi-arm correction an official render of ``spec`` would apply —
+    the value the render fence gates on [F-H7, refactor 01 §4 D8].
+
+    Mirrors ``compute_findings``: the ``multi_arm`` block (and with it a
+    correction) exists only for a >2-arm family — one comparison is built per
+    arm beyond ``arms[0]``, so with two arms there is a single pre-registered
+    pair, no decision family, and the render passes ``"none"`` regardless of
+    the spec field. The observer fence (``analyze/fence.py``) evaluates the
+    correction-consistency item with this value so it cannot show ready while
+    the render refuses; structurally unified with the render in Phase 5."""
+    return spec.multi_arm_correction if len(spec.arms) > 2 else "none"
+
+
 def _assert_correction_consistent(correction: str, ledger_path) -> None:
     """Refuse an official render whose applied multi-arm correction differs from
     any prior official render's recorded correction [F-H7]. Render events that

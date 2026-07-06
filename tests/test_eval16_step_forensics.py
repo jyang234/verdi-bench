@@ -305,5 +305,7 @@ def test_ac6_verified_only_deterministic_ungated(tmp_path):
     assert {i["id"] for i in fence["items"]} == {
         "chain", "lock", "corpus_identity", "corpus_coverage",
         "calibration", "rubric", "selfcheck", "contamination", "insulation",
+        "correction",
     }  # no forensic item exists in the fence vocabulary [EVAL-11 D004];
-    # "insulation" is the F-M-C3 holdout-leak check, still not a forensic flag
+    # "insulation" is the F-M-C3 holdout-leak check and "correction" the F-H7
+    # multi-arm-consistency check [refactor 01 §4 D8] — still not forensic flags
