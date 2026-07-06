@@ -32,7 +32,7 @@ from harness.serve.workspace import scan_workspace
 from harness.status.aggregate import compute_status
 from tests.fixtures.browser import drive
 from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
-from tests.test_eval14_observability_ui import rich_experiment
+from tests.fixtures.scenarios import linked_experiment, reasoning_experiment, rich_experiment
 
 
 def _serve_root(root):
@@ -336,9 +336,7 @@ def test_compare_flight_recorder_stays_open_across_polls(tmp_path):
     live in the URL like every other view knob (panel/facets/slice), so the
     1.5s poll re-render cannot swallow the operator's click, a shared link
     reproduces the open panel [AC-3], and closing round-trips the same way."""
-    from tests.test_eval14_page_drive import _reasoning_experiment
-
-    _reasoning_experiment(tmp_path / "exp-r")
+    reasoning_experiment(tmp_path / "exp-r")
     srv, thread, base = _serve_root(tmp_path)
     try:
         body = """
@@ -380,9 +378,7 @@ def test_process_view_interleaves_thought_and_action(tmp_path):
     step, clock-only reasoning merges by the trial clock, undeclared spans land
     in an explicit unlinked section — and a reasoning-less trial is honestly
     action-only. Placement is the stack's declaration, never inferred."""
-    from tests.test_flight_recorder_v3 import _linked_experiment
-
-    trial_ids = _linked_experiment(tmp_path / "exp-l")
+    trial_ids = linked_experiment(tmp_path / "exp-l")
     rich_experiment(tmp_path / "exp-a")  # no reasoning: the action-only case
     srv, thread, base = _serve_root(tmp_path)
     try:
@@ -443,9 +439,7 @@ def test_compare_reasoning_entries_show_measured_usage(tmp_path):
     reference agent's orchestrator, a v1 recorder, ...). Null renders as NOTHING
     — unmeasured is never dressed as zero, and the page never claims
     'code-authored' (that would be an inference the data cannot prove)."""
-    from tests.test_eval14_page_drive import _reasoning_experiment
-
-    _reasoning_experiment(tmp_path / "exp-r")
+    reasoning_experiment(tmp_path / "exp-r")
     srv, thread, base = _serve_root(tmp_path)
     try:
         body = """

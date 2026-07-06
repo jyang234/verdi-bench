@@ -25,7 +25,7 @@ from harness.serve.bundle import write_bundle
 from harness.serve.server import make_server
 from tests.fixtures.browser import drive
 from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
-from tests.test_eval14_observability_ui import rich_experiment
+from tests.fixtures.scenarios import rich_experiment
 
 runner = CliRunner()
 _REPO = Path(__file__).resolve().parents[1]

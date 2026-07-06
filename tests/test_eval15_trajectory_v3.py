@@ -236,7 +236,7 @@ def test_ac5_renderers_exclude_detail_drilldown_serves_it(tmp_path):
     from harness.schema.experiment import ExperimentSpec
     from harness.serve.server import make_server
     from harness.status.trial import trial_detail
-    from tests.test_eval14_observability_ui import rich_experiment
+    from tests.fixtures.scenarios import rich_experiment
 
     fx = rich_experiment(tmp_path)
     planted = "reading the task"  # the fixture native log's message text
