@@ -37,7 +37,11 @@ from ..schema.experiment import Arm
 # Bumped only on an intentional, disclosed change to what the fingerprint hashes
 # or how — so a bundle exported under an older definition can be told apart from
 # one that merely drifted. A versioned contract, like every hashed seam here.
-FINGERPRINT_VERSION = 1
+# v2 [decision A4, refactor 01 §4 D2]: the grader component's plugin ids are now
+# extracted from the documented "plugin_ids" task key (previously the non-doc
+# "plugins" key, which left the component blind to plugin drift); bundles
+# exported under v1 refuse cleanly with the version-mismatch message.
+FINGERPRINT_VERSION = 2
 
 
 class ControlReuseError(RuntimeError):
