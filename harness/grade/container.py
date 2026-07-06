@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Protocol
 
+from ..hermetic.docker import DAEMON_ERROR_EXIT, DockerClient, HardenedCommand
+
 # The grader image. Configurable via env so a deployment pins a real digest
 # (``verdi-bench/grader@sha256:…``); the default tag is a placeholder a real
 # install overrides — never the all-zeros non-digest it used to be [GR-4].
@@ -190,19 +192,21 @@ class DockerGradeRunner:
     grader_name = "docker"
     runs_plugins_in_container = True  # PRA-M6: plugins run network-less, not in-process
 
+    def __init__(self, docker: Optional[DockerClient] = None) -> None:
+        self._docker = docker or DockerClient()
+
     def preflight(self) -> None:
         """Probe the docker daemon before a grade batch [GR-8/GR-11].
 
         A down daemon makes ``docker run`` exit 1 — indistinguishable from a
         grader that ran and failed — so a single outage would otherwise
         quarantine healthy task versions with *terminal* container_failure
-        events. Probing ``docker version`` up front classifies daemon-down as a
-        transient :class:`GraderUnavailableError` before any grading is
-        attempted. A daemon/OS/config error or nonzero exit fails the probe."""
+        events. Probing ``docker version`` (through the hermetic DockerClient) up
+        front classifies daemon-down as a transient
+        :class:`GraderUnavailableError` before any grading is attempted. A
+        daemon/OS/config error or nonzero exit fails the probe."""
         try:
-            proc = subprocess.run(
-                ["docker", "version"], capture_output=True, text=True, timeout=30
-            )
+            proc = self._docker.run(["docker", "version"], timeout_s=30)
         except (OSError, subprocess.SubprocessError) as e:
             raise GraderUnavailableError(f"docker daemon probe failed: {e}") from e
         if proc.returncode != 0:
@@ -216,12 +220,12 @@ class DockerGradeRunner:
         self, cmd: list[str], workspace: Path, holdouts_dir: str, nonce: Optional[str] = None
     ) -> HoldoutRun:
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+            proc = self._docker.run(cmd, timeout_s=1800)
         except (OSError, subprocess.SubprocessError) as e:
             # Could not run the grader at all — transient infra failure [GR-11].
             raise GraderUnavailableError(str(e)) from e
         # exit 125 is a docker daemon/config error (grader never ran) → transient.
-        if proc.returncode == 125:
+        if proc.returncode == DAEMON_ERROR_EXIT:
             raise GraderUnavailableError("docker daemon/config error (exit 125)")
         # Any other nonzero exit means the grader RAN and failed — not that holdout
         # tests failed (those are per-assertion in the results file at exit 0).
@@ -276,9 +280,15 @@ class LocalGradeRunner:
 
 
 class GradingContainer:
-    def __init__(self, runner: Optional[GradeRunner] = None, *, image: Optional[str] = None):
+    def __init__(
+        self, runner: Optional[GradeRunner] = None, *, image: Optional[str] = None,
+        docker: Optional[DockerClient] = None,
+    ):
         self._runner = runner or DockerGradeRunner()
         self._image = image or os.environ.get("VERDI_GRADER_IMAGE", DEFAULT_GRADER_IMAGE)
+        # The plugin-container run's own docker mechanic [refactor 04 §1]; the
+        # holdout path runs through the injected GradeRunner instead.
+        self._docker = docker or DockerClient()
 
     def preflight(self) -> None:
         """Delegate the daemon probe to the runner (no-op for daemon-less runners).
@@ -302,18 +312,20 @@ class GradingContainer:
         ``nonce`` (present on the production path) is injected as
         ``VERDI_FENCE_NONCE`` so the grader can stamp it into its fence marker
         and the host can authenticate the channel [F-H1 follow-up]."""
-        cmd = ["docker", "run", "--rm", "--network", "none"]
-        cmd += ["--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
+        # Same shared hardened recipe as harbor's trial [refactor 04 §1], minus the
+        # quotas/pull-pin: a fresh, network-less container with caps dropped, no
+        # privilege escalation, non-root [F-H1] — the grader writes nothing the host
+        # reads (results ride the fenced stdout transport).
+        hc = HardenedCommand().rm().network("none").harden()
         if nonce:
-            cmd += ["-e", f"{NONCE_ENV}={nonce}"]
-        if hasattr(os, "getuid"):
-            cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
-        cmd += ["--volume", f"{Path(workspace).resolve()}:/workspace"]
+            hc.e_env(NONCE_ENV, nonce)
+        hc.user()
+        hc.volume(workspace, "/workspace")
         if holdouts_dir:
             # holdouts bind-mounted READ-ONLY [AC-1]
-            cmd += ["--volume", f"{Path(holdouts_dir).resolve()}:/holdouts:ro"]
-        cmd += ["--workdir", "/workspace", self._image]
-        return cmd
+            hc.volume(holdouts_dir, "/holdouts", ro=True)
+        hc.workdir("/workspace").image(self._image)
+        return hc.build()
 
     def build_plugin_command(
         self,
@@ -332,16 +344,17 @@ class GradingContainer:
         ``--cap-drop ALL`` and no-new-privileges) closes that asymmetry. The
         grader image's plugin entrypoint (``python -m harness.grade.run_plugin``)
         reads the ids and the read-only task mount, and writes PLUGIN_RESULTS."""
-        cmd = ["docker", "run", "--rm", "--network", "none"]
-        cmd += ["--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
+        # Same network-less hardened recipe as the holdout grader (no --user: the
+        # plugin entrypoint keeps its prior identity) [PRA-M6, refactor 04 §1].
+        hc = HardenedCommand().rm().network("none").harden()
         if nonce:
-            cmd += ["-e", f"{NONCE_ENV}={nonce}"]
-        cmd += ["--volume", f"{Path(workspace).resolve()}:/workspace"]
+            hc.e_env(NONCE_ENV, nonce)
+        hc.volume(workspace, "/workspace")
         if task_file is not None:
-            cmd += ["--volume", f"{Path(task_file).resolve()}:/verdi/task.json:ro"]
-        cmd += ["--workdir", "/workspace", self._image]
-        cmd += ["python", "-m", "harness.grade.run_plugin", *[str(p) for p in plugin_ids]]
-        return cmd
+            hc.volume(task_file, "/verdi/task.json", ro=True)
+        hc.workdir("/workspace").image(self._image)
+        hc.arg("python", "-m", "harness.grade.run_plugin", *[str(p) for p in plugin_ids])
+        return hc.build()
 
     @property
     def grader_name(self) -> str:
@@ -403,10 +416,10 @@ class GradingContainer:
             nonce = secrets.token_hex(16)
             cmd = self.build_plugin_command(copy, plugin_ids, task_file, nonce)
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+                proc = self._docker.run(cmd, timeout_s=1800)
             except (OSError, subprocess.SubprocessError) as e:
                 raise GraderUnavailableError(str(e)) from e
-            if proc.returncode == 125:
+            if proc.returncode == DAEMON_ERROR_EXIT:
                 raise GraderUnavailableError("docker daemon/config error (exit 125)")
             if proc.returncode != 0:
                 raise GradingContainerError(
