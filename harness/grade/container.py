@@ -14,13 +14,11 @@ from __future__ import annotations
 import json
 import os
 import secrets
-import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Optional, Protocol
 
-from ..hermetic.docker import DAEMON_ERROR_EXIT, DockerClient, HardenedCommand
+from ..hermetic.docker import DockerClient, HardenedCommand
 
 # The grader image. Configurable via env so a deployment pins a real digest
 # (``verdi-bench/grader@sha256:…``); the default tag is a placeholder a real
@@ -52,6 +50,7 @@ from .fence import (  # noqa: F401 — re-exported for external importers + test
     parse_fenced_stdout,
     plugin_fence,
 )
+from .isolation import fresh_workspace_copy, run_grading_container
 
 # Filename the containerized plugin runner writes its assertion list to [PRA-M6].
 # Same fresh-copy discipline: any agent-written copy is removed before the run.
@@ -102,24 +101,9 @@ class DockerGradeRunner:
     def run_holdouts(
         self, cmd: list[str], workspace: Path, holdouts_dir: str, nonce: Optional[str] = None
     ) -> HoldoutRun:
-        try:
-            proc = self._docker.run(cmd, timeout_s=1800)
-        except (OSError, subprocess.SubprocessError) as e:
-            # Could not run the grader at all — transient infra failure [GR-11].
-            raise GraderUnavailableError(str(e)) from e
-        # exit 125 is a docker daemon/config error (grader never ran) → transient.
-        if proc.returncode == DAEMON_ERROR_EXIT:
-            raise GraderUnavailableError("docker daemon/config error (exit 125)")
-        # Any other nonzero exit means the grader RAN and failed — not that holdout
-        # tests failed (those are per-assertion in the results file at exit 0).
-        # Terminal: refuse rather than scoring a stale/partial workspace file, and
-        # do not retry a deterministic failure forever [GR-2/GR-11].
-        if proc.returncode != 0:
-            detail = proc.stderr.strip()
-            raise GradingContainerError(
-                f"grader container exited {proc.returncode}"
-                + (f": {detail}" if detail else "")
-            )
+        # Run the grader + classify its exit through the shared isolation helper
+        # (transient grader_unavailable vs terminal container_failure) [GR-2/GR-11].
+        proc = run_grading_container(self._docker, cmd, noun="grader")
         # F-H1: score ONLY the fenced stdout channel — never a file from the
         # agent-writable /workspace, which agent code executing at grade time
         # can rewrite after the grader does. The per-grade nonce authenticates
@@ -321,22 +305,15 @@ class GradingContainer:
     def _run_plugins_in_container(self, workspace: Path, plugin_ids: list, task) -> list:
         from .types import Assertion
 
-        tmp = Path(tempfile.mkdtemp(prefix="verdi-plugin-"))
-        try:
-            copy = tmp / "workspace"
-            try:
-                shutil.copytree(workspace, copy, symlinks=True)
-                stale = copy / PLUGIN_RESULTS
-                if stale.is_symlink() or stale.is_file():
-                    stale.unlink()
-                elif stale.is_dir():
-                    shutil.rmtree(stale)
-            except OSError as e:
-                raise GradingContainerError(
-                    f"could not prepare a clean workspace copy for plugins: {e}"
-                ) from e
-            # the GradeTask travels into the container read-only at /verdi/task.json
-            task_file = tmp / "task.json"
+        # Same fresh-copy + exit-classification discipline as the holdout path,
+        # via the shared isolation helpers [refactor 05 §2].
+        with fresh_workspace_copy(
+            workspace, stale_name=PLUGIN_RESULTS, prefix="verdi-plugin-",
+            purpose=" for plugins",
+        ) as copy:
+            # the GradeTask travels into the container read-only at /verdi/task.json,
+            # written beside the workspace copy under the same throwaway tree.
+            task_file = copy.parent / "task.json"
             task_file.write_text(json.dumps({
                 "id": getattr(task, "id", "t"),
                 "task_sha": getattr(task, "task_sha", ""),
@@ -346,17 +323,7 @@ class GradingContainer:
             # Per-grade nonce authenticates the plugin fence too [F-H1 follow-up].
             nonce = secrets.token_hex(16)
             cmd = self.build_plugin_command(copy, plugin_ids, task_file, nonce)
-            try:
-                proc = self._docker.run(cmd, timeout_s=1800)
-            except (OSError, subprocess.SubprocessError) as e:
-                raise GraderUnavailableError(str(e)) from e
-            if proc.returncode == DAEMON_ERROR_EXIT:
-                raise GraderUnavailableError("docker daemon/config error (exit 125)")
-            if proc.returncode != 0:
-                raise GradingContainerError(
-                    f"plugin container exited {proc.returncode}"
-                    + (f": {proc.stderr.strip()}" if proc.stderr.strip() else "")
-                )
+            proc = run_grading_container(self._docker, cmd, noun="plugin")
             # F-H1 A.4: same trusted channel as holdouts — never a file from the
             # agent-writable copy, and nonce-authenticated so an agent-forged
             # block is rejected. Every failure mode is terminal here (it flows
@@ -377,8 +344,6 @@ class GradingContainer:
             except json.JSONDecodeError as e:
                 raise GradingContainerError(f"malformed fenced plugin results: {e}") from e
             return [Assertion(**a) for a in raw]
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def run(self, workspace: Path, holdouts_dir: str) -> HoldoutRun:
         workspace = Path(workspace)
@@ -403,36 +368,15 @@ class GradingContainer:
     def _run_on_fresh_copy(
         self, workspace: Path, holdouts_dir: str, nonce: Optional[str] = None
     ) -> HoldoutRun:
-        """Grade a throwaway copy of the workspace.
+        """Grade a throwaway copy of the workspace [GR-1/GR-3].
 
-        The copy protects the ledgered trial evidence from a rw container mount
-        [GR-3], and deleting any pre-existing results file in the copy stops an
-        agent-written ``holdout_results.json`` from masquerading as grader
-        output [GR-1]. The original workspace is never mounted.
-
-        The workspace is agent-controlled, so preparation is hardened: symlinks
-        are copied as links (never followed — no escape/disk-exhaustion), and a
-        results entry of any type (file/dir/symlink) is removed. Any preparation
-        error becomes a GradingContainerError so a hostile workspace fails *this*
-        trial closed rather than aborting the whole grade batch [SEC].
+        The fresh-copy discipline (evidence protection, symlink no-follow, and
+        stale-results removal) lives in the shared
+        :func:`~harness.grade.isolation.fresh_workspace_copy`; this builds the
+        grade command against the copy and hands it to the runner.
         """
-        tmp = Path(tempfile.mkdtemp(prefix="verdi-grade-"))
-        try:
-            copy = tmp / "workspace"
-            try:
-                shutil.copytree(workspace, copy, symlinks=True)
-                stale = copy / HOLDOUT_RESULTS
-                if stale.is_symlink() or stale.is_file():
-                    stale.unlink()
-                elif stale.is_dir():
-                    shutil.rmtree(stale)
-            except OSError as e:
-                raise GradingContainerError(
-                    f"could not prepare a clean workspace copy: {e}"
-                ) from e
+        with fresh_workspace_copy(
+            workspace, stale_name=HOLDOUT_RESULTS, prefix="verdi-grade-",
+        ) as copy:
             cmd = self.build_grade_command(copy, holdouts_dir, nonce)
             return self._runner.run_holdouts(cmd, copy, holdouts_dir, nonce)
-        finally:
-            # Best-effort cleanup of the throwaway copy: a cleanup error must not
-            # clobber an already-computed grade [determinism/fail-loudly intent].
-            shutil.rmtree(tmp, ignore_errors=True)
