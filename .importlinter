@@ -46,6 +46,7 @@ source_modules =
     harness.status
     harness.serve
     harness.author
+    harness.sdk
 forbidden_modules =
     harness.run.engines.harbor
 
@@ -103,6 +104,7 @@ source_modules =
     harness.status
     harness.serve
     harness.author
+    harness.sdk
 forbidden_modules =
     harness.ledger.chain
 
@@ -159,3 +161,37 @@ source_modules =
 forbidden_modules =
     harness.judge.providers
     harness.judge.client
+
+[importlinter:contract:sdk-is-a-leaf]
+name = The SDK facade is a leaf consumer — no subsystem imports it [refactor 02 §1, master plan §3, A5]
+# sdk composes and re-exports subsystems; the import direction is strictly
+# sdk -> subsystems, never the reverse. Every other harness package (the
+# subsystems AND the peer surfaces, incl. cli — `bench init` reads the template
+# data FILES, it does not import the sdk package) is forbidden from importing
+# harness.sdk. This also covers the plan's explicit "review must not import sdk".
+type = forbidden
+source_modules =
+    harness.cli
+    harness.cli_common
+    harness.entrypoints
+    harness.version
+    harness.http_guard
+    harness.schema
+    harness.ledger
+    harness.plan
+    harness.run
+    harness.adapters
+    harness.grade
+    harness.judge
+    harness.analyze
+    harness.review
+    harness.process
+    harness.corpus
+    harness.contamination
+    harness.blind
+    harness.forensics
+    harness.status
+    harness.serve
+    harness.author
+forbidden_modules =
+    harness.sdk

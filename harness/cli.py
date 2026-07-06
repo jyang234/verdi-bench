@@ -110,6 +110,42 @@ def anchor(
     typer.echo(f"anchored head={outcome.head_hash[:12]}… height={outcome.height}")
 
 
+@app.command()
+def init(
+    directory: Path = typer.Argument(..., help="Target dir to scaffold (must be empty)"),
+) -> None:
+    """Scaffold experiment.yaml / tasks.yaml / rubric from the starter templates.
+
+    The no-browser equivalent of the author surface's draft seeding [refactor 02
+    §5]. NOT a ledgered operation (no entrypoint): it only writes files, then you
+    edit and ``bench plan``. Refuses a non-empty target so it can never clobber
+    work. Reads the shared template DATA files directly (the sdk-is-a-leaf
+    contract forbids the CLI from importing the sdk package; the file is the
+    shared contract, not the code).
+    """
+    import yaml
+
+    templates = Path(__file__).resolve().parent / "sdk" / "templates"
+    if directory.exists() and any(directory.iterdir()):
+        typer.echo(f"{directory} is not empty — refusing to scaffold over it", err=True)
+        raise typer.Exit(code=2)
+    spec_text = (templates / "starter-experiment.yaml").read_text(encoding="utf-8")
+    tasks_text = (templates / "starter-tasks.yaml").read_text(encoding="utf-8")
+    rubric_text = (templates / "judge-rubric.md").read_text(encoding="utf-8")
+    # The rubric lands where the spec's judge.rubric points, so the scaffold is
+    # internally consistent (`bench plan` finds the rubric it commits).
+    rubric_rel = (yaml.safe_load(spec_text).get("judge") or {}).get("rubric", "rubric.md")
+
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "experiment.yaml").write_text(spec_text, encoding="utf-8")
+    (directory / "tasks.yaml").write_text(tasks_text, encoding="utf-8")
+    rubric_path = directory / rubric_rel
+    rubric_path.parent.mkdir(parents=True, exist_ok=True)
+    rubric_path.write_text(rubric_text, encoding="utf-8")
+    typer.echo(f"scaffolded {directory}: experiment.yaml, tasks.yaml, {rubric_rel}")
+    typer.echo("  edit the files, then: bench plan experiment.yaml --ledger ledger.ndjson")
+
+
 def _register_stage_commands() -> None:
     """Attach stage subcommands built in later stories, if present.
 
