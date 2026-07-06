@@ -27,6 +27,10 @@ verdi then slices reasoning/trajectory by sub-agent (`slice_reasoning_by_agent`,
 
 ## The harbor compliance contract (what any image must satisfy)
 
+> The normative statement of this contract is `docs/images.md` §1; the table
+> below is the worked, per-image view. This reference could also extend
+> `verdi-base` and drop the hand-rolled tunnel/log code for `verdi_agent`.
+
 | Requirement | How this image meets it |
 |---|---|
 | Digest-pinned, pre-baked, offline (`docker run --pull=never`) | stdlib-only, no build-time network; pin the local image id |
@@ -50,7 +54,7 @@ one image dispatches both stacks on `request.arm`.
 ## Build, pin, use
 
 ```bash
-docker build -t verdi/multi-agent-reference:local images/multi-agent-reference
+docker build -t verdi/multi-agent-reference:local images/reference/multi-agent
 # harbor runs the digest-pinned local image; reference it as the task's image:
 #   tasks.yaml:  - id: t1   image: verdi/multi-agent-reference:local   ...
 ```

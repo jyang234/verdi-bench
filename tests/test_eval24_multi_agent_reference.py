@@ -1,8 +1,8 @@
 """The multi-turn reference image emits a verdi-compliant, agent-attributed log.
 
-Validates ``images/multi-agent-reference/agent.py``'s PURE ``build_agent_log``
+Validates ``images/reference/multi-agent/agent.py``'s PURE ``build_agent_log``
 against the real verdi parsers — proving the reference is harbor/EVAL-21/EVAL-24
-compliant without docker or real keys. [images/multi-agent-reference/README.md]
+compliant without docker or real keys. [images/reference/multi-agent/README.md]
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 from harness.adapters.generic import GenericAdapter, normalize_generic_by_model
 from harness.run.flight_recorder import FlightRecorder, slice_reasoning_by_agent
 
-_AGENT = Path(__file__).resolve().parents[1] / "images" / "multi-agent-reference" / "agent.py"
+_AGENT = Path(__file__).resolve().parents[1] / "images" / "reference" / "multi-agent" / "agent.py"
 _MODEL = "anthropic/claude-haiku-4-5-20251001"
 
 

@@ -24,7 +24,7 @@ from _harness import ASSETS, REPO, Tally, bench, dump_yaml, empty_dir, events  #
 from harness.run.flight_recorder import resolve_flight_recorder, slice_reasoning_by_agent  # noqa: E402
 
 IMAGE = "verdi/multi-agent-reference:local"
-REF_DIR = REPO / "images" / "multi-agent-reference"
+REF_DIR = REPO / "images" / "reference" / "multi-agent"
 # NET_METERED MUST be harbor's METERED_NETWORK constant ("verdi-metered") — the
 # engine joins the trial container to it, so the proxy must live there too.
 PROXY, NET_METERED, NET_EGRESS = "verdi-ma-proxy", "verdi-metered", "verdi-ma-egress"
