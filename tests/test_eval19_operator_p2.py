@@ -360,7 +360,7 @@ def test_ac6_posture_unchanged(tmp_path):
     ledger_contract = text.split("[importlinter:contract:ledger-writes-only-via-events]", 1)[1] \
                           .split("[importlinter:contract:", 1)[0]
     assert "harness.serve" in ledger_contract
-    from tests.test_import_contracts import _run_lint
+    from tests.fixtures.lint import run_lint
 
     module = _REPO / "harness" / "serve" / "bundle.py"
     original = module.read_text(encoding="utf-8")
@@ -371,7 +371,7 @@ def test_ac6_posture_unchanged(tmp_path):
     )
     try:
         module.write_text(planted, encoding="utf-8")
-        result = _run_lint()
+        result = run_lint()
         assert result.returncode != 0, "planted judge-client import broke no contract"
         assert "observability-llm-free" in result.stdout or "Read-only observability" in result.stdout
     finally:

@@ -124,7 +124,7 @@ def test_ac1_isolation_routes_imports_scrub(tmp_path):
         "[importlinter:contract:", 1)[0]
     for mod in ("harness.serve", "harness.status", "harness.author"):
         assert mod in section
-    from tests.test_import_contracts import _run_lint
+    from tests.fixtures.lint import run_lint
 
     module = Path(__file__).resolve().parents[1] / "harness" / "review" / "serve.py"
     original = module.read_text(encoding="utf-8")
@@ -134,7 +134,7 @@ def test_ac1_isolation_routes_imports_scrub(tmp_path):
                        "    import harness.serve  # noqa\n",
             encoding="utf-8",
         )
-        result = _run_lint()
+        result = run_lint()
         assert result.returncode != 0
         assert "reviewer surface" in result.stdout or "reviewer-surface" in result.stdout
     finally:

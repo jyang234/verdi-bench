@@ -474,7 +474,7 @@ def test_ac7_observability_contracts_and_no_entrypoints():
 
     # the new contract is load-bearing: a planted judge-client import in
     # harness.status must break it (reproduce-first pattern, XC-5 precedent)
-    from tests.test_import_contracts import _run_lint
+    from tests.fixtures.lint import run_lint
 
     module = _REPO / "harness" / "status" / "aggregate.py"
     original = module.read_text(encoding="utf-8")
@@ -485,7 +485,7 @@ def test_ac7_observability_contracts_and_no_entrypoints():
     )
     try:
         module.write_text(planted, encoding="utf-8")
-        result = _run_lint()
+        result = run_lint()
         assert result.returncode != 0, "planted judge-client import broke no contract"
         assert "observability-llm-free" in result.stdout or "Read-only observability" in result.stdout, result.stdout
     finally:
