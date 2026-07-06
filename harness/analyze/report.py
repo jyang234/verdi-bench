@@ -1,29 +1,29 @@
-"""Findings computation + the pre-registration fence [EVAL-6 §M4].
+"""Findings — a re-exporting facade over the ``findings`` package [EVAL-6 §M4, refactor 07 §1].
 
-``compute_findings`` is the pure core: a reproducible function of
-``(ledger, spec, seed, corpus_manifest)`` producing a :class:`FindingsDocument`.
-``render_findings`` turns it into an official or exploratory render, and is where
-the fence is mechanical:
+The 2,275-line module that fused six concerns is now
+:mod:`harness.analyze.findings`: :mod:`~harness.analyze.findings.model` (schema +
+refusal taxonomy), :mod:`~harness.analyze.findings.extract` (ledger→series +
+``compute_findings``), :mod:`~harness.analyze.findings.sections` (the section
+model + canonical sequences), :mod:`~harness.analyze.findings.fence` (the one
+official-fence check list), and the :mod:`~harness.analyze.findings.render_md` /
+:mod:`~harness.analyze.findings.render_html` renderers.
 
-* **official** renders *only* the pre-registered primary metric + decision rule;
-  asking for official on anything unregistered is refused [AC-5], and official is
-  refused unless the corpus is ``full-run-validated`` [EVAL-8 AC-2 hook];
-* **everything else** carries an EXPLORATORY watermark on every section, with
-  secondaries always labeled exploratory [AC-5, D003];
-* MDE appears in every render; a null is phrased "no effect ≥ MDE detected"
-  [AC-3]; ``acknowledged_underpowered`` is surfaced when ledgered;
-* the provenance block is schema-required (a missing field fails validation),
-  and the ledger head hash is cross-checked against ``verify_chain`` at render
-  time [AC-6];
-* cross-stack comparisons run only over telemetry both arms measured — a metric
-  with asymmetric nulls is excluded and flagged, never imputed [AC-7]; raw token
-  counts never cross vendors [EVAL-6 constraint].
+This module re-exports every name the siblings and tests import from
+``harness.analyze.report`` — the underscore-privates dossier/selfcheck/fence
+bound, and the public ``compute_findings`` / ``render_markdown`` /
+``render_html`` / ``metric_def`` / … — so out-of-tree importers keep working
+while they migrate onto the package's now-public seams.
+
+The pre-registration fence is still mechanical: ``compute_findings`` is a pure
+reproducible function of ``(ledger, spec, seed, corpus_manifest)``; **official**
+renders only the pre-registered primary metric + decision rule and is refused for
+anything unregistered [AC-5] or an uncalibrated corpus [EVAL-8 AC-2]; every other
+render carries the EXPLORATORY watermark [AC-5, D003]; the provenance block is
+schema-required and the head hash is cross-checked at render time [AC-6]; a metric
+with asymmetric nulls is excluded, never imputed [AC-7].
 """
 
 from __future__ import annotations
-
-import html as _html
-from typing import Literal, Optional
 
 from .findings.fence import (  # noqa: F401 — facade re-export while importers migrate [refactor 07 §1]
     FENCE_CHECKS,
@@ -131,83 +131,9 @@ from .findings.sections import (  # noqa: F401 — facade re-export while import
 )
 
 
-# --- rendering (the fence lives in findings/fence.py) ----------------------
-def render_markdown(
-    findings: FindingsDocument,
-    ledger_path,
-    mode: Literal["official", "exploratory"] = "exploratory",
-    *,
-    metric: Optional[str] = None,
-    corpus_manifest=None,
-) -> str:
-    """Render findings to markdown behind the pre-registration fence."""
-    validate_for_render(
-        findings, ledger_path, mode, metric=metric, corpus_manifest=corpus_manifest
-    )
-    if mode == "official":
-        return _render_official_md(findings)
-    return _render_exploratory_md(findings)
-
-
-def _render_official_md(findings: FindingsDocument) -> str:
-    """Frame the official section sequence [AC-5]: the pre-registered header, one
-    ``## title`` per section, then the coverage CI-method footer. The ordering +
-    bodies are :func:`~harness.analyze.findings.sections.official_sections`."""
-    out = [
-        f"# Official findings — {findings.experiment_id}",
-        f"Pre-registered primary metric: **{findings.primary_metric}**",
-        f"Decision rule: `{findings.decision_rule}`",
-    ]
-    for sec in official_sections(findings):
-        out += ["", f"## {sec.title}", *sec.lines]
-    out += ["", f"CI method selected by coverage: {findings.ci_selection['selected_method']}"]
-    return "\n".join(out) + "\n"
-
-
-def _render_exploratory_md(findings: FindingsDocument) -> str:
-    """Frame the exploratory section sequence [AC-5, D003]: the watermark leads,
-    then every section is wrapped with the watermark on its own header. The
-    ordering + bodies are
-    :func:`~harness.analyze.findings.sections.exploratory_sections`."""
-    out = [f"# Findings (EXPLORATORY) — {findings.experiment_id}", _WATERMARK, ""]
-    for sec in exploratory_sections(findings):
-        # watermark on EVERY section header [AC-5, D003]
-        out += [f"## {_WATERMARK}", f"### {sec.title}", *sec.lines, ""]
-    return "\n".join(out) + "\n"
-
-
-def render_html(
-    findings: FindingsDocument,
-    ledger_path,
-    mode: Literal["official", "exploratory"] = "exploratory",
-    *,
-    metric: Optional[str] = None,
-    corpus_manifest=None,
-) -> str:
-    """Minimal self-contained HTML render; exploratory carries a fixed per-section banner."""
-    md = render_markdown(
-        findings, ledger_path, mode, metric=metric, corpus_manifest=corpus_manifest
-    )
-    banner = (
-        ""
-        if mode == "official"
-        else f'<div class="watermark">{_WATERMARK}</div>'
-    )
-    # Each markdown section header becomes a section; the exploratory banner is
-    # emitted before every <h2>/<h3> so the watermark is present per section.
-    body_lines = []
-    for line in md.splitlines():
-        if mode != "official" and (line.startswith("## ") or line.startswith("### ")):
-            body_lines.append(banner)
-        # AN-5: escape the rendered content — an arm name / reason carrying markup
-        # (e.g. a <script>) must land inert, not verbatim. The banner above is our
-        # own trusted markup and is emitted unescaped.
-        body_lines.append(f"<p>{_html.escape(line)}</p>")
-    style = (
-        "<style>.watermark{background:#fee;color:#900;padding:4px;"
-        "font-weight:bold;border:1px solid #900;margin:6px 0}</style>"
-    )
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        f"{style}</head><body>{''.join(body_lines)}</body></html>"
-    )
+from .findings.render_md import (  # noqa: F401 — facade re-export while importers migrate [refactor 07 §1]
+    _render_exploratory_md,
+    _render_official_md,
+    render_markdown,
+)
+from .findings.render_html import render_html  # noqa: F401 — facade re-export [refactor 07 §1]
