@@ -150,16 +150,14 @@ def judge_reused(
 
     Idempotent: skips comparisons that already carry a NON-transient reused
     verdict, so a transient CANT_JUDGE (timeout / provider_error) is retried on a
-    re-run — matching the native path's ``_is_transient`` semantics.
+    re-run — the shared :class:`JudgingSession` semantics [refactor 05 §4].
 
     Honors the same locked judge token ceiling as native judging [F-M-J3]:
     ``accumulated`` seeds the budget with prior spend (native + reused verdicts,
     so a re-run cannot reset it) and reused verdicts count against it — reuse
     cannot spend past the pre-registered cap. A refuse-to-start at the ceiling,
     like the cost guard."""
-    from .client import judge_pair
-    from .packet import build_packet
-    from .schema import TRANSIENT_CANT_JUDGE
+    from .session import JudgingSession, VerdictSink
 
     comparisons = comparisons_from_reuse(ledger_path, experiment_dir, spec, task_classes=task_classes)
     if not comparisons:
@@ -169,38 +167,15 @@ def judge_reused(
     def _append(lp, c, *, verdict):
         return events.append_reused_verdict(lp, c, verdict=verdict, reused_from=reused_from)
 
-    def _is_transient(v: dict) -> bool:
-        return v.get("winner") == "CANT_JUDGE" and v.get("reason") in TRANSIENT_CANT_JUDGE
-
-    already = {
-        ev["verdict"]["comparison_id"]
-        for ev in find_events(ledger_path, events.REUSED_JUDGE_VERDICT)
-        if not _is_transient(ev["verdict"])
-    }
-    judged = 0
-    for cmp in comparisons:
-        if cmp.comparison_id in already:
-            continue
-        if ceiling is not None and accumulated >= ceiling:
-            events.record_judge_stopped_token_ceiling(
-                ledger_path, ctx, accumulated_tokens=accumulated, ceiling=ceiling
-            )
-            break
-        packet = build_packet(
-            cmp.response_a, cmp.response_b,
-            task_prompt=prompts.get(cmp.task_id, ""), rubric=rubric,
-        )
-        verdict = judge_pair(
-            packet, spec.judge, ledger_path, ctx,
-            ts=ctx.clock(), canaries=canaries,
-            comparison_id=cmp.comparison_id, task_class=cmp.task_class,
-            arm_map=cmp.arm_map, task_id=cmp.task_id,
-            append_verdict_fn=_append,
-        )
-        usage = verdict.provenance.usage or {}
-        accumulated += int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
-        judged += 1
-    return judged
+    # Same loop as native judging, aimed at the exploratory ``reused_judge_verdict``
+    # kind through the reuse-provenance writer [refactor 05 §4].
+    session = JudgingSession(
+        ledger_path, ctx,
+        config=spec.judge, rubric=rubric, prompts=prompts,
+        canaries=canaries, ceiling=ceiling,
+    )
+    sink = VerdictSink(kind=events.REUSED_JUDGE_VERDICT, append_verdict_fn=_append)
+    return session.run(comparisons, sink, accumulated=accumulated).judged
 
 
 # --- one-event property registration ----------------------------------------

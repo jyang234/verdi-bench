@@ -52,13 +52,10 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
     from ..ledger import events
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
-    from ..ledger.query import find_events
     from ..plan.lock import assert_lock
     from ..review.calibrate import calibration_from_spec
     from .assemble import comparisons_from_ledger
-    from .client import judge_pair
-    from .packet import build_packet
-    from .schema import TRANSIENT_CANT_JUDGE
+    from .session import NATIVE_SINK, JudgingSession
 
     exp_dir = Path(exp_dir)
     spec_path = exp_dir / "experiment.yaml"
@@ -105,60 +102,26 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
 
     comparisons = comparisons_from_ledger(ledger_path, spec, task_classes=task_classes)
 
-    # 7A-4: idempotent — one verdict per comparison; skip comparisons that already
-    # carry a verdict. PRA-M13: a *transient* CANT_JUDGE (the judge could not run)
-    # is NOT counted as done, so a re-run re-attempts it; a terminal CANT_JUDGE
-    # stays skipped.
-    def _is_transient(v: dict) -> bool:
-        return v.get("winner") == "CANT_JUDGE" and v.get("reason") in TRANSIENT_CANT_JUDGE
-
-    already = {
-        ev["verdict"]["comparison_id"]
-        for ev in find_events(ledger_path, events.JUDGE_VERDICT)
-        if not _is_transient(ev["verdict"])
-    }
-    # F-M-J3: the judge-scoped token ceiling (locked spec) — resume-aware: prior
-    # verdicts' provider-reported usage seeds the accumulator, so a re-run cannot
-    # reset the budget. Seed from BOTH native and reused verdicts.
+    # The native pairing and the reused-control pairing share one judging loop
+    # [refactor 05 §4]: the session skips comparisons already carrying a
+    # non-transient verdict (7A-4; a transient CANT_JUDGE is re-attempted,
+    # PRA-M13), honors the locked judge token ceiling (F-M-J3), and appends
+    # exactly one verdict per comparison [AC-8].
     ceiling = spec.judge.token_ceiling
-
-    def _verdict_tokens(v: dict) -> int:
-        u = (v.get("provenance") or {}).get("usage") or {}
-        return int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0)
-
-    accumulated = sum(
-        _verdict_tokens(ev["verdict"])
-        for kind in (events.JUDGE_VERDICT, events.REUSED_JUDGE_VERDICT)
-        for ev in find_events(ledger_path, kind)
+    session = JudgingSession(
+        ledger_path, ctx,
+        config=spec.judge, rubric=rubric, prompts=prompts,
+        canaries=canaries, ceiling=ceiling,
     )
-    stopped_ceiling = False
-    judged = 0
-    for cmp in comparisons:
-        if cmp.comparison_id in already:
-            continue
-        if ceiling is not None and accumulated >= ceiling:
-            events.record_judge_stopped_token_ceiling(
-                ledger_path, ctx,
-                accumulated_tokens=accumulated, ceiling=ceiling,
-            )
-            stopped_ceiling = True
-            break
-        packet = build_packet(
-            cmp.response_a, cmp.response_b,
-            task_prompt=prompts.get(cmp.task_id, ""),
-            rubric=rubric,
-        )
-        verdict = judge_pair(
-            packet, spec.judge, ledger_path, ctx,
-            ts=ctx.clock(), canaries=canaries,
-            comparison_id=cmp.comparison_id, task_class=cmp.task_class,
-            arm_map=cmp.arm_map, task_id=cmp.task_id,
-        )
-        usage = verdict.provenance.usage or {}
-        accumulated += int(usage.get("input_tokens") or 0) + int(
-            usage.get("output_tokens") or 0
-        )
-        judged += 1
+    # F-M-J3: resume-aware — seed the budget from BOTH the native and reused
+    # verdict kinds' provider-reported usage, so a re-run cannot reset it.
+    accumulated = session.seed_accumulated(
+        (events.JUDGE_VERDICT, events.REUSED_JUDGE_VERDICT)
+    )
+    native = session.run(comparisons, NATIVE_SINK, accumulated=accumulated)
+    judged, accumulated, stopped_ceiling = (
+        native.judged, native.accumulated, native.stopped_ceiling
+    )
 
     # Control reuse [control-reuse plan]: also judge each fresh-contender vs
     # reused-control pair (a distinct kind the official judge_preference never
