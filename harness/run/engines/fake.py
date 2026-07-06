@@ -88,6 +88,28 @@ class FakeEngine(EngineBase):
                             "decision": "allow" if allowed else "deny",
                         }) + "\n")
 
+        # Simulate the trace collector [refactor 09 §4, A10 pattern]: when otlp is
+        # configured, write scripted envelope lines keyed to this trial, exactly as
+        # a live collector would, so the inherited _read_span_log extracts + decodes
+        # them through the SAME code path as Harbor. ``otlp_spans`` present (even an
+        # empty list) simulates a LIVE collector — the envelope log exists, so a
+        # zero-span trial yields honest empty batches; ABSENT simulates a dead
+        # collector — no log, so a configured trial fails closed span_log_missing,
+        # the proxy_log_missing parity.
+        if req.otlp is not None and req.otlp.log_path:
+            scripted = b.get("otlp_spans")
+            if scripted is not None:
+                log = Path(req.otlp.log_path)
+                log.parent.mkdir(parents=True, exist_ok=True)
+                with open(log, "a", encoding="utf-8") as fh:
+                    for i, body in enumerate(scripted):
+                        fh.write(json.dumps({
+                            "trial": req.trial_id,
+                            "seq": i,
+                            "content_type": "application/json",
+                            "body_json": body,
+                        }) + "\n")
+
         return ExecOutcome(
             outcome=outcome,
             exit_status=b.get("exit_status", 0 if outcome == Outcome.completed else 1),

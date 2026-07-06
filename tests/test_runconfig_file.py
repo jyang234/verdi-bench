@@ -119,6 +119,65 @@ def test_default_quotas_is_the_single_source():
     assert a is not DEFAULT_QUOTAS and b is not DEFAULT_QUOTAS  # copies, not shared
 
 
+# --- otlp block (in-trial OTLP trace capture) [refactor 09 §4, A11] ----------
+def test_otlp_managed_flag_parses():
+    cfg = RunConfigFile.parse({"otlp": {"managed": True}})
+    assert cfg.otlp.managed is True
+    # absent ⇒ the un-opted-in default
+    assert RunConfigFile.parse({}).otlp is None
+    assert RunConfigFile.parse({"otlp": {"endpoint": "http://c:4318"}}).otlp.managed is False
+
+
+def test_otlp_explicit_endpoint_form_parses():
+    cfg = RunConfigFile.parse(
+        {"otlp": {"endpoint": "http://c:4318", "log_path": "/var/log/verdi/otlp.jsonl"}}
+    )
+    assert cfg.otlp.endpoint == "http://c:4318"
+    assert cfg.otlp.log_path == "/var/log/verdi/otlp.jsonl"
+
+
+def test_otlp_non_mapping_keeps_exact_message():
+    with pytest.raises(ValueError) as exc:
+        RunConfigFile.parse({"otlp": "nope"})
+    assert str(exc.value) == "run.config.yaml 'otlp' must be a mapping, got str"
+
+
+def test_load_run_settings_surfaces_managed_otlp(tmp_path):
+    (tmp_path / "run.config.yaml").write_text("otlp:\n  managed: true\n", encoding="utf-8")
+    s = load_run_settings(tmp_path, env={})
+    assert s.otlp_managed is True
+    assert s.otlp is None  # the managed lifecycle supplies endpoint + log_path
+
+
+def test_load_run_settings_surfaces_explicit_otlp(tmp_path):
+    (tmp_path / "run.config.yaml").write_text(
+        "otlp:\n  endpoint: http://c:4318\n  log_path: /var/log/verdi/otlp.jsonl\n",
+        encoding="utf-8",
+    )
+    s = load_run_settings(tmp_path, env={})
+    assert s.otlp_managed is False
+    assert s.otlp.endpoint == "http://c:4318"
+    assert s.otlp.log_path == "/var/log/verdi/otlp.jsonl"
+
+
+def test_otlp_managed_plus_endpoint_is_refused(tmp_path):
+    """otlp.managed provides its own endpoint — an operator-supplied one is
+    contradictory and refused loudly (the proxy.managed + proxy.url precedent)."""
+    (tmp_path / "run.config.yaml").write_text(
+        "otlp:\n  managed: true\n  endpoint: http://c:4318\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="managed collector provides its own endpoint"):
+        load_run_settings(tmp_path, env={})
+
+
+def test_otlp_explicit_without_endpoint_is_refused(tmp_path):
+    (tmp_path / "run.config.yaml").write_text(
+        "otlp:\n  log_path: /var/log/verdi/otlp.jsonl\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="sets no endpoint and is not managed"):
+        load_run_settings(tmp_path, env={})
+
+
 def test_non_list_provider_key_names_fail_loudly():
     """A bare string must refuse, never char-split into ['F','O','O'] the way the
     old ``list(x or [])`` ladder silently did [P1 review F3]."""

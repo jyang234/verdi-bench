@@ -40,6 +40,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Protocol
+from urllib.parse import urlsplit
 
 from ...adapters.base import Outcome, Quotas
 from ...hermetic.docker import (
@@ -295,9 +296,30 @@ class HarborEngine(EngineBase):
         # env and NEVER overriding it — a task env must not shadow an arm's provider
         # key. These are declared (sha-locked) and non-secret, so KEY=VALUE on the
         # argv is fine (the env_kv spelling, like the proxy URLs) [refactor 03 §5].
+        # NO_PROXY is deferred when OTLP capture is configured — it is MERGED with
+        # the collector host in the OTLP block below, not injected twice.
         for k, v in (request.env or {}).items():
-            if k not in (request.provider_keys or {}):
-                hc.env_kv(k, v)
+            if k in (request.provider_keys or {}):
+                continue
+            if request.otlp is not None and k == "NO_PROXY":
+                continue  # merged into the OTLP NO_PROXY injection below
+            hc.env_kv(k, v)
+        # In-trial OTLP trace capture [refactor 09 §4, A11]: point the arm's OTel
+        # exporter at the hermetic collector and attribute every span post to this
+        # trial via the standard header mechanism every SDK honors. NO_PROXY is
+        # load-bearing — HTTP(S)_PROXY is already injected for a metered trial, so
+        # without this the exporter would route span posts THROUGH the metering
+        # proxy, polluting the egress picture and failing the allowlist. The
+        # collector host is APPENDED to any operator-supplied NO_PROXY, never
+        # replacing it. Config rides these standard OTel env vars; the frozen
+        # request.json is untouched (the spec's invariant).
+        if request.otlp is not None:
+            hc.env_kv("OTEL_EXPORTER_OTLP_ENDPOINT", request.otlp.endpoint)
+            hc.env_kv("OTEL_EXPORTER_OTLP_HEADERS", f"x-verdi-trial={request.trial_id}")
+            collector_host = urlsplit(request.otlp.endpoint).hostname or request.otlp.endpoint
+            prior = (request.env or {}).get("NO_PROXY")
+            no_proxy = f"{prior},{collector_host}" if prior else collector_host
+            hc.env_kv("NO_PROXY", no_proxy)
         # workspace mount; then the trial request (prompt + arm config) delivered
         # READ-ONLY, outside the workspace so it never enters the graded copy
         # [RN-4, D-8] — added after the workspace volume so a workspace-first parser

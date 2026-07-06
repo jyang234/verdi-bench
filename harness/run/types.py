@@ -75,6 +75,21 @@ class ProxyConfig:
 
 
 @dataclass
+class OtlpConfig:
+    """In-trial OTLP trace-capture configuration [refactor 09 §4, A11].
+
+    ``endpoint`` is where the arm's OTel exporter posts spans (the hermetic
+    collector, ``http://verdi-trace-collector:4318``); ``log_path`` is the
+    host-side envelope JSONL the post-run ladder reads to extract this trial's
+    slice. ``None`` on a :class:`TrialRequest` means no collector is configured —
+    zero behavior change. Additive and None-defaulted everywhere; the frozen
+    ``request.json`` is untouched because this rides standard OTel env vars."""
+
+    endpoint: str
+    log_path: Optional[str] = None
+
+
+@dataclass
 class TrialRequest:
     """What an engine receives. There is **no field for holdout content** — the
     request type is the allowlist, so holdouts/canaries are unreachable by an
@@ -92,6 +107,11 @@ class TrialRequest:
     timeout_s: int
     ts: str
     proxy: Optional[ProxyConfig] = None
+    # In-trial OTLP trace capture [refactor 09 §4, A11]: when set, the engine
+    # injects the OTel exporter env vars so the arm's spans reach the hermetic
+    # collector, and the post-run ladder extracts this trial's slice. None =
+    # no collector configured (zero behavior change).
+    otlp: Optional[OtlpConfig] = None
     provider_keys: dict = field(default_factory=dict)  # injected at trial start [AC-8]
     fake_behavior: dict = field(default_factory=dict)  # FAKE ENGINE ONLY
     # EnvironmentSpec [refactor 03 §5, A3]: `files` staged into /workspace pre-trial
@@ -136,6 +156,9 @@ class RunConfig:
     default_timeout_s: int = DEFAULT_TIMEOUT_S
     quotas: Quotas = field(default_factory=lambda: DEFAULT_QUOTAS.model_copy())
     proxy: Optional[ProxyConfig] = None
+    # In-trial OTLP trace capture [refactor 09 §4, A11]: threaded onto each
+    # TrialRequest by the seam. None = no collector configured.
+    otlp: Optional[OtlpConfig] = None
     redact_extra_patterns: list[str] = field(default_factory=list)
     provider_keys: dict = field(default_factory=dict)
     # PRA-M2: per-arm allowlist of provider-key NAMES. When set, an arm's

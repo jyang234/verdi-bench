@@ -326,6 +326,7 @@ def run_trial(
         ),
         ts=ts,
         proxy=config.proxy,
+        otlp=config.otlp,  # refactor 09 §4: in-trial OTLP trace capture (None = off)
         provider_keys=arm_keys,
         fake_behavior=task.fake_behavior,
         files=task.files,  # A3: staged into /workspace by the engine

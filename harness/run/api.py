@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from ..plan.interleave import derive_schedule, enumerate_trials
-from .types import ProxyConfig, RunConfig, Task
+from .types import OtlpConfig, ProxyConfig, RunConfig, Task
 
 
 class NoTasksError(RuntimeError):
@@ -103,6 +103,29 @@ def _managed_proxy(settings, engine: str, exp_dir: Path) -> Iterator[Optional[Pr
             yield managed_cfg
         else:
             yield replace(base, proxy_url=managed_cfg.proxy_url, log_path=managed_cfg.log_path)
+
+
+@contextmanager
+def _managed_collector(settings, engine: str, exp_dir: Path) -> Iterator[Optional[OtlpConfig]]:
+    """Yield the OtlpConfig the schedule runs under, standing up the managed OTLP
+    trace collector when opted in [refactor 09 §3/§4].
+
+    A plain passthrough of ``settings.otlp`` unless ``otlp.managed`` is set and the
+    engine actually containerizes — the fake engine is hermetic-by-fiat and needs
+    no docker, so a managed collector would be pointless and break its no-daemon
+    guarantee. When active, it stands the collector up (TraceCollector refuses
+    loudly if docker is unavailable), builds an OtlpConfig from its endpoint +
+    log_path, and always tears it down on exit — deleting the raw envelope log per
+    D-09-1. ``log_path`` defaults under the experiment dir.
+    """
+    if not settings.otlp_managed or engine == "fake":
+        yield settings.otlp
+        return
+    from ..hermetic.tracing import TraceCollector
+
+    log_path = exp_dir / "otlp" / "otlp.jsonl"
+    with TraceCollector.managed(log_path=log_path) as cfg:
+        yield OtlpConfig(endpoint=cfg.endpoint, log_path=cfg.log_path)
 
 
 def run_experiment(
@@ -194,14 +217,18 @@ def run_experiment(
     resolved_actor = resolve_actor(actor)
     ctx = EventContext(experiment_id=exp_dir.name, actor=resolved_actor)
 
-    # Managed metering proxy (opt-in, refactor 04 §1): when run.config.yaml sets
-    # proxy.managed, stand the metering proxy up around the whole schedule and tear
-    # it down after — injecting its own url + log_path onto the ProxyConfig the
-    # trials use. A no-op passthrough (and no docker requirement) otherwise.
-    with _managed_proxy(settings, engine, exp_dir) as run_proxy:
+    # Managed sidecars (opt-in): when run.config.yaml sets proxy.managed [refactor
+    # 04 §1] and/or otlp.managed [refactor 09 §3], stand the metering proxy and/or
+    # OTLP trace collector up around the whole schedule and tear them down after —
+    # injecting their own url/endpoint + log_path onto the config the trials use. A
+    # no-op passthrough (and no docker requirement) otherwise.
+    with _managed_proxy(settings, engine, exp_dir) as run_proxy, _managed_collector(
+        settings, engine, exp_dir
+    ) as run_otlp:
         config = RunConfig(
             engine=eng,
             proxy=run_proxy,
+            otlp=run_otlp,  # refactor 09 §4: in-trial OTLP capture (None = off)
             quotas=settings.quotas,
             provider_keys=settings.provider_keys,
             provider_key_names_by_arm=settings.provider_key_names_by_arm,  # PRA-M2

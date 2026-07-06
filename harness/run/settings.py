@@ -37,7 +37,7 @@ from pydantic import (
 
 from ..adapters.base import Quotas
 from .egress import proxy_config, spec_allowlist
-from .types import DEFAULT_QUOTAS, ProxyConfig
+from .types import DEFAULT_QUOTAS, OtlpConfig, ProxyConfig
 
 RUN_CONFIG_FILENAME = "run.config.yaml"
 
@@ -63,6 +63,20 @@ class ProxyBlock(BaseModel):
     # metering proxy (MeteringProxy) around the run and injects its own url +
     # log_path, so the operator does not hand-roll the 7-step docker lifecycle.
     managed: bool = False
+
+
+class OtlpBlock(BaseModel):
+    """The ``otlp:`` block — in-trial OTLP trace capture [refactor 09 §3/§4, A11].
+
+    Two forms, both additive: ``managed: true`` stands the hermetic collector up
+    around the run (TraceCollector) and injects its own endpoint + log_path; or
+    an explicit ``endpoint`` (+ optional ``log_path``) points trials at an
+    already-running collector. Absent ⇒ no capture (zero behavior change)."""
+
+    model_config = ConfigDict(extra="ignore")
+    managed: bool = False
+    endpoint: Optional[str] = None
+    log_path: Optional[str] = None
 
 
 class QuotasBlock(BaseModel):
@@ -95,6 +109,7 @@ class RunConfigFile(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
     proxy: Optional[ProxyBlock] = None
+    otlp: Optional[OtlpBlock] = None
     quotas: Optional[QuotasBlock] = None
     provider_key_names: list[str] = Field(default_factory=list)
     provider_key_names_by_arm: Optional[dict[str, list[str]]] = None
@@ -106,6 +121,15 @@ class RunConfigFile(BaseModel):
         if v is not None and not isinstance(v, dict):
             raise ValueError(
                 f"run.config.yaml 'proxy' must be a mapping, got {type(v).__name__}"
+            )
+        return v
+
+    @field_validator("otlp", mode="before")
+    @classmethod
+    def _otlp_is_mapping(cls, v):
+        if v is not None and not isinstance(v, dict):
+            raise ValueError(
+                f"run.config.yaml 'otlp' must be a mapping, got {type(v).__name__}"
             )
         return v
 
@@ -169,6 +193,12 @@ class RunSettings:
     # MeteringProxy.managed(...) when set, standing the proxy up and tearing it
     # down around the schedule. Resolved from run.config.yaml's proxy.managed.
     proxy_managed: bool = False
+    # In-trial OTLP trace capture [refactor 09 §4, A11]: the explicit collector
+    # config (endpoint + log_path) trials post to, or None. When otlp_managed is
+    # set, the run wraps the schedule in TraceCollector.managed(...) and this stays
+    # None (the managed lifecycle supplies its own endpoint + log_path).
+    otlp: Optional[OtlpConfig] = None
+    otlp_managed: bool = False
     quotas: Quotas = field(default_factory=lambda: DEFAULT_QUOTAS.model_copy())
     provider_keys: dict = field(default_factory=dict)
     # PRA-M2: optional per-arm provider-key NAME allowlist {arm: [names]}. None
@@ -254,6 +284,29 @@ def load_run_settings(
             "before locking [EVAL-20 AC-6]"
         )
 
+    # In-trial OTLP trace capture [refactor 09 §4, A11]. `managed: true` stands the
+    # hermetic collector up around the run (the lifecycle supplies its own endpoint
+    # + log_path, so an operator-supplied endpoint is contradictory — refuse, like
+    # proxy.managed + proxy.url); the explicit form points trials at an
+    # already-running collector, where an endpoint is required.
+    otlp = None
+    otlp_managed = False
+    if cfg.otlp is not None:
+        otlp_managed = cfg.otlp.managed
+        if otlp_managed and cfg.otlp.endpoint:
+            raise ValueError(
+                "run.config.yaml sets otlp.managed: true but also otlp.endpoint; the "
+                "managed collector provides its own endpoint — remove otlp.endpoint "
+                "[refactor 09 §4]"
+            )
+        if not otlp_managed:
+            if not cfg.otlp.endpoint:
+                raise ValueError(
+                    "run.config.yaml 'otlp' sets no endpoint and is not managed; set "
+                    "otlp.endpoint or otlp.managed: true [refactor 09 §4]"
+                )
+            otlp = OtlpConfig(endpoint=cfg.otlp.endpoint, log_path=cfg.otlp.log_path)
+
     # An explicit ``null`` must NOT silently un-pin a quota (which would break
     # cross-arm comparability, D003/AC-6); a missing or null value falls back to
     # the pinned default (DEFAULT_QUOTAS, the single source of the 2.0/4g values).
@@ -294,7 +347,8 @@ def load_run_settings(
         reuse_bundle = b if b.is_absolute() else Path(experiment_dir) / b
 
     return RunSettings(
-        proxy=proxy, proxy_managed=proxy_managed, quotas=quotas,
+        proxy=proxy, proxy_managed=proxy_managed,
+        otlp=otlp, otlp_managed=otlp_managed, quotas=quotas,
         provider_keys=provider_keys, provider_key_names_by_arm=by_arm,
         reuse_control_bundle=reuse_bundle,
     )
