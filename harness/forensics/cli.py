@@ -1,10 +1,11 @@
 """``bench forensics`` — scan, human spot-check, operator quarantine [EVAL-11].
 
-Thin typer verbs over the scan core (:mod:`harness.forensics.scan`): ``scan``
+Thin typer verbs over the stage API (:mod:`harness.forensics.api`): ``scan``
 appends exactly one ``forensics_report``; ``record`` ledgers a human's
 per-detector spot-check [AC-4, D006]; ``quarantine`` ledgers the operator
 disposition [D003, D007] — the only path by which forensics affects a
-comparison, and it is a human act, never a detector's.
+comparison, and it is a human act, never a detector's. The one-event property
+registration fires here at import time [EVAL-3 §M7, XC-3].
 """
 
 from __future__ import annotations
@@ -14,10 +15,11 @@ from pathlib import Path
 
 import typer
 
-from ..cli_common import event_context
-from ..ledger.events import EventContext, record_forensic_spotcheck
+from ..cli_common import event_context, refusal_exit
+from ..ledger.events import EventContext
+from .api import forensics_record, forensics_scan, quarantine
 from .detectors import DETECTOR_IDS
-from .scan import UnknownTrialError, quarantine_trial, run_forensics
+from .scan import UnknownTrialError, run_forensics
 
 
 def register(app: typer.Typer) -> None:
@@ -27,7 +29,7 @@ def register(app: typer.Typer) -> None:
     )
 
     @forensics_app.command("scan")
-    def forensics_scan(
+    def scan_cmd(
         experiment_dir: Path = typer.Argument(..., help="Dir with experiment.yaml"),
         review: bool = typer.Option(
             True, "--review/--no-review",
@@ -40,18 +42,15 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         """Scan every trial; append exactly one forensics_report event."""
         ctx = event_context(experiment_dir, actor)
-        report = run_forensics(
-            Path(experiment_dir), ctx=ctx, review=review, provider_model=model
-        )
-        cov = report["coverage"]
+        outcome = forensics_scan(experiment_dir, ctx=ctx, review=review, model=model)
         typer.echo(
-            f"forensics: {cov['covered']}/{cov['trials']} trial(s) covered, "
-            f"{len(report['flags'])} flag(s), "
-            f"{len(cov['gaps'])} coverage gap(s)"
+            f"forensics: {outcome.covered}/{outcome.trials} trial(s) covered, "
+            f"{outcome.n_flags} flag(s), "
+            f"{outcome.n_gaps} coverage gap(s)"
         )
 
     @forensics_app.command("record")
-    def forensics_record(
+    def record_cmd(
         experiment_dir: Path = typer.Argument(..., help="Dir with ledger.ndjson"),
         trial_id: str = typer.Option(..., "--trial-id"),
         labels_json: Path = typer.Option(
@@ -73,14 +72,13 @@ def register(app: typer.Typer) -> None:
             )
             raise typer.Exit(code=2)
         ctx = event_context(experiment_dir, actor)
-        record_forensic_spotcheck(
-            Path(experiment_dir) / "ledger.ndjson", ctx,
-            trial_id=trial_id, labels=labels, stratum=stratum,
+        forensics_record(
+            experiment_dir, ctx=ctx, trial_id=trial_id, labels=labels, stratum=stratum
         )
         typer.echo(f"recorded forensic spot-check for {trial_id}")
 
     @forensics_app.command("quarantine")
-    def forensics_quarantine(
+    def quarantine_cmd(
         experiment_dir: Path = typer.Argument(..., help="Dir with ledger.ndjson"),
         trial_id: str = typer.Option(..., "--trial-id"),
         reason: str = typer.Option(..., "--reason", help="Why this trial is excluded"),
@@ -88,13 +86,8 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         """Ledger the operator disposition: exclude a trial, disclosed [D007]."""
         ctx = event_context(experiment_dir, actor)
-        try:
-            quarantine_trial(
-                Path(experiment_dir), ctx=ctx, trial_id=trial_id, reason=reason
-            )
-        except UnknownTrialError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
+        with refusal_exit(UnknownTrialError):
+            quarantine(experiment_dir, ctx=ctx, trial_id=trial_id, reason=reason)
         typer.echo(f"quarantined {trial_id} (excluded from comparisons, disclosed)")
 
     app.add_typer(forensics_app, name="forensics")
