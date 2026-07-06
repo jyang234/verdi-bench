@@ -108,7 +108,7 @@ def test_ac1_bundle_deterministic_selfcontained(tmp_path):
     assert res["trials"] == 4
     assert res["trial"] is True
     assert res["compare"] == {"cards": 2, "exploratory": True}
-    assert res["findings"] == {"fence": 9, "honest": True}  # +insulation [F-M-C3]
+    assert res["findings"] == {"fence": 10, "honest": True}  # +insulation [F-M-C3] +correction (D8)
     assert res["__errors"] == []
 
 
