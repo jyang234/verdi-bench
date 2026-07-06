@@ -29,6 +29,7 @@ is inherited from `EngineBase` or enforced — not a second contract to keep in 
 | Write telemetry to `<workspace>/artifacts/agent_log.json`; a **present but corrupt** log fails the trial closed `infra_failed(telemetry_corrupt)`, never silently "no telemetry" | shared `_read_native_log` raises `TelemetryCorruptError` [RN-17] |
 | Keep the in-memory `native_log` (the telemetry source) consistent with the on-disk **pre-redaction** bytes (the trajectory source) — the dual-source invariant (§3) | shared `_read_native_log`; the fake supplies `ExecOutcome.native_log` explicitly; asserted by the contract suite |
 | Route egress ONLY through the metering proxy and report per-trial attempts/violations; a **configured but absent** proxy log fails the trial closed `infra_failed(proxy_log_missing)`, never a silent zero (§2) | shared `_scan_proxy_log` raises `ProxyLogMissingError` [PRA-H4] |
+| Extract this trial's OTLP span slice when a collector is configured; a **configured but absent** envelope log fails the trial closed `infra_failed(span_log_missing)`, never "zero spans"; zero matching lines yield an empty-batches artifact with a sha (honest emptiness) | shared `_read_span_log` raises `SpanLogMissingError` [refactor 09 §4, A12] |
 | On timeout, **confirm** the container is killed/reaped before the workspace is redacted; an unconfirmed kill fails the trial closed `infra_failed(kill_failed)` | Harbor `DockerCliRunner._kill` (`docker inspect`, not the `--rm` exit codes) [RN-10, PRA-M7] |
 | Stamp only closed-vocabulary `failure_reason` values (§2), so the scheduler ledgers a real reason, never a fixture placeholder | `_execute` + the shared downgrades; `ENGINE_FAILURE_REASONS` [RN-14] |
 | Inject provider keys as env at trial start — never on the argv, in image layers, or the ledger | Harbor `build_run_command` passes key NAMES; values reach docker via the child env [AC-8] |
@@ -41,14 +42,16 @@ seams — changing them is a contract change, not an engine detail.
 `EngineBase.run` assembles the outcome with one fixed downgrade precedence:
 
 ```
-kill_failed > daemon_error > timeout > telemetry_corrupt > proxy_log_missing
+kill_failed > daemon_error > timeout > telemetry_corrupt > proxy_log_missing > span_log_missing
 ```
 
 The head (`kill_failed > daemon_error > timeout`) is determined by the engine inside
 `_execute` — for Harbor from the container result, for the fake from its script. The
-tail (`telemetry_corrupt`, then `proxy_log_missing`) is applied by the shared
-`_assemble`, each **only against a would-be-`completed` trial**, so a more specific
-engine reason is never masked and telemetry corruption outranks a missing proxy log.
+tail (`telemetry_corrupt`, then `proxy_log_missing`, then `span_log_missing`) is
+applied by the shared `_assemble`, each **only against a would-be-`completed` trial**,
+so a more specific engine reason is never masked: telemetry corruption outranks a
+missing proxy log, and egress evidence (`proxy_log_missing`) outranks telemetry
+evidence (`span_log_missing`).
 
 `failure_reason` is a **closed vocabulary** (`ENGINE_FAILURE_REASONS` in `base.py`):
 
@@ -59,6 +62,8 @@ engine reason is never masked and telemetry corruption outranks a missing proxy 
 | `daemon_error` | the container runtime failed before the agent ran (docker exit 125) | `infra_failed` |
 | `telemetry_corrupt` | `agent_log.json` was present but not valid JSON | `infra_failed` (downgrade of `completed`) |
 | `proxy_log_missing` | a configured metering-proxy log file was absent | `infra_failed` (downgrade of `completed`) |
+| `span_log_missing` | a configured OTLP collector's envelope log was absent | `infra_failed` (downgrade of `completed`) |
+| `spans_corrupt` | **reserved** for spec 10's span→trajectory normalizer; a member of the vocabulary but not raised by the capture path in [refactor 09](design/refactor/09-otlp-trace-capture.md) | `infra_failed` (spec 10 wires the raise) |
 
 `proxy_log_missing` carries a **run-abort coupling**: it is a run-level fault (a dead
 or misconfigured proxy fails every remaining trial identically), so the scheduler
