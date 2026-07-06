@@ -16,7 +16,7 @@ from typing import Literal
 
 from ..ledger import events
 from ..ledger.events import EventContext
-from .registry import CalibrationSubset, CorpusManifest, TaskEntry
+from .registry import CalibrationSubset, CorpusManifest
 
 
 class NoGradedTrialsError(RuntimeError):
@@ -99,34 +99,26 @@ def ledger_subset_draw(
 
 
 # --- one-event property registration [EVAL-3 §M7, XC-3] --------------------
-def _prop_manifest() -> CorpusManifest:
-    return CorpusManifest(
-        corpus_id="prop", semver="1.0.0", kind="public",
-        tasks=[
-            TaskEntry(task_id=f"t{i}", sha=f"{i}".rjust(64, "0"), status="admitted",
-                      metadata={"category": "io"})
-            for i in range(4)
-        ],
-    )
-
-
 def _calibration_run_entrypoint(ctx_dir: str) -> None:
     from pathlib import Path
+
+    from .._entrypoint_fixtures import prop_calibration_manifest
 
     d = Path(ctx_dir)
     ledger_calibration_run(
         d / "ledger.ndjson", EventContext(experiment_id="prop"),
-        _prop_manifest(), {"anchor_delta": 0.01}, kind="subset",
+        prop_calibration_manifest(), {"anchor_delta": 0.01}, kind="subset",
     )
 
 
 def _subset_draw_entrypoint(ctx_dir: str) -> None:
     from pathlib import Path
 
+    from .._entrypoint_fixtures import prop_calibration_manifest
     from .stratify import calibration_subset
 
     d = Path(ctx_dir)
-    manifest = _prop_manifest()
+    manifest = prop_calibration_manifest()
     subset = calibration_subset(manifest, seed=7, target_size=2, stratum_key="category")
     ledger_subset_draw(d / "ledger.ndjson", EventContext(experiment_id="prop"),
                        manifest, subset)

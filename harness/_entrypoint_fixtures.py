@@ -3,8 +3,10 @@
 The ``register_entrypoint`` calls stay in their owning stage modules (the
 property test pins their names + import-time firing), but the inline fixture
 *construction* they used to carry — copy-pasted example-spec dicts (several
-naming retired model ids) and a YAML-rewriting helper — moves here so it stops
-duplicating the one canonical starter template.
+naming retired model ids), the corpus manifest fixtures the ``corpus/*``
+entrypoints built inline, and a YAML-rewriting helper — moves here so it stops
+duplicating the one canonical starter template and keeps the entrypoint blocks
+choreography-only.
 
 This is a harness-internal home, NOT the SDK: the sdk-is-a-leaf contract forbids
 any harness module from importing ``harness.sdk``, so — exactly as
@@ -52,3 +54,39 @@ def make_experiment_underpowered(ctx_dir: str) -> None:
     data = yaml.safe_load(p.read_text(encoding="utf-8"))
     data["hypothesized_effect"] = 0.001
     p.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+
+def prop_calibration_manifest():
+    """The public-corpus fixture the ledger-ops one-event entrypoints
+    (``corpus-calibration-run`` / ``corpus-subset-draw``) run against: four
+    admitted tasks carrying a ``category`` stratum key [refactor 06 §6].
+
+    Was the inline ``_prop_manifest`` in ``corpus/ledger_ops.py`` — centralized
+    here so the entrypoint block is choreography-only."""
+    from .corpus.registry import CorpusManifest, TaskEntry
+
+    return CorpusManifest(
+        corpus_id="prop", semver="1.0.0", kind="public",
+        tasks=[
+            TaskEntry(task_id=f"t{i}", sha=f"{i}".rjust(64, "0"), status="admitted",
+                      metadata={"category": "io"})
+            for i in range(4)
+        ],
+    )
+
+
+def prop_admit_manifest(task_sha: str):
+    """The internal-corpus fixture the ``corpus-admit`` one-event entrypoint runs
+    against: a single pending-curation candidate keyed to ``task_sha`` — the same
+    sha the entrypoint's ``prepare`` hook signs the approval + flake baseline for,
+    so it stays the caller's constant, passed in [refactor 06 §6].
+
+    Was the inline ``CorpusManifest`` in ``corpus/admit.py``'s ``_admit_entrypoint``."""
+    from .corpus.registry import CorpusManifest, TaskEntry
+
+    return CorpusManifest(
+        corpus_id="internal-prop", semver="1.0.0", kind="internal",
+        boundary_path="/tmp/prop-boundary",
+        tasks=[TaskEntry(task_id="cand-prop", sha=task_sha,
+                         status="pending-curation", miner="miner-bot")],
+    )

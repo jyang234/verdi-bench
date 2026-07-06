@@ -338,13 +338,10 @@ def _prepare_admit(ctx_dir: str) -> None:
 def _admit_entrypoint(ctx_dir: str) -> None:
     from pathlib import Path
 
+    from .._entrypoint_fixtures import prop_admit_manifest
+
     d = Path(ctx_dir)
-    manifest = CorpusManifest(
-        corpus_id="internal-prop", semver="1.0.0", kind="internal",
-        boundary_path="/tmp/prop-boundary",
-        tasks=[TaskEntry(task_id="cand-prop", sha=_PROP_SHA,
-                         status="pending-curation", miner="miner-bot")],
-    )
+    manifest = prop_admit_manifest(_PROP_SHA)
     admit_task(manifest, d / "ledger.ndjson", EventContext(experiment_id="prop"),
                candidate_id="cand-prop", task_sha=_PROP_SHA, baseline_ref="b1",
                keyring={"curator": _CURATOR_PUB})
