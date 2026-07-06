@@ -17,6 +17,7 @@ source_modules =
     harness.cli
     harness.cli_common
     harness.entrypoints
+    harness._entrypoint_fixtures
     harness.version
     harness.schema
     harness.ledger
@@ -89,6 +90,7 @@ source_modules =
     harness.cli
     harness.cli_common
     harness.entrypoints
+    harness._entrypoint_fixtures
     harness.version
     harness.http_guard
     harness.schema
@@ -179,6 +181,7 @@ source_modules =
     harness.cli
     harness.cli_common
     harness.entrypoints
+    harness._entrypoint_fixtures
     harness.version
     harness.http_guard
     harness.schema

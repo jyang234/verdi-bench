@@ -400,18 +400,6 @@ def _plan_lock_entrypoint(ctx_dir: str) -> None:
     )
 
 
-def _prepare_underpowered(ctx_dir: str) -> None:
-    # Make the fixture experiment underpowered (hypothesized_effect below any
-    # reasonable MDE). Not a ledger write — just fixture prep, so the sweep still
-    # measures only the lock event fn appends.
-    import yaml
-
-    p = Path(ctx_dir) / "experiment.yaml"
-    data = yaml.safe_load(p.read_text(encoding="utf-8"))
-    data["hypothesized_effect"] = 0.001
-    p.write_text(yaml.safe_dump(data), encoding="utf-8")
-
-
 def _plan_lock_underpowered_entrypoint(ctx_dir: str) -> None:
     # PL-14: the acknowledged-underpowered path must also be one event. Lock the
     # (now underpowered) design with acknowledgment; the acknowledgment rides
@@ -433,13 +421,16 @@ def _plan_lock_underpowered_entrypoint(ctx_dir: str) -> None:
 
 
 def _register() -> None:
+    # Fixture construction lives in the harness-internal home, not this
+    # production module [refactor 06 §6]; the name + import-time firing stay here.
+    from .._entrypoint_fixtures import make_experiment_underpowered
     from ..entrypoints import register_entrypoint
 
     register_entrypoint("plan-lock", _plan_lock_entrypoint)
     register_entrypoint(
         "plan-lock-underpowered",
         _plan_lock_underpowered_entrypoint,
-        prepare=_prepare_underpowered,
+        prepare=make_experiment_underpowered,
     )
 
 

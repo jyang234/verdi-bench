@@ -362,26 +362,16 @@ def record_human_process_score(
 def _process_entrypoint(ctx_dir: str) -> None:
     from pathlib import Path
 
+    from .._entrypoint_fixtures import starter_experiment_spec
     from ..judge.providers.fake import FakeProvider
-    from ..schema.experiment import ExperimentSpec
     from .rubric import default_rubric
 
     d = Path(ctx_dir)
     r = default_rubric()
     fp = FakeProvider([json.dumps({"scores": {dim: 3 for dim in r.dimension_ids}})])
-    spec = ExperimentSpec.from_dict({
-        "arms": [
-            {"name": "control", "platform": "claude_code", "model": "anthropic/claude-haiku-4-5-20251001", "payload": {}},
-            {"name": "treatment", "platform": "codex", "model": "openai/gpt-4o-2024-08-06", "payload": {}},
-        ],
-        "corpus": {"id": "public-mini", "version": "1.0.0"},
-        "repetitions": 1,
-        "primary_metric": "holdout_pass_rate",
-        "decision_rule": "delta_holdout_pass_rate > 0",
-        "judge": {"model": "google/gemini-1.5-pro-002", "rubric": "r.md", "orders": "both", "temperature": 0},
-        "seed": 1,
-        "cost_ceiling": {"amount": 1.0, "currency": "USD"},
-    })
+    # A valid spec from the ONE canonical starter template [refactor 06 §6] — no
+    # copy-pasted (retired-model) spec dict duplicating it in this prod module.
+    spec = starter_experiment_spec()
     score_trial_process(
         "trial-x", "clean transcript", r, ledger_path=d / "ledger.ndjson",
         ctx=EventContext(experiment_id="prop"), ts="t0", scorer_id="judge", provider=fp,
