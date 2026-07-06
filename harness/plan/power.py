@@ -165,6 +165,58 @@ def _power_at(
     return rejects / n_sim
 
 
+@dataclass(frozen=True)
+class MdeReport:
+    """Typed result of :func:`mde_check` [refactor 02 §4].
+
+    Replaces the former raw-dict return so the power result carries a named
+    shape. :meth:`to_event_payload` renders the exact dict the
+    ``experiment_locked`` event embeds (pinned by the Phase-0 constructor-replay
+    golden) — the single place that key-set lives.
+
+    ``power_gate_skipped`` is **owned by the lock stage**, not by power: power
+    never decides whether the gate applies. :func:`mde_check` always returns it
+    ``False``; the lock sets it (via :func:`dataclasses.replace`) when a spec
+    omits ``hypothesized_effect``, and :meth:`to_event_payload` folds it into the
+    ledgered ``flags`` — replacing the former in-place mutation of power's return.
+    """
+
+    mde: Optional[float]
+    method: str
+    flags: list[str]
+    n_tasks: int
+    repetitions: int
+    p: float
+    rho: float
+    power_target: float
+    alpha: float
+    power_curve: list[dict]
+    power_gate_skipped: bool = False
+
+    def to_event_payload(self) -> dict:
+        """The exact ``mde`` payload embedded in the lock event — today's keys.
+
+        ``power_gate_skipped`` (a lock-stage flag) is appended *after* power's own
+        flags so the ledgered order is ``[assumption_based_mde, power_gate_skipped]``
+        exactly as before.
+        """
+        flags = list(self.flags)
+        if self.power_gate_skipped and "power_gate_skipped" not in flags:
+            flags.append("power_gate_skipped")
+        return {
+            "mde": self.mde,
+            "method": self.method,
+            "flags": flags,
+            "n_tasks": self.n_tasks,
+            "repetitions": self.repetitions,
+            "p": self.p,
+            "rho": self.rho,
+            "power_target": self.power_target,
+            "alpha": self.alpha,
+            "power_curve": self.power_curve,
+        }
+
+
 def mde_check(
     spec,
     variance_source: VarianceSource,
@@ -176,8 +228,8 @@ def mde_check(
     n_boot: int = 300,
     n_tasks: Optional[int] = None,
     repetitions: Optional[int] = None,
-) -> dict:
-    """Return ``{mde, method, flags, ...}`` for ``spec`` under ``variance_source``.
+) -> MdeReport:
+    """Return an :class:`MdeReport` for ``spec`` under ``variance_source``.
 
     ``spec`` supplies the seed (deterministic sim) and the default ``repetitions``.
     ``n_tasks`` is the design's real **task-cluster** count (the corpus size);
@@ -222,15 +274,15 @@ def mde_check(
     if getattr(variance_source, "assumption_based", False):
         flags.append("assumption_based_mde")
 
-    return {
-        "mde": mde,
-        "method": "paired_binary_bootstrap_sim",
-        "flags": flags,
-        "n_tasks": n_tasks,
-        "repetitions": repetitions,
-        "p": p,
-        "rho": rho,
-        "power_target": power_target,
-        "alpha": alpha,
-        "power_curve": power_curve,
-    }
+    return MdeReport(
+        mde=mde,
+        method="paired_binary_bootstrap_sim",
+        flags=flags,
+        n_tasks=n_tasks,
+        repetitions=repetitions,
+        p=p,
+        rho=rho,
+        power_target=power_target,
+        alpha=alpha,
+        power_curve=power_curve,
+    )

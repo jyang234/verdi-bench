@@ -94,7 +94,9 @@ def plan(
     ) as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(code=2)
-    mde = outcome.mde["mde"]
+    # The MDE scalar reads off the typed report; the ledgered flags (incl. the
+    # lock-stage power_gate_skipped) live on the event payload the report rendered.
+    mde = outcome.mde_report.mde
     flags = ", ".join(outcome.mde["flags"]) or "none"
     typer.echo(f"locked {experiment} (sha256={outcome.spec_sha256[:12]}…)")
     typer.echo(f"  MDE={mde}  flags={flags}")

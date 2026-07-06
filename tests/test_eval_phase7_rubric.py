@@ -108,7 +108,7 @@ def test_legacy_lock_warns_and_still_judges(tmp_path):
     # a LEGACY lock event — no rubric_sha256 field
     events.record_experiment_locked(
         ledger, ctx, spec_sha256=spec_sha256(spec_path), spec_path=str(spec_path),
-        seed=spec.seed, mde=mde, attested_by="t", method="m", task_commitment=tc,
+        seed=spec.seed, mde=mde.to_event_payload(), attested_by="t", method="m", task_commitment=tc,
     )
     _seed_two(ledger)
 

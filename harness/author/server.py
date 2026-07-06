@@ -17,7 +17,6 @@ default: this surface can mutate, so exposing it is a deliberate act.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,7 +35,10 @@ from ..plan.lock import (
     AlreadyLockedError,
     RubricCommitmentError,
     UnderpoweredError,
+    UnknownArmPlatformError,
+    check_arm_platforms,
     lock_experiment,
+    spec_sha256,
 )
 from ..plan.power import AssumedVariance, mde_check
 from ..schema.errors import SpecError
@@ -95,7 +97,7 @@ class AuthorHandler(BaseHTTPRequestHandler):
                 self._json(200, self._schedule(q))
             elif parsed.path == "/api/sha":
                 d = self._dir(q)
-                self._json(200, {"spec_sha256": _spec_sha(d)})
+                self._json(200, {"spec_sha256": spec_sha256(d / "experiment.yaml")})
             else:
                 self._json(404, {"error": f"unknown path {parsed.path!r}"})
         except ForbiddenError as e:
@@ -205,8 +207,18 @@ class AuthorHandler(BaseHTTPRequestHandler):
         return ExperimentSpec.from_yaml_text(text, source=str(d / "experiment.yaml"))
 
     def _validate(self, q: dict) -> dict:
+        """Preview parity with the lock's preflight steps [refactor 02 §4].
+
+        Composes the same steps ``lock_experiment`` runs that can refuse a *fresh
+        draft*: spec-parse+hash, arm-platform capability, rubric presence, and
+        task validity — so a green preview cannot then refuse at lock. The lock's
+        chain-state steps (chain integrity, single-lock) are legitimately skipped:
+        a draft under preview has no ledger to verify and is unlocked by
+        definition. The power gate is served by ``/api/power`` (a heavy sim and a
+        soft, acknowledgeable gate, not a structural refusal). All a pure read.
+        """
         d = self._dir(q)
-        out: dict = {"name": d.name, "spec_sha256": _spec_sha(d)}
+        out: dict = {"name": d.name, "spec_sha256": spec_sha256(d / "experiment.yaml")}
         try:
             spec = self._spec(d)
             out["spec"] = {
@@ -221,6 +233,15 @@ class AuthorHandler(BaseHTTPRequestHandler):
                 "rubric": spec.judge.rubric,
                 "rubric_present": (d / spec.judge.rubric).exists(),
             }
+            # Platform-capability parity: the SAME preflight step the lock runs,
+            # closing the audited gap where an unregistered platform previewed
+            # green then refused at lock with UnknownArmPlatformError.
+            try:
+                check_arm_platforms(spec)
+                out["platform"] = {"ok": True}
+            except UnknownArmPlatformError as e:
+                out["platform"] = {"ok": False, "error_class": type(e).__name__,
+                                   "error": str(e)}
         except (SpecError, yaml.YAMLError) as e:
             out["spec"] = {"ok": False, "error_class": type(e).__name__, "error": str(e)}
         try:
@@ -244,7 +265,7 @@ class AuthorHandler(BaseHTTPRequestHandler):
         return {
             "quick": quick,
             "note": "quick estimate — the lock recomputes at full fidelity" if quick else "",
-            "mde": mde,
+            "mde": mde.to_event_payload(),
         }
 
     def _schedule(self, q: dict) -> dict:
@@ -289,7 +310,11 @@ class AuthorHandler(BaseHTTPRequestHandler):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
             written.append(rel)
-        return {"name": d.name, "saved": sorted(written), "spec_sha256": _spec_sha(d)}
+        # A draft may be saved before its experiment.yaml exists (e.g. tasks
+        # first), so the sha is None until there are bytes to hash.
+        exp = d / "experiment.yaml"
+        sha = spec_sha256(exp) if exp.exists() else None
+        return {"name": d.name, "saved": sorted(written), "spec_sha256": sha}
 
     def _lock(self, body: dict) -> dict:
         d = self._named(body.get("name"))
@@ -361,13 +386,6 @@ class AuthorHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - stdlib name
         """Quiet: the CLI prints the one line that matters."""
-
-
-def _spec_sha(d: Path) -> Optional[str]:
-    p = d / "experiment.yaml"
-    if not p.exists():
-        return None
-    return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
 def make_author_server(

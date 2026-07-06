@@ -96,6 +96,9 @@ def test_ac1_previews_pure_reads(tmp_path):
 
         v = _get(base, "/api/validate?name=exp-a")
         assert v["spec"]["ok"] and v["tasks"] == {"ok": True, "count": 1, "ids": ["t1"]}
+        # platform-capability parity [refactor 02 §4]: the preview runs the same
+        # check the lock does — both SPEC arms name registered platforms, so ok.
+        assert v["platform"] == {"ok": True}
         # the sha previewed IS the sha of the saved bytes
         assert v["spec_sha256"] == hashlib.sha256(
             (draft / "experiment.yaml").read_bytes()
@@ -104,7 +107,7 @@ def test_ac1_previews_pure_reads(tmp_path):
         # power preview equals mde_check for the same inputs [AC-1]
         spec = ExperimentSpec.from_yaml((draft / "experiment.yaml"))
         direct = mde_check(spec, AssumedVariance(), n_tasks=1,
-                           n_sim=8, n_boot=40, deltas=[0.05, 0.1, 0.2, 0.3, 0.4, 0.5])
+                           n_sim=8, n_boot=40, deltas=[0.05, 0.1, 0.2, 0.3, 0.4, 0.5]).to_event_payload()
         served = _get(base, "/api/power?name=exp-a&quick=1")
         assert served["quick"] is True and served["mde"] == json.loads(json.dumps(direct))
 
@@ -129,6 +132,8 @@ def test_ac1_previews_pure_reads(tmp_path):
         assert vb["spec"]["ok"] is False
         assert vb["spec"]["error_class"] == "MissingCostCeilingError"
         assert vb["tasks"]["ok"] is False and "t1" in vb["tasks"]["error"]
+        # a parse failure has no spec to platform-check: the key is simply absent
+        assert "platform" not in vb
 
         # purity: previews change nothing — no ledger exists, bytes identical
         before = _digest(tmp_path)
@@ -213,6 +218,35 @@ def test_ac2_page_ceremony_drive(tmp_path):
         assert [e["event"] for e in evs] == ["experiment_locked"]
         assert evs[0]["provenance"]["actor"] == "page-actor"
         assert evs[0]["attestation"]["attested_by"] == "jyang"
+
+
+def test_platform_gap_closed_in_page(tmp_path):
+    """The audited gap, closed at the UI [refactor 02 §4]: a draft naming an
+    unregistered arm platform previews a platform-bad chip and a *disabled* Lock
+    button, so the green-preview-then-lock-refusal can no longer happen."""
+    bad_spec = SPEC.replace("platform: codex", "platform: my_custom_stack")
+    with _serve(tmp_path, actor="plat-actor") as base:
+        _save_draft(base, name="exp-plat", spec=bad_spec)
+        # server-side parity: the preview refuses the platform the lock would too
+        v = _get(base, "/api/validate?name=exp-plat")
+        assert v["spec"]["ok"] is True and v["platform"]["ok"] is False
+        assert v["platform"]["error_class"] == "UnknownArmPlatformError"
+        # the page reflects it: platform-bad chip + a disabled Lock button
+        body = """
+  await page.goto(BASE + '/#/draft/exp-plat', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(1200);
+  out.chip = await page.evaluate(() => document.body.textContent.includes('UnknownArmPlatformError'));
+  out.lockDisabled = await page.evaluate(() => {
+    const b = [...document.querySelectorAll('button')].find(x => x.textContent === 'Lock pre-registration');
+    return b ? b.disabled : null;
+  });
+"""
+        out = drive(base, body, tmp_path)
+        assert out["__errors"] == []
+        assert out["chip"] is True
+        assert out["lockDisabled"] is True
+        # a pure preview: no lock was taken
+        assert not (tmp_path / "exp-plat" / "ledger.ndjson").exists()
 
 
 # --- AC-3: post-lock immutability -----------------------------------------------------
