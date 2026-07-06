@@ -151,6 +151,8 @@ uv run bench run    <experiment-dir> --reuse-control <bundle> # reuse an unchang
 uv run bench control-cache export <experiment-dir> --arm control --out control.bundle.json   # export a control arm for reuse
 uv run bench proxy up   --allow api.anthropic.com --allow api.openai.com   # stand up the managed metering proxy for harbor egress (ledgers nothing)
 uv run bench proxy down                                       # tear the managed metering proxy + its networks down
+uv run bench otlp  up                                         # stand up the managed OTLP trace collector for in-trial span capture (ledgers nothing)
+uv run bench otlp  down                                       # tear the collector + its network down (deletes the raw envelope log unless --keep-raw)
 uv run bench images list                                      # official trial images: name -> tag (ledgers nothing)
 uv run bench images build generic-llm --pin                  # build (FROM verdi-base first) and pin a trial image to a sha256 digest
 uv run bench images verify <image-ref>                       # offline compliance check: hardened + network-none, asserts the harbor contract

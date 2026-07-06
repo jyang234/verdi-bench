@@ -16,6 +16,10 @@ from __future__ import annotations
 # Read facade (re-export) ------------------------------------------------------
 from ..ledger.view import LedgerView, TrialEventView, TrialStory
 
+# Hermetic sidecar lifecycles (re-export; owner stays ``harness.hermetic``, so the
+# SDK stays a leaf that imports subsystems, never the reverse) [refactor 09 §3].
+from ..hermetic.tracing import CollectorConfig, TraceCollector
+
 # Schema facade (re-export) ----------------------------------------------------
 from ..schema import (
     ExperimentSpec,
@@ -64,6 +68,9 @@ __all__ = [
     "LedgerView",
     "TrialEventView",
     "TrialStory",
+    # hermetic sidecar lifecycles
+    "TraceCollector",
+    "CollectorConfig",
     # schema facade
     "ExperimentSpec",
     "TaskSpec",

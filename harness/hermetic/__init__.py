@@ -31,6 +31,13 @@ from harness.hermetic.network import (
     ensure_metered_network,
     remove_network,
 )
+from harness.hermetic.tracing import (
+    COLLECTOR_PORT,
+    MANAGED_COLLECTOR_NAME,
+    CollectorConfig,
+    TraceCollector,
+    TraceCollectorError,
+)
 
 __all__ = [
     "DockerClient",
@@ -49,4 +56,9 @@ __all__ = [
     "teardown_managed",
     "MANAGED_PROXY_NAME",
     "PROXY_BASE_IMAGE",
+    "TraceCollector",
+    "TraceCollectorError",
+    "CollectorConfig",
+    "MANAGED_COLLECTOR_NAME",
+    "COLLECTOR_PORT",
 ]
