@@ -623,3 +623,30 @@ def test_m_o6_bump_reimport_carries_quarantine_and_never_a_stale_baseline(tmp_pa
     assert m2.task(changed_id).sha != m1.task(changed_id).sha  # changed content
     assert m2.task(changed_id).baseline_ref is None          # never rides the bump
     assert m2.task(changed_id).status == "admitted"          # public policy unchanged
+
+
+# --- calibrate statistics moved out of the thin CLI [refactor 07 §3] --------
+def test_realized_calibration_run_derives_run_from_grades(tmp_path):
+    """The inline calibrate stats moved into a corpus function: it derives the
+    calibration ``run`` record (mean holdout pass rate + task count) from the
+    ledger's grades — the exact record the CLI/api used to inline."""
+    from harness.corpus.ledger_ops import realized_calibration_run
+    from tests.fixtures.builders import seed_trial_and_grade
+
+    ledger = tmp_path / "ledger.ndjson"
+    ctx = fixed_ctx(experiment_id="exp")
+    seed_trial_and_grade(ledger, ctx, trial_id="t1", task_id="ta", arm="control", passed=True)
+    seed_trial_and_grade(ledger, ctx, trial_id="t2", task_id="tb", arm="control", passed=False)
+    assert realized_calibration_run(ledger, rho=0.3, kind="full") == {
+        "p": 0.5, "rho": 0.3, "n_tasks": 2, "kind": "full",
+    }
+
+
+def test_realized_calibration_run_refuses_a_ledger_with_no_grades(tmp_path):
+    """Fail loudly, never a silent p over zero tasks [fail loudly]."""
+    from harness.corpus.ledger_ops import NoGradedTrialsError, realized_calibration_run
+
+    empty = tmp_path / "empty.ndjson"
+    empty.write_text("", encoding="utf-8")
+    with pytest.raises(NoGradedTrialsError, match="no graded trials"):
+        realized_calibration_run(empty, rho=0.3, kind="subset")

@@ -21,7 +21,6 @@ from .api import (
     AdmitInputError,
     CalibrateKindError,
     CandidateStagingError,
-    NoGradedTrialsError,
     UnknownBenchmarkError,
     ValidateTasksFileError,
     corpus_admit,
@@ -35,6 +34,7 @@ from .api import (
     validate_tasks,
 )
 from .benchmarks import importer_help
+from .ledger_ops import NoGradedTrialsError
 
 
 def register(app: typer.Typer) -> None:

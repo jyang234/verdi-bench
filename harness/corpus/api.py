@@ -46,10 +46,6 @@ class CalibrateKindError(RuntimeError):
     """``bench corpus calibrate --kind`` was neither ``subset`` nor ``full``."""
 
 
-class NoGradedTrialsError(RuntimeError):
-    """Calibration was asked to derive variance from a ledger with no grades."""
-
-
 class CandidateStagingError(RuntimeError):
     """Staging a mined candidate into a manifest was refused (bad entry)."""
 
@@ -312,39 +308,25 @@ def corpus_calibrate(
     Raises ``CalibrateKindError`` / ``NoGradedTrialsError`` / ``ActorResolutionError``
     (all mapped to exit 2). ``rho`` is a recorded assumption (full estimation is
     Phase 5)."""
-    from ..ledger import events
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
-    from ..ledger.query import find_events
-    from .ledger_ops import ledger_calibration_run
+    from .ledger_ops import ledger_calibration_run, realized_calibration_run
     from .registry import CorpusManifest
 
     if kind not in ("subset", "full"):
         raise CalibrateKindError("--kind must be 'subset' or 'full'")
     ledger_path = experiment_dir / "ledger.ndjson"
     manifest = CorpusManifest.load(manifest_path)
-
-    trial_task = {
-        ev["trial_record"]["trial_id"]: ev["trial_record"]["task_id"]
-        for ev in find_events(ledger_path, events.TRIAL)
-    }
-    by_task: dict[str, list[float]] = {}
-    for ev in find_events(ledger_path, events.GRADE):
-        task_id = trial_task.get(ev["trial_id"])
-        if task_id is None:
-            continue
-        by_task.setdefault(task_id, []).append(1.0 if ev["binary_score"] else 0.0)
-    if not by_task:
-        raise NoGradedTrialsError("no graded trials to calibrate from")
-    all_scores = [s for xs in by_task.values() for s in xs]
-    p = sum(all_scores) / len(all_scores)
-    n_tasks = len(by_task)
-    run = {"p": round(p, 6), "rho": rho, "n_tasks": n_tasks, "kind": kind}
-
+    # The realized-variance statistics moved into a corpus function [07 §3];
+    # this stays argument handling + refusal mapping + the ledger orchestration.
+    run = realized_calibration_run(ledger_path, rho=rho, kind=kind)
     ctx = EventContext(experiment_id=experiment_dir.name, actor=resolve_actor(actor))
     ledger_calibration_run(ledger_path, ctx, manifest, run, kind=kind)
     manifest.save(manifest_path)
-    return CalibrateOutcome(kind=kind, p=p, n_tasks=n_tasks, status=manifest.calibration.status)
+    return CalibrateOutcome(
+        kind=run["kind"], p=run["p"], n_tasks=run["n_tasks"],
+        status=manifest.calibration.status,
+    )
 
 
 def corpus_admit(
