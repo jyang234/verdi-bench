@@ -76,8 +76,9 @@ def paired_comparisons(experiment_dir, *, corpus_manifest=None) -> dict:
 
     def _reasoning(trial_id):
         """Per-arm reasoning for the operator compare view — unblinded, sha-verified,
-        None when the arm captured none [EVAL-24 AC-5]. Reasoning renders here and
-        ONLY here (operator tier): it is never in the judge packet or the fence."""
+        None when the arm captured none [EVAL-24 AC-5]. Reasoning renders on the
+        operator tier ONLY (here and the trial process view via ``trial_detail``
+        [flight-recorder charter]): it is never in the judge packet or the fence."""
         meta = trial_meta.get(trial_id)
         if meta is None:
             return None

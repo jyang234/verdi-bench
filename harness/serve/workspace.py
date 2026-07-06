@@ -23,12 +23,21 @@ def _summary_row(name: str, snap: dict) -> dict:
         "name": name,
         "chain": snap["chain"],
         "heartbeat_state": hb.get("state"),
+        # Additive: the heartbeat's own timestamp, so the home screen can call
+        # a silent "running" document stale the same way the experiment screen
+        # does (staleness is judged client-side, never by the harness).
+        "heartbeat_ts": hb.get("ts"),
         "in_flight": hb.get("in_flight"),
         "summary": None,  # withheld unless the chain verified [fail closed]
     }
     if st is not None:
+        spec = st.get("spec") or {}
         row["summary"] = {
             "locked": st["lock"]["locked"],
+            # Additive: what the experiment compares — arm names and models
+            # (operator tier; None when the spec is absent/unreadable).
+            "arms": spec.get("arms"),
+            "arm_models": spec.get("arm_models"),
             "cells": st["cells"],
             "spend": st["spend"],
             "grade": st["grade"],

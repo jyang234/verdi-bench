@@ -14,7 +14,11 @@ deterministic grade, or the pre-registration fence (isolation by construction,
 EVAL-24 AC-2). A ``ReasoningEntry`` may carry an optional ``agent`` role
 [EVAL-24 AC-6] attributing the reasoning to a sub-agent of a multi-agent
 workflow, over the SAME closed EVAL-21 vocabulary as the trajectory; null =
-unattributed (single-agent reasoning).
+unattributed (single-agent reasoning). At v3 it may also carry ``relative_ts``
+and ``turn`` linkage [flight-recorder charter: the immutable dump of the whole
+thought process AND orchestration], letting operator-tier views interleave
+reasoning with the trajectory into one process timeline; both null = unlinked,
+the honest state for older records and stacks that don't report them.
 
 Capture honesty mirrors the trajectory [AC-1]: the serialized record passes the
 EVAL-4 secret scrub before persisting and is re-validated after; a scrub that
@@ -40,7 +44,13 @@ from .trajectory import UNATTRIBUTED, validate_agent_label
 # v2 [EVAL-24 AC-6] adds the optional per-entry ``agent`` role (multi-agent
 # reasoning attribution) the trajectory-additive-field way: a v1 recorder reads
 # back with null agent throughout, no reader may require it.
-FLIGHT_RECORDER_SCHEMA_VERSION = 2
+# v3 [flight-recorder charter] adds the optional per-entry LINKAGE fields
+# ``relative_ts`` and ``turn`` — the additive-null-defaulted precedent again —
+# so a stack that reports them lets thought and action interleave into ONE
+# process timeline. v1/v2 recorders read back with both null throughout; no
+# reader may require them (unlinked reasoning stays renderable in capture
+# order). Approved version bump: the user's charter mandate (2026-07-05).
+FLIGHT_RECORDER_SCHEMA_VERSION = 3
 FLIGHT_RECORDER_FILENAME = "flight_recorder.json"
 
 # EVAL-24-D003 [fixed-per-trial-byte-cap]: a documented per-trial reasoning byte
@@ -68,7 +78,18 @@ class ReasoningEntry(BaseModel):
     ``agent`` [EVAL-24 AC-6] optionally attributes the reasoning to a sub-agent of
     a multi-agent workflow, over the SAME closed EVAL-21 role vocabulary as the
     trajectory (``planner``/``worker-2``/…); null = unattributed — single-agent
-    reasoning and v1 records, which read back null throughout."""
+    reasoning and v1 records, which read back null throughout.
+
+    v3 linkage (both Optional, null = unlinked — the honest state for v1/v2
+    records and stacks that don't report them):
+
+    * ``relative_ts`` — seconds since trial start when this reasoning happened,
+      the trajectory-step clock, so thought can be merged into the action
+      timeline even without an explicit turn link.
+    * ``turn`` — the 0-based index of the trajectory step this reasoning span
+      belongs to (the stack's own declaration, never inferred). A negative
+      index is a malformed declaration and is refused loudly, the closed-
+      vocabulary precedent — never laundered into "unlinked"."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -76,6 +97,8 @@ class ReasoningEntry(BaseModel):
     tokens: Optional[int] = None
     cost: Optional[float] = None
     agent: Optional[str] = None
+    relative_ts: Optional[float] = None
+    turn: Optional[int] = None
 
     @field_validator("tokens", mode="before")
     @classmethod
@@ -86,6 +109,26 @@ class ReasoningEntry(BaseModel):
     @classmethod
     def _coerce_cost(cls, v):
         return coerce_float(v)
+
+    @field_validator("relative_ts", mode="before")
+    @classmethod
+    def _coerce_relative_ts(cls, v):
+        return coerce_float(v)
+
+    @field_validator("turn", mode="before")
+    @classmethod
+    def _coerce_turn(cls, v):
+        return coerce_int(v)
+
+    @field_validator("turn")
+    @classmethod
+    def _turn_is_an_index(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v < 0:
+            raise ValueError(
+                f"turn must be a 0-based trajectory-step index, got {v} — a "
+                "negative link is a malformed declaration, not 'unlinked'"
+            )
+        return v
 
     @field_validator("agent")
     @classmethod

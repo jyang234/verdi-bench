@@ -30,20 +30,27 @@ def _sample_log():
     # an ordered multi-turn run: planner → worker drafts+revises → critic → orchestrator
     turns = [
         {"agent": "planner", "reasoning": "decompose: add, then palindrome", "kind": "message",
-         "detail": "plan: add | is_palindrome", "tokens": 20, "model": _MODEL},
+         "detail": "plan: add | is_palindrome", "tokens": 20, "model": _MODEL, "ts": 1.5},
         {"agent": "worker-1", "reasoning": "draft: add returns a + b", "kind": "file_edit",
-         "detail": "def add(a,b): return a+b", "files": ["solution.py"], "tokens": 15, "model": _MODEL},
+         "detail": "def add(a,b): return a+b", "files": ["solution.py"], "tokens": 15, "model": _MODEL, "ts": 3.2},
         {"agent": "worker-1", "reasoning": "revise: no edge cases needed", "kind": "file_edit",
-         "detail": "def add(a, b):\n    return a + b", "files": ["solution.py"], "tokens": 12, "model": _MODEL},
+         "detail": "def add(a, b):\n    return a + b", "files": ["solution.py"], "tokens": 12, "model": _MODEL, "ts": 5.0},
         {"agent": "worker-2", "reasoning": "draft: palindrome via slicing", "kind": "file_edit",
-         "detail": "def is_palindrome(s): return s==s[::-1]", "files": ["solution.py"], "tokens": 18, "model": _MODEL},
+         "detail": "def is_palindrome(s): return s==s[::-1]", "files": ["solution.py"], "tokens": 18, "model": _MODEL, "ts": 7.1},
         {"agent": "worker-2", "reasoning": "revise: normalize case", "kind": "file_edit",
          "detail": "def is_palindrome(s):\n    return s.lower()==s.lower()[::-1]",
-         "files": ["solution.py"], "tokens": 14, "model": _MODEL},
+         "files": ["solution.py"], "tokens": 14, "model": _MODEL, "ts": 9.4},
         {"agent": "critic", "reasoning": "checks out; no bugs", "kind": "message",
-         "detail": "looks correct", "tokens": 10, "model": _MODEL},
-        {"agent": "orchestrator", "reasoning": "aggregated 2 revised worker outputs",
-         "kind": "test_run", "command": "python -c 'import solution'", "detail": "wrote solution.py"},
+         "detail": "looks correct", "tokens": 10, "model": _MODEL, "ts": 11.0},
+        # the closing report: deterministic (no tokens — honest null), stating the
+        # deliverable, its provenance, the critique's disposition, and a REAL
+        # import-check exit code [the aggregation must not end the record mutely]
+        {"agent": "orchestrator", "reasoning":
+            "final deliverable: solution.py (4 lines, defining add, is_palindrome) "
+            "assembled from 2 workers' revised outputs (6 model turns total); critic "
+            "note recorded above, not auto-applied; import smoke check exit 0",
+         "kind": "test_run", "command": "python3 -c 'import solution'",
+         "detail": "import ok", "exit_code": 0, "ts": 12.5},
     ]
     return agent.build_agent_log(model=_MODEL, turns=turns)
 
@@ -74,6 +81,24 @@ def test_reference_log_is_multi_turn_agent_attributed_and_compliant():
     rec = FlightRecorder(trial_id="t", platform="generic", entries=entries)
     groups = slice_reasoning_by_agent(rec)
     assert len(groups["worker-1"]) == 2 and groups["worker-1"][0].content.startswith("draft")
+
+    # per-turn usage rides the reasoning entry when measured; the deterministic
+    # orchestrator turn reports none and reads back null — never zero [EVAL-4-D004]
+    assert [e.tokens for e in groups["worker-1"]] == [15, 12]
+    assert groups["orchestrator"][0].tokens is None
+    # ... and its closing report is a complete final statement with the REAL
+    # smoke-check exit code on the step, not a mute "aggregated N outputs"
+    assert groups["orchestrator"][0].content.startswith("final deliverable:")
+    assert "not auto-applied" in groups["orchestrator"][0].content
+    (orch_step,) = [s for s in steps if s.agent == "orchestrator"]
+    assert orch_step.kind == "test_run" and orch_step.exit_code == 0
+
+    # v3 linkage [flight-recorder charter]: every reasoning entry declares its
+    # own step's index and the turn's measured clock, and the steps carry the
+    # same clock — thought and action interleave into ONE process timeline
+    assert [e.turn for e in entries] == list(range(7))
+    assert [e.relative_ts for e in entries] == [1.5, 3.2, 5.0, 7.1, 9.4, 11.0, 12.5]
+    assert [s.relative_ts for s in steps] == [1.5, 3.2, 5.0, 7.1, 9.4, 11.0, 12.5]
 
 
 def test_reference_log_survives_the_persist_redaction_door(tmp_path):

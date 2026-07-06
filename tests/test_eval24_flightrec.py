@@ -275,7 +275,7 @@ def test_ac6_reasoning_attributed_to_subagent():
         {"content": "solve palindrome", "agent": "worker-2"},
         {"content": "ambient note"}]})            # unattributed
     rec = FlightRecorder(trial_id="t", platform="generic", entries=entries)
-    assert rec.schema_version == 2                # additive v2 bump
+    assert rec.schema_version == 3                # additive v3 bump (charter linkage)
     groups = slice_reasoning_by_agent(rec)
     assert set(groups) == {"planner", "worker-1", "worker-2", UNATTRIBUTED}
     assert [e.content for e in groups["planner"]] == ["decompose the task"]

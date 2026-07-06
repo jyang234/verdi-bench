@@ -155,6 +155,10 @@ def _spec_summary(spec: Optional[ExperimentSpec]) -> Optional[dict]:
         return None
     return {
         "arms": [a.name for a in spec.arms],
+        # Additive [EVAL-14 legibility]: which model each arm runs — the core
+        # identity of an A/B experiment, for the openly-unblinded operator
+        # tier only (the blind path never reads status).
+        "arm_models": {a.name: a.model for a in spec.arms},
         "repetitions": spec.repetitions,
         "primary_metric": spec.primary_metric.value,
         "decision_rule": spec.decision_rule,

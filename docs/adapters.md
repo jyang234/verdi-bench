@@ -148,8 +148,10 @@ unchanged.
 {
   "verdi_log_version": 1,
   "reasoning": [
-    {"content": "plan: solve add first, then the palindrome task", "agent": "planner"},
-    {"content": "add(a, b) returns a + b; handled the overflow case", "agent": "worker-1", "tokens": 90}
+    {"content": "plan: solve add first, then the palindrome task", "agent": "planner",
+     "relative_ts": 1.5, "turn": 0},
+    {"content": "add(a, b) returns a + b; handled the overflow case", "agent": "worker-1",
+     "tokens": 90, "relative_ts": 9.0, "turn": 1}
   ]
 }
 ```
@@ -160,13 +162,24 @@ role [EVAL-24] attributes the reasoning to a sub-agent of a multi-agent
 workflow, over the **same** closed role vocabulary as trajectory steps
 (`planner`/`worker-2`/…); `null` = unattributed (single-agent reasoning). An
 out-of-vocabulary label is refused loudly, exactly like a step's `agent`.
+
+Two optional **v3 linkage** fields [flight-recorder charter] let the operator
+process view interleave thought with action into one timeline: `relative_ts`
+(float — seconds since trial start, the trajectory-step clock) and `turn`
+(int — the 0-based index of the trajectory step this reasoning belongs to,
+the stack's own declaration, never inferred by verdi). Both null = unlinked;
+unlinked reasoning still renders, in capture order, labeled as such. A
+negative `turn` is a malformed declaration and is refused loudly. Older logs
+(and recorders written before v3) read back with both fields null forever —
+no reader may require them.
+
 Reasoning persists as a **separate**
 artifact (`artifacts/flight_recorder.json`) bound to the chain by an additive
 `flight_recorder_sha`, and is **operator-tier** — it feeds the read-only
-compare view and the blinded advisory forensic review, and is invisible by
-construction to the judge, the deterministic grade, and the official fence. A
-malformed `reasoning` block is refused loudly (`GenericLogError`), like any
-declared block.
+compare view, the per-trial process view, and the blinded advisory forensic
+review, and is invisible by construction to the judge, the deterministic
+grade, and the official fence. A malformed `reasoning` block is refused
+loudly (`GenericLogError`), like any declared block.
 
 ### Failure semantics, end to end
 

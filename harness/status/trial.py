@@ -2,12 +2,15 @@
 
 One pure read assembling everything the instrument knows about a single
 trial: the ledgered record, its sha-verified trajectory (status always
-stated, steps only when ``verified``), grade/cant_grade history with
-per-assertion detail, the judge verdicts of its (task, repetition)
-comparison — joined by the same deterministic ``comparison_id`` the judge
-stamps, never guessed — forensic metrics/flags naming it, any quarantine
-disposition, and its egress record. Nulls stay null end-to-end [EVAL-4-D004];
-an unknown trial id returns ``None`` (the serve layer's 404).
+stated, steps only when ``verified``), its sha-verified flight recorder
+[flight-recorder charter] (status always stated, entries only when
+``verified`` — operator tier, same as the compare screen; never the judge
+packet or the fence), grade/cant_grade history with per-assertion detail,
+the judge verdicts of its (task, repetition) comparison — joined by the same
+deterministic ``comparison_id`` the judge stamps, never guessed — forensic
+metrics/flags naming it, any quarantine disposition, and its egress record.
+Nulls stay null end-to-end [EVAL-4-D004]; an unknown trial id returns
+``None`` (the serve layer's 404).
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from typing import Optional
 from ..judge.assemble import comparison_id_for
 from ..ledger import events
 from ..ledger.query import read_events
+from ..run.flight_recorder import resolve_flight_recorder
 from ..run.trajectory import resolve_trajectory
 
 
@@ -27,6 +31,7 @@ def trial_detail(experiment_dir, trial_id: str) -> Optional[dict]:
 
     record: Optional[dict] = None
     trajectory_sha = None
+    flight_recorder_sha = None
     grades: list[dict] = []
     cant_grades: list[dict] = []
     verdicts: list[dict] = []
@@ -42,6 +47,7 @@ def trial_detail(experiment_dir, trial_id: str) -> Optional[dict]:
             if rec.get("trial_id") == trial_id:
                 record = rec
                 trajectory_sha = ev.get("trajectory_sha")
+                flight_recorder_sha = ev.get("flight_recorder_sha")
         elif kind == events.GRADE and ev.get("trial_id") == trial_id:
             grades.append(
                 {
@@ -93,6 +99,14 @@ def trial_detail(experiment_dir, trial_id: str) -> Optional[dict]:
         if trajectory is not None
         else None
     )
+    fr_status, fr_record = resolve_flight_recorder(
+        record.get("artifacts_path"), flight_recorder_sha
+    )
+    fr_entries = (
+        [e.model_dump(mode="json") for e in fr_record.entries]
+        if fr_record is not None
+        else None
+    )
 
     rec_flags = record.get("flags") or {}
     return {
@@ -100,6 +114,9 @@ def trial_detail(experiment_dir, trial_id: str) -> Optional[dict]:
         "record": record,
         "comparison_id": cmp_id,
         "trajectory": {"status": status, "steps": steps},
+        # operator-tier reasoning with v3 linkage, for the process view; the
+        # closed status vocabulary mirrors the trajectory's [EVAL-24]
+        "flight_recorder": {"status": fr_status, "entries": fr_entries},
         "grade": {
             "grades": grades,
             "cant_grades": cant_grades,
