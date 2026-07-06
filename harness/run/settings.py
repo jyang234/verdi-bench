@@ -59,6 +59,10 @@ class ProxyBlock(BaseModel):
     url: Optional[str] = None
     allowlist: Optional[list[str]] = None
     log_path: Optional[str] = None
+    # Opt-in [refactor 04 §1]: when true the harness stands up the managed
+    # metering proxy (MeteringProxy) around the run and injects its own url +
+    # log_path, so the operator does not hand-roll the 7-step docker lifecycle.
+    managed: bool = False
 
 
 class QuotasBlock(BaseModel):
@@ -161,6 +165,10 @@ class RunSettings:
     """Resolved operational parameters for a run (never the pre-registered spec)."""
 
     proxy: Optional[ProxyConfig] = None
+    # Opt-in managed metering proxy [refactor 04 §1]: the engine run is wrapped in
+    # MeteringProxy.managed(...) when set, standing the proxy up and tearing it
+    # down around the schedule. Resolved from run.config.yaml's proxy.managed.
+    proxy_managed: bool = False
     quotas: Quotas = field(default_factory=lambda: DEFAULT_QUOTAS.model_copy())
     provider_keys: dict = field(default_factory=dict)
     # PRA-M2: optional per-arm provider-key NAME allowlist {arm: [names]}. None
@@ -208,7 +216,17 @@ def load_run_settings(
     cfg = RunConfigFile.parse(yaml.safe_load(path.read_text(encoding="utf-8")))
 
     proxy = None
+    proxy_managed = False
     if cfg.proxy is not None:
+        proxy_managed = cfg.proxy.managed
+        if proxy_managed and cfg.proxy.url:
+            # The harness stands up AND addresses its own proxy when managed;
+            # an operator-supplied url is contradictory — refuse, never silently
+            # override [refactor 04 §1, fail-loudly].
+            raise ValueError(
+                "run.config.yaml sets proxy.managed: true but also proxy.url; the "
+                "managed proxy provides its own url — remove proxy.url [refactor 04 §1]"
+            )
         if declared and cfg.proxy.allowlist is not None:
             raise ValueError(
                 "run.config.yaml declares a proxy allowlist but the locked spec "
@@ -270,6 +288,7 @@ def load_run_settings(
         reuse_bundle = b if b.is_absolute() else Path(experiment_dir) / b
 
     return RunSettings(
-        proxy=proxy, quotas=quotas, provider_keys=provider_keys,
-        provider_key_names_by_arm=by_arm, reuse_control_bundle=reuse_bundle,
+        proxy=proxy, proxy_managed=proxy_managed, quotas=quotas,
+        provider_keys=provider_keys, provider_key_names_by_arm=by_arm,
+        reuse_control_bundle=reuse_bundle,
     )

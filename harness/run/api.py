@@ -12,11 +12,13 @@ selected with ``engine="harbor"`` and requires local Docker.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Iterator, Optional
 
 from ..plan.interleave import derive_schedule, enumerate_trials
-from .types import RunConfig, Task
+from .types import ProxyConfig, RunConfig, Task
 
 
 class NoTasksError(RuntimeError):
@@ -65,6 +67,37 @@ def _task_from_dict(t: dict, task_sha: str) -> Task:
         fake_behavior=t.get("fake_behavior", {}),
         task_sha=task_sha,
     )
+
+
+@contextmanager
+def _managed_proxy(settings, engine: str, exp_dir: Path) -> Iterator[Optional[ProxyConfig]]:
+    """Yield the ProxyConfig the schedule runs under, standing up the managed
+    metering proxy when opted in [refactor 04 §1].
+
+    A plain passthrough of ``settings.proxy`` unless ``proxy.managed`` is set and
+    the engine actually containerizes — the fake engine is hermetic-by-fiat and
+    needs no docker, so a managed proxy would be pointless and would break its
+    no-daemon guarantee. When active, it stands the proxy up (MeteringProxy refuses
+    loudly if docker is unavailable), injects its url + log_path onto the
+    spec-derived ProxyConfig (keeping the allowlist + infra_hosts), and always tears
+    it down on exit. ``log_path`` defaults under the experiment dir.
+    """
+    if not settings.proxy_managed or engine == "fake":
+        yield settings.proxy
+        return
+    from ..hermetic.metering import MeteringProxy
+
+    base = settings.proxy
+    allow = list(base.allowlist) if base is not None else []
+    log_path = (
+        Path(base.log_path) if (base is not None and base.log_path)
+        else exp_dir / "metering" / "verdi.jsonl"
+    )
+    with MeteringProxy.managed(allow, log_path=log_path) as managed_cfg:
+        if base is None:
+            yield managed_cfg
+        else:
+            yield replace(base, proxy_url=managed_cfg.proxy_url, log_path=managed_cfg.log_path)
 
 
 def run_experiment(
@@ -147,71 +180,77 @@ def run_experiment(
     # [EVAL-20 AC-6]: a spec that pre-registers egress hosts derives the proxy
     # allowlist from those locked bytes.
     settings = load_run_settings(exp_dir, spec=spec)
-    config = RunConfig(
-        engine=eng,
-        proxy=settings.proxy,
-        quotas=settings.quotas,
-        provider_keys=settings.provider_keys,
-        provider_key_names_by_arm=settings.provider_key_names_by_arm,  # PRA-M2
-    )
     resolved_actor = resolve_actor(actor)
     ctx = EventContext(experiment_id=exp_dir.name, actor=resolved_actor)
 
-    # Operational reuse surface: reuse_control arg, or a reuse_control.bundle key
-    # in run.config.yaml — already parsed+resolved by load_run_settings above [04 §4].
-    if reuse_control is None:
-        reuse_control = settings.reuse_control_bundle
-
-    # Control reuse [control-reuse plan]: import the bundle's control-arm data
-    # under the reused_* kinds (preflight refuses on any fingerprint drift), then
-    # drop that arm's cells from the schedule.
-    reused_arm_name: str | None = None
-    reused_cells: int | None = None
-    if reuse_control is not None:
-        from .reuse import import_bundle, load_bundle
-
-        bundle = load_bundle(reuse_control)
-        reused_arm_name = import_bundle(
-            exp_dir, bundle, ctx, engine=engine, spec=spec, settings=settings,
+    # Managed metering proxy (opt-in, refactor 04 §1): when run.config.yaml sets
+    # proxy.managed, stand the metering proxy up around the whole schedule and tear
+    # it down after — injecting its own url + log_path onto the ProxyConfig the
+    # trials use. A no-op passthrough (and no docker requirement) otherwise.
+    with _managed_proxy(settings, engine, exp_dir) as run_proxy:
+        config = RunConfig(
+            engine=eng,
+            proxy=run_proxy,
+            quotas=settings.quotas,
+            provider_keys=settings.provider_keys,
+            provider_key_names_by_arm=settings.provider_key_names_by_arm,  # PRA-M2
         )
-        reused_cells = len(bundle["cells"])
 
-    # Drop EVERY arm already imported as a reused control from the schedule — read
-    # from the LEDGER, not just this invocation's flag [control-reuse].
-    _reused = reused_arms(ledger_path)
-    if _reused:
-        order = [t for t in order if t.arm not in _reused]
+        # Operational reuse surface: reuse_control arg, or a reuse_control.bundle
+        # key in run.config.yaml — already parsed+resolved by load_run_settings [04 §4].
+        if reuse_control is None:
+            reuse_control = settings.reuse_control_bundle
 
-    try:
-        result = schedule(
-            order,
-            tasks=task_map,
-            arms=arm_map,
-            workspace_root=exp_dir / "workspaces",
-            ledger_path=ledger_path,
-            ctx=ctx,
-            config=config,
-            cost_ceiling=spec.cost_ceiling.amount,
-            quarantined_tasks=quarantine,
-            schedulable_tasks=schedulable,
-            # Liveness sidecar for live observers [EVAL-13 AC-1]: operational
-            # telemetry beside the ledger, never in it.
-            heartbeat_path=exp_dir / HEARTBEAT_FILENAME,
-        )
-    except QuarantinedTaskError as e:
+        # Control reuse [control-reuse plan]: import the bundle's control-arm data
+        # under the reused_* kinds (preflight refuses on any fingerprint drift), then
+        # drop that arm's cells from the schedule.
+        reused_arm_name: str | None = None
+        reused_cells: int | None = None
+        if reuse_control is not None:
+            from .reuse import import_bundle, load_bundle
+
+            bundle = load_bundle(reuse_control)
+            reused_arm_name = import_bundle(
+                exp_dir, bundle, ctx, engine=engine, spec=spec, settings=settings,
+            )
+            reused_cells = len(bundle["cells"])
+
+        # Drop EVERY arm already imported as a reused control from the schedule —
+        # read from the LEDGER, not just this invocation's flag [control-reuse].
+        _reused = reused_arms(ledger_path)
+        if _reused:
+            order = [t for t in order if t.arm not in _reused]
+
+        try:
+            result = schedule(
+                order,
+                tasks=task_map,
+                arms=arm_map,
+                workspace_root=exp_dir / "workspaces",
+                ledger_path=ledger_path,
+                ctx=ctx,
+                config=config,
+                cost_ceiling=spec.cost_ceiling.amount,
+                quarantined_tasks=quarantine,
+                schedulable_tasks=schedulable,
+                # Liveness sidecar for live observers [EVAL-13 AC-1]: operational
+                # telemetry beside the ledger, never in it.
+                heartbeat_path=exp_dir / HEARTBEAT_FILENAME,
+            )
+        except QuarantinedTaskError as e:
+            return RunOutcome(
+                n_trials=0, infra_failures=0, stopped_cost_ceiling=False,
+                aborted_proxy_unavailable=False, reused_arm=reused_arm_name,
+                reused_cells=reused_cells, quarantine_error=str(e),
+            )
         return RunOutcome(
-            n_trials=0, infra_failures=0, stopped_cost_ceiling=False,
-            aborted_proxy_unavailable=False, reused_arm=reused_arm_name,
-            reused_cells=reused_cells, quarantine_error=str(e),
+            n_trials=len(result.records),
+            infra_failures=result.infra_failures,
+            stopped_cost_ceiling=result.stopped_cost_ceiling,
+            aborted_proxy_unavailable=result.aborted_proxy_unavailable,
+            reused_arm=reused_arm_name,
+            reused_cells=reused_cells,
         )
-    return RunOutcome(
-        n_trials=len(result.records),
-        infra_failures=result.infra_failures,
-        stopped_cost_ceiling=result.stopped_cost_ceiling,
-        aborted_proxy_unavailable=result.aborted_proxy_unavailable,
-        reused_arm=reused_arm_name,
-        reused_cells=reused_cells,
-    )
 
 
 def export_control_bundle(exp_dir: Path, *, arm: str, out: Path) -> ControlExportOutcome:

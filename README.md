@@ -149,6 +149,8 @@ uv run bench plan   experiment.yaml --ledger ledger.ndjson   # validate + lock (
 uv run bench run    <experiment-dir>                          # execute trials
 uv run bench run    <experiment-dir> --reuse-control <bundle> # reuse an unchanged control (exploratory; preflight refuses on drift)
 uv run bench control-cache export <experiment-dir> --arm control --out control.bundle.json   # export a control arm for reuse
+uv run bench proxy up   --allow api.anthropic.com --allow api.openai.com   # stand up the managed metering proxy for harbor egress (ledgers nothing)
+uv run bench proxy down                                       # tear the managed metering proxy + its networks down
 uv run bench grade  <experiment-dir>                          # deterministic grades
 uv run bench grade  <experiment-dir> --retry-terminal <trial-id>   # ledgered terminal-cant_grade override
 uv run bench judge  <experiment-dir>                          # identity-blind advisory verdicts (idempotent)

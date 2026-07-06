@@ -44,6 +44,8 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Execute the locked experiment's interleaved trials."""
+        from ..hermetic.metering import MeteringProxyError
+
         try:
             with refusal_exit(
                 TaskCommitmentError, CorpusManifestMismatchError,
@@ -55,6 +57,11 @@ def register(app: typer.Typer) -> None:
                 )
         except NoTasksError as e:
             raise typer.BadParameter(str(e))
+        except MeteringProxyError as e:
+            # proxy.managed was set but the managed metering proxy could not stand
+            # up (e.g. no docker daemon); refuse loudly rather than run unmetered.
+            typer.echo(f"RUN ABORTED: managed metering proxy could not start: {e}", err=True)
+            raise typer.Exit(code=2)
 
         if outcome.reused_arm is not None:
             typer.echo(

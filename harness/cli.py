@@ -159,6 +159,7 @@ def _register_stage_commands() -> None:
 
     for module_name, attr in [
         (".run.cli", "register"),
+        (".hermetic.cli", "register"),
         (".grade.cli", "register"),
         (".judge.cli", "register"),
         (".corpus.cli", "register"),
