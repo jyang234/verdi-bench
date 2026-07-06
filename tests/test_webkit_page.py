@@ -58,3 +58,22 @@ def test_compose_refuses_missing_or_doubled_slots():
         webkit_page.compose("__APP_JS__ __APP_JS__", "X", tokens_css="T")
     with pytest.raises(ValueError, match="app-script splice point"):
         webkit_page.compose("__APP_JS__ __APP_JS__ __TOKENS_CSS__", "X", tokens_css="T")
+
+
+def test_shared_chunks_are_live_single_source_on_reviewer_and_author():
+    """The dedup is load-bearing, not decorative: the reviewer and author
+    documents carry the webkit token block and DOM/fetch kit verbatim (one
+    source), while the operator surface legitimately keeps its own richer kit
+    and palette — so a change to webkit's KIT_JS moves both mutation surfaces
+    at once and cannot silently touch the operator tier."""
+    from harness.author.page import AUTHOR_PAGE
+    from harness.review.serve_page import REVIEWER_PAGE
+    from harness.serve.page import OPERATOR_PAGE
+
+    for page in (REVIEWER_PAGE, AUTHOR_PAGE):
+        assert page.count(webkit_page.TOKENS_CSS) == 1
+        assert page.count(webkit_page.KIT_JS) == 1
+    # the operator surface does NOT share them (its h()/j() are bundle-aware /
+    # display-only and its tokens carry the meter/spark/diff palette)
+    assert webkit_page.KIT_JS not in OPERATOR_PAGE
+    assert webkit_page.TOKENS_CSS not in OPERATOR_PAGE
