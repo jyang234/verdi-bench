@@ -13,12 +13,15 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+
+from pydantic import BaseModel
 
 from ..adapters import get_adapter
-from ..adapters.base import Flags, Outcome, Provenance, TrialRecord
+from ..adapters.base import Adapter, Flags, Outcome, Provenance, TrialRecord
 from ..adapters.generic import by_model_delta, normalize_generic_by_model
 from ..schema.experiment import Arm
 from .egress import undeclared_model_egress
@@ -31,6 +34,48 @@ from .types import RunConfig, Task, TrialRequest
 
 class HoldoutLeakError(RuntimeError):
     """A holdout canary reached the prompt payload — insulation breach [AC-9]."""
+
+
+@dataclass
+class SpendTracker:
+    """The already-incurred spend, threaded through run_trial's post-engine phases
+    [refactor 04 §3, PRA-M8].
+
+    The container has run and the proxy has metered it, so any spend is real
+    before redaction or capture even begin. This carries the best-available
+    figure — the proxy-metered cost until telemetry is normalized, the
+    self-reported cost after — so a post-engine failure can ledger exactly the
+    spend that was incurred instead of forgetting it. It replaces the
+    ``exc.enforcement_cost`` attribute mutation the spend-carry used to smuggle
+    through the exception, a cross-module contract invisible to types.
+    """
+
+    spend: Optional[float]
+
+    def adopt_telemetry(self, telemetry_cost: Optional[float]) -> None:
+        """Prefer the self-reported cost once telemetry is known — matching the
+        completed-trial enforcement figure [PRA-M8]. A null self-report leaves the
+        proxy figure in place; a null is never imputed [D004]."""
+        if telemetry_cost is not None:
+            self.spend = telemetry_cost
+
+
+class PostEngineFailure(Exception):
+    """A run_trial phase AFTER the engine ran failed [refactor 04 §3, PRA-M8].
+
+    The container has already run and been metered, so this carries the
+    already-incurred ``spend`` explicitly and typed — no longer smuggled on the
+    raised exception — for the scheduler to ledger on ``trial_infra_failed`` and
+    charge to the cost guard. ``cause`` is the underlying corruption (redaction,
+    trajectory, or flight recorder); the scheduler maps it to the closed
+    ``trial_infra_failed`` reason vocabulary it owns, so the machine-readable
+    reason stays byte-identical to the pre-refactor protocol.
+    """
+
+    def __init__(self, *, cause: BaseException, spend: Optional[float]) -> None:
+        self.cause = cause
+        self.spend = spend
+        super().__init__(f"post-engine phase failed ({type(cause).__name__}): {cause}")
 
 
 def _now_iso() -> str:
@@ -67,6 +112,151 @@ def _redacted_native_log(artifacts_dir: Path, trial_id: str) -> dict:
 
 def new_trial_id(prefix: str = "trial") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+@dataclass(frozen=True)
+class _CaptureContext:
+    """The per-trial bindings a capture stage needs [refactor 04 §3]."""
+
+    adapter: Adapter
+    trial_id: str
+    platform: str
+    artifacts_dir: Path
+    extra_patterns: list[str]
+
+
+@dataclass(frozen=True)
+class CaptureStage:
+    """One post-redaction artifact-capture stage [refactor 04 §3].
+
+    A stage is pure data — how to pull its content out of the redacted native log
+    (``normalize``), how to build its versioned record (``build``), where its sha
+    lands on the ``TrialRecord`` (``field``), and how to persist it (``persist``).
+    A third capture artifact is one more entry in :data:`CAPTURE_STAGES`, not a
+    third inline block plus a ``TrialRecord`` edit across four files. ``normalize``
+    returning ``None`` is honest absence — no artifact, no sha [EVAL-12 AC-2].
+    """
+
+    field: str
+    normalize: Callable[[Adapter, dict], Optional[list]]
+    build: Callable[["_CaptureContext", list], BaseModel]
+    persist: Callable[[BaseModel, Path, list[str]], str]
+
+
+# The capture stages, in order. Trajectory (the graded actions, EVAL-12) then the
+# flight recorder (the operator-tier reasoning, EVAL-24) — a SEPARATE artifact
+# from the same redacted native log through the same redaction door.
+CAPTURE_STAGES: tuple[CaptureStage, ...] = (
+    CaptureStage(
+        field="trajectory_sha",
+        normalize=lambda adapter, log: adapter.normalize_trajectory(log),
+        build=lambda ctx, steps: TrajectoryRecord(
+            trial_id=ctx.trial_id, platform=ctx.platform, steps=steps
+        ),
+        persist=persist_trajectory,
+    ),
+    CaptureStage(
+        field="flight_recorder_sha",
+        normalize=lambda adapter, log: adapter.normalize_reasoning(log),
+        build=lambda ctx, entries: FlightRecorder(
+            trial_id=ctx.trial_id, platform=ctx.platform, entries=entries
+        ),
+        persist=persist_flight_recorder,
+    ),
+)
+
+
+class CapturePipeline:
+    """The post-engine capture pipeline [refactor 04 §3].
+
+    One place owns the four cross-cutting concerns the trajectory and
+    flight-recorder captures used to duplicate inline:
+
+    * ordering — :meth:`capture` refuses to run before :meth:`redact`, because a
+      capture reads the post-redaction on-disk bytes; a capture before the scrub
+      would persist a transcript's secrets [AC-8, EVAL-12 AC-2];
+    * the infra-failed skip — an already infra-failed trial gets no capture (a
+      second failure here would mask the engine's more specific reason);
+    * the timeout carve-out — a timeout kill can truncate ``agent_log.json``
+      mid-write, so a corrupt post-redaction log on a *timeout* is honest
+      absence, not ``trajectory_corrupt``; the RN-17 datapoint (and its spend)
+      survives [EVAL-12 AC-2];
+    * the PRA-M8 spend-attach — any stage failure raises :class:`PostEngineFailure`
+      carrying the :class:`SpendTracker`'s current figure.
+
+    The dual-source invariant is kept by construction: telemetry reads the engine's
+    in-memory ``native_log`` (in :func:`run_trial`); captures read the redacted
+    on-disk bytes this pipeline scrubbed [refactor 04 §2 contract test].
+    """
+
+    def __init__(
+        self, tracker: SpendTracker, stages: tuple[CaptureStage, ...] = CAPTURE_STAGES
+    ) -> None:
+        self._tracker = tracker
+        self._stages = stages
+        self._redacted = False
+
+    def redact(self, workspace, extra_patterns: list[str]) -> None:
+        """Stage 1: scrub the whole workspace before anything persists [AC-8].
+        Must run before :meth:`capture`."""
+        try:
+            redact_artifacts(workspace, extra_patterns)
+        except Exception as exc:  # PRA-M8: carry the already-incurred spend, typed
+            raise self._failed(exc) from exc
+        self._redacted = True
+
+    def capture(self, outcome: Outcome, ctx: _CaptureContext) -> dict[str, Optional[str]]:
+        """Stages 2..n: persist each capture artifact from the redacted native log.
+
+        Returns ``{stage.field: sha-or-None}`` — an honest ``None`` for a stage
+        whose adapter produced no content, or for an infra-failed / timeout-
+        truncated trial with no capturable log.
+        """
+        if not self._redacted:
+            raise RuntimeError(
+                "capture() before redact(): captures must read the post-redaction "
+                "bytes [refactor 04 §3]"
+            )
+        shas: dict[str, Optional[str]] = {stage.field: None for stage in self._stages}
+        # An already infra-failed trial gets no trial event, so a capture failure
+        # here would only mask the engine's more specific reason — skip.
+        if outcome == Outcome.infra_failed:
+            return shas
+        native_log = self._read_redacted_log(outcome, ctx)
+        for stage in self._stages:
+            shas[stage.field] = self._run_stage(stage, native_log, ctx)
+        return shas
+
+    def _read_redacted_log(
+        self, outcome: Outcome, ctx: _CaptureContext
+    ) -> Optional[dict]:
+        try:
+            return _redacted_native_log(Path(ctx.artifacts_dir), ctx.trial_id)
+        except TrajectoryCorruptError as exc:
+            if outcome != Outcome.timeout:
+                # PRA-M8: carry the already-incurred spend, typed
+                raise self._failed(exc) from exc
+            # Timeout carve-out: a truncated log is honest absence, not corrupt —
+            # keep the RN-17 timeout datapoint (and its spend) instead of erasing
+            # it as trajectory_corrupt.
+            return None
+
+    def _run_stage(
+        self, stage: CaptureStage, native_log: Optional[dict], ctx: _CaptureContext
+    ) -> Optional[str]:
+        if native_log is None:
+            return None
+        content = stage.normalize(ctx.adapter, native_log)
+        if content is None:
+            return None  # honest absence — no artifact, no sha
+        record = stage.build(ctx, content)
+        try:
+            return stage.persist(record, ctx.artifacts_dir, ctx.extra_patterns)
+        except Exception as exc:  # PRA-M8: carry the already-incurred spend, typed
+            raise self._failed(exc) from exc
+
+    def _failed(self, cause: BaseException) -> PostEngineFailure:
+        return PostEngineFailure(cause=cause, spend=self._tracker.spend)
 
 
 def run_trial(
@@ -145,40 +335,36 @@ def run_trial(
     result = config.engine.run(request)
 
     # PRA-M8: the container has now run and the proxy has metered it, so any spend
-    # is already incurred. If a post-engine step below (redaction, trajectory)
-    # raises, the scheduler ledgers trial_infra_failed — which must carry this
-    # spend so it counts against the ceiling and survives resume, instead of
-    # burning budget invisibly. We stamp the best-available enforcement cost onto
-    # the exception; the telemetry-derived figure replaces the proxy figure once
-    # telemetry is normalized below.
-    _spend: Optional[float] = result.proxy_metered_cost
+    # is already incurred. If a post-engine step below (redaction, capture) raises,
+    # the scheduler ledgers trial_infra_failed — which must carry this spend so it
+    # counts against the ceiling and survives resume, instead of burning budget
+    # invisibly. The SpendTracker threads the best-available figure explicitly (the
+    # telemetry-derived figure replaces the proxy figure once telemetry is
+    # normalized below); the CapturePipeline raises the typed PostEngineFailure
+    # carrying it — no exception mutation.
+    spend = SpendTracker(spend=result.proxy_metered_cost)
+    pipeline = CapturePipeline(spend)
 
-    def _attach_spend(exc: BaseException) -> BaseException:
-        exc.enforcement_cost = _spend
-        return exc
-
-    # Redact secrets from the whole trial workspace before it persists [AC-8].
-    # RN-7: the agent can write secrets anywhere in the workspace (Harbor mounts
-    # it rw and the grader later reads it), not just under artifacts/. RN-9: the
-    # injected provider-key VALUES scrub as literals even when their shape is not
-    # a known key pattern. (The trial request is mounted read-only OUTSIDE the
+    # Stage 1: redact secrets from the whole trial workspace before it persists
+    # [AC-8]. RN-7: the agent can write secrets anywhere in the workspace (Harbor
+    # mounts it rw and the grader later reads it), not just under artifacts/. RN-9:
+    # the injected provider-key VALUES scrub as literals even when their shape is
+    # not a known key pattern. (The trial request is mounted read-only OUTSIDE the
     # workspace, so it is not a redaction target [EVAL-4-D-8].)
     extra_patterns = list(config.redact_extra_patterns)
     extra_patterns += [
         re.escape(v) for v in (config.provider_keys or {}).values() if v
     ]
-    try:
-        redact_artifacts(workspace, extra_patterns)
-    except BaseException as exc:  # PRA-M8: carry the already-incurred spend
-        raise _attach_spend(exc)
+    pipeline.redact(workspace, extra_patterns)
 
     # Normalize telemetry from agent-native logs [AC-2]; unmeasurable ⇒ null.
+    # Dual-source invariant: telemetry reads the engine's in-memory native_log,
+    # NOT the on-disk bytes the captures below read [refactor 04 §2].
     adapter = get_adapter(arm.platform)
     telemetry = adapter.normalize(result.native_log)
     # PRA-M8: once telemetry is known, prefer the self-reported cost for any
     # subsequent post-engine failure (matching the completed-trial enforcement).
-    if telemetry.cost is not None:
-        _spend = telemetry.cost
+    spend.adopt_telemetry(telemetry.cost)
 
     # Per-model attribution [EVAL-21 AC-2, AC-4]: a v2 generic log may split
     # telemetry across the arm's DECLARED models. Self-reported testimony, so
@@ -196,60 +382,24 @@ def run_trial(
             result.native_log, arm.declared_models()
         )
 
-    # Trajectory capture [EVAL-12 AC-1, AC-2] — strictly after redact_artifacts:
-    # the input is the already-scrubbed on-disk agent_log.json (a trajectory is
-    # a transcript, and transcripts leak secrets), and persist_trajectory runs
-    # the serialized record through redact_text once more with the same
-    # injected-key patterns. An adapter with no trajectory content yields None:
-    # no artifact, no sha — honest absence, never a fabricated empty record.
-    # A corrupt/unwritable trajectory raises TrajectoryCorruptError, which the
-    # scheduler ledgers as trial_infra_failed(trajectory_corrupt). An already
-    # infra-failed trial (e.g. RN-17 telemetry_corrupt) is not captured: it gets
-    # no trial event, and a second failure here would mask the engine's more
-    # specific reason.
-    trajectory_sha: Optional[str] = None
-    flight_recorder_sha: Optional[str] = None
-    if result.outcome != Outcome.infra_failed:
-        try:
-            native_log = _redacted_native_log(Path(result.artifacts_dir), trial_id)
-        except TrajectoryCorruptError as exc:
-            if result.outcome != Outcome.timeout:
-                raise _attach_spend(exc)  # PRA-M8: carry the already-incurred spend
-            # A timeout kill can truncate agent_log.json mid-write. The timeout
-            # outcome is data (the RN-17 seam keeps it); destroying the trial as
-            # trajectory_corrupt would erase the datapoint and its spend. The
-            # trajectory is honestly absent instead — a COMPLETED trial with a
-            # corrupt post-redaction log still fails closed above.
-            native_log = None
-        steps = (
-            adapter.normalize_trajectory(native_log) if native_log is not None else None
-        )
-        if steps is not None:
-            try:
-                trajectory_sha = persist_trajectory(
-                    TrajectoryRecord(trial_id=trial_id, platform=arm.platform, steps=steps),
-                    result.artifacts_dir,
-                    extra_patterns,
-                )
-            except BaseException as exc:  # PRA-M8: carry the already-incurred spend
-                raise _attach_spend(exc)
-
-        # Flight recorder capture [EVAL-24 AC-1] — reasoning is a SEPARATE artifact
-        # from the graded trajectory, from the same already-scrubbed native log,
-        # through the same redaction door. No reasoning → None: no artifact, no
-        # sha (honest absence [AC-4]); a corrupt/unwritable recorder fails closed.
-        reasoning = (
-            adapter.normalize_reasoning(native_log) if native_log is not None else None
-        )
-        if reasoning is not None:
-            try:
-                flight_recorder_sha = persist_flight_recorder(
-                    FlightRecorder(trial_id=trial_id, platform=arm.platform, entries=reasoning),
-                    result.artifacts_dir,
-                    extra_patterns,
-                )
-            except BaseException as exc:  # PRA-M8: carry the already-incurred spend
-                raise _attach_spend(exc)
+    # Stages 2..n: capture the versioned per-trial artifacts from the redacted
+    # on-disk native log [EVAL-12 AC-1/AC-2, EVAL-24 AC-1]. The pipeline owns the
+    # ordering (strictly after redact — the input is the already-scrubbed
+    # agent_log.json, and each persist runs the serialized record through
+    # redact_text once more with the same injected-key patterns), the infra-failed
+    # skip, the timeout carve-out, and the PRA-M8 spend-attach. An adapter with no
+    # content yields None: no artifact, no sha — honest absence, never a fabricated
+    # empty record.
+    ctx = _CaptureContext(
+        adapter=adapter,
+        trial_id=trial_id,
+        platform=arm.platform,
+        artifacts_dir=result.artifacts_dir,
+        extra_patterns=extra_patterns,
+    )
+    shas = pipeline.capture(result.outcome, ctx)
+    trajectory_sha = shas["trajectory_sha"]
+    flight_recorder_sha = shas["flight_recorder_sha"]
 
     flags = Flags(egress_violation=result.egress_violation)
     if telemetry_by_model:

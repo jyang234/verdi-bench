@@ -22,7 +22,7 @@ from harness.ledger.query import find_events
 from harness.plan.interleave import Trial
 from harness.run.engines.fake import FakeEngine
 from harness.run.interleave import schedule
-from harness.run.seam import run_trial
+from harness.run.seam import PostEngineFailure, run_trial
 from harness.run.trajectory import (
     TRAJECTORY_FILENAME,
     TRAJECTORY_SCHEMA_VERSION,
@@ -220,12 +220,15 @@ def test_timeout_with_corrupt_native_log_keeps_datapoint(tmp_path):
     assert rec.trajectory_sha is None
     assert not _trajectory_path(rec).exists()
 
-    # the same corrupt log on a COMPLETED trial still fails closed
-    with pytest.raises(TrajectoryCorruptError):
+    # the same corrupt log on a COMPLETED trial still fails closed — now the typed
+    # post-engine boundary failure that carries the corruption as its cause
+    # [refactor 04 §3]; the scheduler still ledgers trajectory_corrupt from it.
+    with pytest.raises(PostEngineFailure) as exc:
         _run(
             tmp_path / "completed", CLAUDE_ARM, CLAUDE_NATIVE,
             workspace_files={"artifacts/agent_log.json": "{truncated"},
         )
+    assert isinstance(exc.value.cause, TrajectoryCorruptError)
 
 
 def test_ac2_absent_distinguishable_from_empty(tmp_path):
