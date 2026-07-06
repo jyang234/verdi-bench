@@ -16,22 +16,33 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-def _grade_tasks_from_dicts(task_dicts: list) -> dict:
+def _grade_tasks_from_dicts(task_dicts: list, exp_dir: Path) -> dict:
     """Map the committed task dicts to grader tasks.
 
     The task sha is recomputed from content (not self-attested) and matches the
     lock commitment; the fake scripting fields are **not** read from the task
     source — they exist only for fixtures/the fake engine [GR-5].
+
+    ``holdouts_dir`` is committed as a path RELATIVE TO THE EXPERIMENT DIR (the
+    :class:`~harness.schema.tasks.TaskSpec` contract, and what the SDK inline
+    holdout sugar / ``corpus.materialize`` emit). It is resolved here against
+    ``exp_dir`` — mirroring ``run.control_reuse``'s ``experiment_dir /
+    holdouts_dir`` — so the declared holdout is found regardless of the process
+    CWD (the docker mount and the local-exec loader both otherwise resolved it
+    against CWD). Resolution is a no-op for an absolute holdouts_dir (pathlib
+    join semantics) and NEVER changes the committed bytes: ``task_content_sha``
+    hashes the untouched ``t`` [refactor 03D seam fix].
     """
     from ..corpus.commit import task_content_sha
     from .types import GradeTask
 
     tasks = {}
     for t in task_dicts:
+        holdouts_dir = t.get("holdouts_dir") or ""
         tasks[t["id"]] = GradeTask(
             id=t["id"],
             task_sha=task_content_sha(t),
-            holdouts_dir=t.get("holdouts_dir", ""),
+            holdouts_dir=str(exp_dir / holdouts_dir) if holdouts_dir else "",
             plugin_ids=t.get("plugin_ids", []),
         )
     return tasks
@@ -167,7 +178,7 @@ def grade_experiment(
         lock_event, task_dicts,
         corpus_id=spec.corpus.id, semver=spec.corpus.version,
     )
-    grade_tasks = _grade_tasks_from_dicts(task_dicts)
+    grade_tasks = _grade_tasks_from_dicts(task_dicts, exp_dir)
     already = _completed_trials(ledger_path)
 
     # D-P7-2: --retry-terminal re-attempts named trials whose grade was a

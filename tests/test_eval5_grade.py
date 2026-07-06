@@ -137,11 +137,14 @@ def test_grade_loader_ignores_fake_scripting(tmp_path):
 
     tasks = _grade_tasks_from_dicts(
         [{"id": "t1", "holdouts_dir": "h", "fake_holdout_output": {"assertions": []},
-          "fake_plugin_output": {"p": 1}}]
+          "fake_plugin_output": {"p": 1}}],
+        tmp_path,
     )
     gt = tasks["t1"]
     assert gt.fake_holdout_output is None
     assert gt.fake_plugin_output == {}
+    # holdouts_dir is resolved against the experiment dir (relative-path contract)
+    assert gt.holdouts_dir == str(tmp_path / "h")
     # sha is recomputed from content, not any self-attested field
     from harness.corpus.commit import task_content_sha
 

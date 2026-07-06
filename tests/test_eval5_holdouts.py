@@ -280,6 +280,42 @@ def test_cli_grade_runner_local_exec_end_to_end(tmp_path):
     assert runner.invoke(app, ["verify-chain", str(ledger)]).exit_code == 0
 
 
+def test_cli_grade_local_exec_resolves_holdouts_dir_relative_to_exp(tmp_path, monkeypatch):
+    """``holdouts_dir`` is committed as a path RELATIVE to the experiment dir (the
+    :class:`TaskSpec` contract, and exactly what the SDK inline-holdout sugar
+    ``Task(holdout=...)`` emits — ``holdouts_dir: holdouts/<id>``). ``grade``
+    resolves it against the EXPERIMENT dir, not the process CWD, so the declared
+    holdout is found when grading is driven from any working directory [refactor
+    03D seam fix]. Before the fix a relative holdouts_dir only resolved when the
+    process was CWD'd into the experiment dir; the sanctioned workaround was an
+    absolute holdouts_dir (the test above)."""
+    expdir = tmp_path / "exp"
+    expdir.mkdir(parents=True)
+    AssertionHoldout(expression=_ADD5).materialize(expdir / "holdouts" / "t1")
+    write_experiment_yaml(expdir / "experiment.yaml", repetitions=1)
+    tasks = [{
+        "id": "t1", "prompt": "add", "holdouts_dir": "holdouts/t1",  # RELATIVE to exp dir
+        "fake_behavior": {
+            "native_log": {"total_cost_usd": 0.01},
+            "workspace_files": {"solution.py": "def add(a, b):\n    return a + b\n"},
+        },
+    }]
+    (expdir / "tasks.yaml").write_text(yaml.safe_dump({"tasks": tasks}), encoding="utf-8")
+    ledger = expdir / "ledger.ndjson"
+    assert runner.invoke(
+        app, ["plan", str(expdir / "experiment.yaml"), "--ledger", str(ledger)]
+    ).exit_code == 0
+    assert runner.invoke(app, ["run", str(expdir)]).exit_code == 0
+    # Drive grade from a FOREIGN cwd (tmp_path, not expdir): a CWD-relative
+    # resolution of "holdouts/t1" would look under tmp_path and miss the holdout.
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(app, ["grade", str(expdir), "--runner", "local-exec"])
+    assert r.exit_code == 0, r.output
+    grades = find_events(ledger, "grade")
+    assert grades, f"no grade; cant_grade={find_events(ledger, 'cant_grade')}"
+    assert all(g["grader"] == "local-exec" and g["binary_score"] is True for g in grades)
+
+
 # --- run_holdouts in-image entrypoint (fence + nonce) ----------------------
 def test_run_holdouts_entrypoint_emits_nonce_authenticated_fence(tmp_path, monkeypatch):
     import io
