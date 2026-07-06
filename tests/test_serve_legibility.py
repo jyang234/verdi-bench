@@ -172,7 +172,7 @@ def test_home_rows_surface_arms_states_and_denominators(tmp_path):
     return {
       headers: [...document.querySelectorAll('th')].map(t => t.textContent),
       arms: app.includes('control vs treatment'),
-      models: app.includes('claude-3-5-sonnet'),
+      models: app.includes('claude-haiku-4-5'),
       states: rows.map(r => r.cells[1].textContent),
       gradedCell: rows[0].cells[6].textContent,
       updated: rows[0].cells[9].textContent,
