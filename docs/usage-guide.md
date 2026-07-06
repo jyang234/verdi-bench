@@ -5,9 +5,9 @@ A/B finding. It is written for someone running the instrument for the first
 time; it complements the [deep dive](deep-dive.md) (the *why* and the trust
 mechanisms) and [adapters.md](adapters.md) (the telemetry/trajectory contract).
 
-Everything here uses only the public `bench` CLI and the on-disk file formats —
-no test-only seams. Commands and field names are current as of the post-Phase-8
-codebase.
+Everything here uses only public seams — the `bench` CLI, the on-disk file
+formats, and (§0.5) the `harness.sdk` builder — never test-only internals.
+Commands and field names are current against the codebase in this checkout.
 
 ---
 
@@ -31,6 +31,71 @@ Two execution modes:
 
 Every local result is stamped `ADVISORY`. That is the honest tier; the trusted
 tier is a planned CI-tier cutover.
+
+---
+
+## 0.5 The fastest path — the Python SDK
+
+The walkthrough from §2 on authors the four files by hand, because **files are
+the source of truth for what gets locked**: `bench plan` sha-locks the exact
+bytes of `experiment.yaml` / `tasks.yaml` / `rubric.md`. You do not have to *type*
+them, though. The Python SDK (`harness.sdk`) is a fluent builder that **writes
+those same files** and then drives the whole pipeline in-process. It is a public
+seam that adds no second source of truth — it composes the tested subsystems and
+serializes the files the lock hashes.
+
+Here is a complete fake-engine A/B — the `tests/test_sdk_northstar.py` flow
+verbatim, the executable proof the SDK is a real write path:
+
+```python
+from pathlib import Path
+
+from harness.sdk import Experiment, Task, write_holdout_results
+
+exp = (
+    Experiment("mini-ab", seed=1234, cost_ceiling_usd=10.0)
+    .arm("control",   model="anthropic/claude-haiku-4-5-20251001", platform="claude_code")
+    .arm("treatment", model="openai/gpt-4o-2024-08-06",            platform="codex")
+    .judge("fake/deterministic-2026-01-01")   # rubric defaults to the library template
+    .task(Task("t_add", prompt="Write solution.py defining add(a, b)...",
+               fake_behavior={"native_log": {"total_cost_usd": 0.01}}))
+    .task(Task("t_pal", prompt="Write solution.py defining is_palindrome(s)...",
+               fake_behavior={"native_log": {"total_cost_usd": 0.01}}))
+)
+
+ws = exp.write("_run/mini-ab")     # writes experiment.yaml, tasks.yaml, rubric.md
+ws.plan(actor="me")
+ws.run(engine="fake")
+
+# Fake-path operator step: the arm-blind fake engine reads only task.fake_behavior,
+# so the treatment-beats-control asymmetry is written between run and grade
+# (treatment passes both tasks, control neither) — exactly as the e2e tests do it.
+for tv in ws.view().trials():
+    rec = tv.record
+    write_holdout_results(Path(rec["artifacts_path"]).parent, rec["arm"] == "treatment")
+
+ws.grade(runner="local")
+ws.judge()
+findings = ws.analyze(exploratory=True)      # → findings.exploratory.md (+ dossier)
+assert ws.verify_chain().chain_ok
+```
+
+`exp.write(...)` returns an `ExperimentWorkspace` whose
+`.plan/.run/.grade/.judge/.analyze/.verify_chain` are one-line delegations to the
+same stage APIs the `bench` verbs call; reads go through `ws.view()` (a
+`LedgerView`). Seed and cost ceiling are **required** constructor arguments — no
+silent defaults for the determinism / cost-fence contracts. The judge rubric
+defaults to the library template (the single source of the verdict-JSON contract);
+pass `rubric=` a string of literal text or a `Path` to override it.
+
+**Want the CLI, but a scaffold rather than a blank page?** `bench init <dir>`
+writes the same starter `experiment.yaml` / `tasks.yaml` / `rubric` from the one
+canonical template (it refuses a non-empty target, and **ledgers nothing** — you
+edit the files, then `bench plan`).
+
+Whichever door you use, **what gets locked is the on-disk bytes** — so §2 below is
+the contract-level truth for those files, and worth reading even if you always
+author through the SDK.
 
 ---
 
@@ -184,8 +249,19 @@ mitigated by subprocess isolation, not eliminated.
 binary score is "all holdout assertions pass"; with `fractional_scoring` it is
 the fraction of non-abstaining assertions that pass.
 
-For the fake/learning path (`--runner local`) you place `holdout_results.json`
-directly in each trial's workspace — see §4.
+There are two no-daemon paths for the fake/learning flow:
+
+- **`--runner local`** *reads* a `holdout_results.json` you place directly in each
+  trial's workspace — the injection path the walkthrough (§4) and the e2e tests
+  use to script a known effect on the arm-blind fake engine.
+- **`--runner local-exec`** *executes* a **declared** holdout (a `holdout.json`
+  carrying a `kind` discriminator — assertion / pytest / command) from
+  `holdouts_dir`, in a host subprocess with no Docker, and packs the results into
+  the same fenced wire shape. It is stamped `ADVISORY` (no container isolation, so
+  agent code runs on the host) and it requires a declared holdout — an
+  opaque/bespoke `holdouts_dir` with no `kind` is refused loudly; use
+  `--runner docker` for those. It lets you exercise a real holdout end to end
+  without a daemon, instead of hand-writing the results file.
 
 ---
 
@@ -343,10 +419,21 @@ directory — never in the sha-locked `experiment.yaml`, never on the ledger:
 
 ```yaml
 proxy:
-  url: http://proxy:3128
+  managed: true             # the harness stands the metering proxy up + tears it
+                            # down around the run (no hand-rolled docker). It
+                            # supplies its own url + log_path — setting either
+                            # alongside `managed: true` is refused.
+  # url: http://proxy:3128            # OR point at an EXTERNAL proxy you run:
+  # log_path: /var/log/verdi/proxy.jsonl   #   set url + log_path, drop `managed`
   # allowlist: [...]        # OMIT if the spec declares model_hosts/infra_hosts —
   #                         # the allowlist then derives from the locked bytes
-  log_path: /var/log/verdi/proxy.jsonl
+otlp:
+  managed: true             # OPTIONAL in-trial OTLP span capture: stands up a
+                            # hermetic (internal-network-only) trace collector
+                            # around the run and injects the OTEL_* env vars. It
+                            # supplies its own endpoint + log_path. For an
+                            # already-running collector, set `endpoint:` +
+                            # `log_path:` instead of `managed`.
 quotas:
   cpus: 2.0
   mem: 4g
@@ -363,13 +450,29 @@ Notes that will save you a failed run:
   written to disk or the ledger.
 - Per-arm keys (`provider_key_names_by_arm`) hand each arm only its own
   credentials, so one arm's key never enters another arm's container.
-- **The metering proxy is an external operational component you supply.** A
-  reference Squid config ships in `deploy/metering-proxy/`; a
-  configured-but-missing proxy log now **fails loud** rather than silently
-  reporting zero egress/cost. See §6 of the deep dive for the honest boundary:
-  `--internal` blocks the outside world but not the host gateway, so strong
-  confinement also wants deployment-level firewall rules the harness does not
-  install.
+- **The metering proxy is harness-managed by default.** `proxy.managed: true`
+  stands the proxy up on an internal docker network and tears it down around the
+  run — no hand-rolled docker steps. You can also run it out of band for a longer
+  session (`bench proxy up --allow api.anthropic.com --allow api.openai.com`, then
+  `bench proxy down`), or from Python via the `MeteringProxy.managed([...])`
+  context manager (`from harness.hermetic import MeteringProxy`). An **external**
+  proxy you operate yourself — the reference Squid config in
+  `deploy/metering-proxy/` is one — is the alternative: set `proxy.url` +
+  `proxy.log_path` instead of `managed`. Either way, a configured-but-missing
+  proxy log **fails loud** rather than silently reporting zero egress/cost. See §6
+  of the deep dive for the honest boundary: `--internal` blocks the outside world
+  but not the host gateway, so strong confinement also wants deployment-level
+  firewall rules the harness does not install.
+- **In-trial OTLP span capture is opt-in.** `otlp.managed: true` stands up a
+  hermetic trace collector — internal-network-only, so span data physically
+  cannot leave the host — around the run and injects the standard `OTEL_*` env
+  vars, so any OTel-native image's spans land as a redacted, sha-ledgered
+  `artifacts/otlp_spans.json` (no agent-code changes). Stand it up out of band
+  with `bench otlp up` / `bench otlp down`, or from Python with
+  `TraceCollector.managed(...)`. An arm on **`platform: otlp`** then projects those
+  captured spans into the trajectory (`docs/adapters.md` §"The `otlp` platform");
+  because such an arm needs a collector, a `platform: otlp` run with no `otlp`
+  block is refused at start, naming both settings.
 
 Grading has the same split: `bench grade` defaults to `--runner docker` (the real
 network-less grading container); `--runner local` is the no-daemon fake/test path.
