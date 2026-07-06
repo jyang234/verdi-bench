@@ -29,13 +29,13 @@ class Task:
     model the builder validates through). ``fake_behavior`` is the fake engine's
     deterministic scripting hook (native-log injection for the hermetic paths).
 
-    ``holdout`` is a **Phase-3 seam** ([05](05-grading-judging.md) §1): a
-    first-class ``Holdout`` object that will ``materialize()`` into
-    ``holdouts/<id>/`` and set ``holdouts_dir`` at ``.write(...)`` time. It is
-    accepted here so the value-object shape is stable, but wiring it is not yet
-    implemented — using it raises loudly rather than silently dropping a grading
-    contract (fail-loudly directive). Until then, point ``holdouts_dir`` at a
-    tree you materialize yourself, or use the fake path's ``write_holdout_results``.
+    ``holdout`` is inline holdout sugar ([05](05-grading-judging.md) §1, A3): a
+    first-class ``grade.holdouts.Holdout`` object (or a raw declaration dict) that
+    ``.write(...)`` compiles into ``holdouts/<id>/holdout.json`` (+ any side files)
+    and points ``holdouts_dir`` at. It is BUILDER-INPUT-ONLY: it is never written
+    into ``tasks.yaml`` (the emitted file keeps today's shape — ``holdouts_dir``
+    only), so the on-disk contract is unchanged. Setting both ``holdout`` and
+    ``holdouts_dir`` on one task is refused at write time.
     """
 
     id: str
@@ -51,13 +51,11 @@ class Task:
 
     def to_spec_dict(self) -> dict:
         """The minimal ``TaskSpec`` kwargs — unset optionals omitted so the
-        emitted ``tasks.yaml`` stays the lean file the lenient reader re-reads."""
-        if self.holdout is not None:
-            raise NotImplementedError(
-                "Task(holdout=...) is a Phase-3 seam (the Holdout hierarchy, "
-                "refactor 05 §1) and is not wired yet; set holdouts_dir to a "
-                "materialized tree, or use the fake path's write_holdout_results"
-            )
+        emitted ``tasks.yaml`` stays the lean file the lenient reader re-reads.
+
+        An inline ``holdout`` rides onto the TaskSpec as builder input;
+        ``Experiment.write`` compiles it to ``holdouts_dir`` + files and it is
+        never serialized (``TaskSpec.holdout`` is ``exclude=True``) [05 §1]."""
         out: dict = {"id": self.id}
         if self.prompt:
             out["prompt"] = self.prompt
@@ -75,6 +73,8 @@ class Task:
             out["plugin_ids"] = list(self.plugin_ids)
         if self.fake_behavior:
             out["fake_behavior"] = self.fake_behavior
+        if self.holdout is not None:
+            out["holdout"] = self.holdout  # builder input; compiled out by write()
         return out
 
 
@@ -259,9 +259,11 @@ class Experiment:
 
         Writes ``experiment.yaml`` (``spec_to_yaml``), ``tasks.yaml``
         (``tasks_to_yaml``), the judge rubric at ``judge.rubric``, and
-        ``run.config.yaml`` when one was attached. **Pre-lock only:** refuses if a
-        ``ledger.ndjson`` already exists — a written directory is one the lock may
-        already have hashed, and nothing may rewrite a locked file (07 §invariants).
+        ``run.config.yaml`` when one was attached. Any inline ``Task(holdout=...)``
+        is compiled here into ``holdouts/<id>/`` + ``holdouts_dir`` (05 §1, A3).
+        **Pre-lock only:** refuses if a ``ledger.ndjson`` already exists — a
+        written directory is one the lock may already have hashed, and nothing may
+        rewrite a locked file (07 §invariants).
         """
         import yaml
 
@@ -277,6 +279,9 @@ class Experiment:
             )
         spec, task_specs, rubric_text = self.build()
         dir.mkdir(parents=True, exist_ok=True)
+        # Compile inline holdout sugar OUT to the on-disk holdouts tree before the
+        # tasks.yaml write, so the emitted file carries only holdouts_dir [05 §1].
+        task_specs = _compile_inline_holdouts(dir, task_specs)
         (dir / "experiment.yaml").write_text(spec_to_yaml(spec), encoding="utf-8")
         (dir / "tasks.yaml").write_text(tasks_to_yaml(task_specs), encoding="utf-8")
         rubric_path = dir / spec.judge.rubric
@@ -287,3 +292,31 @@ class Experiment:
                 yaml.safe_dump(self._run_config, sort_keys=False), encoding="utf-8"
             )
         return ExperimentWorkspace(dir)
+
+
+def _compile_inline_holdouts(exp_dir, task_specs):
+    """Compile each task's inline ``holdout=`` sugar into ``holdouts/<id>/`` +
+    ``holdouts_dir`` (A3, refactor 05 §1).
+
+    The inline object (a ``grade.holdouts.Holdout`` or a raw declaration dict) is
+    BUILDER-INPUT-ONLY and never serialized (``TaskSpec.holdout`` is
+    ``exclude=True``); this is the one place it becomes the on-disk holdouts tree
+    the grader mounts read-only. Setting both ``holdout`` and ``holdouts_dir`` on
+    one task is refused (ambiguous grading source, fail-loudly)."""
+    from ..grade.holdouts import as_holdout
+
+    exp_dir = Path(exp_dir)
+    compiled = []
+    for ts in task_specs:
+        if ts.holdout is None:
+            compiled.append(ts)
+            continue
+        if ts.holdouts_dir is not None:
+            raise ValueError(
+                f"task {ts.id!r} sets both holdout= and holdouts_dir=; use one — "
+                "inline holdout sugar compiles to holdouts_dir"
+            )
+        rel = f"holdouts/{ts.id}"
+        as_holdout(ts.holdout).materialize(exp_dir / rel)
+        compiled.append(ts.model_copy(update={"holdouts_dir": rel}))
+    return compiled

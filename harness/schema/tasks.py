@@ -21,7 +21,7 @@ reverse.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -74,6 +74,16 @@ class TaskSpec(BaseModel):
     # Never read by the grader or a real engine; named here at last (32 test
     # files use it undocumented, per 02 §2).
     fake_behavior: dict = Field(default_factory=dict)
+
+    # --- refactor 05 §1 / A3: inline holdout sugar (BUILDER-INPUT-ONLY) ----------
+    # An inline declared holdout — a ``grade.holdouts.Holdout`` object or a raw
+    # declaration dict. The write path (SDK ``Experiment.write`` /
+    # ``compile_inline_holdout``) compiles it OUT: it materializes
+    # ``holdouts/<id>/`` and sets ``holdouts_dir``, so the emitted tasks.yaml keeps
+    # exactly today's on-disk shape (holdouts_dir only). ``exclude=True`` ENFORCES
+    # that it is never serialized. Typed loosely so schema/ takes no grade/ import;
+    # the builder validates it through the Holdout hierarchy.
+    holdout: Optional[Any] = Field(default=None, exclude=True)
 
 
 def tasks_to_yaml(tasks: list[TaskSpec]) -> str:

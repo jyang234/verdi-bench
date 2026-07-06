@@ -317,3 +317,57 @@ def test_run_holdouts_entrypoint_fails_closed_without_declared_kind(tmp_path, mo
     monkeypatch.setattr(rh, "_WORKSPACE", tmp_path / "ws")
     # no fence emitted, nonzero exit → host reads the channel absent (terminal)
     assert rh.main(["run_holdouts"]) == 1
+
+
+# --- SDK inline holdout sugar (A3) -----------------------------------------
+def _experiment(**task_kwargs):
+    from harness.sdk.experiment import Experiment, Task
+
+    M = "fake/deterministic-2026-01-01"
+    return (
+        Experiment("demo", seed=1, cost_ceiling_usd=1.0)
+        .arm("control", model=M).arm("treatment", model=M).judge(M)
+        .task(Task(**task_kwargs))
+    )
+
+
+def test_sdk_inline_holdout_compiles_to_holdouts_dir(tmp_path):
+    exp = _experiment(id="t1", prompt="add", holdout=AssertionHoldout(expression=_ADD5))
+    exp.write(tmp_path / "exp")
+    tasks_yaml = (tmp_path / "exp" / "tasks.yaml").read_text()
+    # the inline holdout is compiled OUT — only holdouts_dir on disk
+    assert "holdout:" not in tasks_yaml
+    assert "holdouts_dir: holdouts/t1" in tasks_yaml
+    spec = json.loads((tmp_path / "exp" / "holdouts" / "t1" / "holdout.json").read_text())
+    assert spec["kind"] == "assertion" and spec["schema_version"] == 1
+
+
+def test_sdk_inline_holdout_grades_via_local_exec(tmp_path):
+    """End-to-end: SDK-compiled inline holdout is executed by the local-exec
+    runner against the trial workspace and scored."""
+    exp = _experiment(id="t1", prompt="add", holdout=AssertionHoldout(expression=_ADD5))
+    exp.write(tmp_path / "exp")
+    hd = tmp_path / "exp" / "holdouts" / "t1"
+    ledger = tmp_path / "l.ndjson"
+    grade_trial(
+        "trial-1", GradeTask(id="t1", task_sha="s", holdouts_dir=str(hd)),
+        _solution(tmp_path / "ws"), ledger, fixed_ctx(),
+        container=GradingContainer(runner=LocalExecutingGradeRunner()),
+    )
+    g = find_events(ledger, "grade")[0]
+    assert g["binary_score"] is True and g["grader"] == "local-exec"
+
+
+def test_taskspec_holdout_is_never_serialized(tmp_path):
+    from harness.schema.tasks import TaskSpec, tasks_to_yaml
+
+    ts = TaskSpec(id="t1", holdout=AssertionHoldout(expression=_ADD5))
+    assert "holdout" not in tasks_to_yaml([ts])
+    assert "holdout" not in ts.model_dump(mode="json")
+
+
+def test_sdk_refuses_both_inline_holdout_and_holdouts_dir(tmp_path):
+    exp = _experiment(id="t1", holdouts_dir="holdouts/t1",
+                      holdout=AssertionHoldout(expression="assert True"))
+    with pytest.raises(ValueError, match="both"):
+        exp.write(tmp_path / "exp")

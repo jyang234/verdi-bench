@@ -84,11 +84,23 @@ def test_write_refuses_a_dir_with_a_ledger(tmp_path):
         _mini(tmp_path).write(d)
 
 
-def test_task_holdout_slot_is_a_documented_phase3_seam():
+def test_task_holdout_slot_compiles_inline_and_fails_loud_for_garbage(tmp_path):
+    """The inline ``holdout=`` seam is wired (refactor 05 §1): a valid Holdout
+    compiles to ``holdouts/<id>/`` + ``holdouts_dir`` at write time; a non-holdout
+    value fails loudly rather than silently dropping the grading contract."""
+    from harness.grade.holdouts import AssertionHoldout
+
     exp = _mini_dir_agnostic()
-    exp._tasks[0] = Task("t1", prompt="p", holdout=object())
-    with pytest.raises(NotImplementedError, match="Phase-3"):
-        exp.build()
+    exp._tasks[0] = Task("t1", prompt="p", holdout=AssertionHoldout(expression="assert True"))
+    exp.write(tmp_path / "ok")
+    assert (tmp_path / "ok" / "holdouts" / "t1" / "holdout.json").exists()
+    # the inline object is compiled OUT — never serialized into tasks.yaml
+    assert "holdout:" not in (tmp_path / "ok" / "tasks.yaml").read_text()
+
+    exp2 = _mini_dir_agnostic()
+    exp2._tasks[0] = Task("t1", prompt="p", holdout=object())
+    with pytest.raises(Exception):  # not a valid Holdout — fail loudly, not silent
+        exp2.write(tmp_path / "bad")
 
 
 def test_arm_image_is_a_documented_phase3_seam():
