@@ -409,4 +409,5 @@ def test_m_i3_unknown_runner_refused_not_silently_docker(tmp_path):
     expdir.mkdir()
     r = CliRunner().invoke(app, ["grade", str(expdir), "--runner", "dcoker"])
     assert r.exit_code != 0
-    assert "docker or local" in (r.output + (r.stderr or ""))
+    # the refusal names the valid set — now including local-exec [refactor 05 §1]
+    assert "docker, local, or local-exec" in (r.output + (r.stderr or ""))

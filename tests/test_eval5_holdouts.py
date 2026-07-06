@@ -13,8 +13,15 @@ from __future__ import annotations
 import json
 
 import pytest
+import yaml
+from typer.testing import CliRunner
 
-from harness.grade.deterministic import parse_holdout_output
+from harness.cli import app
+from harness.grade.container import (
+    GradingContainer,
+    LocalExecutingGradeRunner,
+)
+from harness.grade.deterministic import grade_trial, parse_holdout_output
 from harness.grade.holdouts import (
     AssertionHoldout,
     CommandHoldout,
@@ -23,6 +30,11 @@ from harness.grade.holdouts import (
     assertions_to_raw,
     load_declared_holdout,
 )
+from harness.grade.types import GradeTask
+from harness.ledger.query import find_events
+from tests.fixtures.builders import fixed_ctx, write_experiment_yaml
+
+runner = CliRunner()
 
 
 def _solution(ws, body="def add(a, b):\n    return a + b\n"):
@@ -169,3 +181,99 @@ def test_as_holdout_accepts_instance_and_dict():
     assert as_holdout(inst) is inst
     coerced = as_holdout({"kind": "assertion", "expression": "assert True"})
     assert isinstance(coerced, AssertionHoldout)
+
+
+# --- LocalExecutingGradeRunner (ADVISORY host execution) -------------------
+def test_local_executing_runner_grades_declared_holdout(tmp_path):
+    hd = tmp_path / "hd"
+    AssertionHoldout(expression=_ADD5).materialize(hd)
+    ws = _solution(tmp_path / "ws")
+    ledger = tmp_path / "l.ndjson"
+    grade_trial(
+        "trial-le", GradeTask(id="t", task_sha="s", holdouts_dir=str(hd)),
+        ws, ledger, fixed_ctx(),
+        container=GradingContainer(runner=LocalExecutingGradeRunner()),
+    )
+    g = find_events(ledger, "grade")[0]
+    # executed, scored, and stamped non-"docker" (so analyze banners ADVISORY)
+    assert g["binary_score"] is True
+    assert g["grader"] == "local-exec"
+    assert g["assertions"][0]["source"] == "holdout_test"
+
+
+def test_local_executing_grade_is_advisory_tier(tmp_path):
+    from harness.analyze.report import _tier_summary
+
+    hd = tmp_path / "hd"
+    AssertionHoldout(expression=_ADD5).materialize(hd)
+    ledger = tmp_path / "l.ndjson"
+    grade_trial(
+        "trial-le", GradeTask(id="t", task_sha="s", holdouts_dir=str(hd)),
+        _solution(tmp_path / "ws"), ledger, fixed_ctx(),
+        container=GradingContainer(runner=LocalExecutingGradeRunner()),
+    )
+    assert _tier_summary(ledger)["advisory"] is True
+
+
+def test_local_executing_runner_fails_closed_without_declared_holdout(tmp_path):
+    """An opaque (no-kind) holdout is not library-executable — the local-exec
+    runner must fail the grade closed, never silently score nothing."""
+    hd = tmp_path / "hd"
+    hd.mkdir()
+    (hd / "holdout.json").write_text(json.dumps({"fail_to_pass": ["x"]}), encoding="utf-8")
+    ledger = tmp_path / "l.ndjson"
+    out = grade_trial(
+        "trial-le", GradeTask(id="t", task_sha="s", holdouts_dir=str(hd)),
+        _solution(tmp_path / "ws"), ledger, fixed_ctx(),
+        container=GradingContainer(runner=LocalExecutingGradeRunner()),
+    )
+    assert out.graded is False
+    assert find_events(ledger, "cant_grade")[0]["reason"] == "container_failure"
+
+
+def test_local_executing_runner_declares_advisory_seam():
+    """The runner opts out of the fresh-copy discipline (read-only host exec) and
+    is non-"docker" so analyze's tier logic bands it ADVISORY unchanged."""
+    r = LocalExecutingGradeRunner()
+    assert r.grades_in_place is True
+    assert r.grader_name == "local-exec" != "docker"
+
+
+# --- CLI --runner local-exec wiring ----------------------------------------
+def test_cli_runner_rejects_unknown_choice(tmp_path):
+    r = runner.invoke(app, ["grade", str(tmp_path), "--runner", "bogus"])
+    assert r.exit_code != 0
+    assert "local-exec" in (r.output + (r.stderr or ""))  # the valid set names it
+
+
+def test_cli_grade_runner_local_exec_end_to_end(tmp_path):
+    """The full CLI wiring: plan -> run (fake) -> grade --runner local-exec
+    executes the declared holdout against each fake trial workspace and records a
+    scored, ADVISORY (grader="local-exec") grade; the chain still verifies."""
+    expdir = tmp_path / "exp"
+    expdir.mkdir(parents=True)
+    # absolute holdouts_dir so grade resolves it independent of CWD (the docker
+    # path resolves the mount relative to CWD identically — see the report).
+    hd = expdir / "holdouts" / "t1"
+    AssertionHoldout(expression=_ADD5).materialize(hd)
+    write_experiment_yaml(expdir / "experiment.yaml", repetitions=1)
+    tasks = [{
+        "id": "t1", "prompt": "add", "holdouts_dir": str(hd),
+        "fake_behavior": {
+            "native_log": {"total_cost_usd": 0.01},
+            "workspace_files": {"solution.py": "def add(a, b):\n    return a + b\n"},
+        },
+    }]
+    (expdir / "tasks.yaml").write_text(yaml.safe_dump({"tasks": tasks}), encoding="utf-8")
+    ledger = expdir / "ledger.ndjson"
+
+    assert runner.invoke(
+        app, ["plan", str(expdir / "experiment.yaml"), "--ledger", str(ledger)]
+    ).exit_code == 0
+    assert runner.invoke(app, ["run", str(expdir)]).exit_code == 0
+    r = runner.invoke(app, ["grade", str(expdir), "--runner", "local-exec"])
+    assert r.exit_code == 0, r.output
+    grades = find_events(ledger, "grade")
+    assert grades and all(g["grader"] == "local-exec" for g in grades)
+    assert all(g["binary_score"] is True for g in grades)
+    assert runner.invoke(app, ["verify-chain", str(ledger)]).exit_code == 0

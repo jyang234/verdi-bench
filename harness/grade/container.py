@@ -279,6 +279,54 @@ class LocalGradeRunner:
             return HoldoutRun({"__malformed__": True})
 
 
+class LocalExecutingGradeRunner:
+    """No-daemon runner that EXECUTES a declared holdout [refactor 05 §1].
+
+    Where :class:`LocalGradeRunner` *reads* a pre-placed ``holdout_results.json``,
+    this runner *runs* the declared :class:`~harness.grade.holdouts.Holdout` from
+    ``holdouts_dir`` in a host subprocess — no Docker required — and packs the
+    executed assertions into the same wire shape the deterministic parser reads.
+
+    It executes on the host with no container isolation and scores the harness's
+    own execution rather than a trusted grader image, so its ``grader_name`` is
+    the non-``"docker"`` ``"local-exec"`` — analyze already banners such a grade
+    ADVISORY with zero code change (``analyze/report.py`` keys advisory on a
+    ``grader`` field present and ≠ ``"docker"``).
+
+    ``grades_in_place`` is True: it runs the holdout against the workspace it is
+    given (the fresh-copy discipline is docker's evidence protection; this host
+    path only READS the workspace — a nonce-authenticated fenced channel is not
+    involved — so it opts out like :class:`LocalGradeRunner`, and no per-grade
+    nonce is minted).
+    """
+
+    grades_in_place = True
+    grader_name = "local-exec"
+
+    def preflight(self) -> None:
+        """No daemon to probe — the no-daemon path is always available."""
+
+    def run_holdouts(
+        self, cmd: list[str], workspace: Path, holdouts_dir: str, nonce: Optional[str] = None
+    ) -> HoldoutRun:
+        # Lazy import: holdouts.py imports NONCE_ENV from THIS module, so a
+        # top-level import here would be a cycle (mirrors run_plugins' lazy
+        # ``from .plugins import get_plugin``).
+        from .holdouts import assertions_to_raw, load_declared_holdout
+
+        holdout = load_declared_holdout(holdouts_dir)
+        if holdout is None:
+            # A holdout.json with no ``kind`` (or no file) is opaque/bespoke — it
+            # needs a benchmark grader image (--runner docker), not this generic
+            # executor. Fail closed rather than silently score nothing [GR-6].
+            raise GradingContainerError(
+                f"no declared holdout (holdout.json with a 'kind') in {holdouts_dir!r}; "
+                "the local-exec runner executes declared holdouts — an opaque/bespoke "
+                "holdout is graded by its own image via --runner docker"
+            )
+        return HoldoutRun(assertions_to_raw(holdout.execute(workspace)))
+
+
 class GradingContainer:
     def __init__(
         self, runner: Optional[GradeRunner] = None, *, image: Optional[str] = None,

@@ -124,8 +124,10 @@ def grade_experiment(
 ) -> GradeOutcome:
     """Grade every ungraded trial deterministically [EVAL-5 §M5].
 
-    ``runner`` is ``docker`` (real network-less grading container) or ``local``
-    (the no-daemon fake/test path). Raises the enumerated refusals the CLI maps
+    ``runner`` is ``docker`` (real network-less grading container), ``local``
+    (the no-daemon fake/test path that reads a pre-placed ``holdout_results.json``),
+    or ``local-exec`` (the no-daemon path that EXECUTES a declared holdout on the
+    host — ADVISORY, refactor 05 §1). Raises the enumerated refusals the CLI maps
     to exit codes — ``TaskCommitmentError``/``RetryTerminalError``/
     ``ActorResolutionError`` (exit 2) and ``GraderUnavailableRefusal`` (exit 1,
     after marking pending trials transient) — and returns the graded count.
@@ -143,6 +145,7 @@ def grade_experiment(
         DockerGradeRunner,
         GraderUnavailableError,
         GradingContainer,
+        LocalExecutingGradeRunner,
         LocalGradeRunner,
     )
     from .deterministic import (
@@ -176,7 +179,11 @@ def grade_experiment(
 
     resolved_actor = resolve_actor(actor)
     ctx = EventContext(experiment_id=exp_dir.name, actor=resolved_actor)
-    runner_impl = LocalGradeRunner() if runner == "local" else DockerGradeRunner()
+    # The CLI validates ``runner`` against this exact set before any I/O.
+    runner_impl = {
+        "local": LocalGradeRunner,
+        "local-exec": LocalExecutingGradeRunner,
+    }.get(runner, DockerGradeRunner)()
     container = GradingContainer(runner=runner_impl)
 
     # 7B-1/GR-8: probe the grader once before the batch. A down docker daemon

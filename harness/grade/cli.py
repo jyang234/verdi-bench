@@ -31,7 +31,10 @@ def register(app: typer.Typer) -> None:
     def grade(
         experiment_dir: Path = typer.Argument(..., help="Directory with experiment.yaml"),
         runner: str = typer.Option(
-            "docker", "--runner", help="docker (real container) | local (no-daemon fake/test)"
+            "docker", "--runner",
+            help="docker (real container) | local (no-daemon, reads a pre-placed "
+                 "holdout_results.json) | local-exec (no-daemon, executes a declared "
+                 "holdout — ADVISORY)",
         ),
         retry_terminal: list[str] = typer.Option(
             [], "--retry-terminal",
@@ -45,8 +48,8 @@ def register(app: typer.Typer) -> None:
         """Grade every ungraded trial deterministically."""
         # F-M-I3: a typo'd runner must refuse, never silently select docker —
         # validated before any I/O, like analyze's flag validation.
-        if runner not in ("docker", "local"):
-            raise typer.BadParameter("--runner must be docker or local")
+        if runner not in ("docker", "local", "local-exec"):
+            raise typer.BadParameter("--runner must be docker, local, or local-exec")
         # A down grader marks pending trials transient and refuses (exit 1); the
         # pre-registration refusals map to exit 2 [7B-1/GR-8, PL-7/D-6, D-P7-2].
         with refusal_exit(GraderUnavailableRefusal, code=1):
