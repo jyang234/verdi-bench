@@ -47,6 +47,7 @@ source_modules =
     harness.serve
     harness.author
     harness.sdk
+    harness.hermetic
 forbidden_modules =
     harness.run.engines.harbor
 
@@ -105,6 +106,7 @@ source_modules =
     harness.serve
     harness.author
     harness.sdk
+    harness.hermetic
 forbidden_modules =
     harness.ledger.chain
 
@@ -193,5 +195,6 @@ source_modules =
     harness.status
     harness.serve
     harness.author
+    harness.hermetic
 forbidden_modules =
     harness.sdk
