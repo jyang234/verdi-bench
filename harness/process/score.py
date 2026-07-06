@@ -135,8 +135,14 @@ class ProcessScore(BaseModel):
         return self
 
 
-def _emit(ledger_path, ctx, score: ProcessScore) -> ProcessScore:
-    events.record_process_score(ledger_path, ctx, process_score=score.model_dump(mode="json"))
+def _emit(
+    ledger_path, ctx, score: ProcessScore, *, rubric_sha256: Optional[str] = None
+) -> ProcessScore:
+    events.record_process_score(
+        ledger_path, ctx,
+        process_score=score.model_dump(mode="json"),
+        rubric_sha256=rubric_sha256,  # additive provenance, omitted when None
+    )
     return score
 
 
@@ -191,6 +197,7 @@ def score_trial_process(
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     margin: float = DEFAULT_MARGIN,
     comparison_id: Optional[str] = None,
+    rubric_sha256: Optional[str] = None,
 ) -> ProcessScore:
     """Judge-score one trial's process. Always appends exactly one event [AC-4].
 
@@ -218,6 +225,7 @@ def score_trial_process(
             ledger_path, ctx,
             ProcessScore(trial_id=trial_id, rubric_version=rubric.rubric_version,
                          comparison_id=comparison_id, scores=scores, provenance=prov),
+            rubric_sha256=rubric_sha256,
         )
 
     # The shared fail-closed envelope runs empty → leak-scan → token-gate →
@@ -326,6 +334,7 @@ def record_human_process_score(
     ts: str,
     scorer_id: str,
     comparison_id: str,
+    rubric_sha256: Optional[str] = None,
 ) -> ProcessScore:
     """Record a human process score — only after the EVAL-7 reveal [AC-3].
 
@@ -355,7 +364,7 @@ def record_human_process_score(
         trial_id=trial_id, rubric_version=rubric.rubric_version,
         comparison_id=comparison_id, scores=dimension_scores, provenance=prov,
     )
-    return _emit(ledger_path, ctx, score)
+    return _emit(ledger_path, ctx, score, rubric_sha256=rubric_sha256)
 
 
 # --- one-event property registration [EVAL-3 §M7, XC-3] --------------------

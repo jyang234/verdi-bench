@@ -815,7 +815,13 @@ def _process_section(ledger_path, spec, seed) -> Optional[dict]:
     from ..process.calibrate import dimension_diagnostics
 
     diagnostics = dimension_diagnostics(
-        ledger_path, spec, seed, exclude_trials=frozenset(quarantined)
+        ledger_path, spec, seed,
+        # P4-RUBRIC option (a): the diagnostics dimensions are the UNION of the
+        # ledgered dim_ids the means table above shows (``dims``), not silently
+        # the default v1 rubric — so a custom-rubric dimension cannot appear in
+        # the means and vanish from the kappa/correlation tables [refactor 06 §7].
+        dim_ids=sorted(dims),
+        exclude_trials=frozenset(quarantined),
     )
     return {
         "exploratory": True,

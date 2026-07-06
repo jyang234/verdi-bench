@@ -77,6 +77,7 @@ def dimension_diagnostics(
     seed: int,
     *,
     rubric: Optional[ProcessRubric] = None,
+    dim_ids: Optional[Sequence[str]] = None,
     exclude_trials: frozenset[str] | set[str] = frozenset(),
 ):
     """Assemble per-dimension judge↔human kappa + score-vs-telemetry correlations
@@ -86,6 +87,12 @@ def dimension_diagnostics(
     the trials in the EVAL-7 reviewed set (so the IPW strata apply), while the
     correlation runs over every judge-scored trial vs its telemetry. Returns the
     diagnostics block ``analyze`` folds into its process section.
+
+    ``dim_ids`` (P4-RUBRIC option (a), [refactor 06 §7]) is the set of dimensions
+    to report — the analyze fold passes the UNION of ledgered dim_ids, so the
+    kappa/correlation tables cover exactly what the means table above them shows,
+    never silently the default v1 rubric's dimensions. Defaults to the rubric's
+    own dimensions (used by direct callers/tests on the default rubric).
 
     ``exclude_trials`` drops those trials' scores from every table here — the
     EVAL-11 D007 quarantine path, applied at the same point as the section's
@@ -103,6 +110,7 @@ def dimension_diagnostics(
     from .rubric import default_rubric
 
     rubric = rubric or default_rubric()
+    dims = list(dim_ids) if dim_ids is not None else list(rubric.dimension_ids)
 
     judge_by_trial: dict[str, dict] = {}
     human_by_trial: dict[str, dict] = {}
@@ -138,7 +146,7 @@ def dimension_diagnostics(
         if st is None:
             continue
         stratum, task_class = st
-        for dim in rubric.dimension_ids:
+        for dim in dims:
             js, hs = jmap.get(dim), hmap.get(dim)
             if js is None or hs is None:  # CANT_SCORE excluded from kappa
                 continue
@@ -150,11 +158,11 @@ def dimension_diagnostics(
     rows_by_dim: dict[str, list] = defaultdict(list)
     for trial_id, jmap in judge_by_trial.items():
         tel = tel_by_trial.get(trial_id, {})
-        for dim in rubric.dimension_ids:
+        for dim in dims:
             js = jmap.get(dim)
             if js is not None:
                 rows_by_dim[dim].append((js, tel))
-    corr = score_telemetry_correlation(rows_by_dim, rubric)
+    corr = score_telemetry_correlation(rows_by_dim, rubric, dim_ids=dims)
 
     return {
         "floor_prob": floor_prob,
@@ -211,6 +219,7 @@ def score_telemetry_correlation(
     rows_by_dim: dict[str, list[tuple]],
     rubric: ProcessRubric,
     *,
+    dim_ids: Optional[Sequence[str]] = None,
     threshold: float = DEFAULT_CORRELATION_THRESHOLD,
 ) -> dict[str, DimensionCorrelation]:
     """Spearman of each dimension's scores vs its declared telemetry correlates.
@@ -218,13 +227,23 @@ def score_telemetry_correlation(
     ``rows_by_dim`` = ``{dim_id: [(score, {correlate: value})]}`` (CANT_SCORE rows
     already excluded). A dimension whose |rho| stays below ``threshold`` for every
     declared correlate is flagged ``style_only`` [AC-7].
+
+    ``dim_ids`` (P4-RUBRIC option (a), [refactor 06 §7]) is the set of dimensions
+    to report — the UNION of ledgered dim_ids when the caller has it, so a
+    custom-rubric dimension is not silently dropped for being absent from the
+    default rubric. A dimension the rubric does not know has no declared
+    correlates (an empty, honest correlation row), never a fabricated one.
+    Defaults to the rubric's own dimensions.
     """
+    ids = list(dim_ids) if dim_ids is not None else list(rubric.dimension_ids)
     out: dict[str, DimensionCorrelation] = {}
-    for d in rubric.dimensions:
-        rows = rows_by_dim.get(d.id, [])
+    for dim_id in ids:
+        d = rubric.dimension(dim_id)  # None for a ledgered dim the rubric lacks
+        correlates = d.telemetry_correlates if d is not None else []
+        rows = rows_by_dim.get(dim_id, [])
         scores = [float(s) for s, _ in rows]
         correlations: dict[str, Optional[float]] = {}
-        for correlate in d.telemetry_correlates:
+        for correlate in correlates:
             vals = [row_tel.get(correlate) for _, row_tel in rows]
             if any(v is None for v in vals) or len(vals) < 2:
                 correlations[correlate] = None
@@ -232,5 +251,5 @@ def score_telemetry_correlation(
             correlations[correlate] = _spearman(scores, [float(v) for v in vals])
         measured = [abs(r) for r in correlations.values() if r is not None]
         style_only = bool(measured) and max(measured) < threshold
-        out[d.id] = DimensionCorrelation(d.id, correlations, style_only)
+        out[dim_id] = DimensionCorrelation(dim_id, correlations, style_only)
     return out

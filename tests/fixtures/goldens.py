@@ -860,6 +860,22 @@ def build_constructor_replay(ledger: Path | str) -> set[str]:
                 "source_experiment_id": "golden-source", "bundle_sha256": "66" * 32
             },
         )
+        # process_score WITH the additive rubric_sha256 field [refactor 06 §7
+        # P4-RUBRIC], appended last so every prior line stays byte-identical
+        # (the first process_score above omits it — the "both ways" coverage).
+        E.record_process_score(
+            ledger, ctx,
+            process_score={
+                "trial_id": "t-1",
+                "dimensions": {"planning": 4},
+                "provenance": {
+                    "unblinded": True,
+                    "scorer": "judge",
+                    "provider_model": "fake/deterministic-2026-01-01",
+                },
+            },
+            rubric_sha256="99" * 32,
+        )
 
     import json
 

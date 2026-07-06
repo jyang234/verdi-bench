@@ -17,7 +17,7 @@ from ..cli_common import refusal_exit
 from ..corpus.commit import TaskCommitmentError
 from ..ledger.actor import ActorResolutionError
 from .api import process_record, process_score
-from .rubric import ProcessRubric, default_rubric
+from .rubric import ProcessRubric, default_rubric, process_rubric_sha256
 from .score import ProcessSequencingError
 
 
@@ -49,11 +49,12 @@ def register(app: typer.Typer) -> None:
         # A malformed --rubric is a loud error (traceback), kept outside the
         # refusal envelope so it is never confused with a bad --scores mapping.
         rubric = ProcessRubric.from_yaml(rubric_path) if rubric_path else default_rubric()
+        rubric_sha = process_rubric_sha256(rubric_path)  # P4-RUBRIC provenance
         raw = json.loads(scores_json.read_text(encoding="utf-8"))
         with refusal_exit(ValueError, ActorResolutionError, ProcessSequencingError):
             process_record(
                 experiment_dir, trial_id=trial_id, comparison_id=comparison_id,
-                scores=raw, rubric=rubric, actor=actor,
+                scores=raw, rubric=rubric, rubric_sha256=rubric_sha, actor=actor,
             )
         typer.echo(f"recorded human process score for {trial_id}")
 

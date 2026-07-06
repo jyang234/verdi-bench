@@ -72,6 +72,7 @@ _OMIT_IF_NONE_KEYS = {
         "fractional_score", "grader", "override_of",
         "workspace_sha256", "workspace_walk_version",
     ),
+    "process_score": ("rubric_sha256",),
     "cant_grade": ("override_of",),
     "flake_baseline": ("workspace_basis",),
     "human_verdict": ("integrity",),
