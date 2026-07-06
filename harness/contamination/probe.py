@@ -207,6 +207,17 @@ def run_memory_probe(
     if refused is not None:
         return _record_cant(refused["reason"], task_id=refused["task_id"])
 
+    # This multi-call loop deliberately does NOT route through the shared
+    # judge.envelope.scored_completion [refactor 11 §G5b]. That envelope is a
+    # single-call scored-JSON sequence (empty-input → token-gate → complete →
+    # JSON-parse), whereas a membership probe feeds RAW completions to its
+    # detection channels, combines a true + control completion per oracle task,
+    # and fails the WHOLE run closed on any provider error (discarding partial
+    # arms — test_ac3_cant_probe_fail_closed). Adopting it would inject
+    # empty-input/context-overflow CANT paths absent from this tier's frozen
+    # reason set and could not express the two-call oracle channel — not
+    # byte-neutral. The provider seam it DOES share (get_provider +
+    # provider_failure_reason) keeps the fault mapping single-sourced.
     try:
         arms_out: dict[str, ArmProbe] = {}
         for arm in arms:

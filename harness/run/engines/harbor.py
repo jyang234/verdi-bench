@@ -242,6 +242,9 @@ class DockerCliRunner:
 
 class HarborEngine(EngineBase):
     name = "harbor"
+    # Containerizes real trials, so the managed metering proxy / OTLP collector
+    # wrap around a Harbor run [refactor 11 §G5c].
+    manages_real_infra = True
 
     def __init__(
         self, runner: Optional[CommandRunner] = None, harbor_version: str = HARBOR_VERSION

@@ -105,14 +105,17 @@ def _managed_proxy(settings, engine: str, exp_dir: Path) -> Iterator[Optional[Pr
     metering proxy when opted in [refactor 04 §1].
 
     A plain passthrough of ``settings.proxy`` unless ``proxy.managed`` is set and
-    the engine actually containerizes — the fake engine is hermetic-by-fiat and
-    needs no docker, so a managed proxy would be pointless and would break its
-    no-daemon guarantee. When active, it stands the proxy up (MeteringProxy refuses
-    loudly if docker is unavailable), injects its url + log_path onto the
-    spec-derived ProxyConfig (keeping the allowlist + infra_hosts), and always tears
-    it down on exit. ``log_path`` defaults under the experiment dir.
+    the engine manages real infrastructure (its ``manages_real_infra`` declaration
+    [refactor 11 §G5c]) — the fake engine is hermetic-by-fiat and needs no docker,
+    so a managed proxy would be pointless and would break its no-daemon guarantee.
+    When active, it stands the proxy up (MeteringProxy refuses loudly if docker is
+    unavailable), injects its url + log_path onto the spec-derived ProxyConfig
+    (keeping the allowlist + infra_hosts), and always tears it down on exit.
+    ``log_path`` defaults under the experiment dir.
     """
-    if not settings.proxy_managed or engine == "fake":
+    from .engines import manages_real_infra
+
+    if not settings.proxy_managed or not manages_real_infra(engine):
         yield settings.proxy
         return
     from ..hermetic.metering import MeteringProxy
@@ -136,14 +139,17 @@ def _managed_collector(settings, engine: str, exp_dir: Path) -> Iterator[Optiona
     trace collector when opted in [refactor 09 §3/§4].
 
     A plain passthrough of ``settings.otlp`` unless ``otlp.managed`` is set and the
-    engine actually containerizes — the fake engine is hermetic-by-fiat and needs
-    no docker, so a managed collector would be pointless and break its no-daemon
-    guarantee. When active, it stands the collector up (TraceCollector refuses
-    loudly if docker is unavailable), builds an OtlpConfig from its endpoint +
-    log_path, and always tears it down on exit — deleting the raw envelope log per
-    D-09-1. ``log_path`` defaults under the experiment dir.
+    engine manages real infrastructure (its ``manages_real_infra`` declaration
+    [refactor 11 §G5c]) — the fake engine is hermetic-by-fiat and needs no docker,
+    so a managed collector would be pointless and break its no-daemon guarantee.
+    When active, it stands the collector up (TraceCollector refuses loudly if docker
+    is unavailable), builds an OtlpConfig from its endpoint + log_path, and always
+    tears it down on exit — deleting the raw envelope log per D-09-1. ``log_path``
+    defaults under the experiment dir.
     """
-    if not settings.otlp_managed or engine == "fake":
+    from .engines import manages_real_infra
+
+    if not settings.otlp_managed or not manages_real_infra(engine):
         yield settings.otlp
         return
     from ..hermetic.tracing import TraceCollector

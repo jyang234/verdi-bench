@@ -148,6 +148,14 @@ class EngineBase(ABC):
 
     name: ClassVar[str]
 
+    # Whether this engine manages real infrastructure (docker containers) that the
+    # managed metering proxy / OTLP collector must wrap [refactor 11 §G5c]. Declared
+    # per engine (no default, like ``name``) so infra gating derives from the engine
+    # rather than a ``engine == "fake"`` string a new offline engine would have to
+    # know to imitate; a scripted, hermetic-by-fiat engine sets ``False`` and the
+    # managed sidecars no-op for it.
+    manages_real_infra: ClassVar[bool]
+
     def run(self, req: TrialRequest) -> EngineResult:
         """FINAL template [refactor 04 §2]: stage → resolve → execute → read
         telemetry (fail-closed RN-17) → scan egress (fail-closed PRA-H4) → assemble

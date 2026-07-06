@@ -27,6 +27,9 @@ from .base import EgressObservation, EngineBase, ExecOutcome, ResolvedImage
 
 class FakeEngine(EngineBase):
     name = "fake"
+    # Hermetic-by-fiat: no docker, so a managed proxy/collector would break its
+    # no-daemon guarantee — the managed sidecars no-op for it [refactor 11 §G5c].
+    manages_real_infra = False
 
     def _resolve_image(self, req: TrialRequest) -> ResolvedImage:
         # The fake never refuses: its digest is scripted (or split from the ref),
