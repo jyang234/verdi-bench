@@ -1,18 +1,19 @@
 """Portable helpers for the shakedown acceptance scripts.
 
-After the Phase-2 SDK conversion (refactor 08 §1) the hermetic scripts
-(golden/official/tripwires) author + drive experiments in-process through
-``harness.sdk`` — no hand-built spec dicts, no ``inject_grades``, and reads go
-through ``LedgerView`` — so what stays here is genuinely script-local: the
-``Tally``, ``_run/`` staging, and the one ``bench`` subprocess driver kept for
-the vectors whose *point* is the installed console script (the pre-registration
-refusals exercise the CLI's refusal→exit-code mapping).
+After the SDK + images + hermetic conversions (refactor 08 §1, Phase 3D) EVERY
+shakedown script — the hermetic golden/official/tripwires and the real-container
+harbor/harbor_multiagent — authors + drives experiments in-process through
+``harness.sdk`` (builders + ``ExperimentWorkspace``), builds images through
+``harness.images``, and meters egress through the managed proxy: no hand-built
+spec dicts, no ``inject_grades``, no raw ``docker`` calls, and reads go through
+``LedgerView``. So what stays here is genuinely script-local: the ``Tally``,
+``_run/`` staging, and the one ``bench`` subprocess driver kept for the vectors
+whose *point* is the installed console script (the pre-registration refusals
+exercise the CLI's refusal→exit-code mapping).
 
-``dump_yaml`` stays load-bearing for the hermetic suite (``tripwires.py``
-emits deliberately-invalid specs the validating SDK builder would refuse);
-``events``/``event_counts``/``ASSETS`` remain only because the not-yet-converted
-harbor scripts (``harbor.py`` / ``harbor_multiagent.py``, Phase 3) still import
-them. Scripts import ``harness.*`` freely but never ``tests.*``.
+``dump_yaml`` stays load-bearing for the hermetic suite (``tripwires.py`` emits
+deliberately-invalid specs the validating SDK builder would refuse). Scripts
+import ``harness.*`` freely but never ``tests.*``.
 """
 from __future__ import annotations
 
@@ -20,14 +21,12 @@ import re
 import shutil
 import subprocess
 import sys
-from collections import Counter
 from pathlib import Path
 
 import yaml
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-ASSETS = HERE / "assets"
 RUN = HERE / "_run"
 
 # Strip terminal color so substring assertions on captured CLI output are stable
@@ -68,15 +67,6 @@ def bench(*args, check=True, env=None) -> subprocess.CompletedProcess:
     if check and r.returncode != 0:
         raise SystemExit(f"FAILED ({r.returncode}): bench {' '.join(str(a) for a in args)}")
     return r
-
-
-def events(ledger, kind=None):
-    from harness.ledger.query import find_events, read_events
-    return read_events(Path(ledger)) if kind is None else find_events(Path(ledger), kind)
-
-
-def event_counts(ledger) -> dict:
-    return dict(sorted(Counter(e.get("event") for e in events(ledger)).items()))
 
 
 def empty_dir(name: str) -> Path:
