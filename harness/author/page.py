@@ -14,7 +14,21 @@ immutability of pre-registration as a visible fact [AC-3].
 
 from __future__ import annotations
 
-AUTHOR_PAGE = """<!doctype html>
+import json
+from pathlib import Path
+
+# The template pane is seeded from the ONE canonical starter spec [refactor 02
+# §2] so it can never drift from the docs example / test builders again. The
+# sdk-is-a-leaf import contract forbids importing the sdk package, so the shared
+# template DATA file is read directly — the file is the contract, not the code.
+_STARTER_SPEC_JSON = json.dumps(
+    (
+        Path(__file__).resolve().parent.parent
+        / "sdk" / "templates" / "starter-experiment.yaml"
+    ).read_text(encoding="utf-8")
+)
+
+AUTHOR_PAGE = ("""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -113,23 +127,7 @@ const S = { drafts: null, actor: "", name: null, doc: null, tab: "experiment.yam
 window.__vb = () => ({ route: location.hash, name: S.name, locked: !!(S.doc && S.doc.locked),
                        dirty: Object.keys(S.dirty).length, sha: S.validate && S.validate.spec_sha256 });
 
-const TPL_SPEC = [
-  "arms:",
-  "  - {name: control, platform: claude_code, model: anthropic/claude-haiku-4-5-20251001, payload: {}}",
-  "  - {name: treatment, platform: claude_code, model: anthropic/claude-sonnet-4-5-20250929, payload: {}}",
-  "corpus: {id: my-corpus, version: 1.0.0}",
-  "repetitions: 2",
-  "primary_metric: holdout_pass_rate",
-  "decision_rule: delta_holdout_pass_rate > 0",
-  "judge:",
-  "  model: google/gemini-1.5-pro-002",
-  "  rubric: rubrics/code-task-v1.md",
-  "  orders: both",
-  "  temperature: 0",
-  "seed: 4242",
-  "cost_ceiling: {amount: 25.0, currency: USD}",
-  "hypothesized_effect: 0.2",
-].join("\\n") + "\\n";
+const TPL_SPEC = __STARTER_SPEC_JSON__;  // the single canonical starter [refactor 02 §2]
 const TPL_TASKS = "tasks:\\n  - id: task-1\\n    prompt: describe the work\\n";
 const TPL_RUBRIC = "Judge on correctness of the change against the task intent.\\n";
 const PANES = ["experiment.yaml", "tasks.yaml", "rubrics/code-task-v1.md"];
@@ -391,4 +389,4 @@ route();
 </script>
 </body>
 </html>
-"""
+""").replace("__STARTER_SPEC_JSON__", _STARTER_SPEC_JSON)

@@ -77,7 +77,7 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 All EVAL-1 child stories plus the Phase-7 roadmap stories (EVAL-10/11/12) and
 the operator/authoring/reviewer stories EVAL-13 through EVAL-21 are built. The
 fast suite (`uv run pytest -m "not docker"`) is green — over 700 tests — and
-`make verify` runs it plus the 8 import-linter contracts. Two more CI jobs cover
+`make verify` runs it plus the 9 import-linter contracts. Two more CI jobs cover
 what the fast suite cannot: a `docker`-marked suite of real-container tests (the
 grade container, a Harbor trial, redaction, digest-pinning, kill-on-timeout,
 network-less plugin isolation, metering-proxy egress attribution, and a
@@ -144,6 +144,7 @@ loudly rather than defaulted to `unknown` when the OS user is unresolvable).
 
 ```bash
 uv sync
+uv run bench init   <experiment-dir>                         # scaffold experiment.yaml/tasks.yaml/rubric from templates (not ledgered)
 uv run bench plan   experiment.yaml --ledger ledger.ndjson   # validate + lock (commits rubric hash)
 uv run bench run    <experiment-dir>                          # execute trials
 uv run bench run    <experiment-dir> --reuse-control <bundle> # reuse an unchanged control (exploratory; preflight refuses on drift)

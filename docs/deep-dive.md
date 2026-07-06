@@ -373,7 +373,7 @@ This section is the skeptic's index: claim → mechanism → owner.
 | No operation happened off the record | every verb routes through typed constructors in `events.py`; direct chain writes are contract-forbidden | one-event property sweep `test_ac7_one_event_per_operation` over the closed entrypoint registry |
 | The ledger you're shown is the ledger that was written | hash chain + optional external anchors | `test_eval3_chain.py`, `test_eval3_anchors.py` |
 | Arms never saw graders' answers | holdouts/rubrics outside trial workspaces; canary strings planted and asserted absent | `test_ac9_holdout_canaries_absent`, `test_ac1_holdouts_readonly` |
-| Grades are mechanical | no-LLM import contracts on `harness/grade/`, the `harness/forensics/` deterministic tier, and the `harness/contamination/` detectors | four of the eight import-linter contracts |
+| Grades are mechanical | no-LLM import contracts on `harness/grade/`, the `harness/forensics/` deterministic tier, and the `harness/contamination/` detectors | four of the nine import-linter contracts |
 | The judge can't favor a brand | identity scrub with per-experiment canaries; property tests plant canaries and assert absence from payloads | `test_ac1_scrub_canaries` and packet property tests |
 | Judge weight is earned, not assumed | order-consistency diagnostics; IPW kappa vs blinded humans; escalation gate at κ<0.6 | `test_eval2_calibrate.py`, `test_eval7_review.py` kappa suite |
 | Secrets don't leak into artifacts | capture-side redaction plus defense-in-depth rescans before any provider call; property tests with generated secrets | `test_ac2_capture_post_redaction`, redaction suites in eval4 |
