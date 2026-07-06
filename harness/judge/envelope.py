@@ -1,9 +1,9 @@
 """Shared fail-closed scorer envelope [refactor 06 §4].
 
-Three isolated-model tiers — the forensic advisory review, the process scorer,
-and (in a multi-call variant) the contamination probe — ran the same fail-closed
-sequence by hand, with triplicated ``_heuristic_token_count`` + context limits +
-a greedy ``_JSON_RE``:
+Two single-call scored-JSON tiers — the forensic advisory review
+(``forensics.review``) and the process scorer (``process.score``) — ran the same
+fail-closed sequence by hand, with duplicated ``_heuristic_token_count`` + context
+limits + a greedy ``_JSON_RE``:
 
     empty-input CANT → leak re-scan CANT → token-gate CANT →
     resolve-provider-inside-envelope CANT → complete → parse CANT
@@ -15,6 +15,17 @@ string values never merge or change — each tier keeps its own closed set; the
 envelope only *routes* to the stage's ``on_cant`` after validating the reason
 belongs to that enum (``reason_enum(reason)``), which is the sync check the
 "kept in sync with TRANSIENT_CANT_JUDGE" comments become [refactor 06 §4].
+
+**Not a consumer** [refactor 11 §G5b]: the contamination memory probe
+(``harness.contamination.probe``) shares this envelope's provider seam
+(``get_provider`` + ``provider_failure_reason``) but deliberately does NOT route
+through :func:`scored_completion`. It is a genuinely multi-call membership prober
+that feeds *raw* completions to its detection channels (no JSON parse, no token
+gate, no empty-input gate), combines a true and a control completion per oracle
+task, and fails the WHOLE run closed on any provider error — a shape the
+single-call scored-JSON sequence cannot express without adding empty-input /
+context-overflow CANT paths absent from the probe's frozen reason set. It keeps
+its own sequencing; this docstring no longer claims it.
 
 Provider resolution happens *inside* the envelope (the PR-3/JD-2 posture): an
 unknown prefix fails closed to ``CANT(provider_error)``, never escaping with no
