@@ -176,6 +176,49 @@ def test_ac2_packet_allowlist_only():
     assert fields == {"diff", "holdout_results"}  # outcomes only, no identity
 
 
+def test_ac2_arm_map_is_verdict_event_only_never_in_packet_or_render(tmp_path):
+    """D-P4-1 / blinding-by-construction [refactor 05 §5]: arm_map is the A/B ->
+    physical-arm mapping — the identity the blind judge must never see. It rides
+    the verdict EVENT (the frame-correct calibration join) and NOTHING else: it is
+    not a Packet field, and it never reaches a rendered provider message.
+
+    Structural + behavioral pin. The behavioral half judges with sentinel arm
+    names present ONLY in arm_map (in no packet field, no canary), captures every
+    message the provider is asked to complete across BOTH orders, and asserts
+    neither sentinel surfaced — a leak of arm_map into build_packet or render
+    would carry a sentinel into the payload and fail this test."""
+    import dataclasses
+
+    from harness.judge.client import judge_pair
+    from harness.judge.providers.fake import FakeProvider
+    from harness.ledger.query import find_events
+    from tests.fixtures.builders import fixed_ctx
+    from tests.fixtures.judge_fakes import make_config, verdict_json
+
+    # structural: arm_map is not a channel the packet even carries.
+    assert "arm_map" not in {f.name for f in dataclasses.fields(Packet)}
+
+    # behavioral: the sentinels exist ONLY in arm_map — not in any packet field
+    # (make_packet's diffs/holdouts/prompt/rubric) and not in the canary set.
+    arm_map = {"A": "ARMMAP__ALPHA__SENTINEL", "B": "ARMMAP__BETA__SENTINEL"}
+    prov = FakeProvider([verdict_json("1"), verdict_json("2")])
+    ledger = tmp_path / "l.ndjson"
+    v = judge_pair(
+        make_packet(), make_config(), ledger, fixed_ctx(), ts="t0",
+        provider=prov, arm_map=arm_map,
+    )
+    assert prov.calls, "provider was never called — the pin would be vacuous"
+
+    # the map rides the verdict (object + ledgered event)...
+    assert v.arm_map == arm_map
+    assert find_events(ledger, "judge_verdict")[0]["verdict"]["arm_map"] == arm_map
+
+    # ...and reaches NO rendered provider message (system or user), either order.
+    rendered = "\n".join(m["content"] for call in prov.calls for m in call["messages"])
+    assert arm_map["A"] not in rendered
+    assert arm_map["B"] not in rendered
+
+
 def test_ac2_identity_canary_blocks_send():
     # an arm/model id leaking into a diff trips the canary and is never sent
     pkt = make_packet(diff_a="normal diff", diff_b="leaked arm control-treatment here")
