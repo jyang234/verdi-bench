@@ -6,9 +6,11 @@ from .base import Adapter, Outcome, Provenance, Quotas, Telemetry, TrialRecord
 from .claude_code import ClaudeCodeAdapter
 from .codex import CodexAdapter
 from .generic import GenericAdapter, GenericLogError
+from .otlp import OtlpAdapter
 
 _ADAPTERS: dict[str, Adapter] = {
-    a.platform: a for a in (ClaudeCodeAdapter(), CodexAdapter(), GenericAdapter())
+    a.platform: a
+    for a in (ClaudeCodeAdapter(), CodexAdapter(), GenericAdapter(), OtlpAdapter())
 }
 
 
@@ -39,6 +41,7 @@ __all__ = [
     "CodexAdapter",
     "GenericAdapter",
     "GenericLogError",
+    "OtlpAdapter",
     "Outcome",
     "Provenance",
     "Quotas",
