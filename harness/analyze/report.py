@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import html as _html
 from collections import defaultdict
+from dataclasses import dataclass
 from enum import Enum
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -42,11 +43,6 @@ from .effect import effect_sizes
 from .nullsim import NULL_BINARY, NULL_CONTINUOUS, coverage_from_deltas
 from .stats import DEFAULT_CI_LEVEL, BootstrapResult, paired_bootstrap
 
-# Telemetry-derived primary metrics and the field each reads.
-_METRIC_TELEMETRY_FIELD = {
-    "cost_per_task": "cost",
-    "wall_time": "wall_time_s",
-}
 # Raw token fields are never compared across vendors [EVAL-6 constraint].
 _RAW_TOKEN_FIELDS = ("tokens_in", "tokens_out", "tokens_cache")
 # Cross-vendor comparisons are restricted to these dimensions.
@@ -390,6 +386,100 @@ def _telemetry_values(ledger_path, field: str) -> dict[str, dict[str, list[float
     return acc
 
 
+# --- the primary-metric registry [refactor 07 §2] --------------------------
+# ``task_id -> arm -> [per-trial value]`` — the per-task per-arm value series a
+# metric's extraction yields (None for a pairwise-only metric that has no
+# per-arm series).
+PerTaskSeries = dict[str, dict[str, list[float]]]
+
+
+@dataclass(frozen=True)
+class MetricDef:
+    """One primary metric's analyze-time behavior, keyed by its ``PrimaryMetric``
+    enum value [refactor 07 §2].
+
+    Collapses the string-dispatch that was scattered across extraction, claim
+    tag, null model, and reuse onto one record so a new metric is an enum value
+    + one entry + a power-sim entry, never a hunt across if/elif chains:
+
+    * ``telemetry_field`` — the trial-telemetry key a continuous metric reads
+      (``None`` for holdout-pass-rate and judge-preference);
+    * ``claim_tag`` [AN-6] — ``computed`` (a deterministic function of the
+      ledger) vs ``judgment`` (the advisory judge's preference);
+    * ``null_model`` [AN-4] — the coverage null appropriate to the metric;
+      cost/wall-time are continuous, holdout/judge are bounded, and a continuous
+      primary must not be scored under a binary null;
+    * ``pairwise_only`` — judge-preference has no per-arm absolute (its series is
+      a per-pair win-rate built from verdicts), so an absolute would be a
+      fabrication;
+    * ``extract`` — ``ledger_path -> PerTaskSeries``; ``None`` for a
+      pairwise-only metric whose series is derived per pair in
+      :func:`_comparison_series`.
+    """
+
+    id: str
+    telemetry_field: Optional[str]
+    claim_tag: str
+    null_model: str
+    pairwise_only: bool
+    extract: Callable[..., Optional[PerTaskSeries]]
+
+
+METRICS: dict[str, MetricDef] = {
+    PrimaryMetric.holdout_pass_rate.value: MetricDef(
+        id=PrimaryMetric.holdout_pass_rate.value,
+        telemetry_field=None,
+        claim_tag="computed",
+        null_model=NULL_BINARY,
+        pairwise_only=False,
+        extract=lambda ledger_path: _holdout_values(ledger_path),
+    ),
+    PrimaryMetric.cost_per_task.value: MetricDef(
+        id=PrimaryMetric.cost_per_task.value,
+        telemetry_field="cost",
+        claim_tag="computed",
+        null_model=NULL_CONTINUOUS,
+        pairwise_only=False,
+        extract=lambda ledger_path: _telemetry_values(ledger_path, "cost"),
+    ),
+    PrimaryMetric.wall_time.value: MetricDef(
+        id=PrimaryMetric.wall_time.value,
+        telemetry_field="wall_time_s",
+        claim_tag="computed",
+        null_model=NULL_CONTINUOUS,
+        pairwise_only=False,
+        extract=lambda ledger_path: _telemetry_values(ledger_path, "wall_time_s"),
+    ),
+    PrimaryMetric.judge_preference.value: MetricDef(
+        id=PrimaryMetric.judge_preference.value,
+        telemetry_field=None,
+        claim_tag="judgment",
+        null_model=NULL_BINARY,
+        pairwise_only=True,
+        # pairwise-only: the per-pair win-rate series is built by
+        # _judge_preference_by_task inside _comparison_series, not here.
+        extract=lambda ledger_path: None,
+    ),
+}
+
+
+def metric_def(primary: str) -> MetricDef:
+    """The :class:`MetricDef` for ``primary`` — or a loud failure [refactor 07 §2].
+
+    A missing metric is never silently skipped: an unregistered primary raises
+    an :class:`AnalyzeError` naming it, so a new ``PrimaryMetric`` value without a
+    registry entry fails at the first dispatch rather than rendering an empty
+    section. The REGISTRY-keys == enum-values meta-test catches the drift up
+    front; this is the fail-closed backstop at runtime."""
+    try:
+        return METRICS[primary]
+    except KeyError:
+        raise AnalyzeError(
+            f"no MetricDef registered for primary metric {primary!r}; "
+            f"registered: {sorted(METRICS)} [refactor 07 §2]"
+        ) from None
+
+
 def _judge_preference_by_task(
     ledger_path, arm_a: str, arm_b: str
 ) -> tuple[list[float], list[float]]:
@@ -471,18 +561,14 @@ def paired_task_rows(ledger_path, primary: str, arm_a: str, arm_b: str) -> list[
     metric cannot pair contributes no row — never an imputed zero [D004].
     """
     rows: list[dict] = []
-    if primary == PrimaryMetric.judge_preference.value:
+    mdef = metric_def(primary)
+    if mdef.pairwise_only:
         rates = _judge_preference_rates(ledger_path, arm_a, arm_b)
         for task_id in sorted(rates):
             a = rates[task_id]
             rows.append({"task_id": task_id, "a": a, "b": 1.0 - a, "delta": 2 * a - 1.0})
         return rows
-    if primary == PrimaryMetric.holdout_pass_rate.value:
-        per_task = _holdout_values(ledger_path)
-    elif primary in _METRIC_TELEMETRY_FIELD:
-        per_task = _telemetry_values(ledger_path, _METRIC_TELEMETRY_FIELD[primary])
-    else:  # pragma: no cover - enum is closed
-        raise AnalyzeError(f"unsupported primary metric {primary!r}")
+    per_task = mdef.extract(ledger_path)
     for task_id in sorted(per_task):
         arms = per_task[task_id]
         if arm_a in arms and arm_b in arms and arms[arm_a] and arms[arm_b]:
@@ -501,14 +587,10 @@ def per_arm_absolute_scores(ledger_path, primary: str, spec) -> dict:
     """
     arm_names = [a.name for a in spec.arms]
     out = {a: {"score": None, "n": 0} for a in arm_names}
-    if primary == PrimaryMetric.judge_preference.value:
+    mdef = metric_def(primary)
+    if mdef.pairwise_only:
         return out  # pairwise-only; an absolute would be a fabrication
-    if primary == PrimaryMetric.holdout_pass_rate.value:
-        per_task = _holdout_values(ledger_path)
-    elif primary in _METRIC_TELEMETRY_FIELD:
-        per_task = _telemetry_values(ledger_path, _METRIC_TELEMETRY_FIELD[primary])
-    else:  # pragma: no cover - enum is closed
-        raise AnalyzeError(f"unsupported primary metric {primary!r}")
+    per_task = mdef.extract(ledger_path)
     series: dict[str, list[float]] = {a: [] for a in arm_names}
     for task_id in sorted(per_task):
         arms = per_task[task_id]
@@ -529,7 +611,7 @@ def _comparison_series(
     The single place the per-comparison series is derived, so coverage selection
     (over the primary pair) and each rendered comparison read the same definition.
     """
-    if primary == PrimaryMetric.judge_preference.value:
+    if metric_def(primary).pairwise_only:
         a_vals, b_vals = _judge_preference_by_task(ledger_path, arm_a, arm_b)
     else:
         a_vals, b_vals = _paired_arm_series(per_task, arm_a, arm_b)
@@ -579,28 +661,6 @@ def display_mde(mde: MDEBlock) -> Optional[float]:
     """The sensitivity figure honest at the REALIZED N [F-M-S3]: the achieved
     MDE when the realized cluster count fell below plan, else the plan MDE."""
     return mde.achieved_value if mde.achieved_value is not None else mde.value
-
-
-def _claim_tag_for_metric(primary: str) -> str:
-    """The claim provenance of the primary metric [AN-6, master plan §6].
-
-    ``computed`` — a deterministic function of the ledger (holdout grading,
-    telemetry). ``judgment`` — the advisory judge's preference; the aggregation is
-    computed but the underlying signal is a model judgment, and a reader must be
-    told which."""
-    return "judgment" if primary == PrimaryMetric.judge_preference.value else "computed"
-
-
-def _null_model_for_metric(primary: str) -> str:
-    """The coverage null appropriate to the primary metric [AN-4].
-
-    Cost / wall-time are continuous; holdout-pass-rate and judge-preference are
-    bounded (0/1 or ±1) — a continuous primary must not be scored under a binary
-    null. The coverage sim resamples the realized deltas either way, so this is a
-    disclosure label, but it makes the metric/null match auditable."""
-    if primary in _METRIC_TELEMETRY_FIELD:  # cost_per_task, wall_time
-        return NULL_CONTINUOUS
-    return NULL_BINARY  # holdout_pass_rate, judge_preference
 
 
 def _judge_summary(ledger_path) -> dict:
@@ -1011,14 +1071,13 @@ def _reuse_section(ledger_path, spec) -> Optional[dict]:
     contender_arm = primary_pair_contender(spec, control_arm)
 
     computed = None
-    if contender_arm is not None and primary != PrimaryMetric.judge_preference.value:
-        if primary == PrimaryMetric.holdout_pass_rate.value:
+    mdef = metric_def(primary)
+    if contender_arm is not None and not mdef.pairwise_only:
+        contender_all = mdef.extract(ledger_path)
+        if mdef.telemetry_field is None:  # holdout_pass_rate — graded, not telemetry
             control_by_task = _reused_holdout_by_task(ledger_path)
-            contender_all = _holdout_values(ledger_path)
-        else:  # cost_per_task / wall_time
-            field = _METRIC_TELEMETRY_FIELD[primary]
-            control_by_task = _reused_telemetry_by_task(ledger_path, field)
-            contender_all = _telemetry_values(ledger_path, field)
+        else:  # cost_per_task / wall_time — the reused control's own telemetry
+            control_by_task = _reused_telemetry_by_task(ledger_path, mdef.telemetry_field)
         control_means = [_mean(v) for v in control_by_task.values() if v]
         contender_means = [
             _mean(v[contender_arm])
@@ -1078,25 +1137,19 @@ def compute_findings(
     """
     primary = spec.primary_metric.value
 
-    # metric → per-task per-arm value series
-    if primary == PrimaryMetric.holdout_pass_rate.value:
-        per_task = _holdout_values(ledger_path)
-        metric_field = None
-    elif primary in _METRIC_TELEMETRY_FIELD:
-        metric_field = _METRIC_TELEMETRY_FIELD[primary]
-        per_task = _telemetry_values(ledger_path, metric_field)
-    elif primary == PrimaryMetric.judge_preference.value:
-        per_task = None
-        metric_field = None
-    else:  # pragma: no cover - enum is closed
-        raise AnalyzeError(f"unsupported primary metric {primary!r}")
+    # metric → per-task per-arm value series, via the one registry [refactor 07 §2].
+    # A pairwise-only metric (judge_preference) has no per-arm series; its
+    # per-pair win-rate is built in _comparison_series.
+    mdef = metric_def(primary)
+    per_task = mdef.extract(ledger_path)
+    metric_field = mdef.telemetry_field
 
     excluded_fields = set(asymmetric_null_fields(ledger_path))
     parsed_rule = spec.parsed_rule
 
     arm_a = spec.arms[0].name
-    claim_tag = _claim_tag_for_metric(primary)
-    null_model = _null_model_for_metric(primary)
+    claim_tag = mdef.claim_tag
+    null_model = mdef.null_model
 
     comparisons: list[ComparisonFinding] = []
     deltas_by_pair: list = []  # per-comparison deltas, lockstep with `comparisons` [PRA-M4]

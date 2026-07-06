@@ -184,6 +184,48 @@ def test_an4_binary_metric_uses_binary_null_at_realized_n(tmp_path):
     assert f.ci_selection["n_tasks"] == 5  # populate_paired_trials seeds 5 paired tasks
 
 
+# --- the MetricDef registry [refactor 07 §2]: keyed by the closed enum, pinned --
+def test_metric_registry_keys_match_the_closed_enum():
+    """The MetricDef registry is keyed by EXACTLY the closed PrimaryMetric
+    vocabulary — a new enum value without a MetricDef (or a stray registry key)
+    fails here, so the string-dispatch registry and the schema enum can never
+    drift apart. Each entry is self-consistent (keyed by its own id)."""
+    from harness.analyze.report import METRICS
+    from harness.schema.metrics import PrimaryMetric
+
+    assert set(METRICS) == set(PrimaryMetric.values())
+    assert all(mid == mdef.id for mid, mdef in METRICS.items())
+
+
+def test_metric_registry_pins_null_model_claim_tag_and_pairwise():
+    """AN-4/AN-6: the per-metric null model, claim tag, and pairwise-only flag
+    are pinned at the registry — the one place the render and selfcheck now read
+    the disclosure labels the string-dispatch used to compute in four files."""
+    from harness.analyze.nullsim import NULL_BINARY, NULL_CONTINUOUS
+    from harness.analyze.report import METRICS
+
+    expected = {
+        "holdout_pass_rate": (NULL_BINARY, "computed", False, None),
+        "judge_preference": (NULL_BINARY, "judgment", True, None),
+        "cost_per_task": (NULL_CONTINUOUS, "computed", False, "cost"),
+        "wall_time": (NULL_CONTINUOUS, "computed", False, "wall_time_s"),
+    }
+    for mid, (null_model, claim_tag, pairwise_only, field) in expected.items():
+        m = METRICS[mid]
+        assert (m.null_model, m.claim_tag, m.pairwise_only, m.telemetry_field) == (
+            null_model, claim_tag, pairwise_only, field
+        )
+
+
+def test_metric_def_unregistered_fails_loudly():
+    """A missing metric never silently skips a section: the lookup raises a
+    named AnalyzeError instead of returning None [refactor 07 §2, fail loudly]."""
+    from harness.analyze.report import AnalyzeError, metric_def
+
+    with pytest.raises(AnalyzeError, match="no MetricDef registered for primary metric"):
+        metric_def("composite_made_up_metric")
+
+
 # --- AN-1 / AN-7: judge-preference filtered by arm pair, clustered, not imputed -
 _PREF_ARMS = [
     {"name": "control", "platform": "claude_code",
