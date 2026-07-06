@@ -22,13 +22,17 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from harness.author.server import make_author_server
-from harness.plan.lock import UnknownArmPlatformError, lock_experiment
+from harness.plan.lock import (
+    RubricCommitmentError,
+    UnknownArmPlatformError,
+    lock_experiment,
+)
 from tests.fixtures.builders import fixed_ctx
 from tests.fixtures.servers import running_server
 
 # Two registered platforms (claude_code, codex) — the lock accepts these.
 _GOOD_SPEC = """arms:
-  - {name: control, platform: claude_code, model: anthropic/claude-3-5-sonnet-20241022, payload: {}}
+  - {name: control, platform: claude_code, model: anthropic/claude-haiku-4-5-20251001, payload: {}}
   - {name: treatment, platform: codex, model: openai/gpt-4o-2024-08-06, payload: {}}
 corpus: {id: demo, version: 1.0.0}
 repetitions: 2
@@ -142,3 +146,23 @@ def test_validate_omits_platform_when_spec_unparseable(tmp_path):
         v = _get(base, "/api/validate?name=noceil")
         assert v["spec"]["ok"] is False
         assert "platform" not in v
+
+
+def test_validate_rubric_parity_rejects_directory_rubric(tmp_path):
+    """Rubric-step parity [P1 review F1]: a rubric path that *exists* but is a
+    directory previewed green (``exists()``) yet refuses at lock (``is_file()``
+    inside ``commit_rubric``). The preview must compose the same preflight step,
+    so ``rubric_present`` is False for anything the lock would refuse."""
+    spec = _GOOD_SPEC.replace("rubric: rubrics/r.md", "rubric: rubrics")
+    d = _write_dir(tmp_path, "dirrubric", spec)
+    with _serve(tmp_path) as base:
+        v = _get(base, "/api/validate?name=dirrubric")
+        assert v["spec"]["ok"] is True
+        assert v["spec"]["rubric_present"] is False
+
+    try:
+        lock_experiment(d / "experiment.yaml", d / "ledger.ndjson",
+                        ctx=fixed_ctx(), task_dicts=None, **_QUICK)
+        raise AssertionError("lock should have refused the directory rubric")
+    except RubricCommitmentError as e:
+        assert "rubrics" in str(e)

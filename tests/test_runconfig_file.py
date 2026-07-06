@@ -117,3 +117,15 @@ def test_default_quotas_is_the_single_source():
     a, b = RunConfig(engine=None).quotas, RunSettings().quotas
     assert a == DEFAULT_QUOTAS and b == DEFAULT_QUOTAS
     assert a is not DEFAULT_QUOTAS and b is not DEFAULT_QUOTAS  # copies, not shared
+
+
+def test_non_list_provider_key_names_fail_loudly():
+    """A bare string must refuse, never char-split into ['F','O','O'] the way the
+    old ``list(x or [])`` ladder silently did [P1 review F3]."""
+    with pytest.raises(Exception) as exc:
+        RunConfigFile.parse({"provider_key_names": "OPENAI_API_KEY"})
+    assert "provider_key_names" in str(exc.value)
+
+    with pytest.raises(Exception) as exc:
+        RunConfigFile.parse({"provider_key_names_by_arm": {"control": "OPENAI_API_KEY"}})
+    assert "provider_key_names_by_arm" in str(exc.value) or "control" in str(exc.value)

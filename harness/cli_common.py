@@ -4,8 +4,11 @@ Each stage CLI is a thin shell over its subsystem ``api`` module: it parses
 arguments, resolves the ledgered actor, maps typed refusals to an exit code, and
 echoes. This module owns the two idioms every verb repeated — the
 refusal→``typer.Exit`` ceremony and actor→``EventContext`` resolution [GR-12] —
-so a stage CLI adds a verb without re-deriving either, and a refusal type a verb
-forgot to enumerate surfaces loudly rather than as a raw traceback.
+so a stage CLI adds a verb without re-deriving either. Refusal mapping is by
+explicit enumeration: a refusal type a verb forgot to list still escapes as a
+raw traceback (loud, but unmapped). A shared ``VerdiRefusal`` base that maps
+uniformly is deliberately deferred — reparenting the exception hierarchy needs
+its own sign-off [P1 review F2].
 """
 
 from __future__ import annotations

@@ -37,6 +37,7 @@ from ..plan.lock import (
     UnderpoweredError,
     UnknownArmPlatformError,
     check_arm_platforms,
+    commit_rubric,
     lock_experiment,
     spec_sha256,
 )
@@ -54,6 +55,16 @@ _DRAFT_FILE_RE = re.compile(r"^(experiment\.yaml|tasks\.yaml|rubrics/[A-Za-z0-9.
 # Quick-preview power settings; the lock recomputes at full fidelity and the
 # response says so [AC-1 note].
 _QUICK_POWER = {"n_sim": 8, "n_boot": 40, "deltas": [0.05, 0.1, 0.2, 0.3, 0.4, 0.5]}
+
+
+def _rubric_commits(d: Path, spec: ExperimentSpec) -> bool:
+    """True iff the lock's own ``commit_rubric`` preflight step would accept the
+    draft's rubric — preview parity by composition, not re-implementation."""
+    try:
+        commit_rubric(d / "experiment.yaml", spec)
+        return True
+    except RubricCommitmentError:
+        return False
 
 
 class _NotFound(Exception):
@@ -231,7 +242,10 @@ class AuthorHandler(BaseHTTPRequestHandler):
                 "cost_ceiling": spec.cost_ceiling.amount,
                 "hypothesized_effect": spec.hypothesized_effect,
                 "rubric": spec.judge.rubric,
-                "rubric_present": (d / spec.judge.rubric).exists(),
+                # Rubric parity: the SAME commit_rubric preflight the lock runs
+                # (is_file + readable), not a parallel exists() re-implementation
+                # that previews a directory rubric green [P1 review F1].
+                "rubric_present": _rubric_commits(d, spec),
             }
             # Platform-capability parity: the SAME preflight step the lock runs,
             # closing the audited gap where an unregistered platform previewed
