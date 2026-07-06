@@ -5,7 +5,10 @@
 schema/plan/author/cli · run/adapters/images · grade/judge/blind ·
 ledger/forensics/contamination/process · analyze/serve/status/review/corpus ·
 tests/shakedown/CI. Per-domain plans: [01](01-safety-nets.md) –
-[08](08-shakedown-and-tests.md).
+[08](08-shakedown-and-tests.md). Post-audit additions (2026-07-06):
+[09](09-otlp-trace-capture.md) OTLP trace capture ·
+[10](10-span-trajectory-normalization.md) span→trajectory normalization ·
+[11](11-post-phase-6-mopup.md) post-Phase-6 reuse mop-up.
 
 ## 1. Why this refactor
 
@@ -156,14 +159,16 @@ the safety nets.
 | **0 — Safety nets & defects** | golden ledger/serialization guards, render byte-fixtures, test-fixture extraction, CI marker fixes, the 8 defect fixes (reproduce-first) | [01](01-safety-nets.md) | goldens committed & passing; zero cross-test-file imports; defects fixed or explicitly deferred with owner |
 | **1 — Write path & stage APIs** | spec/task/run-config serializers + builders, stage verb bodies extracted to library functions, `LedgerView`, CLI kit, lock-preflight decomposition | [02](02-experiment-sdk.md), [06](06-ledger-telemetry.md) §LedgerView | an experiment can be authored, locked, run, graded, judged, analyzed from Python with no subprocess and no hand-written YAML |
 | **2 — SDK facade + hermetic shakedown conversion** | `harness/sdk` package, `ExperimentWorkspace`, starter/rubric templates single-sourced; `golden.py`/`tripwires.py`/`official.py` rewritten on it | [02](02-experiment-sdk.md), [08](08-shakedown-and-tests.md) | `make shakedown` passes on the SDK-based scripts; scripts contain vectors + assertions only |
-| **3 — Images, environments, infra** | `harness/hermetic` (docker cmd builder, networks, `MeteringProxy`), `harness/images` (+ `images/base`, `images/official/*`, `verdi_agent.py`, `bench images build/verify/list`), holdout hierarchy + executing runner + in-image grader entrypoint | [03](03-images-and-environments.md), [04](04-run-engine.md) §hermetic, [05](05-grading-judging.md) §holdouts | `harbor.py`/`harbor_multiagent.py` contain zero raw docker calls; a new stack image = extend base + `bench images verify` |
+| **3 — Images, environments, infra** | `harness/hermetic` (docker cmd builder, networks, `MeteringProxy`), `harness/images` (+ `images/base`, `images/official/*`, `verdi_agent.py`, `bench images build/verify/list`), holdout hierarchy + executing runner + in-image grader entrypoint; OTLP trace collector (`TraceCollector`) + span→trajectory adapter | [03](03-images-and-environments.md), [04](04-run-engine.md) §hermetic, [05](05-grading-judging.md) §holdouts, [09](09-otlp-trace-capture.md), [10](10-span-trajectory-normalization.md) | `harbor.py`/`harbor_multiagent.py` contain zero raw docker calls; a new stack image = extend base + `bench images verify` |
 | **4 — Polymorphism hardening** | Engine ABC + registry, provider `Completion`, `JudgingSession`, Detector/channel registries, scorer envelope, MetricDef, importer registry | [04](04-run-engine.md), [05](05-grading-judging.md), [06](06-ledger-telemetry.md), [07](07-analysis-surfaces.md) | each walkthrough cost hits its target (§6); no behavior change outside flagged decisions |
 | **5 — God-module decomposition** | `analyze/report.py` → findings package + unified fence; `serve` webkit + page-kit; `ledger/events.py` declarative registry; `run_trial` capture pipeline; `grade/container.py` split; `run_forensics` phases | [04](04-run-engine.md), [05](05-grading-judging.md), [06](06-ledger-telemetry.md), [07](07-analysis-surfaces.md) | byte-diff fixtures unchanged; no module > ~500 LOC without a documented reason |
 | **6 — Docs, examples, end-state** | usage-guide/README on the SDK path, `docs/engines.md` engine contract, image-authoring guide, shakedown docs refresh | [03](03-images-and-environments.md), [08](08-shakedown-and-tests.md) | docs walkthrough reproduces from an empty dir; example-spec exists in exactly one place |
+| **7 — Reuse mop-up** (post-6) | reference multi-agent image onto `images/base`, `ManagedSidecar` hoist, findings `Renderer` seam (dossier/card), A5 completeness meta-test extension, drift trivia batch | [11](11-post-phase-6-mopup.md) | render goldens byte-identical; zero tunnel code outside `images/base`; every all-packages contract list machine-forced |
 
 Rough sizing (uninterrupted, one engineer + review): Phase 0 ≈ 1 wk · 1 ≈ 1.5 wk
-· 2 ≈ 1 wk · 3 ≈ 2 wk · 4 ≈ 1.5 wk · 5 ≈ 2–3 wk · 6 ≈ 0.5 wk. Phases 3–5 have
-internal parallelism (per-domain plans are independently mergeable workstreams).
+· 2 ≈ 1 wk · 3 ≈ 2 wk · 4 ≈ 1.5 wk · 5 ≈ 2–3 wk · 6 ≈ 0.5 wk · 7 ≈ 0.5–1 wk.
+Phases 3–5 have internal parallelism (per-domain plans are independently
+mergeable workstreams); Phase 7's G1/G2/G4/G5 are likewise independent, G3 last.
 
 ## 5. Approval register — changes that touch versioned contracts
 
@@ -182,6 +187,10 @@ migration story. Everything else in this plan is additive or internal.
 | A8 | Verdict-JSON format instruction moves from user rubrics into harness packet framing | `packet_sha256` framing fingerprint; rubric pinning | opt-in flag or major framing-version bump; decision explicitly deferred to human | [05](05-grading-judging.md) |
 | A9 | Read-side strict `tasks.yaml` validation | lenient loader feeding the lock hash | ship as `bench tasks validate` lint first; strictness later if ever | [02](02-experiment-sdk.md) |
 | A10 | Fake-engine fail-closed parity for configured-but-missing proxy log | engine behavior asymmetry | behavior change to fake engine only when a proxy is *configured*; tests updated deliberately | [04](04-run-engine.md) |
+| A11 | `otlp` config on `TrialRequest`/`RunConfigFile`; OTel env-var injection (incl. `NO_PROXY`) | engine env surface (request.json untouched) | additive, `None`-defaulted; no behavior unless configured; `NO_PROXY` pinned by contract test | [09](09-otlp-trace-capture.md) |
+| A12 | `span_log_missing`/`spans_corrupt` join the `failure_reason` vocabulary (after `proxy_log_missing`); fake-engine parity | closed `failure_reason` vocabulary + downgrade ladder | fires only when a collector is configured (opt-in = required); A10-pattern parity tests | [09](09-otlp-trace-capture.md), [10](10-span-trajectory-normalization.md) |
+| A13 | Additive `spans_sha` on `TrialRecord` + hoisted on the `trial` event (`omit_if_none`) | trial event payload key set | third instance of the sha-hoist pattern; existing event bytes unchanged when absent; constructor-replay golden extended same commit | [09](09-otlp-trace-capture.md) |
+| A14 | `opentelemetry-proto` as optional extra `verdi-bench[otlp]`, lazy import, fail-loud | dependency surface | core install unchanged; protobuf decode refuses loudly without the extra | [09](09-otlp-trace-capture.md) |
 
 ## 6. Measured extensibility targets
 
@@ -235,5 +244,11 @@ audit citations, target design (concrete classes/modules), migration steps,
 constraining tests, and its own approval items. Recommended review order:
 [01](01-safety-nets.md) (gates everything) → [02](02-experiment-sdk.md) +
 [03](03-images-and-environments.md) (the product) → the rest by interest.
+[09](09-otlp-trace-capture.md)/[10](10-span-trajectory-normalization.md)
+(OTLP telemetry) depend on [04](04-run-engine.md) §1 hermetic and slot into
+Phase 3; their decisions are recorded in `decisions.ndjson` (A11–A14,
+D-09-1, D-10-1, D-10-2 — all accepted 2026-07-06).
+[11](11-post-phase-6-mopup.md) collects the reuse gaps found by the
+2026-07-06 branch audit; it runs after Phase 6 and adds no approval items.
 Decisions the human must make before the affected phase are marked
 **DECISION** inline and collected in each plan's header.
