@@ -20,7 +20,7 @@ fresh snapshot construct a new ``LedgerView``. Memoization is confined to the
 instance, so it can never leak across files or go stale within its own life.
 
 **The sha-hoist reader rule.** ``trials()`` reads ``trajectory_sha`` /
-``flight_recorder_sha`` from the *event*, never from the embedded
+``flight_recorder_sha`` / ``spans_sha`` from the *event*, never from the embedded
 ``trial_record`` (whose copies are transport-only and ``None`` after a
 round-trip) — the documented rule on ``events.record_trial``.
 """
@@ -37,17 +37,18 @@ from .query import assert_chain, read_events
 
 @dataclass(frozen=True)
 class TrialEventView:
-    """A ``trial`` event's record plus the two top-level shas hoisted onto it.
+    """A ``trial`` event's record plus the top-level shas hoisted onto it.
 
-    ``trajectory_sha`` / ``flight_recorder_sha`` come from the EVENT — the
-    single source of truth per the ``record_trial`` reader rule — so a consumer
-    verifying the persisted artifact against the chain never has to reach into
-    the embedded ``trial_record`` (whose sha fields are transport-only).
+    ``trajectory_sha`` / ``flight_recorder_sha`` / ``spans_sha`` come from the
+    EVENT — the single source of truth per the ``record_trial`` reader rule — so a
+    consumer verifying the persisted artifact against the chain never has to reach
+    into the embedded ``trial_record`` (whose sha fields are transport-only).
     """
 
     record: dict
     trajectory_sha: Optional[str]
     flight_recorder_sha: Optional[str]
+    spans_sha: Optional[str] = None
 
     @property
     def trial_id(self) -> str:
@@ -143,6 +144,7 @@ class LedgerView:
                     record=e["trial_record"],
                     trajectory_sha=e.get("trajectory_sha"),
                     flight_recorder_sha=e.get("flight_recorder_sha"),
+                    spans_sha=e.get("spans_sha"),
                 )
                 for e in self.by_kind(events.TRIAL)
             ]

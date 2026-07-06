@@ -107,20 +107,23 @@ class EventSpec:
 
 
 def _reshape_trial(fields: dict) -> dict:
-    """Hoist the trajectory/flight-recorder shas out of the ``TrialRecord`` dump.
+    """Hoist the trajectory/flight-recorder/spans shas out of the ``TrialRecord`` dump.
 
     The shas' single source is the embedded record; hoisting them keeps the
     ledgered ``trial_record`` shape unchanged from pre-EVAL-12 (readers take the
     sha from the EVENT, never the round-tripped record) and each sha lives in
-    exactly one place — the top-level event field [EVAL-12-D001, EVAL-24-D001].
+    exactly one place — the top-level event field [EVAL-12-D001, EVAL-24-D001,
+    refactor 09 §5 A13].
     """
     record = dict(fields["trial_record"])
     trajectory_sha = record.pop("trajectory_sha", None)
     flight_recorder_sha = record.pop("flight_recorder_sha", None)
+    spans_sha = record.pop("spans_sha", None)
     return {
         "trial_record": record,
         "trajectory_sha": trajectory_sha,
         "flight_recorder_sha": flight_recorder_sha,
+        "spans_sha": spans_sha,
     }
 
 
@@ -215,7 +218,7 @@ _EVENT_SPECS: tuple[EventSpec, ...] = (
     EventSpec(
         TRIAL,
         required=("trial_record",),
-        omit_if_none=("trajectory_sha", "flight_recorder_sha"),
+        omit_if_none=("trajectory_sha", "flight_recorder_sha", "spans_sha"),
         reshape=_reshape_trial,
     ),
     EventSpec(
@@ -409,16 +412,18 @@ def record_chain_anchor(
 def record_trial(ledger_path, ctx: EventContext, *, trial_record: dict) -> dict:
     """Embeds a normalized TrialRecord [AC-2].
 
-    ``trajectory_sha`` (additive, EVAL-12-D001) and ``flight_recorder_sha``
-    (EVAL-24-D001) bind the persisted per-trial trajectory / reasoning artifacts
-    to the chain. Their single source is the ``TrialRecord`` dump: the spec hoists
-    each out of the payload (:func:`_reshape_trial`) into a top-level omit-if-None
-    field, so the ledgered ``trial_record`` keeps its pre-EVAL-12 shape and each
-    sha lives in exactly one place. Readers take the sha from the EVENT
+    ``trajectory_sha`` (additive, EVAL-12-D001), ``flight_recorder_sha``
+    (EVAL-24-D001), and ``spans_sha`` (refactor 09 §5 A13) bind the persisted
+    per-trial trajectory / reasoning / OTLP-span artifacts to the chain. Their
+    single source is the ``TrialRecord`` dump: the spec hoists each out of the
+    payload (:func:`_reshape_trial`) into a top-level omit-if-None field, so the
+    ledgered ``trial_record`` keeps its pre-EVAL-12 shape and each sha lives in
+    exactly one place. Readers take the sha from the EVENT
     (``ev.get("trajectory_sha")``), never from a round-tripped ``TrialRecord``
     (transport-only, always ``None`` after re-validation). Absent = an honestly
     absent artifact; no reader may require it and legacy chains are never refused
-    over it. ``flight_recorder_sha`` is operator/advisory data, never graded.
+    over it. ``flight_recorder_sha`` and ``spans_sha`` are operator/forensics-tier
+    data, never graded and never in the judge packet.
     """
     return build_event(TRIAL, ledger_path, ctx, trial_record=trial_record)
 

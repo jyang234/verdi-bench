@@ -66,7 +66,7 @@ _OMIT_IF_NONE_KEYS = {
     "experiment_locked": (
         "task_commitment", "acknowledged_underpowered", "rubric_sha256",
     ),
-    "trial": ("trajectory_sha", "flight_recorder_sha"),
+    "trial": ("trajectory_sha", "flight_recorder_sha", "spans_sha"),
     "trial_infra_failed": ("cost",),
     "grade": (
         "fractional_score", "grader", "override_of",

@@ -58,11 +58,27 @@ forbidden_modules =
 [importlinter:contract:grade-has-no-llm-clients]
 name = Deterministic grading imports no LLM client [EVAL-5 constraint]
 type = forbidden
+# harness.hermetic.otlp_decode is the sole internal gateway to opentelemetry-proto
+# (the lazy protobuf import lives there), so forbidding it keeps deterministic
+# grading free of both the span decoder and its optional heavy dep [refactor 09 §6].
 source_modules =
     harness.grade
 forbidden_modules =
     harness.judge.providers
     harness.judge.client
+    harness.hermetic.otlp_decode
+
+[importlinter:contract:judge-imports-no-span-decoder]
+name = The identity-blind judge imports no OTLP span decoder [refactor 09 §6]
+type = forbidden
+# otlp_spans.json is operator/forensics-tier: raw spans name models and vendors
+# (gen_ai.request.model, service.name), so they must never enter the judge packet.
+# The judge importing the span decoder would be the structural path to that leak;
+# forbidding otlp_decode (the sole gateway to opentelemetry-proto) blocks it.
+source_modules =
+    harness.judge
+forbidden_modules =
+    harness.hermetic.otlp_decode
 
 [importlinter:contract:contamination-detectors-have-no-llm-clients]
 name = Deterministic contamination detectors import no LLM client [EVAL-10 AC-6]

@@ -877,6 +877,15 @@ def build_constructor_replay(ledger: Path | str) -> set[str]:
             },
             rubric_sha256="99" * 32,
         )
+        # trial WITH the additive spans_sha field [refactor 09 §5 A13], appended
+        # last so every prior `trial` event line stays byte-identical — the first
+        # two trials above omit it (the "both ways" omit-if-None coverage), and the
+        # spec hoists spans_sha out of the embedded record beside trajectory_sha /
+        # flight_recorder_sha, so this line carries it as a top-level event field.
+        E.record_trial(
+            ledger, ctx,
+            trial_record=trial_record(trial_id="t-6", spans_sha="5c" * 32),
+        )
 
     import json
 
