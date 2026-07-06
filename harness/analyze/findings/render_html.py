@@ -1,11 +1,14 @@
-"""Findings HTML renderer — a real renderer over the section model [refactor 07 §1].
+"""Findings HTML renderer — a real renderer over the section model [refactor 07 §1, refactor 11 §G3].
 
 The ONE sanctioned output change of the report.py decomposition (07 §1): instead
 of escaping the finished markdown line-by-line into ``<p>`` tags, this renders the
-same canonical :class:`~harness.analyze.findings.sections.Section` sequences
-(:func:`official_sections` / :func:`exploratory_sections`) into semantic HTML —
-one ``<h2>`` per section, ``<ul>``/``<li>`` for the disclosure bullets, ``<h3>``
-for a comparison sub-header — behind the same :func:`validate_for_render` fence.
+same canonical :class:`~harness.analyze.findings.sections.Section` sequences into
+semantic HTML — one ``<h2>`` per section, ``<ul>``/``<li>`` for the disclosure
+bullets, ``<h3>`` for a comparison sub-header. It is now a
+:class:`~harness.analyze.findings.render.Renderer` registered under the ``html``
+format id, framing the Section sequence the shared
+:func:`~harness.analyze.findings.render.render_findings` dispatch hands it behind
+the same :func:`validate_for_render` fence.
 
 Invariants preserved [AN-5, AC-5, D003]: every finding-derived value is escaped
 (an arm name carrying ``<script>`` lands inert); the exploratory watermark rides
@@ -17,11 +20,11 @@ from __future__ import annotations
 
 import html as _html
 import re
-from typing import Literal, Optional
+from typing import Literal, Optional, Sequence
 
-from .fence import validate_for_render
 from .model import FindingsDocument
-from .sections import Section, _WATERMARK, exploratory_sections, official_sections
+from .render import RenderContext, register_renderer, render_findings
+from .sections import Section, _WATERMARK
 
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _CODE = re.compile(r"`([^`]+)`")
@@ -86,25 +89,20 @@ def _section_html(sec: Section, watermark: str) -> str:
     return f'{banner}<section><h2>{_html.escape(sec.title)}</h2>{_body_html(sec.lines)}</section>'
 
 
-def render_html(
-    findings: FindingsDocument,
-    ledger_path,
-    mode: Literal["official", "exploratory"] = "exploratory",
-    *,
-    metric: Optional[str] = None,
-    corpus_manifest=None,
+def _render_findings_html(
+    findings: FindingsDocument, sections: Sequence[Section], mode: str
 ) -> str:
-    """Render findings to a self-contained HTML document behind the fence."""
-    validate_for_render(
-        findings, ledger_path, mode, metric=metric, corpus_manifest=corpus_manifest
-    )
+    """Frame a Section sequence to a self-contained HTML document [refactor 11 §G3].
+
+    Official leads with the pre-registered header and a bare CI-method footer;
+    exploratory leads with the watermark banner and rides it before every
+    section. Byte-identical to the prior ``render_html`` body."""
     if mode == "official":
         title = f"Official findings — {findings.experiment_id}"
         head = [
             f"<p>Pre-registered primary metric: <strong>{_html.escape(findings.primary_metric)}</strong></p>",
             f"<p>Decision rule: <code>{_html.escape(findings.decision_rule)}</code></p>",
         ]
-        sections = official_sections(findings)
         # official's coverage CI-method footer is a bare line, not a section [AC-5]
         method = findings.ci_selection["selected_method"]
         foot = [f"<p>CI method selected by coverage: {_html.escape(method)}</p>"]
@@ -113,7 +111,6 @@ def render_html(
         title = f"Findings (EXPLORATORY) — {findings.experiment_id}"
         watermark = _html.escape(_WATERMARK)
         head = [f'<div class="watermark">{watermark}</div>']
-        sections = exploratory_sections(findings)
         foot = []
 
     body = "".join(
@@ -125,4 +122,31 @@ def render_html(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         f"<title>{_html.escape(title)}</title><style>{_STYLE}</style>"
         f"</head><body>{body}</body></html>"
+    )
+
+
+class _HtmlRenderer:
+    """The ``html`` findings renderer — frames a Section sequence to a
+    self-contained HTML document, the framing chosen by ``ctx.mode`` [refactor 11 §G3]."""
+
+    format_id = "html"
+
+    def render(self, sections: Sequence[Section], ctx: RenderContext) -> str:
+        return _render_findings_html(ctx.findings, sections, ctx.mode)
+
+
+register_renderer(_HtmlRenderer())
+
+
+def render_html(
+    findings: FindingsDocument,
+    ledger_path,
+    mode: Literal["official", "exploratory"] = "exploratory",
+    *,
+    metric: Optional[str] = None,
+    corpus_manifest=None,
+) -> str:
+    """Render findings to a self-contained HTML document behind the fence [refactor 11 §G3]."""
+    return render_findings(
+        "html", findings, ledger_path, mode, metric=metric, corpus_manifest=corpus_manifest
     )
