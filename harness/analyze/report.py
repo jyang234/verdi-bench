@@ -31,7 +31,8 @@ from pydantic import BaseModel, ConfigDict
 
 from ..contamination.summary import contamination_summary, latest_probe, probe_asymmetries
 from ..ledger import events
-from ..ledger.query import find_events, latest_event, ledger_head_hash, verify
+from ..ledger.query import ledger_head_hash, verify
+from ..ledger.view import LedgerView
 from ..run.control_reuse import primary_pair_contender
 from ..run.trajectory import resolve_trajectory
 from ..schema.metrics import PrimaryMetric
@@ -253,7 +254,7 @@ class FindingsDocument(BaseModel):
 def _trial_index(ledger_path) -> dict[str, dict]:
     """``trial_id -> {task_id, arm}`` from trial records."""
     out = {}
-    for ev in find_events(ledger_path, events.TRIAL):
+    for ev in LedgerView(ledger_path).by_kind(events.TRIAL):
         rec = ev["trial_record"]
         out[rec["trial_id"]] = rec
     return out
@@ -264,7 +265,7 @@ def _holdout_values(ledger_path) -> dict[str, dict[str, list[float]]]:
     trials = _trial_index(ledger_path)
     quarantined = _quarantined_trial_ids(ledger_path)
     acc: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
-    for ev in find_events(ledger_path, events.GRADE):
+    for ev in LedgerView(ledger_path).by_kind(events.GRADE):
         if ev["trial_id"] in quarantined:
             continue
         rec = trials.get(ev["trial_id"])
@@ -284,7 +285,7 @@ def _quarantine_entries(ledger_path) -> list[dict]:
             "reason": ev["forensic_quarantine"]["reason"],
             "actor": ev["provenance"]["actor"],
         }
-        for ev in find_events(ledger_path, events.FORENSIC_QUARANTINE)
+        for ev in LedgerView(ledger_path).by_kind(events.FORENSIC_QUARANTINE)
     ]
 
 
@@ -317,7 +318,7 @@ def _orphan_grades(ledger_path) -> list[str]:
     trials = _trial_index(ledger_path)
     return sorted(
         ev["trial_id"]
-        for ev in find_events(ledger_path, events.GRADE)
+        for ev in LedgerView(ledger_path).by_kind(events.GRADE)
         if ev["trial_id"] not in trials
     )
 
@@ -336,19 +337,20 @@ def _tier_summary(ledger_path) -> dict:
     silently stamped on each record."""
     from ..adapters.base import ADVISORY
 
+    view = LedgerView(ledger_path)
     tier_set = {
         # `... or {}` / `... or ADVISORY` (not `.get(default)`): a record whose
         # provenance or tier serialized as JSON null must still read as the
         # lowest-trust ADVISORY band, never crash sorted() on a None member.
         (ev["trial_record"].get("provenance") or {}).get("tier") or ADVISORY
-        for ev in find_events(ledger_path, events.TRIAL)
+        for ev in view.by_kind(events.TRIAL)
     }
     # 7B-3: the grade-level `grader` stamp is authoritative for grade trust, not
     # only the trial's provenance tier. An explicit `--runner local` grade over
     # trusted-tier trials (the write-only-stamp hole) must still banner ADVISORY.
     # A grader field present and ≠ "docker" (i.e. "local" or "unknown") is
     # advisory; an absent field (pre-stamp ledger) adds no new signal.
-    for ev in find_events(ledger_path, events.GRADE):
+    for ev in view.by_kind(events.GRADE):
         grader = ev.get("grader")
         if grader is not None and grader != "docker":
             tier_set.add(ADVISORY)
@@ -365,8 +367,9 @@ def _override_summary(ledger_path) -> dict:
     so a manual override is never invisible in the findings."""
     trials: set[str] = set()
     n_events = 0
+    view = LedgerView(ledger_path)
     for kind in (events.GRADE, events.CANT_GRADE):
-        for ev in find_events(ledger_path, kind):
+        for ev in view.by_kind(kind):
             if "override_of" in ev:
                 trials.add(ev["trial_id"])
                 n_events += 1
@@ -377,7 +380,7 @@ def _telemetry_values(ledger_path, field: str) -> dict[str, dict[str, list[float
     """``task_id -> arm -> [telemetry field per non-null trial]``."""
     quarantined = _quarantined_trial_ids(ledger_path)
     acc: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
-    for ev in find_events(ledger_path, events.TRIAL):
+    for ev in LedgerView(ledger_path).by_kind(events.TRIAL):
         rec = ev["trial_record"]
         if rec["trial_id"] in quarantined:
             continue
@@ -415,7 +418,7 @@ def _judge_preference_rates(ledger_path, arm_a: str, arm_b: str) -> dict[str, fl
     pair = {arm_a, arm_b}
     quarantined_cids = _quarantined_comparison_ids(ledger_path)
     per_task: dict[str, dict[str, int]] = defaultdict(lambda: {"a": 0, "n": 0})
-    for ev in find_events(ledger_path, events.JUDGE_VERDICT):
+    for ev in LedgerView(ledger_path).by_kind(events.JUDGE_VERDICT):
         v = ev["verdict"]
         if v.get("comparison_id") in quarantined_cids:
             continue  # a verdict over a quarantined response leaves with it [D007]
@@ -536,7 +539,7 @@ def _comparison_series(
 
 # --- findings computation --------------------------------------------------
 def _lock_event(ledger_path) -> dict:
-    locks = find_events(ledger_path, events.EXPERIMENT_LOCKED)
+    locks = LedgerView(ledger_path).by_kind(events.EXPERIMENT_LOCKED)
     if not locks:
         raise AnalyzeError("no experiment_locked event; run `bench plan` first")
     return locks[0]
@@ -549,7 +552,7 @@ def _mde_block(ledger_path, realized_n_tasks: Optional[int] = None) -> MDEBlock:
     # before the fold recorded it as a separate (now-retired) event; still surface
     # it for those legacy ledgers so the acknowledgment is never silently dropped.
     ack = bool(lock.get("acknowledged_underpowered")) or bool(
-        find_events(ledger_path, "acknowledged_underpowered")
+        LedgerView(ledger_path).by_kind("acknowledged_underpowered")
     )
     value = mde.get("mde")
     plan_n = mde.get("n_tasks")
@@ -601,7 +604,7 @@ def _null_model_for_metric(primary: str) -> str:
 
 
 def _judge_summary(ledger_path) -> dict:
-    verdicts = find_events(ledger_path, events.JUDGE_VERDICT)
+    verdicts = LedgerView(ledger_path).by_kind(events.JUDGE_VERDICT)
     models = sorted({v["verdict"]["provenance"]["judge_model"] for v in verdicts})
     rubrics = sorted({v["verdict"]["provenance"]["rubric_sha256"] for v in verdicts})
     return {"judge_models": models, "rubric_shas": rubrics, "n_verdicts": len(verdicts)}
@@ -611,7 +614,7 @@ def _judge_calibration(ledger_path, spec, seed) -> Optional[dict]:
     """Per-class judge↔human kappa + escalation flags [EVAL-2 AC-7, RV-4], through
     the IPW seam at the locked EscalationConfig. None when the judge produced no
     verdicts; the ``by_class`` table is empty until human review exists."""
-    verdicts = find_events(ledger_path, events.JUDGE_VERDICT)
+    verdicts = LedgerView(ledger_path).by_kind(events.JUDGE_VERDICT)
     if not verdicts:
         return None
     from ..review.calibrate import calibration_from_spec
@@ -644,7 +647,7 @@ def _integrity(ledger_path) -> dict:
     review exists, but the field is always present so a render can never omit it.
     """
     recognized, guessed_right, n = 0, 0, 0
-    for ev in find_events(ledger_path, events.HUMAN_VERDICT):
+    for ev in LedgerView(ledger_path).by_kind(events.HUMAN_VERDICT):
         integrity = ev.get("integrity")
         if integrity is None:
             continue
@@ -684,9 +687,9 @@ def _secondary_metrics(ledger_path, spec) -> dict:
     raw: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     quarantined = _quarantined_trial_ids(ledger_path)
     # one ledger read serves both the means and the attribution aggregation —
-    # find_events re-parses the whole file per call, so a second scan doubles
-    # the dominant I/O of findings generation for zero new information
-    trial_events = list(find_events(ledger_path, events.TRIAL))
+    # the parsed TRIAL projection is passed to _attribution_metrics rather than
+    # re-scanned, so a second pass adds no I/O for zero new information
+    trial_events = list(LedgerView(ledger_path).by_kind(events.TRIAL))
     for ev in trial_events:
         rec = ev["trial_record"]
         if rec["trial_id"] in quarantined:
@@ -777,7 +780,7 @@ def _process_section(ledger_path, spec, seed) -> Optional[dict]:
     quarantined = _quarantined_trial_ids(ledger_path)
     evs = [
         ev
-        for ev in find_events(ledger_path, events.PROCESS_SCORE)
+        for ev in LedgerView(ledger_path).by_kind(events.PROCESS_SCORE)
         if ev["process_score"]["trial_id"] not in quarantined
     ]
     if not evs:
@@ -837,9 +840,8 @@ def _forensics_section(ledger_path, spec) -> Optional[dict]:
     quarantines. Disclosure-only — nothing here feeds the fence [D004]; returns
     None when no forensic activity exists on the ledger."""
     from ..forensics.review import spotcheck_kappa
-    from ..ledger.query import latest_event
 
-    report_ev = latest_event(ledger_path, events.FORENSICS_REPORT)
+    report_ev = LedgerView(ledger_path).latest(events.FORENSICS_REPORT)
     quarantined = _quarantine_entries(ledger_path)
     if report_ev is None and not quarantined:
         return None
@@ -945,12 +947,13 @@ def _apply_holm(comparisons, deltas_by_pair, parsed_rule, seed: int, *, n_boot: 
 def _reused_holdout_by_task(ledger_path) -> dict[str, list[float]]:
     """``task_id -> [binary pass]`` for the reused control, from reused_grade
     joined to reused_trial (the reused_* kinds, never the native ones)."""
+    view = LedgerView(ledger_path)
     trials = {
         e["trial_record"]["trial_id"]: e["trial_record"]
-        for e in find_events(ledger_path, events.REUSED_TRIAL)
+        for e in view.by_kind(events.REUSED_TRIAL)
     }
     acc: dict[str, list[float]] = defaultdict(list)
-    for e in find_events(ledger_path, events.REUSED_GRADE):
+    for e in view.by_kind(events.REUSED_GRADE):
         g = e["grade"]
         tr = trials.get(g.get("trial_id"))
         if tr is not None:
@@ -961,7 +964,7 @@ def _reused_holdout_by_task(ledger_path) -> dict[str, list[float]]:
 def _reused_telemetry_by_task(ledger_path, field: str) -> dict[str, list[float]]:
     """``task_id -> [telemetry field]`` for the reused control's trials."""
     acc: dict[str, list[float]] = defaultdict(list)
-    for e in find_events(ledger_path, events.REUSED_TRIAL):
+    for e in LedgerView(ledger_path).by_kind(events.REUSED_TRIAL):
         tr = e["trial_record"]
         val = (tr.get("telemetry") or {}).get(field)
         if val is not None:
@@ -973,7 +976,7 @@ def _reuse_judge_winrate(ledger_path, contender_arm, control_arm) -> Optional[di
     """Contender win-rate over reused_judge_verdict — TIE/CANT excluded, never
     imputed. None when the reused judge never produced a decided verdict."""
     wins_contender = decided = 0
-    for ev in find_events(ledger_path, events.REUSED_JUDGE_VERDICT):
+    for ev in LedgerView(ledger_path).by_kind(events.REUSED_JUDGE_VERDICT):
         v = ev["verdict"]
         w = v.get("winner")
         if w not in ("A", "B"):
@@ -1000,7 +1003,7 @@ def _reuse_section(ledger_path, spec) -> Optional[dict]:
     for the computed primary metrics, plus the reused judge win-rate — never a
     paired bootstrap (whose matched-conditions assumption a reused control
     violates), never an official decision. Reads only the reused_* kinds."""
-    ctrl_ev = latest_event(ledger_path, events.CONTROL_REUSED)
+    ctrl_ev = LedgerView(ledger_path).latest(events.CONTROL_REUSED)
     if ctrl_ev is None:
         return None
     control_arm = ctrl_ev["control_arm"]
@@ -1241,7 +1244,7 @@ def compute_findings(
     )
 
     return FindingsDocument(
-        experiment_id=find_events(ledger_path, events.EXPERIMENT_LOCKED)[0]["provenance"][
+        experiment_id=LedgerView(ledger_path).by_kind(events.EXPERIMENT_LOCKED)[0]["provenance"][
             "experiment_id"
         ],
         seed=seed,
@@ -1287,7 +1290,7 @@ def _judge_coverage(ledger_path) -> dict:
     # narrowed corpus guards against stays visible if it ever recurs.
     leak_by_class: dict[str, int] = {}
     total = 0
-    for ev in find_events(ledger_path, events.JUDGE_VERDICT):
+    for ev in LedgerView(ledger_path).by_kind(events.JUDGE_VERDICT):
         v = ev.get("verdict") or {}
         total += 1
         if v.get("winner") == "CANT_JUDGE":
@@ -1635,7 +1638,7 @@ def render_markdown(
 
 def _task_ids_run(ledger_path) -> set[str]:
     """The set of task ids the experiment actually ran (from trial records)."""
-    return {ev["trial_record"]["task_id"] for ev in find_events(ledger_path, events.TRIAL)}
+    return {ev["trial_record"]["task_id"] for ev in LedgerView(ledger_path).by_kind(events.TRIAL)}
 
 
 def _ledgered_calibration_status(ledger_path, corpus_id: str, semver: str) -> Optional[str]:
@@ -1644,7 +1647,7 @@ def _ledgered_calibration_status(ledger_path, corpus_id: str, semver: str) -> Op
     Reads ``calibration_run`` events (last-write-wins in ledger order) rather than
     the hand-editable ``manifest.calibration.status`` [CO-4]."""
     status = None
-    for ev in find_events(ledger_path, events.CALIBRATION_RUN):
+    for ev in LedgerView(ledger_path).by_kind(events.CALIBRATION_RUN):
         if ev.get("corpus_id") == corpus_id and ev.get("semver") == semver:
             status = ev.get("status")
     return status
@@ -1825,7 +1828,7 @@ def _assert_correction_consistent(correction: str, ledger_path) -> None:
     any prior official render's recorded correction [F-H7]. Render events that
     predate the recorded field are skipped — a legacy chain is not refused on,
     but the first post-field official render pins the procedure for the rest."""
-    for ev in find_events(ledger_path, events.FINDINGS_RENDERED):
+    for ev in LedgerView(ledger_path).by_kind(events.FINDINGS_RENDERED):
         if ev.get("mode") != "official":
             continue
         prior = ev.get("multi_arm_correction")
