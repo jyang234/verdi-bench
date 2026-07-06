@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from harness.grade.container import GradingContainer
+from harness.grade.container import GradeRunner, GradingContainer
 from harness.grade.deterministic import (
     REASON_CONTAINER,
     REASON_MALFORMED,
@@ -354,15 +354,22 @@ def test_retry_terminal_stamps_override_of_on_unknown_task_reattempt(tmp_path):
     assert len(cants[1]["override_of"]) == 64  # the re-attempt is linked
 
 
-class _FreshCopyRunner:
+class _FreshCopyRunner(GradeRunner):
     """A runner that (like DockerGradeRunner) grades a fresh workspace copy and
-    writes its *own* holdout output — records what it was handed. It does not set
-    ``grades_in_place``, so it gets the safe copy path by default."""
+    writes its *own* holdout output — records what it was handed. It declares
+    ``grades_in_place = False`` so it takes the fail-safe copy path [refactor 05 §2]."""
+
+    grader_name = "scripted"
+    runs_plugins_in_container = False
+    grades_in_place = False
 
     def __init__(self, output):
         self.output = output
         self.saw_stale = None
         self.copy_path = None
+
+    def preflight(self) -> None:
+        """No daemon to probe."""
 
     def run_holdouts(self, cmd, workspace, holdouts_dir, nonce=None):
         from pathlib import Path

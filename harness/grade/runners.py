@@ -24,8 +24,9 @@ import json
 import os
 import secrets
 import subprocess
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import ClassVar, Optional
 
 from ..hermetic.docker import DockerClient, HardenedCommand
 from .fence import (
@@ -51,13 +52,44 @@ DEFAULT_GRADER_IMAGE = "verdi-bench/grader:latest"
 HOLDOUT_RESULTS = "holdout_results.json"
 
 
-class GradeRunner(Protocol):
+class GradeRunner(ABC):
+    """The runner seam: execute a task's holdouts and return their results
+    [refactor 05 §2].
+
+    Every runner must DECLARE four members — not inherit accidents. The four
+    silent ``getattr(runner, ..., default)`` probes GradingContainer once used
+    are gone; a runner that omits a member fails loudly at use rather than
+    defaulting into (say) the trusted docker tier or the fresh-copy opt-out:
+
+    - ``grader_name`` — recorded on the grade event so a local (ADVISORY) grade
+      is distinguishable from a trusted container grade [SEC]; ``"docker"`` is the
+      only trusted tier, everything else banners ADVISORY.
+    - ``runs_plugins_in_container`` — True runs declared plugins network-less in a
+      container (the docker path), False runs them in-process (ADVISORY) [PRA-M6].
+    - ``grades_in_place`` — True reads/executes against the ORIGINAL workspace (a
+      read-only no-daemon path), False fails SAFE onto a throwaway copy so a
+      container cannot mutate ledgered evidence [GR-1/GR-3].
+    - ``preflight`` — probe whatever a batch needs up front (the docker daemon),
+      or explicitly no-op for a daemon-less path; classifies daemon-down as a
+      transient GraderUnavailableError before any grading is attempted [GR-8].
+    """
+
+    grader_name: ClassVar[str]
+    runs_plugins_in_container: ClassVar[bool]
+    grades_in_place: ClassVar[bool]
+
+    @abstractmethod
+    def preflight(self) -> None:
+        """Probe the runner's prerequisites before a grade batch, or no-op [GR-8]."""
+
+    @abstractmethod
     def run_holdouts(
         self, cmd: list[str], workspace: Path, holdouts_dir: str, nonce: Optional[str] = None
-    ) -> HoldoutRun: ...
+    ) -> HoldoutRun:
+        """Execute the task's holdouts and return their fenced-stdout results."""
 
 
-class DockerGradeRunner:
+class DockerGradeRunner(GradeRunner):
     """Runs holdouts in a fresh network-less container via the docker CLI.
 
     Uses :class:`GradingContainer`'s default (safe) path: a throwaway copy of the
@@ -67,6 +99,7 @@ class DockerGradeRunner:
 
     grader_name = "docker"
     runs_plugins_in_container = True  # PRA-M6: plugins run network-less, not in-process
+    grades_in_place = False  # fail SAFE onto a throwaway copy [GR-1/GR-3]
 
     def __init__(self, docker: Optional[DockerClient] = None) -> None:
         self._docker = docker or DockerClient()
@@ -106,7 +139,7 @@ class DockerGradeRunner:
         return parse_fenced_stdout(proc.stdout, proc.returncode, nonce=nonce)
 
 
-class LocalGradeRunner:
+class LocalGradeRunner(GradeRunner):
     """No-daemon runner: reads a pre-placed ``holdout_results.json`` from the
     workspace. Used by the fake/end-to-end path so grading is exercisable without
     Docker (the real DockerGradeRunner is docker-marked).
@@ -121,6 +154,7 @@ class LocalGradeRunner:
 
     grades_in_place = True
     grader_name = "local"
+    runs_plugins_in_container = False  # in-process ADVISORY fallback [PRA-M6]
 
     def preflight(self) -> None:
         """No daemon to probe — the no-daemon path is always available."""
@@ -140,7 +174,7 @@ class LocalGradeRunner:
             return HoldoutRun({"__malformed__": True})
 
 
-class LocalExecutingGradeRunner:
+class LocalExecutingGradeRunner(GradeRunner):
     """No-daemon runner that EXECUTES a declared holdout [refactor 05 §1].
 
     Where :class:`LocalGradeRunner` *reads* a pre-placed ``holdout_results.json``,
@@ -163,6 +197,7 @@ class LocalExecutingGradeRunner:
 
     grades_in_place = True
     grader_name = "local-exec"
+    runs_plugins_in_container = False  # in-process ADVISORY fallback [PRA-M6]
 
     def preflight(self) -> None:
         """No daemon to probe — the no-daemon path is always available."""
@@ -200,13 +235,12 @@ class GradingContainer:
         self._docker = docker or DockerClient()
 
     def preflight(self) -> None:
-        """Delegate the daemon probe to the runner (no-op for daemon-less runners).
+        """Delegate the daemon probe to the runner [GR-8/GR-11].
 
-        Called once at the start of a grade batch [GR-8/GR-11]. A runner without
-        a ``preflight`` is treated as always-available."""
-        probe = getattr(self._runner, "preflight", None)
-        if probe is not None:
-            probe()
+        Called once at the start of a grade batch. ``preflight`` is a declared
+        GradeRunner member — the docker runner probes the daemon, the daemon-less
+        runners no-op — so there is no silent "always-available" default."""
+        self._runner.preflight()
 
     def build_grade_command(
         self, workspace: Path, holdouts_dir: str, nonce: Optional[str] = None
@@ -257,7 +291,7 @@ class GradingContainer:
     def grader_name(self) -> str:
         """Identity of the grader used, recorded in the grade event so a local
         (ADVISORY) grade is distinguishable from a trusted container grade [SEC]."""
-        return getattr(self._runner, "grader_name", "unknown")
+        return self._runner.grader_name
 
     def run_plugins(self, workspace: Path, plugin_ids: list, task) -> list:
         """Run declared grader plugins and return their assertions [PRA-M6].
@@ -272,7 +306,7 @@ class GradingContainer:
 
         if not plugin_ids:
             return []
-        if getattr(self._runner, "runs_plugins_in_container", False):
+        if self._runner.runs_plugins_in_container:
             # docker path: network-less container over a throwaway copy, via the
             # plugin-launch recipe [refactor 05 §2].
             from .plugins.launch import run_plugins_in_container
@@ -294,7 +328,7 @@ class GradingContainer:
         # read a pre-placed file in the original workspace (the no-daemon
         # LocalGradeRunner) opts out via ``grades_in_place`` — a future container
         # runner therefore cannot silently lose evidence protection [GR-1/GR-3].
-        if getattr(self._runner, "grades_in_place", False):
+        if self._runner.grades_in_place:
             # Local/ADVISORY path reads a pre-placed file — no container, no
             # fenced channel, so no nonce.
             cmd = self.build_grade_command(workspace, holdouts_dir)
