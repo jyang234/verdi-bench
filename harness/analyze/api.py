@@ -35,8 +35,7 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False,
     from .dossier import render_dossier
     from .findings.extract import compute_findings
     from .findings.model import AnalyzeError, cant_analyze_reason
-    from .findings.render_html import render_html
-    from .findings.render_md import render_markdown
+    from .findings.render import render_findings
 
     experiment_dir = Path(experiment_dir)
     spec_path = experiment_dir / "experiment.yaml"
@@ -59,8 +58,11 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False,
         # F-H7: the multi-arm decision policy comes from the sha-locked spec —
         # there is deliberately no analyze-time knob for it.
         findings = compute_findings(ledger_path, spec, spec.seed, corpus_manifest=manifest)
-        renderer = render_html if html else render_markdown
-        rendered = renderer(findings, ledger_path, mode, corpus_manifest=manifest)
+        # G3: the format choice resolves through the Renderer registry — the
+        # boolean picks a format id, not a bare function [refactor 11 §G3].
+        rendered = render_findings(
+            "html" if html else "md", findings, ledger_path, mode, corpus_manifest=manifest
+        )
         # EVAL-12 AC-7/D004: the dossier rides the same invocation as a third
         # artifact — same fence (render_dossier delegates to render_markdown's
         # validators), same single findings_rendered event, no new verb.
