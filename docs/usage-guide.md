@@ -396,7 +396,9 @@ corrupt* log fails the trial closed, never silently becomes "no telemetry".
 
 Plan-time validation refuses to lock an arm whose `platform` has no registered
 adapter, so a typo fails **before any spend**, not mid-run. The registered
-platforms today are `claude_code`, `codex`, and `generic`.
+platforms today are `claude_code`, `codex`, `generic`, and `otlp` (the last
+projects a trial's captured OTLP spans into the trajectory instead of reading a
+log — see refactor spec 10; its full section lands with the Phase 6 docs).
 
 ### Tier 1 — zero code: emit the normalized format (`platform: generic`)
 
