@@ -242,3 +242,18 @@ def test_metering_proxy_context_manager_tears_down_on_error(tmp_path, monkeypatc
             pass
     flat = [" ".join(c) for c in d.calls]
     assert any("network rm verdi-metered" in f for f in flat)  # torn down despite the error
+
+
+def test_metering_proxy_honors_custom_log_basename(tmp_path):
+    """[P3 interim review F1] The container must write the OPERATOR's filename:
+    a custom basename previously fell open — the proxy wrote verdi.jsonl while
+    ProxyConfig.log_path pointed at the touched-but-empty custom file, so the
+    PRA-H4 scanner read zero egress. The PROXY_LOG env token must carry the
+    operator's basename under the mounted log dir."""
+    d = _RecordingDocker(script={("docker", "network", "inspect"): 0})
+    log = tmp_path / "custom-egress.jsonl"
+    cfg = MeteringProxy(["api.anthropic.com"], log_path=log, docker=d).start()
+    assert cfg.log_path == str(log)
+    run_call = next(c for c in d.calls if c[:2] == ["docker", "run"] and "-d" in c)
+    env_tokens = [run_call[i + 1] for i, t in enumerate(run_call) if t in ("--env", "-e")]
+    assert "PROXY_LOG=/var/log/verdi/custom-egress.jsonl" in env_tokens, env_tokens

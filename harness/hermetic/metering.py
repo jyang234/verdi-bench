@@ -83,10 +83,12 @@ class MeteringProxy:
         self._docker = docker or DockerClient()
         self._name = name
         self._proxy_src = Path(__file__).resolve().parent / "_proxy_container.py"
-        # Resolve where the JSONL log lands. An explicit path is honored as-is (its
-        # parent dir is the mount); an absent one gets a managed temp dir removed on
-        # teardown. Either way the *directory* is bind-mounted so the container can
-        # create/append the file.
+        # Resolve where the JSONL log lands. An explicit path is honored as-is:
+        # its parent dir is the mount AND its basename rides into the container
+        # via PROXY_LOG, so the proxy writes the operator's exact filename — a
+        # custom basename must never fall open as a touched-but-empty log while
+        # the proxy writes verdi.jsonl beside it [P3 interim review F1]. An
+        # absent path gets a managed temp dir removed on teardown.
         self._owns_logdir = log_path is None
         if log_path is None:
             self._logdir = Path(tempfile.mkdtemp(prefix="verdi-metering-"))
@@ -138,7 +140,7 @@ class MeteringProxy:
             .harden()
             .user()
             .env_kv("VERDI_PROXY_ALLOW", ",".join(self._allow))
-            .env_kv("PROXY_LOG", _CONTAINER_LOG)
+            .env_kv("PROXY_LOG", f"{os.path.dirname(_CONTAINER_LOG)}/{self._logfile.name}")
             .volume(self._proxy_src, "/verdi/proxy.py", ro=True)
             .volume(self._logdir, os.path.dirname(_CONTAINER_LOG))
             .image(self._image)

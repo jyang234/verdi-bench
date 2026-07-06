@@ -157,3 +157,32 @@ def test_bench_run_aborts_on_managed_proxy_failure(monkeypatch, tmp_path):
     r = CliRunner().invoke(app, ["run", str(tmp_path), "--engine", "harbor"])
     assert r.exit_code == 2
     assert "RUN ABORTED" in r.output and "managed metering proxy" in r.output
+
+
+def test_proxy_up_partial_failure_tears_down(monkeypatch):
+    """[P3 interim review M4] A crash mid-stand-up on `bench proxy up` must not
+    leak networks/containers until a manual `bench proxy down`."""
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+    from harness.hermetic import cli as hermetic_cli
+    from harness.hermetic.metering import MeteringProxyError
+
+    calls = {"start": 0, "stop": 0}
+
+    class _Boom:
+        def __init__(self, *a, **kw):
+            pass
+
+        def start(self):
+            calls["start"] += 1
+            raise MeteringProxyError("scripted mid-stand-up crash")
+
+        def stop(self):
+            calls["stop"] += 1
+
+    monkeypatch.setattr(hermetic_cli, "MeteringProxy", _Boom)
+    result = CliRunner().invoke(app, ["proxy", "up", "--allow", "api.anthropic.com"])
+    assert result.exit_code == 1
+    assert "did not come up" in (result.output or "") + str(result.exception or "")
+    assert calls == {"start": 1, "stop": 1}

@@ -100,7 +100,9 @@ def _await_port(container: str, port: int) -> None:
 
 @pytest.mark.skipif(not DOCKER_AVAILABLE, reason="no docker daemon available")
 def test_managed_proxy_stands_up_meters_and_tears_down(tmp_path):
-    log = tmp_path / "metering" / "verdi.jsonl"
+    # custom basename on purpose: pins the F1 fail-open fix (the proxy must write
+    # the operator's exact filename, not verdi.jsonl beside an empty custom file)
+    log = tmp_path / "metering" / "custom-egress.jsonl"
     _rm(_UPSTREAM, _CLIENT, MANAGED_PROXY_NAME)
     try:
         with MeteringProxy.managed([_ALLOWED_HOST], log_path=log) as cfg:

@@ -40,11 +40,18 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         """Stand up the metered + egress networks and the CONNECT proxy, then leave
         it running (tear it down with ``bench proxy down``)."""
+        proxy = MeteringProxy(list(allow), log_path=log_path)
         try:
-            cfg = MeteringProxy(list(allow), log_path=log_path).start()
+            cfg = proxy.start()
         except MeteringProxyError as e:
+            # A partial stand-up (networks made, container crashed) must not
+            # leak until `bench proxy down` [P3 interim review M4].
+            proxy.stop()
             typer.echo(f"metering proxy did not come up: {e}", err=True)
             raise typer.Exit(code=1)
+        except BaseException:
+            proxy.stop()
+            raise
         typer.echo(f"metering proxy up: {cfg.proxy_url}")
         typer.echo(f"  allowlist: {', '.join(cfg.allowlist)}")
         typer.echo(f"  log: {cfg.log_path}")
