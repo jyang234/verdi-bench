@@ -103,6 +103,41 @@ declared format, exit semantics are honored, and nothing was written outside
 `/workspace`. It validates **plumbing, not intelligence** — no provider keys, no
 network, no LLM calls. A non-compliant image fails loudly with the named check.
 
+## Emitting OTLP spans (optional) [refactor 09 §4/§6]
+
+An OTel-native stack (LangChain/LangSmith, pydantic-ai, Logfire, OpenLLMetry, a
+hand-instrumented SDK) does **not** have to flatten its span tree into
+`agent_log.json` by hand: it can emit OTLP inside the trial container and let the
+harness capture the spans as a redacted, sha-ledgered `artifacts/otlp_spans.json`
+artifact — with no byte leaving the hermetic boundary. verdi-bench builds the
+mailbox, never the instrumentation.
+
+When (and only when) a trace collector is configured for the run
+(`otlp.managed: true`, or an explicit `otlp.endpoint`, in `run.config.yaml` — see
+`docs/usage-guide.md` §6), the engine injects three **standard** OTel environment
+variables the image MAY read through any OTLP-HTTP exporter — no verdi-specific
+code:
+
+| Env var | Injected value | Purpose |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | the collector's OTLP/HTTP endpoint (managed: `http://verdi-trace-collector:4318`) | where an OTel SDK POSTs `/v1/traces` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `x-verdi-trial=<trial_id>` | per-trial attribution — the collector's analog of the proxy's trial-id credential; the header every SDK forwards |
+| `NO_PROXY` | the collector host, **appended** to any operator-supplied `NO_PROXY` | keeps span posts off the metering proxy, so egress metering stays unpolluted |
+
+**Spans are always optional; compliance never requires them.** OTLP config rides
+these standard env vars, *not* `/verdi/request.json` — the frozen A1 request
+contract is untouched, so an image that ignores OTel sees nothing new. Critically,
+`bench images verify` runs `--network none` with **no `OTEL_*` env** at all: OTel
+SDKs buffer and drop unexported spans by design, so a span-emitting image verifies
+exactly like any other. Point an exporter at the injected endpoint and you get
+spans when a collector is live, and a clean, compliant image when one is not.
+
+The image only *emits* spans; the harness extracts this trial's slice post-run
+into `artifacts/otlp_spans.json` (an image never writes that file). That artifact
+is projected into the trajectory + flight-recorder surfaces by the `platform:
+otlp` adapter — see `docs/adapters.md` §"The `otlp` platform" for the normative
+span→trajectory mapping and how to select it in an arm.
+
 ## Companion docs
 
 - `docs/adapters.md` — the FROZEN generic log format v1/v2 (this is the writer's
@@ -111,5 +146,5 @@ network, no LLM calls. A non-compliant image fails loudly with the named check.
   the image directory.
 - `images/reference/multi-agent/README.md` — a worked multi-agent example.
 - `deploy/metering-proxy/README.md` — the external metering-proxy deployment
-  reference (egress obligation above); its one-line pointer here lands with the
-  Phase 6 docs pass.
+  reference for the egress obligation above (the harness-native path is the
+  managed proxy; that README points back here).
