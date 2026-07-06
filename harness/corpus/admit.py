@@ -13,6 +13,10 @@ refuses quarantined tasks; a pending candidate is excluded by
 
 from __future__ import annotations
 
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from ..contamination.canary import derive_canary, embed_canary, hash_canary
@@ -215,6 +219,95 @@ def admit_task(
         baseline_ref=baseline_ref,
     )
     return task
+
+
+# --- two-phase admission persistence [refactor 07 §3; PRA-M11, EVAL-10 AC-2] --
+class AdmitInputError(RuntimeError):
+    """The stored candidate content for admission is missing/malformed/inside
+    the instrument repo — refused before ledgering [EVAL-10 AC-2]."""
+
+
+class AdmitDestinationError(RuntimeError):
+    """An admission write destination is not writable — refused before
+    ledgering, so nothing is torn [PRA-M11]."""
+
+
+@dataclass(frozen=True)
+class AdmitOutcome:
+    """The result of a two-phase admission [PRA-M11]: the persisted embedded-copy
+    path (when a candidate was embedded), and a post-ledger ``persist_error`` when
+    the admission is on the chain but the manifest/embedded copy could not be
+    written — surfaced with the recovery hint, never swallowed."""
+
+    embedded_path: Path | None = None
+    persist_error: str | None = None
+
+
+def admit_with_persistence(
+    manifest: CorpusManifest,
+    ledger_path,
+    ctx: EventContext,
+    *,
+    candidate_id: str,
+    task_sha: str,
+    baseline_ref: str,
+    keyring: dict,
+    manifest_path,
+    candidate_content: Optional[dict] = None,
+    candidate_json=None,
+) -> AdmitOutcome:
+    """The admission's two-phase write orchestration [PRA-M11, EVAL-10 AC-2].
+
+    Phase 1 (pre-ledger, fail-closed): probe every write destination — a
+    non-writable manifest/embedded-copy path refuses with NOTHING ledgered.
+    Phase 2 (post-ledger): :func:`admit_task` ledgers exactly one
+    ``task_admitted`` (validating the canary embed first), then the embedded copy
+    is persisted ALONGSIDE the reviewed file (never over it) and the manifest is
+    saved. A failure there is reported as ``AdmitOutcome.persist_error`` — the
+    admission is on the chain, re-save to reconcile — never swallowed.
+
+    Sits beside :func:`admit_task` so the api/CLI keep argument handling +
+    refusal mapping only [refactor 07 §3]. ``candidate_content`` is the
+    already-read stored content (the api validates its provenance before
+    ledgering, raising ``AdmitInputError`` there)."""
+    # PRA-M11: validate the write destinations BEFORE ledgering, so a non-writable
+    # manifest/embedded-copy path fails closed with nothing torn.
+    for dest in (manifest_path, candidate_json):
+        if dest is not None and not os.access(dest.parent, os.W_OK):
+            raise AdmitDestinationError(
+                f"admission destination {dest.parent} is not writable; refusing "
+                "before ledgering [PRA-M11]"
+            )
+    # admit_task validates the canary embed BEFORE ledgering, so an embed refusal
+    # (no prompt, double embed) leaves nothing torn.
+    admit_task(
+        manifest, ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
+        baseline_ref=baseline_ref, keyring=keyring, candidate_content=candidate_content,
+    )
+    # EVAL-10 AC-2: persist the embedded copy ALONGSIDE the reviewed file — never
+    # over it. embed_canary is pure, so this repeats the exact call admit_task
+    # already validated. A failure here (post-ledger) is reported loudly with the
+    # recovery hint, not swallowed [PRA-M11].
+    embedded_path: Path | None = None
+    try:
+        if candidate_content is not None:
+            embedded = embed_canary(candidate_content, derive_canary(task_sha))
+            ep = candidate_json.with_suffix(".embedded.json")
+            ep.write_text(
+                json.dumps(embedded, sort_keys=True, indent=2), encoding="utf-8"
+            )
+            embedded_path = ep
+        manifest.save(manifest_path)
+    except OSError as e:
+        return AdmitOutcome(
+            embedded_path=embedded_path,
+            persist_error=(
+                f"task_admitted was ledgered but persisting the manifest/embedded "
+                f"copy failed: {e}. The admission is on the chain; re-save the "
+                f"manifest to {manifest_path} to reconcile [PRA-M11]"
+            ),
+        )
+    return AdmitOutcome(embedded_path=embedded_path)
 
 
 # --- one-event property registration [EVAL-3 §M7, XC-3] --------------------

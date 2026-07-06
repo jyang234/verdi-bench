@@ -3,18 +3,24 @@
 The importable entry points behind ``bench corpus …`` [EVAL-8 §M6]: import a
 public dataset, materialize a runnable experiment, lint tasks.yaml, draw a
 calibration subset, mine/approve/admit curated candidates, record a calibration
-run, and run the flake baseline. Bodies are extracted **as-is** — the deeper
-calibrate-statistics and admit-persistence refactors are Phase 4 [07 §3]. The
-typer verbs (``harness/corpus/cli.py``) are thin shells that map the refusals to
-exit codes and echo.
+run, and run the flake baseline. Each verb keeps argument handling + refusal
+mapping; the domain work lives in the corpus modules (calibrate statistics in
+``ledger_ops.realized_calibration_run``, admission's two-phase persistence in
+``admit.admit_with_persistence``) [refactor 07 §3]. The typer verbs
+(``harness/corpus/cli.py``) are thin shells that map the refusals to exit codes
+and echo.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
+
+# The admission refusal types + two-phase outcome live beside admit_task
+# [refactor 07 §3]; re-exported here because this stage API is the seam the
+# CLI and SDK import them through.
+from .admit import AdmitDestinationError, AdmitInputError, AdmitOutcome
 
 # Known tasks.yaml drift traps — singular/plural keys the lenient run/grade reader
 # would silently ignore (decision A9). validate-tasks names them explicitly.
@@ -48,16 +54,6 @@ class CalibrateKindError(RuntimeError):
 
 class CandidateStagingError(RuntimeError):
     """Staging a mined candidate into a manifest was refused (bad entry)."""
-
-
-class AdmitInputError(RuntimeError):
-    """The stored candidate content for admission is missing/malformed/inside
-    the instrument repo — refused before ledgering [EVAL-10 AC-2]."""
-
-
-class AdmitDestinationError(RuntimeError):
-    """An admission write destination is not writable — refused before
-    ledgering, so nothing is torn [PRA-M11]."""
 
 
 @dataclass(frozen=True)
@@ -97,12 +93,6 @@ class CalibrateOutcome:
     p: float
     n_tasks: int
     status: str
-
-
-@dataclass(frozen=True)
-class AdmitOutcome:
-    embedded_path: Path | None = None
-    persist_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -339,11 +329,12 @@ def corpus_admit(
     ``KeyringFormatError``/``AdmitDestinationError``/``CorpusError``/``CanaryError``,
     all exit 2); a *post-ledger* persistence failure is returned as
     ``AdmitOutcome.persist_error`` (exit 1) so the admission on the chain is
-    reported, not lost [PRA-M11]."""
-    from ..contamination.canary import derive_canary, embed_canary
+    reported, not lost [PRA-M11]. The two-phase persistence orchestration lives
+    beside ``admit_task`` (:func:`harness.corpus.admit.admit_with_persistence`);
+    this verb keeps argument handling + refusal mapping [refactor 07 §3]."""
     from ..ledger.events import EventContext
     from ..ledger.actor import resolve_actor
-    from .admit import admit_task
+    from .admit import admit_with_persistence
     from .attestation import load_keyring
     from .registry import CorpusError, CorpusManifest, assert_outside_instrument
 
@@ -364,45 +355,11 @@ def corpus_admit(
     # raises KeyringFormatError (a ValueError) the CLI maps to a clean exit-2
     # migration refusal [D-P7-3].
     authorized = load_keyring(keyring)
-    # PRA-M11: validate the write destinations BEFORE ledgering, so a non-writable
-    # manifest/embedded-copy path fails closed with nothing torn.
-    for dest in (manifest_path, candidate_json):
-        if dest is not None and not os.access(dest.parent, os.W_OK):
-            raise AdmitDestinationError(
-                f"admission destination {dest.parent} is not writable; refusing "
-                "before ledgering [PRA-M11]"
-            )
-    # admit_task validates the canary embed BEFORE ledgering, so an embed refusal
-    # (no prompt, double embed) leaves nothing torn.
-    admit_task(
+    return admit_with_persistence(
         manifest, ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
-        baseline_ref=baseline_ref, keyring=authorized,
-        candidate_content=candidate_content,
+        baseline_ref=baseline_ref, keyring=authorized, manifest_path=manifest_path,
+        candidate_content=candidate_content, candidate_json=candidate_json,
     )
-    # EVAL-10 AC-2: persist the embedded copy ALONGSIDE the reviewed file — never
-    # over it. embed_canary is pure, so this repeats the exact call admit_task
-    # already validated. A failure here (post-ledger) is reported loudly with the
-    # recovery hint, not swallowed [PRA-M11].
-    embedded_path: Path | None = None
-    try:
-        if candidate_content is not None:
-            embedded = embed_canary(candidate_content, derive_canary(task_sha))
-            ep = candidate_json.with_suffix(".embedded.json")
-            ep.write_text(
-                json.dumps(embedded, sort_keys=True, indent=2), encoding="utf-8"
-            )
-            embedded_path = ep
-        manifest.save(manifest_path)
-    except OSError as e:
-        return AdmitOutcome(
-            embedded_path=embedded_path,
-            persist_error=(
-                f"task_admitted was ledgered but persisting the manifest/embedded "
-                f"copy failed: {e}. The admission is on the chain; re-save the "
-                f"manifest to {manifest_path} to reconcile [PRA-M11]"
-            ),
-        )
-    return AdmitOutcome(embedded_path=embedded_path)
 
 
 def corpus_baseline(
