@@ -45,6 +45,15 @@ never from the sha-locked `experiment.yaml` or the ledger.
 - `docker-compose.yml` — brings the proxy up on the `verdi-metered` internal
   network the engine attaches trials to.
 
+> **Squid-version caveat.** Harbor presents the trial id as a basic-auth
+> *username with an empty password* (`_with_trial_auth`); Squid 6 refuses an
+> empty-password credential in core, so validate the auth against your Squid
+> version before trusting attribution. The **shipped** in-repo path avoids this
+> entirely: the managed metering proxy (`harness/hermetic/_proxy_container.py`,
+> stood up and torn down by `MeteringProxy` / `run.config` `proxy.managed`)
+> accepts the username-only credential natively and is what the shakedown (L6)
+> and the e2e tests use.
+
 ## Validation
 
 `tests/test_e2e_metering_proxy.py` (docker-marked, CI only) brings this proxy up,

@@ -29,7 +29,7 @@ make shakedown            # golden.py + tripwires.py
 uv run --env-file .env python scripts/shakedown/official.py
 
 # L6 — real LLMs solving tasks in real hermetic containers, egress metered
-#      per trial through a proxy this script stands up and tears down
+#      per trial through the harness-managed metering proxy
 uv run --env-file .env python scripts/shakedown/harbor.py
 
 # L4 — container guarantees on real Docker (builds synthetic images)
@@ -49,9 +49,8 @@ Generated run state lands in `_run/` (git-ignored); committed inputs are under
 
 | Path | Role |
 |---|---|
-| `_harness.py` | script-local helpers — `Tally`, `_run/` staging, the one `bench` console-script driver (pre-registration vectors) + ANSI strip; `dump_yaml` stays for tripwires' deliberately-invalid specs; `events`/`ASSETS` linger only for the not-yet-converted harbor scripts (Phase 3) |
+| `_harness.py` | script-local helpers — `Tally`, `_run/` staging, the one `bench` console-script driver (pre-registration vectors) + ANSI strip; `dump_yaml` stays for tripwires' deliberately-invalid specs |
 | `golden.py` · `tripwires.py` | hermetic acceptance (L1, L3), authored + driven through `harness.sdk` |
 | `official.py` | opt-in real-judge layer (L2), on `harness.sdk` |
-| `harbor.py` · `harbor_multiagent.py` | opt-in real-container layers (L6); convert to the SDK in Phase 3 |
+| `harbor.py` · `harbor_multiagent.py` | opt-in real-container layers (L6), on `harness.sdk` + `harness.images` (the official `generic-llm` / reference multi-agent images) + the managed metering proxy |
 | `assets/golden/` | the committed golden vectors (still pinned by a schema test) |
-| `assets/harbor/` | the real trial-agent image + minimal metering CONNECT proxy |

@@ -35,13 +35,16 @@ make shakedown        # L1 golden path + L3 tripwire matrix (no keys, no Docker)
 L0, L1, L3 are hermetic. L2/L6 need provider keys (`.env`); L4/L6 need Docker;
 L5 needs a host node + Playwright + Chromium.
 
-Since the Phase-2 SDK (refactor 02/08), the hermetic scripts (`golden.py`,
-`tripwires.py`) and the real-judge `official.py` author + drive experiments
-in-process through `harness.sdk` — no hand-built spec dicts, no `bench`
-subprocess for the pipeline, ledger reads through `LedgerView`. The one
-console-script survivor is the pre-registration refusal matrix (L3 #1–7), whose
-point is the installed `bench plan` exit-code mapping. The harbor real-container
-layers (L6) convert in Phase 3.
+Since the Phase-2 SDK (refactor 02/08) and the Phase-3D real-container conversion,
+every script — `golden.py`, `tripwires.py`, the real-judge `official.py`, and the
+real-agent `harbor.py` / `harbor_multiagent.py` — authors + drives experiments
+in-process through `harness.sdk`: no hand-built spec dicts, no `bench` subprocess
+for the pipeline, ledger reads through `LedgerView`. L6 builds its trial images
+through `harness.images` (the official `generic-llm` / reference multi-agent
+images) and meters egress through the managed metering proxy (`run.config`
+`proxy.managed`) — zero raw `docker` calls. The one console-script survivor is the
+pre-registration refusal matrix (L3 #1–7), whose point is the installed
+`bench plan` exit-code mapping.
 
 ## L3 — the tripwire matrix (18 vectors)
 
@@ -116,11 +119,15 @@ Each row is an adversarial input; the fence must produce the exact disposition.
   demonstrated live via `DockerCliRunner().run_container([...], timeout_s=2)`.
 - **The reference `deploy/metering-proxy/` Squid config rejects harbor's
   credential.** Harbor injects the trial id as a basic-auth *username with an
-  empty password* (`_with_trial_auth`), which Squid 6 refuses in core — exactly
-  the "validate against your Squid version" caveat the docs flag. `harbor.py`
-  ships a minimal stdlib CONNECT proxy (`assets/harbor/proxy.py`) that accepts
+  empty password* (`_with_trial_auth`), which Squid 6 refuses in core — the
+  "validate against your Squid version" caveat that now lives only in
+  `deploy/metering-proxy/README.md`, where the external Squid path lives on. The
+  **shipped** metering path is the managed proxy: the stdlib CONNECT proxy
+  `harness/hermetic/_proxy_container.py`, stood up and torn down by
+  `MeteringProxy` (`run.config` `proxy.managed`, which L6 uses), which accepts
   the username-only credential and emits the `{"trial","host","decision"}` JSONL
-  `_scan_proxy_log` parses, restoring genuine per-trial egress attribution.
+  `_scan_proxy_log` parses — genuine per-trial egress attribution, no external
+  Squid required.
 
 ## Executed baseline — 2026-07-05 (main @31b5be9)
 

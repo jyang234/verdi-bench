@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Official ``generic-llm`` trial agent — single-turn chat, platform ``generic`` [refactor 03 §3].
 
-The promotion of the shakedown harbor agent (``scripts/shakedown/assets/harbor/
-agent.py``) onto :mod:`verdi_agent`: it reads its task + identity from
-``/verdi/request.json``, calls the arm's model ONCE (anthropic / openai / google)
-through the injected metering proxy, writes ``solution.py`` into the graded
-``/workspace``, and emits ``artifacts/agent_log.json`` in the verdi generic v1
-format. Fail-visible: :func:`verdi_agent.run_visible` guarantees a scorable log
-even when the model call raises.
+The promotion of the former shakedown harbor trial agent onto :mod:`verdi_agent`:
+it reads its task + identity from ``/verdi/request.json``, calls the arm's model
+ONCE (anthropic / openai / google) through the injected metering proxy, writes
+``solution.py`` into the graded ``/workspace``, and emits
+``artifacts/agent_log.json`` in the verdi generic v1 format. Fail-visible:
+:func:`verdi_agent.run_visible` guarantees a scorable log even when the model
+call raises.
 
-The ~35 lines of CONNECT-tunnel + ``Proxy-Authorization`` code the old asset
+The ~35 lines of CONNECT-tunnel + ``Proxy-Authorization`` code that agent
 hand-rolled are gone — ``verdi_agent.post_json`` owns that dance now, so this
 file is agent logic only.
 """
