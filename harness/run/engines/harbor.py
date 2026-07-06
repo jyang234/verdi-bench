@@ -46,10 +46,11 @@ from ..types import EngineResult, TrialRequest
 
 HARBOR_VERSION = "harbor-pinned-0.1.0"  # version-pinned in images [D005]
 
-# The trial-image contract [RN-4, EVAL-4-D-8]: the harness writes the task prompt
-# and arm configuration to a host file and bind-mounts it READ-ONLY at this path,
-# OUTSIDE /workspace (so it never pollutes the graded workspace copy). A pre-baked
-# trial image's entrypoint reads it to learn its task and which arm it is.
+# The trial-image contract [RN-4, EVAL-4-D-8; the normative statement is
+# docs/images.md §1]: the harness writes the task prompt and arm configuration to a
+# host file (a typed TrialRequestFile, A1) and bind-mounts it READ-ONLY at this
+# path, OUTSIDE /workspace (so it never pollutes the graded workspace copy). A
+# pre-baked trial image's entrypoint reads it to learn its task and which arm it is.
 TRIAL_REQUEST_MOUNT = "/verdi/request.json"
 
 # METERED_NETWORK is imported from harness.hermetic.network — the single owner of
@@ -410,16 +411,21 @@ class HarborEngine:
 
     @staticmethod
     def _trial_request_payload(request: TrialRequest) -> dict:
-        """The trial-image contract payload [RN-4, D-8] — what a pre-baked image's
-        entrypoint reads from ``/verdi/request.json``: its prompt and which arm it
-        is (name, model, config). The prompt is holdout-free by construction (the
-        seam refuses a canary in any request channel before the engine runs)."""
-        return {
-            "prompt": request.prompt,
-            "arm": request.arm.name,
-            "model": request.arm.model,
-            "payload": request.arm.payload or {},
-        }
+        """The trial-image contract payload [RN-4, D-8, A1] — what a pre-baked
+        image's entrypoint reads from ``/verdi/request.json``: its prompt and which
+        arm it is (name, model, config). Built through the typed
+        :class:`~harness.run.request.TrialRequestFile` so the file carries a
+        ``schema_version`` (A1, additive: the existing prompt/arm/model/payload keys
+        are unchanged). The prompt is holdout-free by construction (the seam refuses
+        a canary in any request channel before the engine runs)."""
+        from ..request import TrialRequestFile
+
+        return TrialRequestFile(
+            prompt=request.prompt,
+            arm=request.arm.name,
+            model=request.arm.model,
+            payload=request.arm.payload or {},
+        ).model_dump(mode="json")
 
     @staticmethod
     def _agent_version(request: TrialRequest) -> Optional[str]:

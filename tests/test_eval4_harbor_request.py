@@ -93,6 +93,11 @@ def test_ac1_trial_request_delivered_readonly(tmp_path):
     assert p["arm"] == "control"
     assert p["model"] == "anthropic/claude-3-5-sonnet-20241022"
     assert p["payload"] == {"temperature": 0}
+    # A1: the request file carries a schema_version (additive; the keys above are
+    # unchanged), so a future consumer can branch on the version.
+    from harness.run.request import TRIAL_REQUEST_SCHEMA_VERSION
+
+    assert p["schema_version"] == TRIAL_REQUEST_SCHEMA_VERSION == 1
 
 
 def test_trial_request_outside_workspace_and_cleaned(tmp_path):
@@ -140,4 +145,6 @@ def test_docker_trial_reads_its_request(tmp_path):
     seen = json.loads((ws / "artifacts" / "seen_request.json").read_text(encoding="utf-8"))
     assert seen["prompt"] == "solve X"
     assert seen["arm"] == "control"
+    # A1: a REAL container reads the versioned request file end to end.
+    assert seen["schema_version"] == 1
     assert rec.provenance.image_digest and rec.provenance.image_digest.startswith("sha256:")
