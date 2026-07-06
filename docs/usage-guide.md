@@ -75,7 +75,7 @@ an unknown key is a rejection, not a silent no-op. A minimal, valid spec:
 arms:
   - name: control
     platform: claude_code
-    model: anthropic/claude-3-5-sonnet-20241022
+    model: anthropic/claude-haiku-4-5-20251001
     payload: {}
   - name: treatment
     platform: codex

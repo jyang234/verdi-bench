@@ -1777,13 +1777,13 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
             f"{detail}. The pairing is invalid for these tasks; exploratory "
             "still renders, watermarked, with the full summary [EVAL-10 AC-5]"
         )
-    # 8. holdout-leak insulation alarms [F-M-C3, EVAL-4 AC-9]: an alarm on the
+    # 7. holdout-leak insulation alarms [F-M-C3, EVAL-4 AC-9]: an alarm on the
     # latest ledgered probe is an insulation VIOLATION — holdout content
     # reproduced in a solution — and refuses the official render until it is
     # investigated: quarantine the offending trial (ledgered), re-run the scan
     # (quarantined trials are skipped, disclosed) and the probe.
     _assert_no_insulation_alarms(ledger_path)
-    # 7. multi-arm correction consistency [F-H7]: one pre-registered decision
+    # 8. multi-arm correction consistency [F-H7]: one pre-registered decision
     # procedure per experiment. The policy lives in the sha-locked spec, so two
     # official renders cannot legitimately differ through the tool; this is
     # defense in depth against a chain produced under a different policy.
@@ -1919,7 +1919,7 @@ def _render_official_md(findings: FindingsDocument) -> str:
     out += [f"- {c['flag']}" for c in findings.confounds] or ["- none"]
     out += ["", "## Contamination (disclosed, non-suppressing)"]
     out += _contamination_lines(findings)
-    out += ["", f"## Blinding integrity", f"- {_integrity_line(findings)}"]
+    out += ["", "## Blinding integrity", f"- {_integrity_line(findings)}"]
     tier = _tier_lines(findings)
     if tier:
         out += ["", "## Grade tier", *tier]

@@ -7,7 +7,7 @@ Confirms the flight recorder captures MULTI-TURN, agent-attributed reasoning
 (planner / worker-N draft+revise / critic), runs the full grade→forensics→judge
 →analyze pipeline (real openai advisory review + judge), and tears down.
 
-  $ uv run --env-file .env python scratchpad/shakedown/harbor_multiagent.py
+  $ uv run --env-file .env python scripts/shakedown/harbor_multiagent.py
 """
 from __future__ import annotations
 

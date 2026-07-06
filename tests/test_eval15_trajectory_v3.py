@@ -156,7 +156,7 @@ def test_ac3_detail_redaction_property(tmp_path_factory, suffix):
 
 
 # --- AC-4 fixture: an experiment whose trajectory detail carries arm identity ------
-_ARM_MODEL = "anthropic/claude-3-5-sonnet-20241022"  # the fixture spec's arm model
+_ARM_MODEL = "anthropic/claude-haiku-4-5-20251001"  # the fixture spec's arm model
 
 
 class _RecordingProvider:

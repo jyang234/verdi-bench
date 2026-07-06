@@ -104,7 +104,7 @@ def fixed_ctx(experiment_id: str = "exp-fixture", actor: str = "tester") -> Even
 def valid_experiment_dict(**overrides) -> dict:
     base = {
         "arms": [
-            {"name": "control", "platform": "claude_code", "model": "anthropic/claude-3-5-sonnet-20241022", "payload": {}},
+            {"name": "control", "platform": "claude_code", "model": "anthropic/claude-haiku-4-5-20251001", "payload": {}},
             {"name": "treatment", "platform": "codex", "model": "openai/gpt-4o-2024-08-06", "payload": {}},
         ],
         "corpus": {"id": "public-mini", "version": "1.0.0"},

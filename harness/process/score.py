@@ -395,7 +395,7 @@ def _process_entrypoint(ctx_dir: str) -> None:
     fp = FakeProvider([json.dumps({"scores": {dim: 3 for dim in r.dimension_ids}})])
     spec = ExperimentSpec.from_dict({
         "arms": [
-            {"name": "control", "platform": "claude_code", "model": "anthropic/claude-3-5-sonnet-20241022", "payload": {}},
+            {"name": "control", "platform": "claude_code", "model": "anthropic/claude-haiku-4-5-20251001", "payload": {}},
             {"name": "treatment", "platform": "codex", "model": "openai/gpt-4o-2024-08-06", "payload": {}},
         ],
         "corpus": {"id": "public-mini", "version": "1.0.0"},
