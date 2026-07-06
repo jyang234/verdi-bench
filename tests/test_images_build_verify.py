@@ -11,6 +11,7 @@ including the loud rejection of a non-compliant image.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -260,6 +261,51 @@ def test_registry_resolves_context_path(tmp_path):
 def test_registry_unknown_target_raises():
     with pytest.raises(UnknownImageError):
         resolve("no-such-image-or-path")
+
+
+# --- source-level contract: the tunnel lives in exactly one place ----------
+_IMAGES_ROOT = Path(__file__).resolve().parents[1] / "images"
+# The hand-rolled metering-proxy dance is characterized IN CODE by http.client's
+# CONNECT primitive (``set_tunnel``) and the credential header set as a string
+# literal (``"Proxy-Authorization"``). Prose that merely NAMES the header (a
+# docstring or a README compliance table) is not the sequence and is not scanned.
+_TUNNEL_SIGNATURE = re.compile(r"""set_tunnel|['"]Proxy-Authorization['"]""")
+
+
+def test_only_verdi_base_owns_the_proxy_tunnel():
+    """The CONNECT-tunnel + Proxy-Authorization dance the metering proxy requires
+    is owned by ``verdi_agent.post_json`` (images/base) and nowhere else: a trial
+    image ``import``s it, never re-implements it [refactor 03 §2, G1]. This sweep
+    is the forcing function — if any image agent outside images/base/ hand-rolls
+    the tunnel again, it fails loudly here instead of silently duplicating the seam.
+    """
+    base = _IMAGES_ROOT / "base"
+    offenders = sorted(
+        str(py.relative_to(_IMAGES_ROOT))
+        for py in _IMAGES_ROOT.rglob("*.py")
+        if base not in py.parents
+        and _TUNNEL_SIGNATURE.search(py.read_text(encoding="utf-8"))
+    )
+    assert not offenders, (
+        "hand-rolled proxy tunnel (set_tunnel / \"Proxy-Authorization\") found "
+        f"outside images/base/ — import verdi_agent.post_json instead: {offenders}"
+    )
+
+
+def test_the_tunnel_sweep_actually_bites():
+    """The sweep is a real guard, not vacuous: the exact dance verdi_agent owns,
+    dropped into a file OUTSIDE images/base/, is caught by the signature."""
+    hand_rolled = (
+        "conn = http.client.HTTPSConnection(pu.hostname, pu.port or 3128)\n"
+        '        tunnel_headers = {"Proxy-Authorization": "Basic " + cred}\n'
+        "        conn.set_tunnel(host, 443, headers=tunnel_headers)\n"
+    )
+    assert _TUNNEL_SIGNATURE.search(hand_rolled)
+    # and verdi_agent itself (the one legitimate home) carries the signature —
+    # proof the sweep would fire on it were images/base/ not exempted.
+    assert _TUNNEL_SIGNATURE.search(
+        (_IMAGES_ROOT / "base" / "verdi_agent.py").read_text(encoding="utf-8")
+    )
 
 
 # --- docker-marked: a REAL build + verify ----------------------------------
