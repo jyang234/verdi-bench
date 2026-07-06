@@ -12,6 +12,7 @@ from harness.grade.types import Assertion, AssertionResult, GradeTask
 from harness.ledger.query import find_events
 from tests.fixtures.builders import fixed_ctx
 from tests.fixtures.grade_fakes import ScriptedGradeRunner, write_workspace
+from tests.fixtures.grading import write_holdout_results
 
 
 def test_ac4_plugin_contract(tmp_path):
@@ -168,9 +169,7 @@ def test_m_o1_groundwork_without_fixture_output_fails_the_grade_closed(tmp_path)
 
     ws = tmp_path / "ws"
     ws.mkdir()
-    (ws / "holdout_results.json").write_text(
-        '{"assertions": [{"id": "h1", "result": "pass"}]}', encoding="utf-8"
-    )
+    write_holdout_results(ws, True)
     ledger = tmp_path / "l.ndjson"
     task = GradeTask(id="t", task_sha="s", plugin_ids=["groundwork"])
     out = grade_trial("t1", task, ws, ledger, fixed_ctx(),

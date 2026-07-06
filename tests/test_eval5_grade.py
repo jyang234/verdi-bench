@@ -13,6 +13,7 @@ from harness.grade.types import GradeTask
 from harness.ledger.query import find_events
 from tests.fixtures.builders import fixed_ctx
 from tests.fixtures.grade_fakes import ScriptedGradeRunner, write_workspace
+from tests.fixtures.grading import write_holdout_results
 
 
 def _task(**kw):
@@ -379,8 +380,7 @@ def test_grade_ignores_forged_results_and_protects_evidence(tmp_path):
 
     ws = write_workspace(tmp_path)
     # the subject agent forges an all-pass results file in its own workspace
-    forged = {"assertions": [{"id": "h1", "result": "pass"}]}
-    (ws / "holdout_results.json").write_text(json.dumps(forged), encoding="utf-8")
+    forged = write_holdout_results(ws, True)
 
     # the real grader output disagrees (a failure)
     runner = _FreshCopyRunner({"assertions": [{"id": "h1", "result": "fail"}]})

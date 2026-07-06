@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from harness.grade.container import GradingContainer
+from tests.fixtures.grading import write_holdout_results
 
 
 def test_ac1_grading_isolated(tmp_path):
@@ -184,9 +185,7 @@ def test_h1_in_run_forged_results_file_is_never_scored(tmp_path, monkeypatch):
         # file in the graded copy, while the real grader reports FAIL on stdout
         mount = next(a for a in cmd if a.endswith(":/workspace"))
         copy = Path(mount.rsplit(":", 1)[0])
-        (copy / "holdout_results.json").write_text(
-            _json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
-        )
+        write_holdout_results(copy, True)
         begin, end = holdout_fence(nonce)
         body = _json.dumps({"assertions": [{"id": "h1", "result": "fail"}]})
         stdout = f"grader log noise\n{begin}\n{body}\n{end}\ntail\n"
