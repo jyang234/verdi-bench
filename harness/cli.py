@@ -168,9 +168,11 @@ def anchor(
 def _register_stage_commands() -> None:
     """Attach stage subcommands built in later stories, if present.
 
-    Only a genuinely-absent module is tolerated (ModuleNotFoundError); any other
-    error (a real bug inside a present stage CLI) propagates rather than
-    degrading to a silently-missing subcommand.
+    Only a genuinely-absent stage module is tolerated: the except clause checks
+    ``e.name`` against the module being imported, so a *transitive*
+    ModuleNotFoundError (a missing dependency inside a present stage CLI — a
+    real bug) propagates rather than degrading to a silently-missing
+    subcommand [refactor 01 §4 D1].
     """
     from importlib import import_module
 
@@ -190,8 +192,12 @@ def _register_stage_commands() -> None:
     ]:
         try:
             mod = import_module(module_name, __package__)
-        except ModuleNotFoundError:  # pragma: no cover - stage not present yet
-            continue
+        except ModuleNotFoundError as e:
+            if e.name != f"{__package__}{module_name}":
+                # A transitive miss inside a present stage CLI: re-raise —
+                # swallowing it would silently drop the verb [refactor 01 §4 D1].
+                raise
+            continue  # pragma: no cover - the stage module itself is absent
         getattr(mod, attr)(app)
 
 
