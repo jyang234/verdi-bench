@@ -49,7 +49,7 @@ Generated run state lands in `_run/` (git-ignored); committed inputs are under
 
 | Path | Role |
 |---|---|
-| `_harness.py` | script-local helpers — `Tally`, `_run/` staging, the one `bench` console-script driver (pre-registration vectors) + ANSI strip; the `events`/`dump_yaml`/`ASSETS` helpers linger only for the not-yet-converted harbor scripts (Phase 3) |
+| `_harness.py` | script-local helpers — `Tally`, `_run/` staging, the one `bench` console-script driver (pre-registration vectors) + ANSI strip; `dump_yaml` stays for tripwires' deliberately-invalid specs; `events`/`ASSETS` linger only for the not-yet-converted harbor scripts (Phase 3) |
 | `golden.py` · `tripwires.py` | hermetic acceptance (L1, L3), authored + driven through `harness.sdk` |
 | `official.py` | opt-in real-judge layer (L2), on `harness.sdk` |
 | `harbor.py` · `harbor_multiagent.py` | opt-in real-container layers (L6); convert to the SDK in Phase 3 |

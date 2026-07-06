@@ -8,11 +8,11 @@ through ``LedgerView`` — so what stays here is genuinely script-local: the
 the vectors whose *point* is the installed console script (the pre-registration
 refusals exercise the CLI's refusal→exit-code mapping).
 
-The ``events``/``event_counts``/``dump_yaml``/``ASSETS`` helpers remain only
-because the not-yet-converted harbor scripts (``harbor.py`` /
-``harbor_multiagent.py``, which graduate in Phase 3) still import them; the
-hermetic scripts no longer touch them. Scripts import ``harness.*`` freely but
-never ``tests.*``.
+``dump_yaml`` stays load-bearing for the hermetic suite (``tripwires.py``
+emits deliberately-invalid specs the validating SDK builder would refuse);
+``events``/``event_counts``/``ASSETS`` remain only because the not-yet-converted
+harbor scripts (``harbor.py`` / ``harbor_multiagent.py``, Phase 3) still import
+them. Scripts import ``harness.*`` freely but never ``tests.*``.
 """
 from __future__ import annotations
 
