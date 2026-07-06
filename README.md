@@ -92,6 +92,21 @@ names an AC its story does not declare, or if an AC test is disabled with an
 unconditional `@pytest.mark.skip`. `--ac-report` additionally prints the
 exercised AC numbers.
 
+An **instrument-to-product refactor program** (`docs/design/refactor/`) then built
+the write path and hermetic infrastructure the shakedown had proved were
+hand-rolled. It added a Python **SDK** (`harness.sdk` — the fluent `Experiment`
+builder and the stage-driving `ExperimentWorkspace`) plus a `bench init` scaffold,
+so an experiment can be authored, locked, run, graded, judged, and analyzed from
+Python with no subprocess and no hand-written YAML; maintained **trial images**
+(`harness/images`, a `verdi-base` + `verdi_agent`, checked by
+`bench images build` and `bench images verify`); a **hermetic** Docker layer that
+owns the networks, a **managed metering proxy**, and a **trace collector**
+(`bench proxy up`, `bench otlp up`); a holdout hierarchy with an executing local
+runner; and **in-trial OTLP trace capture** projected into the trajectory
+(`platform: otlp`). The measurement core is unchanged — the refactor
+composed the existing subsystems around it, proven by byte-identical contract
+goldens. See `docs/design/refactor/` for the master plan and per-domain plans.
+
 ## Provisional decisions
 
 Per the master-plan decision-gate dashboard, these are implemented to the
@@ -136,6 +151,26 @@ uv run bench verify-chain ledger.ndjson                       # audit the ledger
 Everything the run produced — who did what, in what order, under which
 instrument version — is on the ledger, and `findings.exploratory.dossier.html`
 is a single self-contained file you can archive or hand to a reviewer.
+
+Or drive the same experiment from **Python** with the SDK — the builder writes
+those same files (they remain the source of truth for what gets locked) and runs
+the pipeline in-process:
+
+```python
+from harness.sdk import Experiment, Task
+
+ws = (Experiment("demo", seed=1234, cost_ceiling_usd=10.0)
+      .arm("control",   model="anthropic/claude-haiku-4-5-20251001", platform="claude_code")
+      .arm("treatment", model="openai/gpt-4o-2024-08-06",            platform="codex")
+      .judge("fake/deterministic-2026-01-01")
+      .task(Task("t1", prompt="Write solution.py defining add(a, b)..."))
+      ).write("demo")                 # writes experiment.yaml, tasks.yaml, rubric.md
+ws.plan(actor="me"); ws.run(engine="fake"); ws.grade(runner="local"); ws.judge()
+ws.analyze(exploratory=True)          # findings + dossier — the same bytes the CLI writes
+```
+
+The usage guide §0.5 shows the complete runnable flow (including the fake-path
+grade step), and `init <dir>` scaffolds the files if you prefer the CLI.
 
 ## Usage
 
