@@ -1,15 +1,16 @@
 """Forensics scan core + operator dispositions [EVAL-11 §M4, AC-6, D006, D007].
 
-``run_forensics`` walks the ledger's trials, resolves each trajectory through
-the EVAL-12 verifier (a record is never evidence unless its bytes matched the
-chain), computes the vocabulary-v1 metrics, runs the gaming detectors over
-assembled evidence, optionally runs the blinded advisory review, and appends
-**exactly one** ``forensics_report`` event — partial coverage is disclosed in
-the report with a per-trial reason, never silent [AC-6].
+``run_forensics`` is the thin composition [refactor 06 §5]: a
+:class:`~harness.forensics.assembler.TrialEvidenceAssembler` turns the ledger and
+on-disk artifacts into per-trial :class:`TrialEvidence` + coverage notes
+(deterministic, provider-free), the Phase-4 detector registry runs over that
+evidence, the blinded advisory review optionally runs on the spliced transcript
+the assembler prepared, and one ``forensics_report`` event is appended — partial
+coverage disclosed with a per-trial reason, never silent [AC-6].
 
-``quarantine_trial`` is the D007 operator path; it refuses a trial id the
-ledger does not know, because a ledgered exclusion that silently matched
-nothing would render as an exclusion that never happened.
+``quarantine_trial`` is the D007 operator path; it refuses a trial id the ledger
+does not know, because a ledgered exclusion that silently matched nothing would
+render as an exclusion that never happened.
 """
 
 from __future__ import annotations
@@ -22,55 +23,12 @@ from ..ledger.events import (
     record_forensic_quarantine,
     record_forensics_report,
 )
-from ..run.artifacts import read_transcript
-from .detectors import (
-    TrialEvidence,
-    detail_evaluable,
-    extract_assertion_values,
-    run_detectors,
-)
-from .metrics import FORENSICS_VOCABULARY_VERSION, trajectory_metrics
-
-_SKIP_DIRS = {"artifacts", ".git", "__pycache__"}
+from .detectors import run_detectors
+from .metrics import FORENSICS_VOCABULARY_VERSION
 
 
 class UnknownTrialError(ValueError):
     """A disposition named a trial the ledger has no record of [D007]."""
-
-
-def _read_text_files(root: Optional[Path]) -> dict[str, str]:
-    """Deterministic relpath→text mapping. Undecodable (binary) files are not
-    text evidence and are skipped; a file that exists but cannot be READ is a
-    loud OSError — swallowing it would silently drop detector evidence. A
-    missing root (deleted workspace) is honest emptiness, not a crash."""
-    if root is None or not root.is_dir():
-        return {}
-    out: dict[str, str] = {}
-    for p in sorted(root.rglob("*")):
-        if not p.is_file():
-            continue
-        rel = p.relative_to(root).as_posix()
-        if any(part in _SKIP_DIRS for part in rel.split("/")):
-            continue
-        try:
-            out[rel] = p.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-    return out
-
-
-def _resolve_holdouts_dir(experiment_dir: Path, holdouts_dir: str) -> Path:
-    root = Path(holdouts_dir)
-    return root if root.is_absolute() else experiment_dir / holdouts_dir
-
-
-def _holdout_assertion_values(root: Path) -> tuple[str, ...]:
-    values: list[str] = []
-    for _, text in sorted(_read_text_files(root if root.is_dir() else None).items()):
-        for v in extract_assertion_values(text):
-            if v not in values:
-                values.append(v)
-    return tuple(values)
 
 
 def run_forensics(
@@ -86,9 +44,7 @@ def run_forensics(
     from ..corpus.commit import load_task_dicts
     from ..ledger.view import LedgerView
     from ..plan.lock import assert_lock
-    from ..run.flight_recorder import DEFAULT_REASONING_BUDGET_BYTES, resolve_flight_recorder
-    from ..run.trajectory import resolve_trajectory
-    from ..run.workspace import ABSENT, VERIFIED, resolve_workspace
+    from .assembler import TrialEvidenceAssembler
     from .review import forensic_review
 
     experiment_dir = Path(experiment_dir)
@@ -99,151 +55,44 @@ def run_forensics(
     canaries = arm_canaries(spec.arms)
 
     view = LedgerView(ledger_path)
-    # Latest grade wins per trial — one GRADE scan feeds both the pass map and
-    # the F-H3 grade-time workspace commitment (legacy grades lack the field →
-    # None → ABSENT below), replacing the former double iteration [refactor 06 §1].
-    latest_grades = view.latest_grade_by_trial()
-    passed_by_trial: dict[str, bool] = {
-        trial_id: bool(g["binary_score"]) for trial_id, g in latest_grades.items()
-    }
-    workspace_sha_by_trial: dict[str, Optional[str]] = {
-        trial_id: g.get("workspace_sha256") for trial_id, g in latest_grades.items()
-    }
-    # assertion values depend only on the task's holdout dir — extract once
-    # per distinct dir, not once per trial
-    assertion_cache: dict[str, tuple[str, ...]] = {}
+    assembled = TrialEvidenceAssembler(
+        view, experiment_dir, tasks, review=review
+    ).assemble()
 
-    metrics: dict[str, dict] = {}
     flags: list[dict] = []
-    gaps: list[dict] = []
     reviews: dict[str, dict] = {}
-    # EVAL-16 AC-5 (additive coverage keys, D002): where the step-content
-    # detectors could and could not look, rolled up per arm — asymmetric
-    # scrutiny is a disclosed measurement condition, never silent.
-    detail_by_arm: dict[str, dict] = {}
-    detail_gaps: list[dict] = []
-    workspace_gaps: list[dict] = []
-    trials = view.trials()
-    for tv in trials:
-        rec = tv.record
-        trial_id = rec["trial_id"]
-        artifacts_path = rec.get("artifacts_path")
-        status, record = resolve_trajectory(artifacts_path, tv.trajectory_sha)
-        if status == "verified":
-            metrics[trial_id] = trajectory_metrics(record)
-        else:
-            # AC-6: partial coverage is data with the verifier's named reason
-            gaps.append({"trial_id": trial_id, "reason": status})
-
-        task = tasks.get(rec["task_id"], {})
-        holdouts_dir = task.get("holdouts_dir") or ""
-        holdout_root = (
-            _resolve_holdouts_dir(experiment_dir, holdouts_dir) if holdouts_dir else None
-        )
-        if holdout_root is not None and holdouts_dir not in assertion_cache:
-            assertion_cache[holdouts_dir] = _holdout_assertion_values(holdout_root)
-        workspace_root = Path(artifacts_path).parent if artifacts_path else None
-        # F-H3: end-state evidence is chain-verified before it is trusted.
-        # verified → read, full authority. ABSENT (legacy chain / fabricated
-        # grade) → read for legacy utility, but disclosed as an unverified-
-        # evidence gap. Any mismatch/missing → WITHHELD: tampered bytes must
-        # neither produce flags (framing) nor clean claims (laundering).
-        ws_status = resolve_workspace(
-            workspace_root,
-            workspace_sha_by_trial.get(trial_id),
-            artifacts_dir=Path(artifacts_path) if artifacts_path else None,
-        )
-        if ws_status not in (VERIFIED,):
-            workspace_gaps.append({"trial_id": trial_id, "reason": ws_status})
-        workspace_files = (
-            _read_text_files(workspace_root)
-            if ws_status in (VERIFIED, ABSENT)
-            else {}
-        )
-        evidence = TrialEvidence(
-            trial_id=trial_id,
-            task_id=rec["task_id"],
-            arm=rec["arm"],
-            trajectory=record,
-            passed=passed_by_trial.get(trial_id),
-            # resolved to a full path: detectors match by prefix, never by a
-            # bare segment name a workspace dir could share
-            holdout_paths=(holdout_root.as_posix(),) if holdout_root else (),
-            workspace_files=workspace_files,
-            # tasks.yaml carries no pristine workspace content; detectors fall
-            # back to trajectory-attributed edits and stay silent when neither
-            # can attribute [plan §4.3]
-            pristine_files={},
-            holdout_assertion_values=assertion_cache.get(holdouts_dir, ()),
-            # only a multi-segment relpath is content-matchable — a bare
-            # segment like "tests" would flag every workspace test edit
-            holdout_relpaths=(holdouts_dir,) if "/" in holdouts_dir else (),
-        )
-        flags.extend(run_detectors(evidence))
-
-        # step-content detector coverage, per arm [EVAL-16 AC-5]
-        bucket = detail_by_arm.setdefault(
-            rec["arm"],
-            {"trials": 0, "detail_evaluable": 0, "steps_total": 0, "steps_with_detail": 0},
-        )
-        bucket["trials"] += 1
-        if record is not None:
-            bucket["steps_total"] += len(record.steps)
-            bucket["steps_with_detail"] += sum(
-                1 for s in record.steps if s.detail is not None
-            )
-        if detail_evaluable(record):
-            bucket["detail_evaluable"] += 1
-        else:
-            detail_gaps.append(
-                {
-                    "trial_id": trial_id,
-                    "reason": "no_detail" if status == "verified" else status,
-                }
-            )
-
+    for at in assembled.trials:
+        # the detector pass — the Phase-4 registry over the frozen evidence
+        flags.extend(run_detectors(at.evidence))
         if review:
-            transcript = read_transcript(artifacts_path)
-            # Reasoning is the richest pathology signal: the advisory review reads
-            # the flight recorder (blinded, fail-closed, byte-bounded) ahead of the
-            # transcript [EVAL-24 AC-3]. resolve_flight_recorder verifies the sha —
-            # unverified reasoning is never fed, exactly like the trajectory.
-            _fr_status, fr_record = resolve_flight_recorder(
-                artifacts_path, tv.flight_recorder_sha
-            )
-            max_reasoning_bytes = None
-            if fr_record is not None:
-                reasoning_text = fr_record.as_transcript()
-                transcript = (
-                    f"{reasoning_text}\n\n{transcript}" if transcript.strip() else reasoning_text
-                )
-                # D003: bound only when reasoning is present, so non-reasoning
-                # trials keep their existing review behavior exactly.
-                max_reasoning_bytes = DEFAULT_REASONING_BUDGET_BYTES
-            reviews[trial_id] = forensic_review(
-                trial_id,
-                transcript,
+            # the advisory pass — the sole provider-touching phase, over the
+            # transcript the assembler already spliced and byte-budgeted
+            reviews[at.trial_id] = forensic_review(
+                at.trial_id,
+                at.review_transcript,
                 canaries=canaries,
                 provider=provider,
                 provider_model=provider_model or spec.judge.model,
-                max_reasoning_bytes=max_reasoning_bytes,
+                max_reasoning_bytes=at.max_reasoning_bytes,
             ).model_dump(mode="json")
 
     report = {
         "vocabulary_version": FORENSICS_VOCABULARY_VERSION,
-        "metrics": metrics,
+        "metrics": assembled.metrics,
         "flags": flags,
         "coverage": {
-            "trials": len(trials),
-            "covered": len(metrics),
-            "gaps": gaps,
+            "trials": assembled.n_trials,
+            "covered": len(assembled.metrics),
+            "gaps": assembled.gaps,
             # additive keys [EVAL-16 D002]: old readers ignore them, old
             # ledgers simply lack them, the report stays one event
-            "detail_by_arm": {arm: detail_by_arm[arm] for arm in sorted(detail_by_arm)},
-            "detail_gaps": detail_gaps,
+            "detail_by_arm": {
+                arm: assembled.detail_by_arm[arm] for arm in sorted(assembled.detail_by_arm)
+            },
+            "detail_gaps": assembled.detail_gaps,
             # F-H3 (additive): trials whose end-state evidence could not be
             # verified against the grade-time workspace commitment.
-            "workspace_gaps": workspace_gaps,
+            "workspace_gaps": assembled.workspace_gaps,
         },
     }
     if review:

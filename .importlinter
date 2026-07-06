@@ -119,9 +119,13 @@ forbidden_modules =
 [importlinter:contract:forensics-deterministic-tier-llm-free]
 name = Deterministic forensics imports no LLM client [EVAL-11 AC-3]
 type = forbidden
+# The assembler is the deterministic ledger+disk → TrialEvidence phase [refactor
+# 06 §5]: it prepares (splices, byte-budgets) the transcript but requests no
+# completion — the advisory pass (review.py) is the sole provider-touching phase.
 source_modules =
     harness.forensics.metrics
     harness.forensics.detectors
+    harness.forensics.assembler
 forbidden_modules =
     harness.judge.providers
     harness.judge.client
