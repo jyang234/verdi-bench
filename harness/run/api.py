@@ -66,6 +66,11 @@ def _task_from_dict(t: dict, task_sha: str) -> Task:
         holdout_canaries=t.get("holdout_canaries", []),
         fake_behavior=t.get("fake_behavior", {}),
         task_sha=task_sha,
+        # EnvironmentSpec [refactor 03 §5, A3]: read the lenient dict (read side
+        # stays untyped, A9); the raw bytes are already sha-covered by the lock.
+        files=t.get("files", {}),
+        env=t.get("env", {}),
+        extra_hosts=t.get("extra_hosts", []),
     )
 
 
@@ -179,7 +184,13 @@ def run_experiment(
     # — NOT from the sha-locked spec or the ledger [RN-13, D-9, AC-8]. Exception
     # [EVAL-20 AC-6]: a spec that pre-registers egress hosts derives the proxy
     # allowlist from those locked bytes.
-    settings = load_run_settings(exp_dir, spec=spec)
+    # A3: a task's extra_hosts extend the spec-derived proxy allowlist for all arms
+    # (harness/run/egress.py); union them from the same locked task dicts.
+    from .egress import task_extra_hosts
+
+    settings = load_run_settings(
+        exp_dir, spec=spec, task_extra_hosts=task_extra_hosts(task_dicts)
+    )
     resolved_actor = resolve_actor(actor)
     ctx = EventContext(experiment_id=exp_dir.name, actor=resolved_actor)
 

@@ -37,6 +37,14 @@ class Task:
     # content sha of this task version — the scheduler compares (id, task_sha)
     # against the flake quarantine so quarantine is version-scoped [D-2].
     task_sha: Optional[str] = None
+    # EnvironmentSpec [refactor 03 §5, A3]: a task's declared environment. `files`
+    # (relative path → contents) are staged into /workspace pre-trial by BOTH
+    # engines; `env` (NAME → VALUE, never secrets) is injected by Harbor after the
+    # provider-key env; `extra_hosts` extends the derived proxy allowlist (consumed
+    # by the settings/egress path, not the engine).
+    files: dict = field(default_factory=dict)
+    env: dict = field(default_factory=dict)
+    extra_hosts: list = field(default_factory=list)
 
 
 @dataclass
@@ -86,6 +94,11 @@ class TrialRequest:
     proxy: Optional[ProxyConfig] = None
     provider_keys: dict = field(default_factory=dict)  # injected at trial start [AC-8]
     fake_behavior: dict = field(default_factory=dict)  # FAKE ENGINE ONLY
+    # EnvironmentSpec [refactor 03 §5, A3]: `files` staged into /workspace pre-trial
+    # (both engines); `env` non-secret vars injected by Harbor after the provider
+    # keys, never overriding them.
+    files: dict = field(default_factory=dict)
+    env: dict = field(default_factory=dict)
 
 
 @dataclass

@@ -42,6 +42,7 @@ from ...hermetic.docker import (
 )
 from ...hermetic.network import METERED_NETWORK
 from ...hermetic.network import ensure_metered_network as _ensure_metered_network
+from ..environment import stage_files
 from ..types import EngineResult, TrialRequest
 
 HARBOR_VERSION = "harbor-pinned-0.1.0"  # version-pinned in images [D005]
@@ -276,6 +277,13 @@ class HarborEngine:
         # environment, which run_container populates from request.provider_keys.
         for k in (request.provider_keys or {}):
             hc.env(k)
+        # A3: a task's declared non-secret env vars, injected AFTER the provider-key
+        # env and NEVER overriding it — a task env must not shadow an arm's provider
+        # key. These are declared (sha-locked) and non-secret, so KEY=VALUE on the
+        # argv is fine (the env_kv spelling, like the proxy URLs) [refactor 03 §5].
+        for k, v in (request.env or {}).items():
+            if k not in (request.provider_keys or {}):
+                hc.env_kv(k, v)
         # workspace mount; then the trial request (prompt + arm config) delivered
         # READ-ONLY, outside the workspace so it never enters the graded copy
         # [RN-4, D-8] — added after the workspace volume so a workspace-first parser
@@ -291,6 +299,9 @@ class HarborEngine:
         pinned = self._runner.resolve_pinned(image)
         artifacts = Path(request.workspace) / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
+        # A3: stage the task's declared fixture files into /workspace before the
+        # container runs, so a real trial sees them at /workspace/<rel> [refactor 03 §5].
+        stage_files(request.workspace, request.files or {})
 
         if pinned is None:
             # D005/RN-12: a trial must run a digest-pinned image. A tag-only or

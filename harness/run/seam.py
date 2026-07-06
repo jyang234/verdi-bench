@@ -94,6 +94,10 @@ def run_trial(
             prompt,
             json.dumps(arm.payload, sort_keys=True, default=str),
             json.dumps(task.fake_behavior, sort_keys=True, default=str),
+            # A3: a task's declared environment is ALSO request-bound (staged into
+            # /workspace, injected as env), so a canary must not reach it either.
+            json.dumps(task.files, sort_keys=True, default=str),
+            json.dumps(task.env, sort_keys=True, default=str),
         ]
     )
     for canary in task.holdout_canaries:
@@ -134,6 +138,8 @@ def run_trial(
         proxy=config.proxy,
         provider_keys=arm_keys,
         fake_behavior=task.fake_behavior,
+        files=task.files,  # A3: staged into /workspace by the engine
+        env=task.env,  # A3: injected as non-secret env by Harbor
     )
 
     result = config.engine.run(request)

@@ -48,6 +48,12 @@ class Task:
     plugin_ids: tuple[str, ...] = ()
     fake_behavior: Optional[dict] = None
     holdout: Optional[object] = None  # Phase-3 seam; see the class docstring.
+    # --- EnvironmentSpec fields [refactor 03 §5, A3] ---
+    # A task's declared environment; each maps 1:1 onto TaskSpec (files staged into
+    # /workspace, env injected non-secret, extra_hosts extend the proxy allowlist).
+    files: Optional[dict] = None
+    env: Optional[dict] = None
+    extra_hosts: tuple[str, ...] = ()
 
     def to_spec_dict(self) -> dict:
         """The minimal ``TaskSpec`` kwargs — unset optionals omitted so the
@@ -75,6 +81,13 @@ class Task:
             out["plugin_ids"] = list(self.plugin_ids)
         if self.fake_behavior:
             out["fake_behavior"] = self.fake_behavior
+        # A3 environment fields, emitted only when set (lean file for the reader).
+        if self.files:
+            out["files"] = dict(self.files)
+        if self.env:
+            out["env"] = dict(self.env)
+        if self.extra_hosts:
+            out["extra_hosts"] = list(self.extra_hosts)
         return out
 
 
