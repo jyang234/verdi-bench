@@ -54,7 +54,7 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
     from ..ledger.events import EventContext
     from ..plan.lock import assert_lock
     from ..review.calibrate import calibration_from_spec
-    from .assemble import comparisons_from_ledger
+    from .assemble import native_comparisons_from_ledger
     from .session import NATIVE_SINK, JudgingSession
 
     exp_dir = Path(exp_dir)
@@ -100,7 +100,7 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
     resolved_actor = resolve_actor(actor)
     ctx = EventContext(experiment_id=exp_dir.name, actor=resolved_actor)
 
-    comparisons = comparisons_from_ledger(ledger_path, spec, task_classes=task_classes)
+    comparisons = native_comparisons_from_ledger(ledger_path, spec, task_classes=task_classes)
 
     # The native pairing and the reused-control pairing share one judging loop
     # [refactor 05 §4]: the session skips comparisons already carrying a

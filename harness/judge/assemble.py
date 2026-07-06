@@ -148,8 +148,13 @@ def _holdout_results(grade_event) -> list:
     ]
 
 
-def comparisons_from_ledger(ledger_path, spec, *, task_classes=None) -> list[Comparison]:
+def native_comparisons_from_ledger(ledger_path, spec, *, task_classes=None) -> list[Comparison]:
     """Pair the two arms per (task, repetition) into judgeable comparisons.
+
+    Named ``native_`` to distinguish it from the review sampler's identically
+    shaped-but-different ``review.sample.comparisons_from_ledger`` (which joins
+    judge verdicts with holdout winners for kappa) — one name, one meaning
+    [refactor 05 §4].
 
     ``arm_a``/``arm_b`` are ``spec.arms[0]``/``[1]`` (deterministic order), so the
     recorded ``arm_map`` is stable. A (task, repetition) with a missing arm trial
