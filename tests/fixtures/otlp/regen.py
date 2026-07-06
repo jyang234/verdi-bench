@@ -118,7 +118,8 @@ def _langchain() -> dict:
 
 def _pydantic_ai() -> dict:
     """pydantic-ai-style: agent run with two model requests + a tool, spans emitted
-    OUT of start order in the file. Pins ordering + tokens-with-only-output."""
+    OUT of start order in the file. Pins ordering + partial-usage honesty (a span
+    reporting only output_tokens → null tokens, the absent half never imputed)."""
     return capture(
         "fixture-pydantic-ai",
         [
@@ -126,7 +127,7 @@ def _pydantic_ai() -> dict:
                 "b3", 1.0, name="chat", parent="b1",
                 attrs=[
                     ("gen_ai.operation.name", sv("chat")),
-                    ("gen_ai.usage.output_tokens", iv(60)),  # only output present
+                    ("gen_ai.usage.output_tokens", iv(60)),  # only output → null (no imputation)
                 ],
             ),
             span(

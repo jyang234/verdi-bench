@@ -239,12 +239,15 @@ def _agent(attrs: dict) -> Optional[str]:
 
 
 def _tokens(attrs: dict) -> Optional[int]:
-    """§2 tokens: ``gen_ai.usage.input_tokens + output_tokens``; both absent → null."""
+    """§2 tokens: ``gen_ai.usage.input_tokens + output_tokens``; null unless BOTH
+    halves are present. A step's ``tokens`` is a total, so a total with an
+    unmeasured half is unmeasurable — returned null, never imputed by treating the
+    absent half as 0 [D004: nulls are flagged, never imputed]."""
     in_tok = _int(attrs.get("gen_ai.usage.input_tokens"))
     out_tok = _int(attrs.get("gen_ai.usage.output_tokens"))
-    if in_tok is None and out_tok is None:
+    if in_tok is None or out_tok is None:
         return None
-    return (in_tok or 0) + (out_tok or 0)
+    return in_tok + out_tok
 
 
 def _tool_detail(attrs: dict) -> Optional[str]:
