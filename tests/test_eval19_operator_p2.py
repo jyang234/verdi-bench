@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -22,27 +21,16 @@ from typer.testing import CliRunner
 from harness.cli import app
 from harness.ledger.query import read_events
 from harness.serve.bundle import write_bundle
-from harness.serve.server import make_server
 from tests.fixtures.browser import drive
 from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
-from tests.test_eval14_observability_ui import rich_experiment
+from tests.fixtures.scenarios import rich_experiment
+from tests.fixtures.servers import serve_root
+
+pytestmark = pytest.mark.browser
 
 runner = CliRunner()
 _REPO = Path(__file__).resolve().parents[1]
 _NEEDLES = ("http://", "https://", "src=", "href=", "url(", "@import", "<link")
-
-
-def _serve_root(root):
-    srv = make_server(None, root=root, port=0)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
-    return srv, thread, f"http://127.0.0.1:{srv.server_address[1]}"
-
-
-def _stop(srv, thread):
-    srv.shutdown()
-    srv.server_close()
-    thread.join(timeout=5)
 
 
 def _digest(d: Path) -> list:
@@ -127,8 +115,7 @@ def test_ac1_bundle_deterministic_selfcontained(tmp_path):
 # --- AC-2: the typed grammar and the chips are one state ---------------------------
 def test_ac2_grammar_chips_one_state(tmp_path):
     rich_experiment(tmp_path / "exp-a")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-a/trials', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1800);
@@ -186,8 +173,6 @@ def test_ac2_grammar_chips_one_state(tmp_path):
             assert out[key]["route"] == prev["route"], key  # never a partial filter
             assert out[key]["rows"] == prev["rows"], key
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)
 
 
 # --- AC-3: saved views — local, URL-canonical -----------------------------------------
@@ -195,8 +180,7 @@ def test_ac3_saved_views_local_url_canonical(tmp_path):
     rich_experiment(tmp_path / "exp-a")
     expdir = tmp_path / "exp-a"
     before = _digest(expdir)
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-a/trials?arm=control&graded=-pass', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1800);
@@ -239,8 +223,6 @@ def test_ac3_saved_views_local_url_canonical(tmp_path):
         assert out["renamed"] == ["ours"]
         assert out["deleted"] == []
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)
     # views never move trust server-side: the experiment directory is untouched
     assert _digest(expdir) == before
 
@@ -277,8 +259,7 @@ def test_ac4_eta_sparklines_null_honest(tmp_path):
     # 2 of 8 done → below the minimum sample, the estimate is ABSENT
     _partial_run_experiment(tmp_path / "exp-mid", n_per_arm=3)
     _partial_run_experiment(tmp_path / "exp-two", n_per_arm=1)
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-mid', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1800);
@@ -310,15 +291,12 @@ def test_ac4_eta_sparklines_null_honest(tmp_path):
         # below the minimum sample: no estimate anywhere — absent, not zero
         assert out["two"]["eta"] is None and out["two"]["absent"] is True
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)
 
 
 # --- AC-5: tallies are navigation ------------------------------------------------------
 def test_ac5_tallies_navigate(tmp_path):
     fx = rich_experiment(tmp_path / "exp-a")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-a/compare', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
@@ -363,8 +341,6 @@ def test_ac5_tallies_navigate(tmp_path):
         assert out["flag"]["route"] == "#/exp/exp-a/trial/" + fx["flagged"] + "?tab=forensics"
         assert out["flag"]["forensicsOn"] is True and out["flag"]["detector"] is True
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)
 
 
 # --- AC-6: posture under growth, again ---------------------------------------------
@@ -386,7 +362,7 @@ def test_ac6_posture_unchanged(tmp_path):
     ledger_contract = text.split("[importlinter:contract:ledger-writes-only-via-events]", 1)[1] \
                           .split("[importlinter:contract:", 1)[0]
     assert "harness.serve" in ledger_contract
-    from tests.test_import_contracts import _run_lint
+    from tests.fixtures.lint import run_lint
 
     module = _REPO / "harness" / "serve" / "bundle.py"
     original = module.read_text(encoding="utf-8")
@@ -397,7 +373,7 @@ def test_ac6_posture_unchanged(tmp_path):
     )
     try:
         module.write_text(planted, encoding="utf-8")
-        result = _run_lint()
+        result = run_lint()
         assert result.returncode != 0, "planted judge-client import broke no contract"
         assert "observability-llm-free" in result.stdout or "Read-only observability" in result.stdout
     finally:
@@ -413,8 +389,7 @@ def test_ac6_posture_unchanged(tmp_path):
     assert not {e.name for e in all_entrypoints() if "bundle" in e.name}
 
     rich_experiment(tmp_path / "exp-a")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(base + "/api/bundle")
         assert excinfo.value.code == 404
@@ -422,5 +397,3 @@ def test_ac6_posture_unchanged(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(req)
         assert excinfo.value.code == 405  # still a GET-only observer
-    finally:
-        _stop(srv, thread)

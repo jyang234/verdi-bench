@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import re
 import string
-import threading
 import urllib.request
 from pathlib import Path
 
@@ -234,9 +233,9 @@ def test_ac5_renderers_exclude_detail_drilldown_serves_it(tmp_path):
     from harness.analyze.report import compute_findings
     from harness.analyze.timeline import trial_timeline
     from harness.schema.experiment import ExperimentSpec
-    from harness.serve.server import make_server
     from harness.status.trial import trial_detail
-    from tests.test_eval14_observability_ui import rich_experiment
+    from tests.fixtures.scenarios import rich_experiment
+    from tests.fixtures.servers import serve_experiment
 
     fx = rich_experiment(tmp_path)
     planted = "reading the task"  # the fixture native log's message text
@@ -259,16 +258,8 @@ def test_ac5_renderers_exclude_detail_drilldown_serves_it(tmp_path):
     detail = trial_detail(tmp_path, fx["flagged"])
     assert any(s.get("detail") == planted for s in detail["trajectory"]["steps"])
 
-    srv = make_server(tmp_path, port=0)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
-    try:
-        url = (f"http://127.0.0.1:{srv.server_address[1]}"
-               f"/api/trial?id={fx['flagged']}")
+    with serve_experiment(tmp_path) as base:
+        url = base + f"/api/trial?id={fx['flagged']}"
         with urllib.request.urlopen(url) as resp:
             served = json.loads(resp.read())
         assert any(s.get("detail") == planted for s in served["trajectory"]["steps"])
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        thread.join(timeout=5)

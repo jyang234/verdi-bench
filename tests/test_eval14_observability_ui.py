@@ -10,126 +10,23 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 import pytest
-import yaml
 
 from harness.corpus.registry import CorpusManifest, TaskEntry
 from harness.judge.assemble import comparison_id_for
 from harness.ledger import events as ledger_events
 from harness.ledger.query import read_events
-from harness.plan.interleave import derive_schedule, enumerate_trials
-from harness.run.engines.fake import FakeEngine
-from harness.run.heartbeat import HEARTBEAT_FILENAME
-from harness.run.interleave import schedule
-from harness.run.types import RunConfig, Task
 from harness.serve.compare import paired_comparisons
-from harness.serve.server import make_server
 from harness.serve.workspace import scan_workspace
 from harness.status.trial import trial_detail
 from tests.fixtures.builders import fixed_ctx, locked_experiment
-
-# a claude-code native log whose message stream yields a real trajectory
-_NATIVE_LOG = {
-    "usage": {"input_tokens": 900, "output_tokens": 120},
-    "total_cost_usd": 0.05,
-    "messages": [
-        {"content": [{"type": "text", "text": "reading the task"}]},
-        {"content": [{"type": "tool_use", "name": "Bash",
-                      "input": {"command": "pytest -q"}}]},
-        {"content": [{"type": "tool_use", "name": "Edit",
-                      "input": {"file_path": "solution.py"}}]},
-    ],
-}
-
-
-def rich_experiment(tmp_path: Path) -> dict:
-    """A locked experiment with a real fake-engine run (verified trajectories,
-    heartbeat), per-arm workspace content, grades that disagree on t1, one
-    advisory verdict, a forensics flag, and a quarantine."""
-    # repetitions=1 so the fixture RUN completes the pre-registered plan
-    # (status reports planned cells from the locked spec, not from what ran)
-    spec, spec_path, ledger = locked_experiment(tmp_path, repetitions=1)
-    (tmp_path / "tasks.yaml").write_text(
-        yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "p"}, {"id": "t2", "prompt": "p"}]}),
-        encoding="utf-8",
-    )
-    ctx = fixed_ctx(experiment_id=tmp_path.name)
-    arms = {a.name: a for a in spec.arms}
-    tasks = {
-        tid: Task(id=tid, prompt="p", fake_behavior={"native_log": _NATIVE_LOG})
-        for tid in ["t1", "t2"]
-    }
-    order = derive_schedule(spec.seed, enumerate_trials(["t1", "t2"], list(arms), 1))
-    schedule(
-        order, tasks=tasks, arms=arms, workspace_root=tmp_path / "workspaces",
-        ledger_path=ledger, ctx=ctx, config=RunConfig(engine=FakeEngine()),
-        cost_ceiling=spec.cost_ceiling.amount,
-        heartbeat_path=tmp_path / HEARTBEAT_FILENAME,
-    )
-
-    trial_ids: dict[tuple, str] = {}
-    for ev in read_events(ledger):
-        if ev.get("event") == "trial":
-            rec = ev["trial_record"]
-            trial_ids[(rec["task_id"], rec["arm"])] = rec["trial_id"]
-            # plant per-arm solution content so compare has a real diff
-            ws = Path(rec["artifacts_path"]).parent
-            ws.mkdir(parents=True, exist_ok=True)
-            (ws / "solution.py").write_text(
-                f"def solve():\n    return {rec['arm']!r}  # {rec['task_id']}\n",
-                encoding="utf-8",
-            )
-
-    rubric_sha = hashlib.sha256(
-        (tmp_path / "rubrics" / "code-task-v1.md").read_text("utf-8").encode("utf-8")
-    ).hexdigest()
-
-    def grade(tid: str, passed: bool) -> None:
-        ledger_events.record_grade(
-            ledger, ctx, trial_id=tid, task_sha="sha-x",
-            assertions=[{"id": "h1", "source": "holdout_test",
-                         "result": "pass" if passed else "fail"}],
-            binary_score=passed,
-        )
-
-    grade(trial_ids[("t1", "control")], False)
-    grade(trial_ids[("t1", "treatment")], True)   # t1: arms disagree
-    grade(trial_ids[("t2", "control")], True)
-    grade(trial_ids[("t2", "treatment")], True)   # t2: arms agree
-
-    ledger_events.append_verdict(
-        ledger, ctx,
-        verdict={
-            "comparison_id": comparison_id_for("t1", 0), "winner": "B",
-            "reason": "treatment handles the holdout case",
-            "provenance": {"judge_model": "google/gemini-1.5-pro-002",
-                           "rubric_sha256": rubric_sha},
-        },
-    )
-    flagged = trial_ids[("t1", "control")]
-    ledger_events.record_forensics_report(
-        ledger, ctx,
-        forensics_report={
-            "vocabulary_version": 1,
-            "metrics": {flagged: {"steps": 3}},
-            "flags": [{"trial_id": flagged, "task_id": "t1", "arm": "control",
-                       "detector": "suspicious_single_step",
-                       "reason": "planted for fixture"}],
-            "coverage": {"trials": 4, "covered": 4, "gaps": []},
-        },
-    )
-    ledger_events.record_forensic_quarantine(
-        ledger, ctx, trial_id=trial_ids[("t2", "treatment")], reason="fixture quarantine"
-    )
-    return {
-        "dir": tmp_path, "ledger": ledger, "spec": spec, "ctx": ctx,
-        "trial_ids": trial_ids, "flagged": flagged, "rubric_sha": rubric_sha,
-    }
+from tests.fixtures.scenarios import rich_experiment
+from tests.fixtures.servers import serve_experiment, serve_root
+from tests.fixtures.tamper import reencode_line
 
 
 def _passing_fence(fx: dict) -> CorpusManifest:
@@ -152,22 +49,9 @@ def _passing_fence(fx: dict) -> CorpusManifest:
     )
 
 
-def _serve(target, *, root=False):
-    srv = make_server(None if root else target, root=target if root else None, port=0)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
-    return srv, thread, f"http://127.0.0.1:{srv.server_address[1]}"
-
-
 def _get_json(url: str):
     with urllib.request.urlopen(url) as resp:
         return json.loads(resp.read().decode("utf-8"))
-
-
-def _stop(srv, thread):
-    srv.shutdown()
-    srv.server_close()
-    thread.join(timeout=5)
 
 
 # --- AC-1: workspace scan ------------------------------------------------------
@@ -184,11 +68,7 @@ def test_ac1_workspace_scan_summaries(tmp_path):
         ledger, fixed_ctx(experiment_id="exp-tampered"),
         trial_id="tampered-cover", reason="grader_unavailable",
     )
-    lines = ledger.read_text(encoding="utf-8").splitlines()
-    doctored = json.loads(lines[0])
-    doctored["seed"] = 999999
-    lines[0] = json.dumps(doctored, sort_keys=True, separators=(",", ":"))
-    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    reencode_line(ledger, 0, lambda ev: ev.update(seed=999999))
     (tmp_path / "not-an-experiment").mkdir()  # silently not one
     (tmp_path / "stray.txt").write_text("x", encoding="utf-8")
 
@@ -214,8 +94,7 @@ def test_ac1_workspace_scan_summaries(tmp_path):
     assert t["summary"] is None  # withheld, never zeros [fail closed]
 
     # the endpoint serves the same rows, and root mode demands exp= on scoped APIs
-    srv, thread, base = _serve(tmp_path, root=True)
-    try:
+    with serve_root(tmp_path) as base:
         assert _get_json(base + "/api/experiments")["experiments"] == json.loads(
             json.dumps(rows)
         )
@@ -227,8 +106,6 @@ def test_ac1_workspace_scan_summaries(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(base + "/api/status?exp=..%2Fexp-a")
         assert excinfo.value.code == 404  # name shape refused, never path-joined
-    finally:
-        _stop(srv, thread)
 
 
 # --- AC-2: trial drill-down ------------------------------------------------------
@@ -259,8 +136,7 @@ def test_ac2_trial_detail_aggregates(tmp_path):
     assert dq["quarantine"] == {"reason": "fixture quarantine"}
     assert dq["verdicts"] == []  # t2 was never judged
 
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with serve_experiment(tmp_path) as base:
         served = _get_json(base + f"/api/trial?id={flagged}")
         assert served == json.loads(json.dumps(d))
         with pytest.raises(urllib.error.HTTPError) as excinfo:
@@ -269,8 +145,6 @@ def test_ac2_trial_detail_aggregates(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(base + "/api/trial")
         assert excinfo.value.code == 400
-    finally:
-        _stop(srv, thread)
 
 
 # --- AC-6: paired compare + fence watermark ----------------------------------------
@@ -334,8 +208,7 @@ def test_ac7_fence_checklist_and_artifacts(tmp_path):
     (tmp_path / "findings.exploratory.dossier.html").write_text(
         "<!doctype html><p>fixture dossier</p>", encoding="utf-8"
     )
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with serve_experiment(tmp_path) as base:
         with urllib.request.urlopen(base + "/artifact?name=findings.json") as resp:
             assert resp.read() == b'{"fixture": true}'
             assert resp.headers["Content-Type"] == "application/json"
@@ -350,8 +223,6 @@ def test_ac7_fence_checklist_and_artifacts(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(base + "/artifact?name=findings.official.dossier.html")
         assert excinfo.value.code == 404  # allowlisted but not rendered: honest 404
-    finally:
-        _stop(srv, thread)
     kinds = [e["event"] for e in read_events(fx["ledger"])]
     assert "cant_analyze" not in kinds and "findings_rendered" not in kinds
 
@@ -369,8 +240,7 @@ def test_ac8_posture_all_routes(tmp_path):
 
     fx = rich_experiment(tmp_path / "exp-a")
     before = _dir_digest(tmp_path)
-    srv, thread, base = _serve(tmp_path, root=True)
-    try:
+    with serve_root(tmp_path) as base:
         # the page stays self-contained and carries the standing disclosure
         with urllib.request.urlopen(base + "/") as resp:
             page = resp.read().decode("utf-8")
@@ -395,8 +265,6 @@ def test_ac8_posture_all_routes(tmp_path):
                 urllib.request.urlopen(req)
             assert excinfo.value.code == 405
             assert excinfo.value.headers["Allow"] == "GET"
-    finally:
-        _stop(srv, thread)
 
     # structural posture: contracts cover the observability packages; no new
     # event kind and no entrypoint arrived with this story

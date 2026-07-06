@@ -16,14 +16,15 @@ from harness.contamination.probe import ProbeTask, run_memory_probe
 from harness.corpus.registry import CorpusManifest, TaskEntry
 from harness.judge.providers.fake import FakeProvider
 from tests.fixtures.builders import fixed_ctx, locked_experiment
-from tests.test_eval6_analyze import (
-    _FAST,
-    _populate,
-    _seed_full_calibration,
-    _seed_matching_selfcheck,
+from tests.fixtures.scenarios import (
+    FAST_STATS,
+    full_corpus,
+    populate_paired_trials,
+    seed_full_calibration,
+    seed_matching_selfcheck,
 )
 
-_SHA = "a" * 64  # matches the eval6 _full_corpus task shas
+_SHA = "a" * 64  # matches the full_corpus fixture task shas
 
 # both arms date-clean on every task: created strictly after both cutoffs, so
 # any flag below is a pure detection, exactly the spec's asymmetric-vs-clean case
@@ -49,8 +50,8 @@ def _dated_corpus(created_at="2026-01-01T00:00:00Z"):
 
 def _official_ready(tmp_path, ctx, **overrides):
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx, **overrides)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
-    _seed_full_calibration(ledger, ctx)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    seed_full_calibration(ledger, ctx)
     return spec, ledger
 
 
@@ -73,9 +74,9 @@ def test_ac5_asymmetry_refuses_official(tmp_path):
     canary = derive_canary(_SHA)
     # control regurgitates the canary; treatment does not
     _probe(ledger, ctx, spec, [f"…continues <!-- {canary} -->", "no idea"])
-    _seed_matching_selfcheck(ledger, ctx, spec)
+    seed_matching_selfcheck(ledger, ctx, spec)
     manifest = _dated_corpus()
-    findings = compute_findings(ledger, spec, spec.seed, corpus_manifest=manifest, **_FAST)
+    findings = compute_findings(ledger, spec, spec.seed, corpus_manifest=manifest, **FAST_STATS)
 
     assert findings.contamination["per_arm"]["control"]["flagged_task_ids"] == ["task0"]
     assert findings.contamination["per_arm"]["treatment"]["flagged"] == 0
@@ -104,9 +105,9 @@ def test_ac5_symmetric_discloses(tmp_path):
     # BOTH arms regurgitate — symmetric
     _probe(ledger, ctx, spec,
            [f"…continues <!-- {canary} -->", f"training doc: <!-- {canary} -->"])
-    _seed_matching_selfcheck(ledger, ctx, spec)
+    seed_matching_selfcheck(ledger, ctx, spec)
     manifest = _dated_corpus()
-    findings = compute_findings(ledger, spec, spec.seed, corpus_manifest=manifest, **_FAST)
+    findings = compute_findings(ledger, spec, spec.seed, corpus_manifest=manifest, **FAST_STATS)
 
     assert findings.contamination["asymmetric"] == []
     md = render_markdown(findings, ledger, "official", corpus_manifest=manifest)
@@ -122,12 +123,10 @@ def test_all_unknown_renders_official_with_caveat(tmp_path):
     [AC-5, AC-1 constraint]."""
     ctx = fixed_ctx()
     spec, ledger = _official_ready(tmp_path, ctx)  # default arms: no cutoffs
-    _seed_matching_selfcheck(ledger, ctx, spec)
+    seed_matching_selfcheck(ledger, ctx, spec)
     # eval6's undated corpus: no created_at anywhere
-    from tests.test_eval6_analyze import _full_corpus
-
-    manifest = _full_corpus()
-    findings = compute_findings(ledger, spec, spec.seed, corpus_manifest=manifest, **_FAST)
+    manifest = full_corpus()
+    findings = compute_findings(ledger, spec, spec.seed, corpus_manifest=manifest, **FAST_STATS)
     c = findings.contamination
     assert c["probe_status"] == "not_run"
     assert all(s["clean_by_date"] == 0 and s["flagged"] == 0 for s in c["per_arm"].values())
@@ -147,11 +146,9 @@ def test_cant_probe_status_disclosed(tmp_path):
         tasks=[ProbeTask(task_id="task0", task_sha=_SHA, prompt="p", has_canary=True)],
         provider=FakeProvider([ProviderTimeout("deadline")]),
     )
-    _seed_matching_selfcheck(ledger, ctx, spec)
-    from tests.test_eval6_analyze import _full_corpus
-
+    seed_matching_selfcheck(ledger, ctx, spec)
     findings = compute_findings(
-        ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST
+        ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS
     )
     assert findings.contamination["probe_status"] == "cant_probe(timeout)"
     md = render_markdown(findings, ledger, "exploratory")

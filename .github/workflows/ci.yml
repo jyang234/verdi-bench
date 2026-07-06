@@ -39,12 +39,14 @@ jobs:
       - name: Compile under 3.12 (syntax/compat gate)
         run: uv run --no-project --python 3.12 python -m compileall -q harness tests conftest.py
 
-  # Browser UI acceptance suite [PRA-H5]. The EVAL-14/17/18/19 page-drive tests
+  # Browser UI acceptance suite [PRA-H5]. The browser-marked page-drive tests
   # need node + the playwright package + a Chromium build; on the fast job they
-  # skip (no browser), so 10 acceptance criteria never executed in CI. This job
-  # provisions the stack, points the env-configurable paths at it, and runs with
-  # VERDI_REQUIRE_BROWSER=1 so it CANNOT green-pass by skipping (mirrors the
-  # docker job's VERDI_REQUIRE_DOCKER guard).
+  # skip (no browser). This job provisions the stack, points the
+  # env-configurable paths at it, and runs with VERDI_REQUIRE_BROWSER=1 so it
+  # CANNOT green-pass by skipping (mirrors the docker job's
+  # VERDI_REQUIRE_DOCKER guard). Selection is by marker, not path enumeration:
+  # the old four-file list silently omitted test_serve_legibility's drives
+  # (defect D6, refactor plan 01 §3) — a marker cannot rot that way.
   browser:
     runs-on: ubuntu-latest
     steps:
@@ -70,12 +72,25 @@ jobs:
         # instead of skipping every UI AC test green.
         env:
           VERDI_REQUIRE_BROWSER: "1"
-        run: >
-          uv run pytest -q
-          tests/test_eval14_page_drive.py
-          tests/test_eval17_author.py
-          tests/test_eval18_review_serve.py
-          tests/test_eval19_operator_p2.py
+        run: uv run pytest -m browser -q
+
+  # Behavioral acceptance shakedown [refactor plan 01 §3]: the hermetic golden
+  # path plus the tripwire matrix, driven end-to-end through the real bench CLI
+  # — no keys, no Docker, no browser. Every advertised fence must fire with its
+  # exact reason string; a refactor that breaks one now fails CI instead of
+  # only failing whoever remembers to run `make shakedown` locally.
+  shakedown:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # git sha provenance needs history
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync
+        run: uv sync --dev
+      - name: Hermetic shakedown (golden path + tripwires)
+        run: make shakedown
 
   # Real-container suite: the docker-marked tests that exercise the grade + Harbor
   # paths against a live daemon. GitHub-hosted ubuntu runners ship with Docker, so
@@ -94,6 +109,12 @@ jobs:
         # VERDI_REQUIRE_DOCKER makes the docker fixture raise at import when the
         # daemon is absent, so the job cannot pass green by skipping every test
         # on a daemon-less runner (XC-1 residual, 7H-2).
+        # VERDI_REQUIRE_PROXY (decision P0-PROXY-CI) applies the same fail-closed
+        # posture to the real-proxy egress e2e: with no reference proxy stood up
+        # (VERDI_METERING_PROXY_LOG unset) that test FAILS loudly instead of
+        # skipping, keeping the missing proxy provisioning visible in CI until
+        # the managed proxy lands (refactor plan 04 §1).
         env:
           VERDI_REQUIRE_DOCKER: "1"
+          VERDI_REQUIRE_PROXY: "1"
         run: uv run pytest -m docker -q

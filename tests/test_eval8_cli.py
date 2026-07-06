@@ -16,6 +16,7 @@ from harness.corpus.registry import CorpusManifest
 from harness.ledger.events import record_flake_baseline
 from harness.ledger.query import find_events
 from tests.fixtures.builders import fixed_ctx, seed_trial_and_grade
+from tests.fixtures.grading import write_holdout_results
 
 runner = CliRunner()
 
@@ -146,9 +147,7 @@ def test_h2_baseline_verb_flow_no_fabrication(tmp_path):
     # the reference-solution tree: holdouts pass deterministically when solved
     ws = tmp_path / "ref-solution"
     ws.mkdir()
-    (ws / "holdout_results.json").write_text(
-        json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
-    )
+    write_holdout_results(ws, True)
     holdouts = tmp_path / "holdouts"
     holdouts.mkdir()
     rb = runner.invoke(app, [
@@ -178,9 +177,7 @@ def test_h2_baseline_verb_quarantines_on_failure(tmp_path):
     expdir.mkdir()
     ws = tmp_path / "ref-solution"
     ws.mkdir()
-    (ws / "holdout_results.json").write_text(
-        json.dumps({"assertions": [{"id": "h1", "result": "fail"}]}), encoding="utf-8"
-    )
+    write_holdout_results(ws, False)
     holdouts = tmp_path / "holdouts"
     holdouts.mkdir()
     r = runner.invoke(app, [

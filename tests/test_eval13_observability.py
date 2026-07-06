@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -31,6 +30,8 @@ from harness.run.types import RunConfig, Task
 from harness.schema.experiment import Arm
 from harness.status.aggregate import compute_status
 from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
+from tests.fixtures.servers import serve_experiment
+from tests.fixtures.tamper import reencode_line
 
 _REPO = Path(__file__).resolve().parents[1]
 
@@ -287,11 +288,7 @@ def test_ac3_status_broken_chain_fails_closed(tmp_path):
         json.dumps({"schema_version": 1, "state": "running"}), encoding="utf-8"
     )
     # tamper a mid-chain line: its successor's prev_hash no longer matches
-    lines = ledger.read_text(encoding="utf-8").splitlines()
-    tampered = json.loads(lines[1])
-    tampered["seed_of_doubt"] = True
-    lines[1] = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
-    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    reencode_line(ledger, 1, lambda ev: ev.update(seed_of_doubt=True))
 
     snap = compute_status(tmp_path)
     assert snap["chain"]["ok"] is False
@@ -327,15 +324,6 @@ def _dir_digest(root: Path) -> list[tuple[str, str]]:
     )
 
 
-def _serve(experiment_dir: Path):
-    from harness.serve.server import make_server
-
-    srv = make_server(experiment_dir, port=0)  # OS-assigned port for tests
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
-    return srv, thread, f"http://127.0.0.1:{srv.server_address[1]}"
-
-
 def _get_json(url: str) -> dict:
     with urllib.request.urlopen(url) as resp:
         return json.loads(resp.read().decode("utf-8"))
@@ -346,8 +334,7 @@ def test_ac5_serve_endpoints_read_only(tmp_path):
 
     ledger = _fixture_experiment(tmp_path)
     before = _dir_digest(tmp_path)
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with serve_experiment(tmp_path) as base:
         assert _get_json(base + "/api/status") == compute_status(tmp_path)
 
         page1 = _get_json(base + "/api/events?offset=0")
@@ -361,17 +348,12 @@ def test_ac5_serve_endpoints_read_only(tmp_path):
         assert _get_json(base + "/api/timeline") == json.loads(
             json.dumps(trial_timeline(ledger))
         )
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        thread.join(timeout=5)
     assert _dir_digest(tmp_path) == before  # serving mutated nothing
 
 
 def test_ac5_serve_refuses_non_get_and_unknown_paths(tmp_path):
     _fixture_experiment(tmp_path)
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with serve_experiment(tmp_path) as base:
         for method in ("POST", "PUT", "DELETE", "PATCH"):
             req = urllib.request.Request(base + "/api/status", method=method, data=b"")
             with pytest.raises(urllib.error.HTTPError) as excinfo:
@@ -394,10 +376,6 @@ def test_ac5_serve_refuses_non_get_and_unknown_paths(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(base + "/api/events?offset=-1")
         assert excinfo.value.code == 400  # PRA-L10: negative offset is malformed (400)
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        thread.join(timeout=5)
 
 
 def test_m10_data_routes_fail_closed_on_broken_chain(tmp_path):
@@ -405,53 +383,34 @@ def test_m10_data_routes_fail_closed_on_broken_chain(tmp_path):
     content (409), not just /api/status — the trials list, timeline, drill-down,
     and compare no longer render tampered events."""
     ledger = _fixture_experiment(tmp_path)
-    lines = ledger.read_text(encoding="utf-8").splitlines()
-    tampered = json.loads(lines[1])
-    tampered["seed_of_doubt"] = True
-    lines[1] = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
-    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    reencode_line(ledger, 1, lambda ev: ev.update(seed_of_doubt=True))
 
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with serve_experiment(tmp_path) as base:
         for route in ("/api/events", "/api/timeline", "/api/compare"):
             with pytest.raises(urllib.error.HTTPError) as excinfo:
                 urllib.request.urlopen(base + route)
             assert excinfo.value.code == 409, route
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        thread.join(timeout=5)
 
 
 def test_m16_serve_refuses_foreign_host(tmp_path):
     """PRA-M16: a request with a foreign Host header (DNS-rebinding) is refused,
     so a malicious page cannot read unblinded operator data from the browser."""
     _fixture_experiment(tmp_path)
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with serve_experiment(tmp_path) as base:
         req = urllib.request.Request(base + "/api/status", headers={"Host": "evil.example"})
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(req)
         assert excinfo.value.code == 403
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        thread.join(timeout=5)
 
 
 def test_ac6_operator_page_self_contained(tmp_path):
     from harness.serve.page import OPERATOR_PAGE
 
     tmp_path.mkdir(exist_ok=True)
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with serve_experiment(tmp_path) as base:
         with urllib.request.urlopen(base + "/") as resp:
             served = resp.read().decode("utf-8")
             assert resp.headers["Content-Type"].startswith("text/html")
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        thread.join(timeout=5)
     assert served == OPERATOR_PAGE
 
     # the dossier's self-containment needles, minus its script ban (live tool):
@@ -508,7 +467,7 @@ def test_ac7_observability_contracts_and_no_entrypoints():
 
     # the new contract is load-bearing: a planted judge-client import in
     # harness.status must break it (reproduce-first pattern, XC-5 precedent)
-    from tests.test_import_contracts import _run_lint
+    from tests.fixtures.lint import run_lint
 
     module = _REPO / "harness" / "status" / "aggregate.py"
     original = module.read_text(encoding="utf-8")
@@ -519,7 +478,7 @@ def test_ac7_observability_contracts_and_no_entrypoints():
     )
     try:
         module.write_text(planted, encoding="utf-8")
-        result = _run_lint()
+        result = run_lint()
         assert result.returncode != 0, "planted judge-client import broke no contract"
         assert "observability-llm-free" in result.stdout or "Read-only observability" in result.stdout, result.stdout
     finally:
@@ -552,8 +511,7 @@ def test_m_i1_same_size_tamper_with_restored_mtime_fails_closed(tmp_path):
     import os
 
     ledger = _fixture_experiment(tmp_path)
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with serve_experiment(tmp_path) as base:
         urllib.request.urlopen(base + "/api/events")  # warm the verify cache
 
         st = ledger.stat()
@@ -568,7 +526,3 @@ def test_m_i1_same_size_tamper_with_restored_mtime_fails_closed(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(base + "/api/events")
         assert excinfo.value.code == 409
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        thread.join(timeout=5)

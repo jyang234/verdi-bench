@@ -26,6 +26,7 @@ from harness.cli import app
 from harness.ledger.query import find_events
 from harness.schema.experiment import ExperimentSpec
 from tests.fixtures.builders import write_experiment_yaml
+from tests.fixtures.grading import write_holdout_results
 
 runner = CliRunner()
 
@@ -56,10 +57,7 @@ def _graded_analyzed(tmp_path, *, name="exp", prompt="solve it",
         rec = ev["trial_record"]
         ws = Path(rec["artifacts_path"]).parent
         passed = control_pass if rec["arm"] == "control" else treatment_pass
-        (ws / "holdout_results.json").write_text(
-            json.dumps({"assertions": [{"id": "h1", "result": "pass" if passed else "fail"}]}),
-            encoding="utf-8",
-        )
+        write_holdout_results(ws, passed)
     _ok("grade", expdir, "--runner", "local")
     _ok("analyze", expdir, "--exploratory")
     spec = ExperimentSpec.from_yaml(expdir / "experiment.yaml")
@@ -307,10 +305,7 @@ def test_swebench_card_has_corpus_battery_and_resolved_rates(tmp_path):
         rec = ev["trial_record"]
         ws = Path(rec["artifacts_path"]).parent
         passed = rec["arm"] == "control"
-        (ws / "holdout_results.json").write_text(
-            json.dumps({"assertions": [{"id": "t::a", "result": "pass" if passed else "fail"}]}),
-            encoding="utf-8",
-        )
+        write_holdout_results(ws, passed, assertion_id="t::a")
     _ok("grade", expdir, "--runner", "local")
     _ok("analyze", expdir, "--exploratory")
 

@@ -24,6 +24,7 @@ from typer.testing import CliRunner
 from harness.cli import app
 from harness.ledger.query import find_events
 from tests.fixtures.builders import write_experiment_yaml
+from tests.fixtures.grading import write_holdout_results
 
 runner = CliRunner()
 
@@ -53,9 +54,7 @@ def test_fake_pipeline_plan_run_grade(tmp_path):
     # Stand in for the grader container output the local runner reads.
     for ev in trials:
         ws = Path(ev["trial_record"]["artifacts_path"]).parent
-        (ws / "holdout_results.json").write_text(
-            json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
-        )
+        write_holdout_results(ws, True)
 
     r2 = runner.invoke(app, ["grade", str(expdir), "--runner", "local"])
     assert r2.exit_code == 0, r2.output
@@ -103,9 +102,7 @@ def test_retry_terminal_override_regrades_and_discloses(tmp_path):
     # Now place the results the local runner reads, and override the target only.
     for ev in trials:
         ws = Path(ev["trial_record"]["artifacts_path"]).parent
-        (ws / "holdout_results.json").write_text(
-            json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
-        )
+        write_holdout_results(ws, True)
     r2 = runner.invoke(
         app, ["grade", str(expdir), "--runner", "local", "--retry-terminal", target]
     )
@@ -168,9 +165,7 @@ def test_fake_pipeline_rerun_yields_byte_identical_analysis_inputs(tmp_path):
     _ok("run", str(expdir))
     for ev in find_events(ledger, "trial"):
         ws = Path(ev["trial_record"]["artifacts_path"]).parent
-        (ws / "holdout_results.json").write_text(
-            json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
-        )
+        write_holdout_results(ws, True)
     _ok("grade", str(expdir), "--runner", "local")
     _ok("judge", str(expdir))
     _ok("review", "build", str(expdir))
@@ -286,9 +281,7 @@ def test_docker_grade_real_container(tmp_path):
     ws.mkdir()
     (ws / "solution.txt").write_text("agent output", encoding="utf-8")
     # the subject agent forges an all-pass file in its own workspace
-    (ws / "holdout_results.json").write_text(
-        json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
-    )
+    write_holdout_results(ws, True)
 
     ledger = tmp_path / "l.ndjson"
     container = GradingContainer(runner=DockerGradeRunner(), image=image)
