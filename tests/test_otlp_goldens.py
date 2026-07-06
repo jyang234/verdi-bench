@@ -14,7 +14,6 @@ drift pin, closed-vocabulary, determinism, honest absence) lives beside it once
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest

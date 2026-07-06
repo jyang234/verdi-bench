@@ -13,7 +13,6 @@ uncaught crash.
 from __future__ import annotations
 
 import copy
-import json
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
