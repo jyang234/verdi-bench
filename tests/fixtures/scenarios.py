@@ -16,7 +16,8 @@ from pathlib import Path
 
 import yaml
 
-from harness.corpus.registry import CorpusManifest, TaskEntry
+from harness.corpus.manifest import build_manifest
+from harness.corpus.registry import CorpusManifest
 from harness.judge.assemble import comparison_id_for
 from harness.ledger import events as ledger_events
 from harness.ledger.events import record_calibration_run
@@ -217,9 +218,9 @@ def full_corpus() -> CorpusManifest:
     # (public-mini@1.0.0) and to the tasks the experiment ran (task0..task4), so
     # the manifest must match both — the old terminal-bench@2.0.0 / one-task
     # manifest was the mismatch the shipped tests baked in.
-    m = CorpusManifest(
+    m = build_manifest(
         corpus_id="public-mini", semver="1.0.0", kind="public",
-        tasks=[TaskEntry(task_id=f"task{i}", sha="a" * 64, status="admitted") for i in range(5)],
+        tasks=[{"task_id": f"task{i}", "sha": "a" * 64} for i in range(5)],
     )
     # status is kept for provenance, but the FENCE now reads the ledgered
     # calibration_run events (CO-4), so official tests must seed_full_calibration.
