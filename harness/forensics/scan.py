@@ -24,7 +24,6 @@ from ..ledger.events import (
     record_forensics_report,
 )
 from .detectors import run_detectors
-from .metrics import FORENSICS_VOCABULARY_VERSION
 
 
 class UnknownTrialError(ValueError):
@@ -45,6 +44,7 @@ def run_forensics(
     from ..ledger.view import LedgerView
     from ..plan.lock import assert_lock
     from .assembler import TrialEvidenceAssembler
+    from .report import build_forensics_report
     from .review import forensic_review
 
     experiment_dir = Path(experiment_dir)
@@ -76,27 +76,9 @@ def run_forensics(
                 max_reasoning_bytes=at.max_reasoning_bytes,
             ).model_dump(mode="json")
 
-    report = {
-        "vocabulary_version": FORENSICS_VOCABULARY_VERSION,
-        "metrics": assembled.metrics,
-        "flags": flags,
-        "coverage": {
-            "trials": assembled.n_trials,
-            "covered": len(assembled.metrics),
-            "gaps": assembled.gaps,
-            # additive keys [EVAL-16 D002]: old readers ignore them, old
-            # ledgers simply lack them, the report stays one event
-            "detail_by_arm": {
-                arm: assembled.detail_by_arm[arm] for arm in sorted(assembled.detail_by_arm)
-            },
-            "detail_gaps": assembled.detail_gaps,
-            # F-H3 (additive): trials whose end-state evidence could not be
-            # verified against the grade-time workspace commitment.
-            "workspace_gaps": assembled.workspace_gaps,
-        },
-    }
-    if review:
-        report["reviews"] = reviews
+    # the report builder — the exact ledgered dict shape; reviews=None omits the
+    # key entirely so a --no-review scan renders as a SKIPPED advisory pass
+    report = build_forensics_report(assembled, flags, reviews if review else None)
     record_forensics_report(ledger_path, ctx, forensics_report=report)
     return report
 
