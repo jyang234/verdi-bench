@@ -94,11 +94,16 @@ prompt delivered read-only at `/verdi/request.json` *outside* the graded
 workspace, provider keys env-injected, egress confined to a metering proxy
 with per-trial attribution, kill-on-timeout). The Harbor library is importable
 only by the engine seam — an import-linter contract plus an AST sweep
-(`tests/test_eval4_seam.py`) keep it that way.
+(`tests/test_eval4_seam.py`) keep it that way. The Docker *mechanics* themselves
+— argv construction, the daemon probe, the metered network, and the
+metering-proxy lifecycle — live in `harness/hermetic/`, the one layer that talks
+to Docker; harbor and the grader route through it.
 
 Three of those container guarantees fail *closed* rather than degrading
-silently. The metering proxy is an **external operational component** (a
-reference squid config ships in `deploy/metering-proxy/`); a
+silently. The metering proxy can be a **managed** one the harness stands up and
+tears down around the run (`proxy.managed`, or `bench proxy up`), or an
+**external operational component** (a reference squid config ships in
+`deploy/metering-proxy/`); a
 configured-but-absent per-trial proxy log raises rather than being read as zero
 egress and zero cost [PRA-H4], and a proxy that is unreachable at preflight
 aborts the run instead of letting trials leak egress un-metered [PRA-M9].
