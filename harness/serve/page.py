@@ -152,6 +152,7 @@ OPERATOR_PAGE = """<!doctype html>
   .rz .role { font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; margin: 8px 0 3px; }
   .rz .role:first-child { margin-top: 0; }
   .rz .reason { font-size: 12px; line-height: 1.5; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; margin-bottom: 5px; }
+  .rz .rmeta { font-size: 10.5px; color: var(--ink-3); font-family: ui-monospace, Menlo, Consolas, monospace; margin: -4px 0 6px; }
   .rz .none { color: var(--ink-3); font-size: 12px; }
   .armhead { display: grid; grid-template-columns: 1fr 1fr; margin: 2px 0 4px; }
   .armhead > div { font-size: 11px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.04em; padding: 0 2px; }
@@ -1290,7 +1291,17 @@ function reasoningCol(entries) {
   }
   for (const role of order) {
     col.append(h("div", { class: "role", text: role }));
-    for (const e of groups[role]) col.append(h("div", { class: "reason", text: e.content }));
+    for (const e of groups[role]) {
+      col.append(h("div", { class: "reason", text: e.content }));
+      /* measured usage beside the turn — a metered model turn is legible
+         against an unmeasured one (deterministic orchestrator step, v1
+         recorder). Null renders as NOTHING: unmeasured is never zero, and
+         the page never infers "code-authored" from absence. */
+      const bits = [];
+      if (e.tokens !== null && e.tokens !== undefined) bits.push(fmt(e.tokens, 0) + " tok");
+      if (e.cost !== null && e.cost !== undefined) bits.push("cost " + fmt(e.cost, 4));
+      if (bits.length) col.append(h("div", { class: "rmeta", text: bits.join(" \\u00b7 ") }));
+    }
   }
   return col;
 }

@@ -374,6 +374,36 @@ def test_compare_flight_recorder_stays_open_across_polls(tmp_path):
         _stop(srv, thread)
 
 
+# --- compare: reasoning entries show measured usage; absence stays absent ----------
+def test_compare_reasoning_entries_show_measured_usage(tmp_path):
+    """A reasoning entry's measured tokens/cost render beside its content, so a
+    post-reveal human can tell a metered model turn from an unmeasured one (the
+    reference agent's orchestrator, a v1 recorder, ...). Null renders as NOTHING
+    — unmeasured is never dressed as zero, and the page never claims
+    'code-authored' (that would be an inference the data cannot prove)."""
+    from tests.test_eval14_page_drive import _reasoning_experiment
+
+    _reasoning_experiment(tmp_path / "exp-r")
+    srv, thread, base = _serve_root(tmp_path)
+    try:
+        body = """
+  await page.goto(BASE + '/#/exp/exp-r/compare?fr=cmp-t1-r0', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(2200);
+  out.meta = await page.evaluate(() => ({
+    metas: [...document.querySelectorAll('.rz .rmeta')].map(e => e.textContent),
+    reasons: document.querySelectorAll('.rz .reason').length }));
+"""
+        out = drive(base, body, tmp_path)
+        # 2 arms x 2 entries render; ONLY the measured entry (x2 arms) gets a
+        # usage line, and it carries both figures
+        assert out["meta"]["reasons"] == 4
+        assert len(out["meta"]["metas"]) == 2
+        assert all("412 tok" in m and "0.0021" in m for m in out["meta"]["metas"])
+        assert out["__errors"] == []
+    finally:
+        _stop(srv, thread)
+
+
 # --- compare: ungraded stays neutral; the pair index navigates ---------------------
 def test_compare_ungraded_pair_neutral_and_index(tmp_path):
     _paired_fixture(tmp_path / "exp-p")

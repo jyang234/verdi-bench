@@ -247,8 +247,11 @@ def _reasoning_experiment(exp_dir):
     native = {"verdi_log_version": 1, "telemetry": {"tokens_out": 40},
               "trajectory": [{"kind": "file_edit", "files_touched": ["solution.py"], "agent": "worker-1"}],
               "reasoning": [
+                  # one token-less entry (a deterministic/unmeasured turn) and one
+                  # measured model turn, so per-entry usage rendering has both states
                   {"content": "plan: decompose into add, then verify", "agent": "planner"},
-                  {"content": "add(a, b) returns a + b; handled overflow", "agent": "worker-1"}]}
+                  {"content": "add(a, b) returns a + b; handled overflow", "agent": "worker-1",
+                   "tokens": 412, "cost": 0.0021}]}
     tasks = {"t1": Task(id="t1", prompt="p", fake_behavior={"native_log": native})}
     order = derive_schedule(spec.seed, enumerate_trials(["t1"], list(arms), 1))
     schedule(order, tasks=tasks, arms=arms, workspace_root=exp_dir / "workspaces",
