@@ -418,7 +418,7 @@ def _run_trial_entrypoint(ctx_dir: str) -> None:
 
     d = Path(ctx_dir)
     task = Task(id="t", prompt="hello", fake_behavior={"outcome": "completed", "native_log": {}})
-    arm = Arm(name="A", platform="claude_code", model="anthropic/claude-3-5-sonnet-20241022")
+    arm = Arm(name="A", platform="claude_code", model="anthropic/claude-haiku-4-5-20251001")
     rec = run_trial(task, arm, d / "ws", RunConfig(engine=FakeEngine()))
     events.record_trial(
         d / "ledger.ndjson",
