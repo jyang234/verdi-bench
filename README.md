@@ -172,6 +172,7 @@ uv run bench author <workspace-dir> [--actor <name>]   # draft/validate/preview 
 uv run bench corpus import <tasks-dir> --cache <dir>   # idempotent public import (harbor json dir)
 uv run bench corpus import <swe-bench.jsonl> --cache <dir> --benchmark swebench [--image-template T]   # a standardized battery
 uv run bench corpus materialize <manifest> --cache <dir> --out <experiment-dir> [--all]   # → runnable tasks.yaml + holdouts
+uv run bench corpus validate-tasks <experiment-dir>   # strict-lint tasks.yaml (unknown keys / drift traps); ledgers nothing
 uv run bench corpus subset <manifest> --seed 1234      # stratified calibration subset
 uv run bench corpus mine <mr.json> --ticket t.txt --out cand.json
 uv run bench corpus review <cand.json>                 # curation view

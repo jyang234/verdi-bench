@@ -28,6 +28,24 @@ def _resolve_actor_or_exit(flag_value):
         raise typer.Exit(code=2)
 
 
+# Known tasks.yaml drift traps — singular/plural keys the lenient run/grade reader
+# would silently ignore (decision A9). validate-tasks names them explicitly.
+_TASK_DRIFT_TRAPS = {"holdout_dir": "holdouts_dir", "plugins": "plugin_ids"}
+
+
+def _suggest_task_key(unknown: str) -> str | None:
+    """The known-good TaskSpec field an unknown tasks.yaml key most likely meant:
+    a hardcoded drift trap first, else the closest field by edit distance."""
+    import difflib
+
+    from ..schema.tasks import TaskSpec
+
+    if unknown in _TASK_DRIFT_TRAPS:
+        return _TASK_DRIFT_TRAPS[unknown]
+    matches = difflib.get_close_matches(unknown, list(TaskSpec.model_fields), n=1)
+    return matches[0] if matches else None
+
+
 def register(app: typer.Typer) -> None:
     corpus_app = typer.Typer(help="Task corpus tooling [EVAL-8].", no_args_is_help=True)
 
@@ -112,6 +130,61 @@ def register(app: typer.Typer) -> None:
             typer.echo(f"{type(e).__name__}: {e}", err=True)
             raise typer.Exit(code=2)
         typer.echo(f"materialized → {dest}/tasks.yaml (+ holdouts/)")
+
+    @corpus_app.command("validate-tasks")
+    def corpus_validate_tasks(
+        experiment_dir: Path = typer.Argument(
+            ..., help="Experiment dir whose tasks.yaml to lint"
+        ),
+    ) -> None:
+        """Strict-lint tasks.yaml through the write-side TaskSpec [decision A9].
+
+        The run/grade reader is deliberately lenient (it feeds the lock hash), so
+        an unknown key is silently ignored there. This verb refuses unknown keys —
+        with a did-you-mean for the known drift traps (holdout_dir→holdouts_dir,
+        plugins→plugin_ids) — before a lock is ever taken. Pure read: nothing is
+        ledgered. Exit 0 clean, 2 on any problem or a missing/mis-shaped file.
+        """
+        from pydantic import ValidationError
+
+        from ..schema.tasks import TaskSpec
+        from .commit import TaskCommitmentError, load_task_dicts
+
+        experiment_dir = Path(experiment_dir)
+        if not (experiment_dir / "tasks.yaml").exists():
+            typer.echo(f"no tasks.yaml in {experiment_dir}", err=True)
+            raise typer.Exit(code=2)
+        try:
+            # The lenient reader's own structural refusals (missing/duplicate id)
+            # are lint failures too — surface them, don't crash past them.
+            task_dicts = load_task_dicts(experiment_dir)
+        except TaskCommitmentError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
+
+        problems: list[str] = []
+        for t in task_dicts:
+            tid = t.get("id", "<no id>")
+            try:
+                TaskSpec(**t)
+            except ValidationError as e:
+                for err in e.errors():
+                    if err["type"] == "extra_forbidden":
+                        key = str(err["loc"][-1])
+                        suggestion = _suggest_task_key(key)
+                        hint = f" — did you mean {suggestion!r}?" if suggestion else ""
+                        problems.append(f"task {tid!r}: unknown key {key!r}{hint}")
+                    else:
+                        loc = ".".join(str(p) for p in err["loc"]) or "<task>"
+                        problems.append(f"task {tid!r}: {err['msg']} (at {loc})")
+        if problems:
+            for p in problems:
+                typer.echo(p, err=True)
+            typer.echo(
+                f"validate-tasks: {len(problems)} problem(s) in tasks.yaml", err=True
+            )
+            raise typer.Exit(code=2)
+        typer.echo(f"validate-tasks: {len(task_dicts)} task(s) OK")
 
     @corpus_app.command("subset")
     def corpus_subset(
