@@ -93,14 +93,23 @@ class ExecOutcome:
     carries the engine-determined head of the precedence (``kill_failed >
     daemon_error > timeout`` for Harbor; the scripted outcome for the fake); the
     shared ``_assemble`` layers ``telemetry_corrupt`` then ``proxy_log_missing`` on
-    top. ``egress`` is set ONLY by an engine that reports its own egress (the fake);
-    left ``None``, the shared proxy-log scan is the egress source (Harbor)."""
+    top.
+
+    ``native_log`` is the engine's IN-MEMORY telemetry, set ONLY by a scripted
+    engine (the fake) so its telemetry stays decoupled from the on-disk log a
+    fixture may corrupt to exercise the seam's trajectory fail-closed path — the
+    dual-source invariant (telemetry from memory, trajectory from redacted disk).
+    Left ``None``, the shared ``_read_native_log`` reads the on-disk log with
+    fail-closed RN-17 semantics (Harbor's only telemetry source). ``egress`` is set
+    ONLY by an engine that reports its own egress (the fake); left ``None``, the
+    shared proxy-log scan is the egress source (Harbor)."""
 
     outcome: Outcome
     exit_status: Optional[int] = None
     agent_binary_version: Optional[str] = None
     engine_version: Optional[str] = None
     failure_reason: Optional[str] = None
+    native_log: Optional[dict] = None
     egress: Optional[EgressObservation] = None
 
 
@@ -124,12 +133,19 @@ class EngineBase(ABC):
         if resolved.refused:
             return self._refused_result(req, resolved)
         exec_ = self._execute(req, resolved)
-        # Shared fail-closed readers: a raise is a precedence SIGNAL the assembler
-        # downgrades a would-be-completed trial on — never a swallowed failure.
-        try:
-            native_log, telemetry_corrupt = self._read_native_log(req), False
-        except TelemetryCorruptError:
-            native_log, telemetry_corrupt = {}, True
+        # Telemetry source (dual-source invariant): a scripted engine supplies its
+        # own in-memory native_log, decoupled from the on-disk log a fixture may
+        # corrupt to drive the seam's trajectory fail-closed path, so it never has
+        # engine-level telemetry corruption. Otherwise the shared fail-closed reader
+        # is the source, and a raise is a precedence SIGNAL the assembler downgrades
+        # a would-be-completed trial on — never a swallowed failure.
+        if exec_.native_log is not None:
+            native_log, telemetry_corrupt = exec_.native_log, False
+        else:
+            try:
+                native_log, telemetry_corrupt = self._read_native_log(req), False
+            except TelemetryCorruptError:
+                native_log, telemetry_corrupt = {}, True
         try:
             attempts, violation, metered_cost = self._scan_proxy_log(req)
             proxy_log_missing = False
