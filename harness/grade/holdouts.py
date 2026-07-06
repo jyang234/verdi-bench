@@ -43,7 +43,7 @@ from typing import Annotated, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter
 
-from .container import NONCE_ENV
+from .fence import NONCE_ENV
 from .types import Assertion, AssertionResult
 
 # The on-disk name of the declared-holdout spec. MUST match

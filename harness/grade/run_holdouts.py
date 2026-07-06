@@ -30,7 +30,7 @@ import os
 import sys
 from pathlib import Path
 
-from .container import NONCE_ENV, holdout_fence
+from .fence import NONCE_ENV, holdout_fence
 from .holdouts import HOLDOUT_SPEC_FILENAME, assertions_to_raw, load_declared_holdout
 
 _HOLDOUTS_MOUNT = Path("/holdouts")

@@ -31,7 +31,7 @@ import os
 import sys
 from pathlib import Path
 
-from .container import NONCE_ENV, plugin_fence
+from .fence import NONCE_ENV, plugin_fence
 from .plugins import get_plugin
 from .types import GradeTask
 
