@@ -11,6 +11,7 @@ proved in ``tests/test_e2e_run_holdouts.py``.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 import yaml
@@ -100,8 +101,8 @@ def test_pytest_holdout_executes_after_reload(tmp_path):
 def test_command_holdout_exit_code_is_the_verdict(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
-    assert CommandHoldout(argv=["python", "-c", "exit(0)"]).execute(ws)[0].result.value == "pass"
-    assert CommandHoldout(argv=["python", "-c", "exit(1)"]).execute(ws)[0].result.value == "fail"
+    assert CommandHoldout(argv=[sys.executable, "-c", "exit(0)"]).execute(ws)[0].result.value == "pass"
+    assert CommandHoldout(argv=[sys.executable, "-c", "exit(1)"]).execute(ws)[0].result.value == "fail"
 
 
 def test_execute_scrubs_fence_nonce_and_sets_no_bytecode(tmp_path, monkeypatch):
