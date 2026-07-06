@@ -25,10 +25,22 @@ from __future__ import annotations
 import html as _html
 from typing import Literal, Optional
 
-from ..contamination.summary import latest_probe, probe_asymmetries
-from ..ledger import events
-from ..ledger.query import ledger_head_hash, verify
-from ..ledger.view import LedgerView
+from .findings.fence import (  # noqa: F401 — facade re-export while importers migrate [refactor 07 §1]
+    FENCE_CHECKS,
+    FenceCheck,
+    FenceContext,
+    FenceOutcome,
+    _assert_correction_consistent,
+    _assert_head_hash,
+    _assert_no_insulation_alarms,
+    _ledgered_calibration_status,
+    _task_ids_run,
+    _validate_process_disclosure,
+    _validate_provenance,
+    assert_official_fence,
+    effective_multi_arm_correction,
+    validate_for_render,
+)
 from .findings.extract import (  # noqa: F401 — facade re-export while importers migrate [refactor 07 §1]
     METRICS,
     MIN_DETECTION_CLUSTERS,
@@ -119,40 +131,7 @@ from .findings.sections import (  # noqa: F401 — facade re-export while import
 )
 
 
-# --- rendering + the fence -------------------------------------------------
-def _validate_provenance(findings: FindingsDocument) -> None:
-    p = findings.provenance
-    for name in ("instrument_version", "instrument_git_sha", "ledger_head_hash", "judge"):
-        if getattr(p, name) in (None, ""):
-            raise ProvenanceError(f"findings provenance missing {name} [AC-6]")
-
-
-def _validate_process_disclosure(findings: FindingsDocument) -> None:
-    """Process scores may never render without the unblinded disclosure [EVAL-9 AC-2]."""
-    if findings.process is None:
-        return
-    disclosure = findings.process.get("disclosure")
-    if not disclosure or disclosure.get("unblinded") is not True:
-        raise DisclosureError(
-            "findings include process scores but no unblinded disclosure block; "
-            "process scores never render without disclosure [EVAL-9 AC-2]"
-        )
-
-
-def _assert_head_hash(findings: FindingsDocument, ledger_path) -> None:
-    """Cross-check the recorded head hash against verify_chain at render time [AC-6]."""
-    result = verify(ledger_path)
-    if not result.ok:
-        raise ProvenanceError(f"ledger chain does not verify at render: {result.detail}")
-    current = ledger_head_hash(ledger_path)
-    if current != findings.provenance.ledger_head_hash:
-        raise ProvenanceError(
-            "ledger head hash changed since the findings were computed "
-            f"(recorded {findings.provenance.ledger_head_hash[:12]}…, "
-            f"now {current[:12]}…) — findings are stale [AC-6]"
-        )
-
-
+# --- rendering (the fence lives in findings/fence.py) ----------------------
 def render_markdown(
     findings: FindingsDocument,
     ledger_path,
@@ -162,225 +141,12 @@ def render_markdown(
     corpus_manifest=None,
 ) -> str:
     """Render findings to markdown behind the pre-registration fence."""
-    _validate_provenance(findings)
-    _validate_process_disclosure(findings)
-    _assert_head_hash(findings, ledger_path)
-
+    validate_for_render(
+        findings, ledger_path, mode, metric=metric, corpus_manifest=corpus_manifest
+    )
     if mode == "official":
-        if metric is not None and metric != findings.primary_metric:
-            raise UnregisteredOfficialError(
-                f"official render requested for {metric!r}, but the pre-registered "
-                f"primary metric is {findings.primary_metric!r}; only the "
-                "primary metric + decision rule are official [AC-5]"
-            )
-        _assert_official_calibration(findings, corpus_manifest, ledger_path)
         return _render_official_md(findings)
     return _render_exploratory_md(findings)
-
-
-def _task_ids_run(ledger_path) -> set[str]:
-    """The set of task ids the experiment actually ran (from trial records)."""
-    return {ev["trial_record"]["task_id"] for ev in LedgerView(ledger_path).by_kind(events.TRIAL)}
-
-
-def _ledgered_calibration_status(ledger_path, corpus_id: str, semver: str) -> Optional[str]:
-    """The latest calibration status **on the chain** for a corpus, or None.
-
-    Reads ``calibration_run`` events (last-write-wins in ledger order) rather than
-    the hand-editable ``manifest.calibration.status`` [CO-4]."""
-    status = None
-    for ev in LedgerView(ledger_path).by_kind(events.CALIBRATION_RUN):
-        if ev.get("corpus_id") == corpus_id and ev.get("semver") == semver:
-            status = ev.get("status")
-    return status
-
-
-def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, ledger_path) -> None:
-    """Bind the official fence to corpus identity + integrity [AN-2, D-P5-2].
-
-    All six checks — a fence that trusts fewer is a hand-editable bypass:
-
-    1. the cited manifest is the **pre-registered** corpus (id + semver match
-       ``spec.corpus``); a different corpus cannot be laundered into an official
-       finding;
-    2. every task the experiment **ran** is an admitted task in that manifest, so
-       the manifest actually covers the data;
-    3. the corpus is full-run-validated per the **ledgered** ``calibration_run``
-       events, not the mutable ``manifest.calibration.status`` [CO-4];
-    4. every verdict's rubric hash agrees with the lock's committed
-       ``rubric_sha256`` (a post-lock rubric swap is refused) [D-P7-6];
-    5. a ledgered ``selfcheck`` with ``passed=true`` exists (the coverage
-       self-validation gate) [EVAL-1-D008];
-    6. no *asymmetric flagged* contamination — a task flagged for one arm's
-       model but not another invalidates the pairing itself; symmetric or
-       unknown states are disclosed caveats, not refusals [EVAL-10 AC-5, D001].
-
-    Note on check (2): D-P5-2 framed this as reconciling ``manifest.task_shas()``
-    with the lock's ``task_commitment``, but those are different hash domains —
-    the commitment hashes each task's *tasks.yaml entry* (corpus/commit.py) while
-    ``task_shas()`` are *corpus-cache blob* shas — so a direct sha comparison is
-    not well-defined. Membership is the achievable analyze-time binding; the task
-    *content* the experiment ran is separately fenced at run/grade/judge time by
-    ``assert_task_commitment`` against that same ``task_commitment``. The
-    manifest's cited task shas are provenance, not an independently anchored
-    integrity claim.
-    """
-    spec_corpus = findings.spec_corpus
-    if corpus_manifest is None:
-        raise CalibrationIncompleteError(
-            "official findings require a full-run-validated corpus manifest; none "
-            f"provided for {spec_corpus['id']}@{spec_corpus['version']} [EVAL-8 AC-2]"
-        )
-    # 1. corpus identity: the cited manifest must be the pre-registered corpus.
-    if (
-        corpus_manifest.corpus_id != spec_corpus["id"]
-        or corpus_manifest.semver != spec_corpus["version"]
-    ):
-        raise CorpusMismatchError(
-            f"official render cites corpus {corpus_manifest.corpus_id}@"
-            f"{corpus_manifest.semver}, but the experiment pre-registered "
-            f"{spec_corpus['id']}@{spec_corpus['version']}; the primary metric is "
-            "official only against the corpus it was registered on [AN-2]"
-        )
-    # 2. every task the experiment ran must be admitted in that manifest.
-    missing = sorted(t for t in _task_ids_run(ledger_path) if not corpus_manifest.is_schedulable(t))
-    if missing:
-        raise CorpusMismatchError(
-            f"official render cites {corpus_manifest.corpus_id}@{corpus_manifest.semver}, "
-            f"but tasks {missing} were run and are not admitted in it; the manifest "
-            "does not cover the experiment's data [AN-2]"
-        )
-    # 3. full-run-validated per the LEDGERED calibration_run events, not manifest JSON.
-    status = _ledgered_calibration_status(ledger_path, spec_corpus["id"], spec_corpus["version"])
-    if status != "full-run-validated":
-        raise CalibrationIncompleteError(
-            f"corpus {spec_corpus['id']}@{spec_corpus['version']} is not "
-            f"full-run-validated on the chain (ledgered status={status!r}); a "
-            "manifest JSON status alone does not satisfy the fence — calibrate "
-            "through a ledgered calibration_run before the first official finding "
-            "[EVAL-8 AC-2, CO-4]"
-        )
-    # 4. rubric commitment [D-P7-6]: when the lock committed a rubric_sha256 and
-    # verdicts exist, every verdict's provenance rubric hash must equal it — a
-    # post-lock rubric swap must not reach an official finding. A legacy lock
-    # (no committed hash) is not refused here; the render adds a caveat instead.
-    locked_rubric_sha = _lock_event(ledger_path).get("rubric_sha256")
-    if locked_rubric_sha is not None:
-        verdict_shas = _judge_summary(ledger_path)["rubric_shas"]
-        disagreeing = sorted(s for s in verdict_shas if s != locked_rubric_sha)
-        if disagreeing:
-            raise RubricMismatchError(
-                f"official render refused: verdict rubric hash(es) {disagreeing} "
-                f"disagree with the locked rubric_sha256 {locked_rubric_sha}; the "
-                "judging rubric was swapped after the lock [D-P7-6]"
-            )
-    # 5. self-validation [EVAL-1-D008]: a ledgered `selfcheck` with passed=true
-    # must exist, must not be stale (no data appended after it — review #1), and
-    # must have validated the CI method the render deploys (review #2).
-    from .selfcheck import latest_selfcheck, selfcheck_status
-
-    status = selfcheck_status(ledger_path)
-    if status != "current":
-        detail = {
-            "missing": "no selfcheck has been run",
-            "failed": "the selfcheck failed",
-            "stale": "the selfcheck predates later trials/grades — it validated an "
-                     "older dataset than this render analyzes",
-        }[status]
-        raise SelfcheckRequiredError(
-            f"official render refused: {detail}. Run `bench selfcheck "
-            "<experiment-dir>` and pass it before the first official finding "
-            "[EVAL-1-D008]"
-        )
-    # The selfcheck validated a specific CI method; the render must deploy that
-    # same method, else the coverage the gate certified is not the coverage of
-    # the interval actually shown [review #2].
-    validated = (latest_selfcheck(ledger_path) or {}).get("selected_method")
-    deployed = findings.ci_selection.get("selected_method")
-    if validated != deployed:
-        raise SelfcheckRequiredError(
-            f"official render refused: the selfcheck validated CI method "
-            f"{validated!r} but the render deploys {deployed!r}; re-run `bench "
-            "selfcheck <experiment-dir>` so the validated and deployed methods "
-            "agree [EVAL-1-D008]"
-        )
-    # 6. asymmetric flagged contamination [EVAL-10 AC-5, D001]: the one
-    # contamination case A/B cannot disclose its way out of — a flag on one
-    # arm's model with the other arm not flagged breaks the pairing. Symmetric
-    # flags and unknowns stay disclosed caveats in the render, never refusals.
-    # Recomputed from the LEDGERED probe event, like the fence's other checks —
-    # the findings field is disclosure, not the thing the fence trusts; the
-    # findings-based list still counts (defense in depth for summary-only
-    # flags), but an empty findings dict cannot silence a ledgered asymmetry.
-    asymmetric = probe_asymmetries(latest_probe(ledger_path)) or (
-        findings.contamination or {}
-    ).get("asymmetric", [])
-    if asymmetric:
-        detail = "; ".join(asymmetry_line(a) for a in asymmetric)
-        raise AsymmetricContaminationError(
-            f"official render refused: asymmetric flagged contamination — "
-            f"{detail}. The pairing is invalid for these tasks; exploratory "
-            "still renders, watermarked, with the full summary [EVAL-10 AC-5]"
-        )
-    # 7. holdout-leak insulation alarms [F-M-C3, EVAL-4 AC-9]: an alarm on the
-    # latest ledgered probe is an insulation VIOLATION — holdout content
-    # reproduced in a solution — and refuses the official render until it is
-    # investigated: quarantine the offending trial (ledgered), re-run the scan
-    # (quarantined trials are skipped, disclosed) and the probe.
-    _assert_no_insulation_alarms(ledger_path)
-    # 8. multi-arm correction consistency [F-H7]: one pre-registered decision
-    # procedure per experiment. The policy lives in the sha-locked spec, so two
-    # official renders cannot legitimately differ through the tool; this is
-    # defense in depth against a chain produced under a different policy.
-    _assert_correction_consistent(
-        (findings.multi_arm or {}).get("correction", "none"), ledger_path
-    )
-
-
-def _assert_no_insulation_alarms(ledger_path) -> None:
-    """Refuse an official render while the latest probe carries insulation
-    alarms [F-M-C3]. Probes predating the recorded field simply lack it."""
-    alarms = (latest_probe(ledger_path) or {}).get("alarms") or []
-    if alarms:
-        detail = "; ".join(alarms)
-        raise InsulationAlarmError(
-            f"official render refused: {len(alarms)} holdout-leak insulation "
-            f"alarm(s) on the latest contamination probe — {detail}. Investigate; "
-            "if intentional, quarantine the trial (ledgered) and re-run "
-            "`bench contamination probe` [F-M-C3, EVAL-4 AC-9]"
-        )
-
-
-def effective_multi_arm_correction(spec) -> str:
-    """The multi-arm correction an official render of ``spec`` would apply —
-    the value the render fence gates on [F-H7, refactor 01 §4 D8].
-
-    Mirrors ``compute_findings``: the ``multi_arm`` block (and with it a
-    correction) exists only for a >2-arm family — one comparison is built per
-    arm beyond ``arms[0]``, so with two arms there is a single pre-registered
-    pair, no decision family, and the render passes ``"none"`` regardless of
-    the spec field. The observer fence (``analyze/fence.py``) evaluates the
-    correction-consistency item with this value so it cannot show ready while
-    the render refuses; structurally unified with the render in Phase 5."""
-    return spec.multi_arm_correction if len(spec.arms) > 2 else "none"
-
-
-def _assert_correction_consistent(correction: str, ledger_path) -> None:
-    """Refuse an official render whose applied multi-arm correction differs from
-    any prior official render's recorded correction [F-H7]. Render events that
-    predate the recorded field are skipped — a legacy chain is not refused on,
-    but the first post-field official render pins the procedure for the rest."""
-    for ev in LedgerView(ledger_path).by_kind(events.FINDINGS_RENDERED):
-        if ev.get("mode") != "official":
-            continue
-        prior = ev.get("multi_arm_correction")
-        if prior is not None and prior != correction:
-            raise CorrectionMismatchError(
-                f"official render refused: a prior official render used "
-                f"multi-arm correction {prior!r}; this render would use "
-                f"{correction!r} — one pre-registered decision procedure per "
-                "experiment [F-H7]"
-            )
 
 
 def _render_official_md(findings: FindingsDocument) -> str:

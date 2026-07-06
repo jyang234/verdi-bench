@@ -47,7 +47,7 @@ from .report import (
     _secondary_lines,
     _tier_lines,
     paired_task_rows,
-    render_markdown,
+    validate_for_render,
 )
 from .timeline import trial_timeline
 
@@ -463,13 +463,15 @@ def render_dossier(
 ) -> str:
     """Render the three-layer dossier behind the markdown render's exact fence.
 
-    Fence parity by delegation [AC-4]: the markdown render runs first, purely
-    for its validations — provenance, process disclosure, head-hash/chain
-    verify, and (official) the five-check calibration fence — so the dossier
-    is refused precisely when the markdown is, with the same ``AnalyzeError``
-    subtype and therefore the same ``cant_analyze`` reason.
+    Fence parity by shared validation [AC-4]: the dossier runs the SAME
+    :func:`~harness.analyze.findings.fence.validate_for_render` the markdown
+    render runs — provenance, process disclosure, head-hash/chain verify, and
+    (official) the metric gate + the calibration fence — so it is refused
+    precisely when the markdown is, with the same ``AnalyzeError`` subtype and
+    therefore the same ``cant_analyze`` reason. No full markdown render is built
+    and discarded just for the side effects [refactor 07 §1].
     """
-    render_markdown(findings, ledger_path, mode, metric=metric, corpus_manifest=corpus_manifest)
+    validate_for_render(findings, ledger_path, mode, metric=metric, corpus_manifest=corpus_manifest)
 
     timelines = trial_timeline(ledger_path)
     disclosures = _disclosure_sections(findings)
