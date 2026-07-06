@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -31,6 +32,48 @@ from .types import RunConfig, Task, TrialRequest
 
 class HoldoutLeakError(RuntimeError):
     """A holdout canary reached the prompt payload — insulation breach [AC-9]."""
+
+
+@dataclass
+class SpendTracker:
+    """The already-incurred spend, threaded through run_trial's post-engine phases
+    [refactor 04 §3, PRA-M8].
+
+    The container has run and the proxy has metered it, so any spend is real
+    before redaction or capture even begin. This carries the best-available
+    figure — the proxy-metered cost until telemetry is normalized, the
+    self-reported cost after — so a post-engine failure can ledger exactly the
+    spend that was incurred instead of forgetting it. It replaces the
+    ``exc.enforcement_cost`` attribute mutation the spend-carry used to smuggle
+    through the exception, a cross-module contract invisible to types.
+    """
+
+    spend: Optional[float]
+
+    def adopt_telemetry(self, telemetry_cost: Optional[float]) -> None:
+        """Prefer the self-reported cost once telemetry is known — matching the
+        completed-trial enforcement figure [PRA-M8]. A null self-report leaves the
+        proxy figure in place; a null is never imputed [D004]."""
+        if telemetry_cost is not None:
+            self.spend = telemetry_cost
+
+
+class PostEngineFailure(Exception):
+    """A run_trial phase AFTER the engine ran failed [refactor 04 §3, PRA-M8].
+
+    The container has already run and been metered, so this carries the
+    already-incurred ``spend`` explicitly and typed — no longer smuggled on the
+    raised exception — for the scheduler to ledger on ``trial_infra_failed`` and
+    charge to the cost guard. ``cause`` is the underlying corruption (redaction,
+    trajectory, or flight recorder); the scheduler maps it to the closed
+    ``trial_infra_failed`` reason vocabulary it owns, so the machine-readable
+    reason stays byte-identical to the pre-refactor protocol.
+    """
+
+    def __init__(self, *, cause: BaseException, spend: Optional[float]) -> None:
+        self.cause = cause
+        self.spend = spend
+        super().__init__(f"post-engine phase failed ({type(cause).__name__}): {cause}")
 
 
 def _now_iso() -> str:
@@ -148,14 +191,11 @@ def run_trial(
     # is already incurred. If a post-engine step below (redaction, trajectory)
     # raises, the scheduler ledgers trial_infra_failed — which must carry this
     # spend so it counts against the ceiling and survives resume, instead of
-    # burning budget invisibly. We stamp the best-available enforcement cost onto
-    # the exception; the telemetry-derived figure replaces the proxy figure once
-    # telemetry is normalized below.
-    _spend: Optional[float] = result.proxy_metered_cost
-
-    def _attach_spend(exc: BaseException) -> BaseException:
-        exc.enforcement_cost = _spend
-        return exc
+    # burning budget invisibly. The SpendTracker threads the best-available figure
+    # explicitly (the telemetry-derived figure replaces the proxy figure once
+    # telemetry is normalized below), and a post-engine failure raises the typed
+    # PostEngineFailure carrying it — no exception mutation.
+    spend = SpendTracker(spend=result.proxy_metered_cost)
 
     # Redact secrets from the whole trial workspace before it persists [AC-8].
     # RN-7: the agent can write secrets anywhere in the workspace (Harbor mounts
@@ -169,16 +209,15 @@ def run_trial(
     ]
     try:
         redact_artifacts(workspace, extra_patterns)
-    except BaseException as exc:  # PRA-M8: carry the already-incurred spend
-        raise _attach_spend(exc)
+    except Exception as exc:  # PRA-M8: carry the already-incurred spend, typed
+        raise PostEngineFailure(cause=exc, spend=spend.spend) from exc
 
     # Normalize telemetry from agent-native logs [AC-2]; unmeasurable ⇒ null.
     adapter = get_adapter(arm.platform)
     telemetry = adapter.normalize(result.native_log)
     # PRA-M8: once telemetry is known, prefer the self-reported cost for any
     # subsequent post-engine failure (matching the completed-trial enforcement).
-    if telemetry.cost is not None:
-        _spend = telemetry.cost
+    spend.adopt_telemetry(telemetry.cost)
 
     # Per-model attribution [EVAL-21 AC-2, AC-4]: a v2 generic log may split
     # telemetry across the arm's DECLARED models. Self-reported testimony, so
@@ -214,7 +253,8 @@ def run_trial(
             native_log = _redacted_native_log(Path(result.artifacts_dir), trial_id)
         except TrajectoryCorruptError as exc:
             if result.outcome != Outcome.timeout:
-                raise _attach_spend(exc)  # PRA-M8: carry the already-incurred spend
+                # PRA-M8: carry the already-incurred spend, typed
+                raise PostEngineFailure(cause=exc, spend=spend.spend) from exc
             # A timeout kill can truncate agent_log.json mid-write. The timeout
             # outcome is data (the RN-17 seam keeps it); destroying the trial as
             # trajectory_corrupt would erase the datapoint and its spend. The
@@ -231,8 +271,8 @@ def run_trial(
                     result.artifacts_dir,
                     extra_patterns,
                 )
-            except BaseException as exc:  # PRA-M8: carry the already-incurred spend
-                raise _attach_spend(exc)
+            except Exception as exc:  # PRA-M8: carry the already-incurred spend, typed
+                raise PostEngineFailure(cause=exc, spend=spend.spend) from exc
 
         # Flight recorder capture [EVAL-24 AC-1] — reasoning is a SEPARATE artifact
         # from the graded trajectory, from the same already-scrubbed native log,
@@ -248,8 +288,8 @@ def run_trial(
                     result.artifacts_dir,
                     extra_patterns,
                 )
-            except BaseException as exc:  # PRA-M8: carry the already-incurred spend
-                raise _attach_spend(exc)
+            except Exception as exc:  # PRA-M8: carry the already-incurred spend, typed
+                raise PostEngineFailure(cause=exc, spend=spend.spend) from exc
 
     flags = Flags(egress_violation=result.egress_violation)
     if telemetry_by_model:

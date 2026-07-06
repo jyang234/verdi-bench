@@ -36,7 +36,7 @@ from .budget import CostGuard, enforcement_cost
 from .flight_recorder import FlightRecorderCorruptError
 from .heartbeat import RunHeartbeat
 from .redact import RedactionError
-from .seam import HoldoutLeakError, new_trial_id, run_trial
+from .seam import HoldoutLeakError, PostEngineFailure, new_trial_id, run_trial
 from .trajectory import TrajectoryCorruptError
 from .types import RunConfig, Task
 
@@ -284,17 +284,23 @@ def schedule(
                 # failing every remaining cell identically.
                 out.aborted_proxy_unavailable = True
                 break
-            except Exception as exc:  # noqa: BLE001 — ANY per-trial fault fails THIS
-                # cell closed (ledgered, reason-tagged), never escapes to abort the
-                # whole run [RN-15]. Not swallowed: surfaced as trial_infra_failed.
-                # PRA-M8: a post-engine failure (redaction/trajectory) carries the
-                # spend already incurred on the exception; ledger it AND feed it to
-                # the guard so it counts against the ceiling and survives resume.
-                spend = getattr(exc, "enforcement_cost", None)
-                _fail_cell(out, ledger_path, ctx, planned, reason=_reason_for(exc),
-                           hb=hb, cost=spend)
-                if spend is not None:
-                    guard.add(spend)
+            except PostEngineFailure as exc:
+                # PRA-M8: a failure AFTER the engine ran carries the already-incurred
+                # spend explicitly on the typed failure. Ledger it (the reason is
+                # mapped from the underlying cause, keeping this module the owner of
+                # the trial_infra_failed vocabulary) AND feed it to the guard so it
+                # counts against the ceiling and survives resume.
+                _fail_cell(out, ledger_path, ctx, planned, reason=_reason_for(exc.cause),
+                           hb=hb, cost=exc.spend)
+                if exc.spend is not None:
+                    guard.add(exc.spend)
+                continue
+            except Exception as exc:  # noqa: BLE001 — ANY OTHER per-trial fault fails
+                # THIS cell closed (ledgered, reason-tagged), never escapes to abort
+                # the whole run [RN-15]. Not swallowed: surfaced as trial_infra_failed.
+                # A pre-engine or adapter fault (holdout leak, unknown platform,
+                # generic-log parse) carries no incurred spend.
+                _fail_cell(out, ledger_path, ctx, planned, reason=_reason_for(exc), hb=hb)
                 continue
             if out.stopped_cost_ceiling:
                 break  # budget exhausted inside the infra-rerun loop [RN-3]
