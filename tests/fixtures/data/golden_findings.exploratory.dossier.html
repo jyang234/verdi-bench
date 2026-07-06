@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Comparison dossier — golden-mini-ab</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:1.5em;max-width:60em}
+.watermark{background:#fee;color:#900;padding:4px 8px;font-weight:bold;border:1px solid #900;margin:6px 0}
+.advisory{background:#ffd;color:#640;padding:4px 8px;border:1px solid #a80;margin:6px 0}
+.layer{border:1px solid #ccc;border-radius:6px;padding:0.5em 1em;margin:1em 0}
+table{border-collapse:collapse}td,th{border:1px solid #bbb;padding:2px 8px;text-align:right}
+th:first-child,td:first-child{text-align:left}
+summary{font-weight:bold;cursor:pointer;margin:0.4em 0}
+.nm{color:#666;font-style:italic}
+svg{display:block;margin:4px 0}
+</style>
+</head>
+<body>
+<h1>Comparison dossier — golden-mini-ab</h1>
+<p>mode: <strong>exploratory</strong></p>
+
+<section class="layer" id="layer-verdict">
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<div class="advisory">- ⚠ ADVISORY: results include ADVISORY-tier grades (local / no trusted container) — advisory, not authoritative; tiers present: [&#39;ADVISORY&#39;] [AC-9]</div>
+<h2>Verdict — the pre-registered answer</h2>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Verdict</summary>
+<div class="comparison"><h4>control vs treatment</h4><p>Pre-registered question: does control beat treatment on holdout_pass_rate?</p><p>Decision rule (verbatim): delta_holdout_pass_rate &gt; 0</p><p>Outcome: an effect was detected and the pre-registered decision rule is MET — control is favored over treatment on holdout_pass_rate (observed paired delta 0.5000).</p><p>Uncertainty: 95% CI (bca, 500 resamples) [0.2000, 0.8000]; MDE=n/a; N=5 paired task(s).</p><p>Caveat: the MDE is assumption-based — variance not yet calibrated.</p></div>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Confounds (disclosed, non-suppressing)</summary>
+<ul><li>none</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Blinding integrity</summary>
+<ul><li>blinding integrity: n/a (no human review recorded yet)</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Judge coverage</summary>
+<ul><li>- 1 of 10 judged comparison(s) terminally unjudgeable (refusal: 1) — excluded from judge_preference and calibration, never imputed. If exclusions correlate with outcomes (e.g. an arm salting canaries on losing trials), judge_preference is biased by this missing-data channel [F-M-J1].</li></ul>
+</details>
+
+</section>
+
+<section class="layer" id="layer-analyst">
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<div class="advisory">- ⚠ ADVISORY: results include ADVISORY-tier grades (local / no trusted container) — advisory, not authoritative; tiers present: [&#39;ADVISORY&#39;] [AC-9]</div>
+<h2>Analyst — how the arms behaved</h2>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Per-task paired deltas (A vs B)</summary>
+<h4>control vs treatment</h4><table><tr><th>task</th><th>control (A)</th><th>treatment (B)</th><th>delta</th></tr><tr><td>task0</td><td>1.0000</td><td>0.5000</td><td>0.5000</td></tr><tr><td>task1</td><td>1.0000</td><td>0.5000</td><td>0.5000</td></tr><tr><td>task2</td><td>1.0000</td><td>0.0000</td><td>1.0000</td></tr><tr><td>task3</td><td>1.0000</td><td>0.5000</td><td>0.5000</td></tr><tr><td>task4</td><td>1.0000</td><td>1.0000</td><td>0.0000</td></tr></table><svg role="img" width="400" height="110" aria-label="per-task delta, control minus treatment"><line x1="270.00" y1="0" x2="270.00" y2="110.00" stroke="#999"/><text x="0" y="20.00" font-size="11">task0</text><rect x="270.00" y="10.00" width="65.00" height="12" fill="#284"/><text x="0" y="38.00" font-size="11">task1</text><rect x="270.00" y="28.00" width="65.00" height="12" fill="#284"/><text x="0" y="56.00" font-size="11">task2</text><rect x="270.00" y="46.00" width="130.00" height="12" fill="#284"/><text x="0" y="74.00" font-size="11">task3</text><rect x="270.00" y="64.00" width="65.00" height="12" fill="#284"/><text x="0" y="92.00" font-size="11">task4</text><rect x="270.00" y="82.00" width="0.00" height="12" fill="#284"/></svg>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Per-trial trajectory timelines</summary>
+<h4>task task0</h4><table><tr><th>arm</th><th>trial</th><th>outcome</th><th>telemetry</th><th>trajectory</th></tr><tr><td>control</td><td>c-0-0 (rep 0)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>control</td><td>c-0-1 (rep 1)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>treatment</td><td>t-0-0 (rep 0)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>treatment</td><td>t-0-1 (rep 1)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr></table><h4>task task1</h4><table><tr><th>arm</th><th>trial</th><th>outcome</th><th>telemetry</th><th>trajectory</th></tr><tr><td>control</td><td>c-1-0 (rep 0)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>control</td><td>c-1-1 (rep 1)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>treatment</td><td>t-1-0 (rep 0)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>treatment</td><td>t-1-1 (rep 1)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr></table><h4>task task2</h4><table><tr><th>arm</th><th>trial</th><th>outcome</th><th>telemetry</th><th>trajectory</th></tr><tr><td>control</td><td>c-2-0 (rep 0)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>control</td><td>c-2-1 (rep 1)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>treatment</td><td>t-2-0 (rep 0)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>treatment</td><td>t-2-1 (rep 1)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr></table><h4>task task3</h4><table><tr><th>arm</th><th>trial</th><th>outcome</th><th>telemetry</th><th>trajectory</th></tr><tr><td>control</td><td>c-3-0 (rep 0)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>control</td><td>c-3-1 (rep 1)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>treatment</td><td>t-3-0 (rep 0)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>treatment</td><td>t-3-1 (rep 1)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr></table><h4>task task4</h4><table><tr><th>arm</th><th>trial</th><th>outcome</th><th>telemetry</th><th>trajectory</th></tr><tr><td>control</td><td>c-4-0 (rep 0)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>control</td><td>c-4-1 (rep 1)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>treatment</td><td>t-4-0 (rep 0)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr><tr><td>treatment</td><td>t-4-1 (rep 1)</td><td>completed</td><td>wall time: 12.00s </td><td><span class="nm">trajectory: absent</span></td></tr></table>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Secondary metrics (exploratory)</summary>
+<ul><li>- per-arm means: {&#x27;control&#x27;: {&#x27;cost&#x27;: 0.5, &#x27;tokens_cache&#x27;: 50.0, &#x27;tokens_in&#x27;: 500.0, &#x27;tokens_out&#x27;: 200.0, &#x27;tool_calls&#x27;: 3.0, &#x27;wall_time_s&#x27;: 12.0}, &#x27;treatment&#x27;: {&#x27;cost&#x27;: 0.5, &#x27;tokens_cache&#x27;: 50.0, &#x27;tokens_in&#x27;: 500.0, &#x27;tokens_out&#x27;: 200.0, &#x27;tool_calls&#x27;: 3.0, &#x27;wall_time_s&#x27;: 12.0}}</li><li>- cross-vendor: raw token fields [&#x27;tokens_in&#x27;, &#x27;tokens_out&#x27;, &#x27;tokens_cache&#x27;] are vendor-incomparable and NOT compared across arms; cross-vendor comparisons restricted to [&#x27;cost&#x27;, &#x27;wall_time_s&#x27;, &#x27;tool_calls&#x27;]</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Judge calibration (per class)</summary>
+<ul><li>- thresholds: kappa ≥ 0.6 at ≥ 20 EFFECTIVE human verdicts (Kish, IPW-weighted); escalation fires when the interval&#x27;s UPPER bound is below threshold — a straddling interval is INCONCLUSIVE, not silently fine [AC-7, F-M-S4]</li><li>- no human-reviewed comparisons yet — kappa pending</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Confounds (disclosed, non-suppressing)</summary>
+<ul><li>none</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Blinding integrity</summary>
+<ul><li>blinding integrity: n/a (no human review recorded yet)</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Judge coverage</summary>
+<ul><li>- 1 of 10 judged comparison(s) terminally unjudgeable (refusal: 1) — excluded from judge_preference and calibration, never imputed. If exclusions correlate with outcomes (e.g. an arm salting canaries on losing trials), judge_preference is biased by this missing-data channel [F-M-J1].</li></ul>
+</details>
+
+</section>
+
+<section class="layer" id="layer-auditor">
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<div class="advisory">- ⚠ ADVISORY: results include ADVISORY-tier grades (local / no trusted container) — advisory, not authoritative; tiers present: [&#39;ADVISORY&#39;] [AC-9]</div>
+<h2>Auditor — verify it yourself</h2>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Provenance</summary>
+<ul><li>- instrument: 0.0.0+golden @ ffffffffffff</li><li>- ledger head: bd1019604c2e1d59…  chain_ok=True</li><li>- judge: {&#x27;judge_models&#x27;: [&#x27;fake/deterministic-2026-01-01&#x27;], &#x27;rubric_shas&#x27;: [&#x27;086a6b27cca76b48855347d7d749bad55a1074e9918dab87fa3e5bf004aa6dea&#x27;], &#x27;n_verdicts&#x27;: 10}</li><li>- [computed] judge is identity-blind, not outcome-blind: the packet includes holdout results by design, so judge_preference is not independent of holdout_pass_rate [EVAL-2 D002]</li><li>- corpus: public-mini@1.0.0 (full-run-validated), 5 task sha(s)</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Chain verification</summary>
+<ul><li>ledger head: bd1019604c2e1d59c455bd3b3b01fa3d195150dd3225b714f935a1abd8201310</li><li>chain_ok=True (verify_chain at render time)</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Coverage selfcheck (D008)</summary>
+<ul><li>selfcheck status: current</li><li>latest selfcheck: method=bca coverage=0.95 passed=True</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Trajectory coverage</summary>
+<ul><li>absent: 20 trial(s)</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>CI method selection (coverage)</summary>
+<ul><li>selected method: bca</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Confounds (disclosed, non-suppressing)</summary>
+<ul><li>none</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Blinding integrity</summary>
+<ul><li>blinding integrity: n/a (no human review recorded yet)</li></ul>
+</details>
+
+<div class="watermark">⚠ EXPLORATORY — not an official, pre-registered finding</div>
+<details open>
+<summary>Judge coverage</summary>
+<ul><li>- 1 of 10 judged comparison(s) terminally unjudgeable (refusal: 1) — excluded from judge_preference and calibration, never imputed. If exclusions correlate with outcomes (e.g. an arm salting canaries on losing trials), judge_preference is biased by this missing-data channel [F-M-J1].</li></ul>
+</details>
+
+</section>
+
+</body>
+</html>
