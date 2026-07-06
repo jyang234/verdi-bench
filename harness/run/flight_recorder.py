@@ -38,8 +38,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from ..adapters.base import coerce_float, coerce_int
-from .redact import redact_text
-from .trajectory import UNATTRIBUTED, validate_agent_label
+from .trajectory import UNATTRIBUTED, persist_versioned_artifact, validate_agent_label
 
 # v2 [EVAL-24 AC-6] adds the optional per-entry ``agent`` role (multi-agent
 # reasoning attribution) the trajectory-additive-field way: a v1 recorder reads
@@ -178,37 +177,24 @@ def persist_flight_recorder(
 ) -> str:
     """Scrub → re-validate → write → read back; return the persisted sha256.
 
-    The scrub runs over the serialized text so every string field (the reasoning
-    content especially) passes the same EVAL-4 secret door the trajectory does,
-    including the injected provider-key literals in ``extra_patterns`` [AC-1].
-    Any failure is :class:`FlightRecorderCorruptError`: a corrupt or unwritable
-    recorder fails the trial closed, never persists silently wrong bytes.
+    The FROZEN flight-recorder recipe over the shared
+    :func:`~harness.run.trajectory.persist_versioned_artifact` path [refactor 04
+    §3, the ``persist_trajectory`` twin]: every string field (the reasoning
+    content especially) passes the same EVAL-4 secret door, including the injected
+    provider-key literals in ``extra_patterns``, and a corrupt/unwritable recorder
+    raises :class:`FlightRecorderCorruptError`, failing the trial closed [AC-1].
     """
-    text = canonical_bytes(record).decode("utf-8")
-    scrubbed, n_hits = redact_text(text, extra_patterns)
-    if n_hits:
-        try:
-            FlightRecorder.model_validate(json.loads(scrubbed))
-        except (json.JSONDecodeError, ValidationError) as e:
-            raise FlightRecorderCorruptError(
-                f"flight recorder for {record.trial_id} is not a valid record "
-                f"after redaction — refusing to persist a broken artifact [AC-1]: {e}"
-            ) from e
-    data = scrubbed.encode("utf-8")
-    path = Path(artifacts_dir) / FLIGHT_RECORDER_FILENAME
-    try:
-        path.write_bytes(data)
-        readback = path.read_bytes()
-    except OSError as e:
-        raise FlightRecorderCorruptError(
-            f"flight recorder for {record.trial_id} could not be written to {path}: {e}"
-        ) from e
-    if readback != data:
-        raise FlightRecorderCorruptError(
-            f"flight recorder artifact {path} did not read back byte-identical; "
-            "refusing a sha over bytes that are not on disk [AC-1]"
-        )
-    return flight_recorder_sha256(data)
+    return persist_versioned_artifact(
+        record,
+        artifacts_dir,
+        FLIGHT_RECORDER_FILENAME,
+        canonicalize=canonical_bytes,
+        model=FlightRecorder,
+        error=FlightRecorderCorruptError,
+        label="flight recorder",
+        ac="AC-1",
+        extra_patterns=extra_patterns,
+    )
 
 
 def parse_flight_recorder(data: bytes, *, source: str = "flight recorder artifact") -> FlightRecorder:

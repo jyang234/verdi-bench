@@ -22,7 +22,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
@@ -145,6 +145,62 @@ def trajectory_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def persist_versioned_artifact(
+    record: BaseModel,
+    artifacts_dir,
+    filename: str,
+    *,
+    canonicalize: Callable[[BaseModel], bytes],
+    model: type[BaseModel],
+    error: type[Exception],
+    label: str,
+    ac: str,
+    extra_patterns: Optional[list[str]] = None,
+) -> str:
+    """Scrub → re-validate → write → read back; return the persisted sha256.
+
+    The single persistence path every versioned capture artifact shares [refactor
+    04 §3] — trajectory and the flight recorder route through it, and a third
+    artifact would too. The scrub runs over the serialized text so every string
+    field, present and future, passes the same EVAL-4 secret door the workspace
+    does, including the injected provider-key literals in ``extra_patterns``. Any
+    failure is ``error``: a corrupt or unwritable artifact fails the trial closed,
+    never persists silently wrong bytes.
+
+    ``canonicalize`` and ``model`` are FROZEN per-artifact inputs: the returned sha
+    rides the ledger hash chain (``trajectory_sha`` / ``flight_recorder_sha``), so
+    a change to either byte recipe invalidates every existing chain [refactor 04
+    §6, EVAL-12-D001]. Callers pass their own canonicalizer/model, never share one.
+    """
+    text = canonicalize(record).decode("utf-8")
+    scrubbed, n_hits = redact_text(text, extra_patterns)
+    if n_hits:
+        # only a scrub that actually rewrote bytes can have broken the record's
+        # structure; re-validate before those bytes become the artifact
+        try:
+            model.model_validate(json.loads(scrubbed))
+        except (json.JSONDecodeError, ValidationError) as e:
+            raise error(
+                f"{label} for {record.trial_id} is not a valid record after "
+                f"redaction — refusing to persist a broken artifact [{ac}]: {e}"
+            ) from e
+    data = scrubbed.encode("utf-8")
+    path = Path(artifacts_dir) / filename
+    try:
+        path.write_bytes(data)
+        readback = path.read_bytes()
+    except OSError as e:
+        raise error(
+            f"{label} for {record.trial_id} could not be written to {path}: {e}"
+        ) from e
+    if readback != data:
+        raise error(
+            f"{label} artifact {path} did not read back byte-identical; "
+            f"refusing a sha over bytes that are not on disk [{ac}]"
+        )
+    return hashlib.sha256(data).hexdigest()
+
+
 def persist_trajectory(
     record: TrajectoryRecord,
     artifacts_dir,
@@ -152,39 +208,23 @@ def persist_trajectory(
 ) -> str:
     """Scrub → re-validate → write → read back; return the persisted sha256.
 
-    The scrub runs over the serialized text so every string field — present and
-    future — passes the same EVAL-4 door the workspace does, including the
-    injected provider-key literals in ``extra_patterns`` [AC-2]. Any failure is
-    :class:`TrajectoryCorruptError`: a corrupt or unwritable trajectory fails
-    the trial closed, never persists silently wrong bytes.
+    The FROZEN trajectory recipe over the shared
+    :func:`persist_versioned_artifact` path [refactor 04 §3]: every string field
+    passes the EVAL-4 door (incl. the injected provider-key literals in
+    ``extra_patterns``) and a corrupt/unwritable trajectory raises
+    :class:`TrajectoryCorruptError`, failing the trial closed [AC-2].
     """
-    text = canonical_bytes(record).decode("utf-8")
-    scrubbed, n_hits = redact_text(text, extra_patterns)
-    if n_hits:
-        # only a scrub that actually rewrote bytes can have broken the record's
-        # structure; re-validate before those bytes become the artifact
-        try:
-            TrajectoryRecord.model_validate(json.loads(scrubbed))
-        except (json.JSONDecodeError, ValidationError) as e:
-            raise TrajectoryCorruptError(
-                f"trajectory for {record.trial_id} is not a valid record after "
-                f"redaction — refusing to persist a broken artifact [AC-2]: {e}"
-            ) from e
-    data = scrubbed.encode("utf-8")
-    path = Path(artifacts_dir) / TRAJECTORY_FILENAME
-    try:
-        path.write_bytes(data)
-        readback = path.read_bytes()
-    except OSError as e:
-        raise TrajectoryCorruptError(
-            f"trajectory for {record.trial_id} could not be written to {path}: {e}"
-        ) from e
-    if readback != data:
-        raise TrajectoryCorruptError(
-            f"trajectory artifact {path} did not read back byte-identical; "
-            "refusing a sha over bytes that are not on disk [AC-2]"
-        )
-    return trajectory_sha256(data)
+    return persist_versioned_artifact(
+        record,
+        artifacts_dir,
+        TRAJECTORY_FILENAME,
+        canonicalize=canonical_bytes,
+        model=TrajectoryRecord,
+        error=TrajectoryCorruptError,
+        label="trajectory",
+        ac="AC-2",
+        extra_patterns=extra_patterns,
+    )
 
 
 def parse_trajectory(data: bytes, *, source: str = "trajectory artifact") -> TrajectoryRecord:
