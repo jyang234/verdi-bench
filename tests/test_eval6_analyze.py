@@ -1222,7 +1222,7 @@ def test_m_j1_terminal_cant_judge_exclusions_are_disclosed(tmp_path):
 
     md = render_markdown(f, ledger, "exploratory")
     assert "Judge coverage" in md and "identity_leak: 2" in md
-    titles = [sec["title"] for sec in _disclosure_sections(f)]
+    titles = [sec.title for sec in _disclosure_sections(f)]  # now Section objects [refactor 11 §G3]
     assert "Judge coverage" in titles  # dossier parity
 
 

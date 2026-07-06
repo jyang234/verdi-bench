@@ -97,6 +97,15 @@ def test_render_findings_dispatches_by_format(tmp_path):
     assert html == render_html(findings, ledger, "exploratory")
 
 
+def test_dossier_registers_on_import():
+    """The dossier is a findings surface behind the registry too [refactor 11 §G3]:
+    importing it registers its layer-wrapping under the ``dossier`` format id."""
+    import harness.analyze.dossier  # noqa: F401 — registers on import
+
+    assert "dossier" in available_renderers()
+    assert resolve_renderer("dossier").format_id == "dossier"
+
+
 def test_official_and_exploratory_frame_their_own_sequences(tmp_path):
     """The seam frames the mode's canonical sequence; official leads with the
     pre-registered header, exploratory with the watermark."""
