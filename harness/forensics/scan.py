@@ -96,8 +96,7 @@ def run_forensics(
     """The scan core: assemble → detect → (review) → one ledgered report."""
     from ..blind.core import arm_canaries
     from ..corpus.commit import load_task_dicts
-    from ..ledger import events
-    from ..ledger.query import find_events
+    from ..ledger.view import LedgerView
     from ..plan.lock import assert_lock
     from ..run.flight_recorder import DEFAULT_REASONING_BUDGET_BYTES, resolve_flight_recorder
     from ..run.trajectory import resolve_trajectory
@@ -111,15 +110,16 @@ def run_forensics(
     tasks = {t["id"]: t for t in load_task_dicts(experiment_dir)}
     canaries = arm_canaries(spec.arms)
 
+    view = LedgerView(ledger_path)
+    # Latest grade wins per trial — one GRADE scan feeds both the pass map and
+    # the F-H3 grade-time workspace commitment (legacy grades lack the field →
+    # None → ABSENT below), replacing the former double iteration [refactor 06 §1].
+    latest_grades = view.latest_grade_by_trial()
     passed_by_trial: dict[str, bool] = {
-        ev["trial_id"]: bool(ev["binary_score"])
-        for ev in find_events(ledger_path, events.GRADE)
+        trial_id: bool(g["binary_score"]) for trial_id, g in latest_grades.items()
     }
-    # F-H3: the grade-time workspace commitment (latest grade wins, matching
-    # passed_by_trial). Legacy grades lack the field → None → ABSENT below.
     workspace_sha_by_trial: dict[str, Optional[str]] = {
-        ev["trial_id"]: ev.get("workspace_sha256")
-        for ev in find_events(ledger_path, events.GRADE)
+        trial_id: g.get("workspace_sha256") for trial_id, g in latest_grades.items()
     }
     # assertion values depend only on the task's holdout dir — extract once
     # per distinct dir, not once per trial
@@ -135,12 +135,12 @@ def run_forensics(
     detail_by_arm: dict[str, dict] = {}
     detail_gaps: list[dict] = []
     workspace_gaps: list[dict] = []
-    trial_events = find_events(ledger_path, events.TRIAL)
-    for ev in trial_events:
-        rec = ev["trial_record"]
+    trials = view.trials()
+    for tv in trials:
+        rec = tv.record
         trial_id = rec["trial_id"]
         artifacts_path = rec.get("artifacts_path")
-        status, record = resolve_trajectory(artifacts_path, ev.get("trajectory_sha"))
+        status, record = resolve_trajectory(artifacts_path, tv.trajectory_sha)
         if status == "verified":
             metrics[trial_id] = trajectory_metrics(record)
         else:
@@ -221,7 +221,7 @@ def run_forensics(
             # transcript [EVAL-24 AC-3]. resolve_flight_recorder verifies the sha —
             # unverified reasoning is never fed, exactly like the trajectory.
             _fr_status, fr_record = resolve_flight_recorder(
-                artifacts_path, ev.get("flight_recorder_sha")
+                artifacts_path, tv.flight_recorder_sha
             )
             max_reasoning_bytes = None
             if fr_record is not None:
@@ -246,7 +246,7 @@ def run_forensics(
         "metrics": metrics,
         "flags": flags,
         "coverage": {
-            "trials": len(trial_events),
+            "trials": len(trials),
             "covered": len(metrics),
             "gaps": gaps,
             # additive keys [EVAL-16 D002]: old readers ignore them, old
@@ -270,13 +270,10 @@ def quarantine_trial(experiment_dir: Path, *, ctx: EventContext, trial_id: str, 
     A quarantine that matches no trial would still render as '(excluded from
     comparisons)' while excluding nothing; validating here keeps the ledgered
     disclosure true [fail loudly]."""
-    from ..ledger import events
-    from ..ledger.query import find_events
+    from ..ledger.view import LedgerView
 
     ledger_path = Path(experiment_dir) / "ledger.ndjson"
-    known = {
-        ev["trial_record"]["trial_id"] for ev in find_events(ledger_path, events.TRIAL)
-    }
+    known = {t.trial_id for t in LedgerView(ledger_path).trials()}
     if trial_id not in known:
         raise UnknownTrialError(
             f"cannot quarantine {trial_id!r}: no trial record with that id on "

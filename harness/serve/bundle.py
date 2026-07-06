@@ -25,8 +25,8 @@ from pathlib import Path
 
 from ..analyze.fence import official_fence_report
 from ..analyze.timeline import trial_timeline
-from ..ledger import events
-from ..ledger.query import find_events, tail_events
+from ..ledger.query import tail_events
+from ..ledger.view import LedgerView
 from ..status.aggregate import compute_status
 from ..status.trial import trial_detail
 from .compare import paired_comparisons
@@ -78,9 +78,10 @@ def collect_bundle_data(experiment_dir, *, corpus_manifest=None) -> dict:
         )
     status = compute_status(experiment_dir)
     tail, next_offset = tail_events(ledger_path, 0)
-    trial_ids = [
-        ev["trial_record"]["trial_id"] for ev in find_events(ledger_path, events.TRIAL)
-    ]
+    # One parse of the (already chain-verified) ledger shared across every
+    # per-trial drill-down, instead of a full re-read per trial [refactor 06 §1].
+    view = LedgerView(ledger_path)
+    trial_ids = [t.trial_id for t in view.trials()]
     return {
         "experiment": experiment_dir.name,
         "experiments": [_summary_row(experiment_dir.name, status)],
@@ -88,7 +89,7 @@ def collect_bundle_data(experiment_dir, *, corpus_manifest=None) -> dict:
         "events": tail,
         "next_offset": next_offset,
         "timeline": trial_timeline(ledger_path),
-        "trials": {tid: trial_detail(experiment_dir, tid) for tid in trial_ids},
+        "trials": {tid: trial_detail(experiment_dir, tid, view=view) for tid in trial_ids},
         "compare": paired_comparisons(experiment_dir, corpus_manifest=corpus_manifest),
         "fence": official_fence_report(experiment_dir, corpus_manifest=corpus_manifest),
     }
