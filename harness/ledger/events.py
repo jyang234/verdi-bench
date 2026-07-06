@@ -713,13 +713,27 @@ PROCESS_SCORE = register_event("process_score")
 
 
 def record_process_score(
-    ledger_path, ctx: EventContext, *, process_score: dict
+    ledger_path,
+    ctx: EventContext,
+    *,
+    process_score: dict,
+    rubric_sha256: Optional[str] = None,
 ) -> dict:
     """Openly-unblinded process score [EVAL-9 §4.2, AC-2].
 
     Subsumes CANT_SCORE via per-dimension ``CANT_SCORE`` values. The score is
-    unrepresentable without unblinded provenance (schema-required)."""
-    return emit(ledger_path, ctx, PROCESS_SCORE, {"process_score": process_score})
+    unrepresentable without unblinded provenance (schema-required).
+
+    ``rubric_sha256`` (additive omit-if-None field, [refactor 06 §7 P4-RUBRIC])
+    commits the content hash of the rubric FILE that scored — the same
+    normalized-text hash the lock's rubric commitment carries — so a score's
+    rubric provenance is recoverable and analyze can honestly attribute custom
+    dimensions later. Absent on a pre-P4 score (old bytes unchanged), following
+    the ledger's additive-optional precedent (experiment_locked's rubric_sha256)."""
+    payload = {"process_score": process_score}
+    if rubric_sha256 is not None:
+        payload["rubric_sha256"] = rubric_sha256
+    return emit(ledger_path, ctx, PROCESS_SCORE, payload)
 
 
 # ---------------------------------------------------------------------------

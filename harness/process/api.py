@@ -34,7 +34,7 @@ def process_score(exp_dir, *, rubric_path=None, actor=None) -> ProcessScoreOutco
     from ..ledger.query import find_events
     from ..plan.lock import assert_lock
     from ..run.artifacts import read_transcript
-    from .rubric import ProcessRubric, default_rubric
+    from .rubric import ProcessRubric, default_rubric, process_rubric_sha256
     from .score import TRANSIENT_CANT_SCORE, score_trial_process
 
     exp_dir = Path(exp_dir)
@@ -49,6 +49,9 @@ def process_score(exp_dir, *, rubric_path=None, actor=None) -> ProcessScoreOutco
     )
 
     rubric = ProcessRubric.from_yaml(rubric_path) if rubric_path else default_rubric()
+    # P4-RUBRIC: commit the rubric FILE's content hash onto every score for
+    # provenance (the default v1 file when no --rubric was given) [refactor 06 §7].
+    rubric_sha = process_rubric_sha256(rubric_path)
     resolved_actor = resolve_actor(actor)
     ctx = EventContext(experiment_id=exp_dir.name, actor=resolved_actor)
 
@@ -82,21 +85,24 @@ def process_score(exp_dir, *, rubric_path=None, actor=None) -> ProcessScoreOutco
             ts=ctx.clock(), scorer_id=spec.judge.model, spec=spec,
             provider_model=spec.judge.model,
             comparison_id=comparison_id_for(rec["task_id"], rec["repetition"]),
+            rubric_sha256=rubric_sha,
         )
         n += 1
     return ProcessScoreOutcome(scored=n)
 
 
 def process_record(
-    exp_dir, *, trial_id: str, comparison_id: str, scores: dict, rubric, actor=None
+    exp_dir, *, trial_id: str, comparison_id: str, scores: dict, rubric,
+    rubric_sha256=None, actor=None,
 ) -> None:
     """Record a human process score — refused before the EVAL-7 reveal.
 
     ``scores`` is a ``{dim_id: 1..5 | 'CANT_SCORE'}`` mapping and ``rubric`` the
     already-loaded rubric (a malformed ``--rubric`` is the CLI's loud error, kept
-    outside this envelope). Raises ``ValueError`` (bad/unknown dimension),
-    ``ActorResolutionError``, and ``ProcessSequencingError`` (pre-reveal) — all
-    mapped to exit 2 by the CLI."""
+    outside this envelope). ``rubric_sha256`` (the CLI computes it from the rubric
+    file) rides the score for provenance [P4-RUBRIC]. Raises ``ValueError``
+    (bad/unknown dimension), ``ActorResolutionError``, and
+    ``ProcessSequencingError`` (pre-reveal) — all mapped to exit 2 by the CLI."""
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
     from .score import human_scores_from_mapping, record_human_process_score
@@ -110,4 +116,5 @@ def process_record(
     record_human_process_score(
         trial_id, rubric, dimension_scores, ledger_path=ledger_path, ctx=ctx,
         ts=ctx.clock(), scorer_id=who, comparison_id=comparison_id,
+        rubric_sha256=rubric_sha256,
     )

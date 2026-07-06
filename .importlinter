@@ -17,6 +17,7 @@ source_modules =
     harness.cli
     harness.cli_common
     harness.entrypoints
+    harness._entrypoint_fixtures
     harness.version
     harness.schema
     harness.ledger
@@ -73,6 +74,7 @@ source_modules =
     harness.contamination.dating
     harness.contamination.canary
     harness.contamination.overlap
+    harness.contamination.channels
     harness.contamination.scan
     harness.contamination.summary
 forbidden_modules =
@@ -89,6 +91,7 @@ source_modules =
     harness.cli
     harness.cli_common
     harness.entrypoints
+    harness._entrypoint_fixtures
     harness.version
     harness.http_guard
     harness.schema
@@ -179,6 +182,7 @@ source_modules =
     harness.cli
     harness.cli_common
     harness.entrypoints
+    harness._entrypoint_fixtures
     harness.version
     harness.http_guard
     harness.schema
