@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from ...adapters.base import Outcome, Quotas
+from ..environment import stage_files
 from ..types import EngineResult, TrialRequest
 
 
@@ -22,6 +23,9 @@ class FakeEngine:
         b = request.fake_behavior or {}
         artifacts = Path(request.workspace) / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
+        # A3: materialize the task's declared fixture files, exactly as a real
+        # container would see them, so L1 hermetic tests stay meaningful [refactor 03 §5].
+        stage_files(request.workspace, request.files or {})
 
         # Write a transcript. If the script asks, echo a secret to exercise
         # redaction; the prompt is written so insulation tests can scan it.

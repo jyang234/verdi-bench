@@ -41,14 +41,37 @@ def arm_declared_hosts(arm) -> list[str]:
     return [h for declared in arm.model_hosts.values() for h in declared]
 
 
-def spec_allowlist(spec) -> list[str]:
+def task_extra_hosts(task_dicts: list[dict]) -> list[str]:
+    """The union of every task's declared ``extra_hosts`` [refactor 03 §5, A3].
+
+    Task-scoped egress: each host EXTENDS the derived allowlist for ALL arms
+    (applied uniformly, so it never introduces the per-arm asymmetry the
+    "declare for every arm or none" rule forbids). Empty/whitespace hosts are
+    dropped — an empty entry would suffix-match every trailing-dot hostname."""
+    hosts: set[str] = set()
+    for t in task_dicts:
+        for h in t.get("extra_hosts") or []:
+            if h and h.strip():
+                hosts.add(h)
+    return sorted(hosts)
+
+
+def spec_allowlist(spec, task_extra: list[str] | None = None) -> list[str]:
     """The allowlist a spec pre-registers [EVAL-20 AC-6, D003]: the union of
     every arm's ``model_hosts`` values and the experiment's ``infra_hosts``.
     Empty when the spec declares no hosts (pre-EVAL-20 posture — the runtime
-    config keeps supplying the allowlist)."""
+    config keeps supplying the allowlist).
+
+    A3: ``task_extra`` (per-task ``extra_hosts``) EXTENDS this derived allowlist —
+    but only when the spec already pre-registers hosts (the derived-allowlist
+    regime). If the spec declares nothing, task hosts are inert rather than
+    silently flipping the run out of runtime-allowlist mode; declare the hosts on
+    the arms/infra to engage the derived allowlist."""
     hosts: set[str] = set(spec.infra_hosts)
     for arm in spec.arms:
         hosts.update(arm_declared_hosts(arm))
+    if hosts and task_extra:
+        hosts.update(h for h in task_extra if h and h.strip())
     return sorted(hosts)
 
 

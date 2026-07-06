@@ -151,6 +151,9 @@ uv run bench run    <experiment-dir> --reuse-control <bundle> # reuse an unchang
 uv run bench control-cache export <experiment-dir> --arm control --out control.bundle.json   # export a control arm for reuse
 uv run bench proxy up   --allow api.anthropic.com --allow api.openai.com   # stand up the managed metering proxy for harbor egress (ledgers nothing)
 uv run bench proxy down                                       # tear the managed metering proxy + its networks down
+uv run bench images list                                      # official trial images: name -> tag (ledgers nothing)
+uv run bench images build generic-llm --pin                  # build (FROM verdi-base first) and pin a trial image to a sha256 digest
+uv run bench images verify <image-ref>                       # offline compliance check: hardened + network-none, asserts the harbor contract
 uv run bench grade  <experiment-dir>                          # deterministic grades
 uv run bench grade  <experiment-dir> --retry-terminal <trial-id>   # ledgered terminal-cant_grade override
 uv run bench judge  <experiment-dir>                          # identity-blind advisory verdicts (idempotent)

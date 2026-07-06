@@ -42,14 +42,16 @@ from ...hermetic.docker import (
 )
 from ...hermetic.network import METERED_NETWORK
 from ...hermetic.network import ensure_metered_network as _ensure_metered_network
+from ..environment import stage_files
 from ..types import EngineResult, TrialRequest
 
 HARBOR_VERSION = "harbor-pinned-0.1.0"  # version-pinned in images [D005]
 
-# The trial-image contract [RN-4, EVAL-4-D-8]: the harness writes the task prompt
-# and arm configuration to a host file and bind-mounts it READ-ONLY at this path,
-# OUTSIDE /workspace (so it never pollutes the graded workspace copy). A pre-baked
-# trial image's entrypoint reads it to learn its task and which arm it is.
+# The trial-image contract [RN-4, EVAL-4-D-8; the normative statement is
+# docs/images.md §1]: the harness writes the task prompt and arm configuration to a
+# host file (a typed TrialRequestFile, A1) and bind-mounts it READ-ONLY at this
+# path, OUTSIDE /workspace (so it never pollutes the graded workspace copy). A
+# pre-baked trial image's entrypoint reads it to learn its task and which arm it is.
 TRIAL_REQUEST_MOUNT = "/verdi/request.json"
 
 # METERED_NETWORK is imported from harness.hermetic.network — the single owner of
@@ -275,6 +277,13 @@ class HarborEngine:
         # environment, which run_container populates from request.provider_keys.
         for k in (request.provider_keys or {}):
             hc.env(k)
+        # A3: a task's declared non-secret env vars, injected AFTER the provider-key
+        # env and NEVER overriding it — a task env must not shadow an arm's provider
+        # key. These are declared (sha-locked) and non-secret, so KEY=VALUE on the
+        # argv is fine (the env_kv spelling, like the proxy URLs) [refactor 03 §5].
+        for k, v in (request.env or {}).items():
+            if k not in (request.provider_keys or {}):
+                hc.env_kv(k, v)
         # workspace mount; then the trial request (prompt + arm config) delivered
         # READ-ONLY, outside the workspace so it never enters the graded copy
         # [RN-4, D-8] — added after the workspace volume so a workspace-first parser
@@ -290,6 +299,9 @@ class HarborEngine:
         pinned = self._runner.resolve_pinned(image)
         artifacts = Path(request.workspace) / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
+        # A3: stage the task's declared fixture files into /workspace before the
+        # container runs, so a real trial sees them at /workspace/<rel> [refactor 03 §5].
+        stage_files(request.workspace, request.files or {})
 
         if pinned is None:
             # D005/RN-12: a trial must run a digest-pinned image. A tag-only or
@@ -410,16 +422,21 @@ class HarborEngine:
 
     @staticmethod
     def _trial_request_payload(request: TrialRequest) -> dict:
-        """The trial-image contract payload [RN-4, D-8] — what a pre-baked image's
-        entrypoint reads from ``/verdi/request.json``: its prompt and which arm it
-        is (name, model, config). The prompt is holdout-free by construction (the
-        seam refuses a canary in any request channel before the engine runs)."""
-        return {
-            "prompt": request.prompt,
-            "arm": request.arm.name,
-            "model": request.arm.model,
-            "payload": request.arm.payload or {},
-        }
+        """The trial-image contract payload [RN-4, D-8, A1] — what a pre-baked
+        image's entrypoint reads from ``/verdi/request.json``: its prompt and which
+        arm it is (name, model, config). Built through the typed
+        :class:`~harness.run.request.TrialRequestFile` so the file carries a
+        ``schema_version`` (A1, additive: the existing prompt/arm/model/payload keys
+        are unchanged). The prompt is holdout-free by construction (the seam refuses
+        a canary in any request channel before the engine runs)."""
+        from ..request import TrialRequestFile
+
+        return TrialRequestFile(
+            prompt=request.prompt,
+            arm=request.arm.name,
+            model=request.arm.model,
+            payload=request.arm.payload or {},
+        ).model_dump(mode="json")
 
     @staticmethod
     def _agent_version(request: TrialRequest) -> Optional[str]:

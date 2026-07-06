@@ -182,7 +182,11 @@ class RunSettings:
 
 
 def load_run_settings(
-    experiment_dir, env: Optional[Mapping[str, str]] = None, *, spec=None
+    experiment_dir,
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    spec=None,
+    task_extra_hosts: Optional[list[str]] = None,
 ) -> RunSettings:
     """Resolve run settings from ``<experiment_dir>/run.config.yaml`` + ``env``.
 
@@ -198,7 +202,9 @@ def load_run_settings(
     A spec declaring no hosts keeps the pre-EVAL-20 behavior exactly.
     """
     env = os.environ if env is None else env
-    declared = spec_allowlist(spec) if spec is not None else []
+    # A3: task extra_hosts extend the spec-derived allowlist (for all arms); inert
+    # when the spec pre-registers no hosts (spec_allowlist keeps runtime-mode).
+    declared = spec_allowlist(spec, task_extra_hosts) if spec is not None else []
     infra = sorted(spec.infra_hosts) if spec is not None else []
     path = Path(experiment_dir) / RUN_CONFIG_FILENAME
     if not path.exists():

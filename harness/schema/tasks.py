@@ -84,6 +84,17 @@ class TaskSpec(BaseModel):
     # that it is never serialized. Typed loosely so schema/ takes no grade/ import;
     # the builder validates it through the Holdout hierarchy.
     holdout: Optional[Any] = Field(default=None, exclude=True)
+    # --- EnvironmentSpec fields [refactor 03 §5, A3] ------------------------
+    # A task's declared environment. Additive, optional, sha-covered by the task
+    # commitment (raw bytes). The canonical model is
+    # harness.images.spec.EnvironmentSpec (a schema→images import would invert the
+    # dependency direction, so the three fields are carried flat here; a parity
+    # test keeps the sets identical). Consumed by run/api.py: `files` + `env` reach
+    # the engine (staged into /workspace / injected as non-secret env); `extra_hosts`
+    # extends the derived proxy allowlist (harness/run/egress.py).
+    files: dict[str, str] = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
+    extra_hosts: list[str] = Field(default_factory=list)
 
 
 def tasks_to_yaml(tasks: list[TaskSpec]) -> str:
