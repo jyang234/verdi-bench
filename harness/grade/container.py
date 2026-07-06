@@ -30,7 +30,6 @@ from .fence import (
 from .runners import (
     DEFAULT_GRADER_IMAGE,
     HOLDOUT_RESULTS,
-    PLUGIN_RESULTS,
     DockerGradeRunner,
     GradeRunner,
     GradingContainer,
@@ -54,7 +53,6 @@ __all__ = [
     # runners + orchestrator [runners]
     "DEFAULT_GRADER_IMAGE",
     "HOLDOUT_RESULTS",
-    "PLUGIN_RESULTS",
     "GradeRunner",
     "DockerGradeRunner",
     "LocalGradeRunner",

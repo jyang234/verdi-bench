@@ -33,9 +33,7 @@ from .fence import (
     GraderUnavailableError,
     GradingContainerError,
     HoldoutRun,
-    _extract_fence,
     parse_fenced_stdout,
-    plugin_fence,
 )
 from .isolation import fresh_workspace_copy, run_grading_container
 
@@ -51,10 +49,6 @@ DEFAULT_GRADER_IMAGE = "verdi-bench/grader:latest"
 # the judge/scanner solution walks. Single-sourced here (judge imports it via
 # the grade facade) [refactor 05 §1].
 HOLDOUT_RESULTS = "holdout_results.json"
-
-# Filename the containerized plugin runner writes its assertion list to [PRA-M6].
-# Same fresh-copy discipline: any agent-written copy is removed before the run.
-PLUGIN_RESULTS = "plugin_results.json"
 
 
 class GradeRunner(Protocol):
@@ -249,27 +243,15 @@ class GradingContainer:
         task_file: Optional[Path] = None,
         nonce: Optional[str] = None,
     ) -> list[str]:
-        """Fresh, NETWORK-LESS container for grader plugins [PRA-M6].
+        """The fresh, network-less plugin container argv [PRA-M6].
 
-        Plugins previously ran in-process on the harness host — with full network
-        and filesystem access — against the agent-controlled workspace; a plugin
-        that shells out over malicious build/config files was a host-side
-        code-execution surface the holdout tier does not have. Running them under
-        the same ``--network none`` fresh-copy discipline as holdouts (plus
-        ``--cap-drop ALL`` and no-new-privileges) closes that asymmetry. The
-        grader image's plugin entrypoint (``python -m harness.grade.run_plugin``)
-        reads the ids and the read-only task mount, and writes PLUGIN_RESULTS."""
-        # Same network-less hardened recipe as the holdout grader (no --user: the
-        # plugin entrypoint keeps its prior identity) [PRA-M6, refactor 04 §1].
-        hc = HardenedCommand().rm().network("none").harden()
-        if nonce:
-            hc.e_env(NONCE_ENV, nonce)
-        hc.volume(workspace, "/workspace")
-        if task_file is not None:
-            hc.volume(task_file, "/verdi/task.json", ro=True)
-        hc.workdir("/workspace").image(self._image)
-        hc.arg("python", "-m", "harness.grade.run_plugin", *[str(p) for p in plugin_ids])
-        return hc.build()
+        A thin binding of this container's ``image`` to the plugin-launch recipe
+        (:func:`harness.grade.plugins.launch.build_plugin_command`), kept as a
+        method so the argv-identity tests can build it off a ``GradingContainer``.
+        """
+        from .plugins.launch import build_plugin_command
+
+        return build_plugin_command(self._image, workspace, plugin_ids, task_file, nonce)
 
     @property
     def grader_name(self) -> str:
@@ -291,8 +273,13 @@ class GradingContainer:
         if not plugin_ids:
             return []
         if getattr(self._runner, "runs_plugins_in_container", False):
-            # docker path: network-less container over a throwaway copy.
-            return self._run_plugins_in_container(Path(workspace), plugin_ids, task)
+            # docker path: network-less container over a throwaway copy, via the
+            # plugin-launch recipe [refactor 05 §2].
+            from .plugins.launch import run_plugins_in_container
+
+            return run_plugins_in_container(
+                self._docker, self._image, Path(workspace), plugin_ids, task
+            )
         # no-daemon ADVISORY path (LocalGradeRunner / test fakes): in-process, no
         # isolation — used only where there is no daemon; grades are stamped
         # grader_name="local" so they are distinguishable from a trusted grade.
@@ -300,49 +287,6 @@ class GradingContainer:
         for pid in plugin_ids:
             out.extend(get_plugin(pid).grade(Path(workspace), task))
         return out
-
-    def _run_plugins_in_container(self, workspace: Path, plugin_ids: list, task) -> list:
-        from .types import Assertion
-
-        # Same fresh-copy + exit-classification discipline as the holdout path,
-        # via the shared isolation helpers [refactor 05 §2].
-        with fresh_workspace_copy(
-            workspace, stale_name=PLUGIN_RESULTS, prefix="verdi-plugin-",
-            purpose=" for plugins",
-        ) as copy:
-            # the GradeTask travels into the container read-only at /verdi/task.json,
-            # written beside the workspace copy under the same throwaway tree.
-            task_file = copy.parent / "task.json"
-            task_file.write_text(json.dumps({
-                "id": getattr(task, "id", "t"),
-                "task_sha": getattr(task, "task_sha", ""),
-                "holdouts_dir": getattr(task, "holdouts_dir", ""),
-                "fake_plugin_output": getattr(task, "fake_plugin_output", {}) or {},
-            }), encoding="utf-8")
-            # Per-grade nonce authenticates the plugin fence too [F-H1 follow-up].
-            nonce = secrets.token_hex(16)
-            cmd = self.build_plugin_command(copy, plugin_ids, task_file, nonce)
-            proc = run_grading_container(self._docker, cmd, noun="plugin")
-            # F-H1 A.4: same trusted channel as holdouts — never a file from the
-            # agent-writable copy, and nonce-authenticated so an agent-forged
-            # block is rejected. Every failure mode is terminal here (it flows
-            # to cant_grade(plugin_error) in grade_trial), so no marker needed.
-            pbegin, pend = plugin_fence(nonce)
-            status, body = _extract_fence(proc.stdout, pbegin, pend)
-            if status == "absent":
-                raise GradingContainerError(
-                    "plugin container emitted no fenced results on stdout (an "
-                    "image predating the V1 transport must be rebuilt)"
-                )
-            if status != "ok":
-                raise GradingContainerError(
-                    "ambiguous plugin results channel: multiple or inverted fences"
-                )
-            try:
-                raw = json.loads(body or "")
-            except json.JSONDecodeError as e:
-                raise GradingContainerError(f"malformed fenced plugin results: {e}") from e
-            return [Assertion(**a) for a in raw]
 
     def run(self, workspace: Path, holdouts_dir: str) -> HoldoutRun:
         workspace = Path(workspace)
