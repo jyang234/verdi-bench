@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "trial_id": "fixture-multi-agent",
+  "batches": [
+    {
+      "content_type": "application/json",
+      "resource_spans": [
+        {
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "verdi.fixture"
+              },
+              "spans": [
+                {
+                  "name": "orchestrator",
+                  "spanId": "c1",
+                  "startTimeUnixNano": "1700000000000000000",
+                  "endTimeUnixNano": "1700000000001000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.operation.name",
+                      "value": {
+                        "stringValue": "chat"
+                      }
+                    },
+                    {
+                      "key": "verdi.agent",
+                      "value": {
+                        "stringValue": "worker-1"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.input_tokens",
+                      "value": {
+                        "intValue": "500"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.output_tokens",
+                      "value": {
+                        "intValue": "100"
+                      }
+                    },
+                    {
+                      "key": "verdi.cost_usd",
+                      "value": {
+                        "doubleValue": 0.012
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "critic",
+                  "spanId": "c2",
+                  "startTimeUnixNano": "1700000000500000000",
+                  "endTimeUnixNano": "1700000000501000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.operation.name",
+                      "value": {
+                        "stringValue": "chat"
+                      }
+                    },
+                    {
+                      "key": "verdi.agent",
+                      "value": {
+                        "stringValue": "critic-2"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.input_tokens",
+                      "value": {
+                        "intValue": "300"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.output_tokens",
+                      "value": {
+                        "intValue": "80"
+                      }
+                    },
+                    {
+                      "key": "verdi.cost_usd",
+                      "value": {
+                        "doubleValue": 0.008
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "worker-exec",
+                  "spanId": "c3",
+                  "startTimeUnixNano": "1700000001000000000",
+                  "endTimeUnixNano": "1700000001001000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.tool.name",
+                      "value": {
+                        "stringValue": "bash"
+                      }
+                    },
+                    {
+                      "key": "verdi.agent",
+                      "value": {
+                        "stringValue": "worker-1"
+                      }
+                    },
+                    {
+                      "key": "verdi.command",
+                      "value": {
+                        "stringValue": "ls -la"
+                      }
+                    },
+                    {
+                      "key": "verdi.exit_code",
+                      "value": {
+                        "intValue": "0"
+                      }
+                    }
+                  ],
+                  "parentSpanId": "c1"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

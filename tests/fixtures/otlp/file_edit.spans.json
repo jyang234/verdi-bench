@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "trial_id": "fixture-file-edit",
+  "batches": [
+    {
+      "content_type": "application/json",
+      "resource_spans": [
+        {
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "verdi.fixture"
+              },
+              "spans": [
+                {
+                  "name": "Edit",
+                  "spanId": "e1",
+                  "startTimeUnixNano": "1700000000000000000",
+                  "endTimeUnixNano": "1700000000001000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.tool.name",
+                      "value": {
+                        "stringValue": "Edit"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.tool.arguments",
+                      "value": {
+                        "stringValue": "{\"file_path\": \"/ws/main.py\", \"old_string\": \"a\", \"new_string\": \"b\"}"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "write_file",
+                  "spanId": "e2",
+                  "startTimeUnixNano": "1700000000100000000",
+                  "endTimeUnixNano": "1700000000101000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.tool.name",
+                      "value": {
+                        "stringValue": "write_file"
+                      }
+                    },
+                    {
+                      "key": "verdi.files",
+                      "value": {
+                        "arrayValue": {
+                          "values": [
+                            {
+                              "stringValue": "/ws/out.txt"
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "str_replace_editor",
+                  "spanId": "e3",
+                  "startTimeUnixNano": "1700000000200000000",
+                  "endTimeUnixNano": "1700000000201000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.tool.name",
+                      "value": {
+                        "stringValue": "str_replace_editor"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.tool.arguments",
+                      "value": {
+                        "stringValue": "{\"path\": \"/ws/x.py\"}"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "pytest",
+                  "spanId": "e4",
+                  "startTimeUnixNano": "1700000000300000000",
+                  "endTimeUnixNano": "1700000000301000000",
+                  "attributes": [
+                    {
+                      "key": "verdi.test_run",
+                      "value": {
+                        "boolValue": true
+                      }
+                    },
+                    {
+                      "key": "verdi.command",
+                      "value": {
+                        "stringValue": "pytest tests/ -q"
+                      }
+                    },
+                    {
+                      "key": "verdi.exit_code",
+                      "value": {
+                        "intValue": "0"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "grep",
+                  "spanId": "e5",
+                  "startTimeUnixNano": "1700000000400000000",
+                  "endTimeUnixNano": "1700000000401000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.tool.name",
+                      "value": {
+                        "stringValue": "grep"
+                      }
+                    },
+                    {
+                      "key": "verdi.command",
+                      "value": {
+                        "stringValue": "grep -r foo"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "go-test",
+                  "spanId": "e6",
+                  "startTimeUnixNano": "1700000000500000000",
+                  "endTimeUnixNano": "1700000000501000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.tool.name",
+                      "value": {
+                        "stringValue": "bash"
+                      }
+                    },
+                    {
+                      "key": "verdi.command",
+                      "value": {
+                        "stringValue": "go test ./..."
+                      }
+                    },
+                    {
+                      "key": "verdi.exit_code",
+                      "value": {
+                        "intValue": "2"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "Read",
+                  "spanId": "e7",
+                  "startTimeUnixNano": "1700000000600000000",
+                  "endTimeUnixNano": "1700000000601000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.tool.name",
+                      "value": {
+                        "stringValue": "Read"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
