@@ -1,47 +1,46 @@
-"""``bench corpus …`` [EVAL-8 §M6].
+"""``bench corpus …`` [EVAL-8 §M6] — thin shells over :mod:`harness.corpus.api`.
 
-Functional against fixtures: ``import`` (public dataset → cache + manifest),
-``subset`` (stratified calibration selection), ``mine`` (MR → pending
-candidate), ``review`` (surface prompt + holdouts + diff for the curator), and
-``approve`` (ledger a ``curation_approval``). The review view exists to make
-curation real — solution-leakage in the prompt is caught here, not by a machine
-[risks §9].
+``import`` (public dataset → cache + manifest), ``materialize``, ``validate-tasks``,
+``subset`` (stratified calibration selection), ``mine`` (MR → pending candidate),
+``review`` (curator surface — kept here as pure display), ``approve``,
+``calibrate``, ``admit``, and ``baseline``. The verbs parse flags, map the
+enumerated refusals to exit codes, and echo; the logic lives in the stage API
+[refactor 02 §3].
 """
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import typer
 
-from ..cli_common import event_context, resolve_actor_or_exit
-
-
-# Known tasks.yaml drift traps — singular/plural keys the lenient run/grade reader
-# would silently ignore (decision A9). validate-tasks names them explicitly.
-_TASK_DRIFT_TRAPS = {"holdout_dir": "holdouts_dir", "plugins": "plugin_ids"}
-
-
-def _suggest_task_key(unknown: str) -> str | None:
-    """The known-good TaskSpec field an unknown tasks.yaml key most likely meant:
-    a hardcoded drift trap first, else the closest field by edit distance."""
-    import difflib
-
-    from ..schema.tasks import TaskSpec
-
-    if unknown in _TASK_DRIFT_TRAPS:
-        return _TASK_DRIFT_TRAPS[unknown]
-    matches = difflib.get_close_matches(unknown, list(TaskSpec.model_fields), n=1)
-    return matches[0] if matches else None
+from ..cli_common import refusal_exit
+from .api import (
+    AdmitDestinationError,
+    AdmitInputError,
+    CalibrateKindError,
+    CandidateStagingError,
+    NoGradedTrialsError,
+    UnknownBenchmarkError,
+    ValidateTasksFileError,
+    corpus_admit,
+    corpus_approve,
+    corpus_baseline,
+    corpus_calibrate,
+    corpus_import,
+    corpus_materialize,
+    corpus_mine,
+    corpus_subset,
+    validate_tasks,
+)
 
 
 def register(app: typer.Typer) -> None:
     corpus_app = typer.Typer(help="Task corpus tooling [EVAL-8].", no_args_is_help=True)
 
     @corpus_app.command("import")
-    def corpus_import(
+    def import_cmd(
         source: Path = typer.Argument(
             ..., help="Harbor-task dir (--benchmark dir) or a benchmark export file"
         ),
@@ -69,39 +68,22 @@ def register(app: typer.Typer) -> None:
         export (JSON array or JSONL) into citable, admitted corpus tasks — the
         problem statement is agent-visible, the tests become the grading holdout.
         """
-        from .public import DirectorySource, import_public_dataset
-
-        if benchmark == "dir":
-            task_source = DirectorySource(source)
-            dataset_name = corpus_id or "terminal-bench"
-            resolved_version = dataset_version or "2.0"
-        elif benchmark == "swebench":
-            from .benchmarks import SWEBENCH, SweBenchSource
-
-            task_source = SweBenchSource(source, image_template=image_template)
-            dataset_name = SWEBENCH
-            # do NOT inherit terminal-bench's "2.0"; the user labels the export
-            resolved_version = dataset_version or "SWE-bench_Verified"
-        else:
-            typer.echo(f"unknown --benchmark {benchmark!r} (dir | swebench)", err=True)
-            raise typer.Exit(code=2)
-
         try:
-            manifest = import_public_dataset(
-                task_source,
-                cache,
-                corpus_id=corpus_id or dataset_name,
-                semver=semver,
-                dataset_name=dataset_name,
-                dataset_version=resolved_version,
+            outcome = corpus_import(
+                source, cache=cache, benchmark=benchmark, corpus_id=corpus_id,
+                semver=semver, dataset_version=dataset_version,
+                image_template=image_template,
             )
+        except UnknownBenchmarkError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2)
         except Exception as e:  # noqa: BLE001 — a malformed export is a user error, named
             typer.echo(f"{type(e).__name__}: {e}", err=True)
             raise typer.Exit(code=2)
-        typer.echo(f"imported {len(manifest.tasks)} task(s) → {cache}/manifest.json")
+        typer.echo(f"imported {outcome.n_tasks} task(s) → {cache}/manifest.json")
 
     @corpus_app.command("materialize")
-    def corpus_materialize(
+    def materialize_cmd(
         manifest_path: Path = typer.Argument(..., help="manifest.json from a prior import"),
         cache: Path = typer.Option(..., "--cache", help="Cache dir the import wrote"),
         out: Path = typer.Option(..., "--out", help="Experiment dir to write tasks.yaml + holdouts/"),
@@ -111,19 +93,15 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         """Write a runnable experiment (tasks.yaml + read-only holdouts) from an
         imported corpus, so `plan → run → grade` can use a standardized task set."""
-        from .materialize import materialize_experiment
-        from .registry import CorpusManifest
-
-        manifest = CorpusManifest.load(manifest_path)
         try:
-            dest = materialize_experiment(manifest, cache, out, only_admitted=not all_tasks)
+            outcome = corpus_materialize(manifest_path, cache=cache, out=out, all_tasks=all_tasks)
         except Exception as e:  # noqa: BLE001 — cache/manifest mismatch is named, not swallowed
             typer.echo(f"{type(e).__name__}: {e}", err=True)
             raise typer.Exit(code=2)
-        typer.echo(f"materialized → {dest}/tasks.yaml (+ holdouts/)")
+        typer.echo(f"materialized → {outcome.dest}/tasks.yaml (+ holdouts/)")
 
     @corpus_app.command("validate-tasks")
-    def corpus_validate_tasks(
+    def validate_tasks_cmd(
         experiment_dir: Path = typer.Argument(
             ..., help="Experiment dir whose tasks.yaml to lint"
         ),
@@ -136,49 +114,21 @@ def register(app: typer.Typer) -> None:
         plugins→plugin_ids) — before a lock is ever taken. Pure read: nothing is
         ledgered. Exit 0 clean, 2 on any problem or a missing/mis-shaped file.
         """
-        from pydantic import ValidationError
+        from .commit import TaskCommitmentError
 
-        from ..schema.tasks import TaskSpec
-        from .commit import TaskCommitmentError, load_task_dicts
-
-        experiment_dir = Path(experiment_dir)
-        if not (experiment_dir / "tasks.yaml").exists():
-            typer.echo(f"no tasks.yaml in {experiment_dir}", err=True)
-            raise typer.Exit(code=2)
-        try:
-            # The lenient reader's own structural refusals (missing/duplicate id)
-            # are lint failures too — surface them, don't crash past them.
-            task_dicts = load_task_dicts(experiment_dir)
-        except TaskCommitmentError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
-
-        problems: list[str] = []
-        for t in task_dicts:
-            tid = t.get("id", "<no id>")
-            try:
-                TaskSpec(**t)
-            except ValidationError as e:
-                for err in e.errors():
-                    if err["type"] == "extra_forbidden":
-                        key = str(err["loc"][-1])
-                        suggestion = _suggest_task_key(key)
-                        hint = f" — did you mean {suggestion!r}?" if suggestion else ""
-                        problems.append(f"task {tid!r}: unknown key {key!r}{hint}")
-                    else:
-                        loc = ".".join(str(p) for p in err["loc"]) or "<task>"
-                        problems.append(f"task {tid!r}: {err['msg']} (at {loc})")
-        if problems:
-            for p in problems:
+        with refusal_exit(ValidateTasksFileError, TaskCommitmentError):
+            outcome = validate_tasks(experiment_dir)
+        if outcome.problems:
+            for p in outcome.problems:
                 typer.echo(p, err=True)
             typer.echo(
-                f"validate-tasks: {len(problems)} problem(s) in tasks.yaml", err=True
+                f"validate-tasks: {len(outcome.problems)} problem(s) in tasks.yaml", err=True
             )
             raise typer.Exit(code=2)
-        typer.echo(f"validate-tasks: {len(task_dicts)} task(s) OK")
+        typer.echo(f"validate-tasks: {outcome.n_tasks} task(s) OK")
 
     @corpus_app.command("subset")
-    def corpus_subset(
+    def subset_cmd(
         manifest_path: Path = typer.Argument(..., help="manifest.json"),
         seed: int = typer.Option(..., "--seed"),
         size: int = typer.Option(30, "--size"),
@@ -189,26 +139,17 @@ def register(app: typer.Typer) -> None:
         actor: str = typer.Option(None, "--actor", help="Actor recorded on the draw [GR-12]"),
     ) -> None:
         """Select and record a stratified calibration subset."""
-        from ..ledger.events import EventContext
-        from .ledger_ops import ledger_subset_draw
-        from .registry import CorpusManifest
-        from .stratify import calibration_subset
+        from ..ledger.actor import ActorResolutionError
 
-        manifest = CorpusManifest.load(manifest_path)
-        subset = calibration_subset(
-            manifest, seed, target_size=size, stratum_key=stratum_key
-        )
-        # CO-9: ledger the draw *before* persisting the mutable manifest, so an
-        # interrupted run cannot leave the manifest showing a draw the chain never
-        # recorded (the ledger is the auditable, tamper-evident source of truth).
-        if ledger is not None:
-            ctx = EventContext(experiment_id=manifest.corpus_id, actor=resolve_actor_or_exit(actor))
-            ledger_subset_draw(ledger, ctx, manifest, subset)
-        manifest.save(manifest_path)
-        typer.echo(f"subset: {len(subset.task_ids)} task(s) over {len(subset.strata['sizes'])} strata")
+        with refusal_exit(ActorResolutionError):
+            outcome = corpus_subset(
+                manifest_path, seed=seed, size=size, stratum_key=stratum_key,
+                ledger=ledger, actor=actor,
+            )
+        typer.echo(f"subset: {outcome.n_tasks} task(s) over {outcome.n_strata} strata")
 
     @corpus_app.command("mine")
-    def corpus_mine(
+    def mine_cmd(
         mr_json: Path = typer.Argument(..., help="MR json {parent_sha, files:[...]}"),
         ticket: Path = typer.Option(..., "--ticket", help="Ticket text file"),
         out: Path = typer.Option(..., "--out", help="Candidate json output"),
@@ -219,51 +160,20 @@ def register(app: typer.Typer) -> None:
         task_id: str = typer.Option(None, "--task-id", help="Manifest task id [default: --out stem]"),
     ) -> None:
         """Mine a merged MR into a pending candidate; optionally stage it in a manifest."""
-        from .mine import MergeRequest, MRFile, mine_mr
-        from .registry import CorpusError, CorpusManifest, assert_outside_instrument
+        from ..ledger.actor import ActorResolutionError
 
-        who = resolve_actor_or_exit(miner)
-        data = json.loads(mr_json.read_text(encoding="utf-8"))
-        mr = MergeRequest(
-            parent_sha=data["parent_sha"],
-            files=[MRFile(**f) for f in data.get("files", [])],
-        )
-        candidate = mine_mr(mr, ticket.read_text(encoding="utf-8"))
-        candidate.miner = who
-        # CO-1: a mined candidate carries ticket text + holdout contents — internal
-        # corpus data that must never be written into the instrument repo.
-        assert_outside_instrument(out)
-        out.write_text(
-            json.dumps(candidate.__dict__, sort_keys=True, indent=2), encoding="utf-8"
-        )
-        sha = candidate.content_sha()
-        # CO-8: the mine→manifest link — stage the candidate as a pending task so
-        # admission (which requires a manifest entry) is reachable.
-        if manifest_path is not None:
-            from pydantic import ValidationError
-
-            manifest = CorpusManifest.load(manifest_path)
-            try:
-                # EVAL-10 AC-1: created_at comes from the MR's merged_at — input
-                # data, not a wall-clock read; absent stays an honest unknown.
-                # A malformed merged_at surfaces as a pydantic ValidationError
-                # (the created_at validator runs inside TaskEntry), so it must
-                # be caught here for the clean exit-2 refusal, not a traceback.
-                manifest.stage_candidate(
-                    task_id or out.stem, sha=sha, miner=who,
-                    created_at=data.get("merged_at"),
-                )
-            except (CorpusError, ValidationError) as e:
-                typer.echo(str(e), err=True)
-                raise typer.Exit(code=2)
-            manifest.save(manifest_path)
+        with refusal_exit(ActorResolutionError, CandidateStagingError):
+            outcome = corpus_mine(
+                mr_json, ticket=ticket, out=out, miner=miner,
+                manifest_path=manifest_path, task_id=task_id,
+            )
         typer.echo(
-            f"candidate: parent={candidate.workspace_ref[:12]}… sha={sha[:12]}… "
-            f"miner={who} holdouts={len(candidate.holdouts)} status={candidate.status}"
+            f"candidate: parent={outcome.workspace_ref[:12]}… sha={outcome.sha[:12]}… "
+            f"miner={outcome.miner} holdouts={outcome.n_holdouts} status={outcome.status}"
         )
 
     @corpus_app.command("review")
-    def corpus_review(
+    def review_cmd(
         candidate_json: Path = typer.Argument(..., help="Candidate json"),
     ) -> None:
         """Surface prompt + holdouts + diff so the curator can vet the candidate.
@@ -287,7 +197,7 @@ def register(app: typer.Typer) -> None:
             typer.echo(h.get("content", ""))
 
     @corpus_app.command("approve")
-    def corpus_approve(
+    def approve_cmd(
         experiment_dir: Path = typer.Argument(..., help="Dir with ledger.ndjson"),
         candidate_id: str = typer.Option(..., "--candidate-id"),
         task_sha: str = typer.Option(..., "--task-sha"),
@@ -300,24 +210,14 @@ def register(app: typer.Typer) -> None:
         notes: str = typer.Option("", "--notes"),
     ) -> None:
         """Sign + record a curation_approval — the approver attests with their key."""
-        from ..ledger.events import EventContext, record_curation_approval
-        from .attestation import sign_approval
-
-        # D-P7-7: approver identity is security-relevant (D-P7-3 binds it to a key),
-        # so it must be given explicitly — never defaulted from the environment.
-        who = approver
-        priv = signing_key.read_text(encoding="utf-8").strip()
-        sig, pk = sign_approval(priv, candidate_id=candidate_id, task_sha=task_sha, approver=who)
-        ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=who)
-        record_curation_approval(
-            ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
-            approver=who, signature=sig, signer_public_key=pk, notes=notes,
+        corpus_approve(
+            experiment_dir, candidate_id=candidate_id, task_sha=task_sha,
+            signing_key=signing_key, approver=approver, notes=notes,
         )
-        typer.echo(f"approved {candidate_id} (sha={task_sha[:12]}…) signed by {who}")
+        typer.echo(f"approved {candidate_id} (sha={task_sha[:12]}…) signed by {approver}")
 
     @corpus_app.command("calibrate")
-    def corpus_calibrate(
+    def calibrate_cmd(
         experiment_dir: Path = typer.Argument(..., help="Dir with a completed run's ledger"),
         manifest_path: Path = typer.Option(..., "--manifest", help="manifest.json to advance"),
         kind: str = typer.Option("full", "--kind", help="subset | full"),
@@ -331,42 +231,19 @@ def register(app: typer.Typer) -> None:
         so a calibration run is chain-anchored and feeds ``bench plan``'s power
         gate [PL-5]. ``rho`` is a recorded assumption (full estimation is Phase 5).
         """
-        from ..ledger import events
-        from ..ledger.query import find_events
-        from .ledger_ops import ledger_calibration_run
-        from .registry import CorpusManifest
+        from ..ledger.actor import ActorResolutionError
 
-        if kind not in ("subset", "full"):
-            typer.echo("--kind must be 'subset' or 'full'", err=True)
-            raise typer.Exit(code=2)
-        ledger_path = experiment_dir / "ledger.ndjson"
-        manifest = CorpusManifest.load(manifest_path)
-
-        trial_task = {
-            ev["trial_record"]["trial_id"]: ev["trial_record"]["task_id"]
-            for ev in find_events(ledger_path, events.TRIAL)
-        }
-        by_task: dict[str, list[float]] = {}
-        for ev in find_events(ledger_path, events.GRADE):
-            task_id = trial_task.get(ev["trial_id"])
-            if task_id is None:
-                continue
-            by_task.setdefault(task_id, []).append(1.0 if ev["binary_score"] else 0.0)
-        if not by_task:
-            typer.echo("no graded trials to calibrate from", err=True)
-            raise typer.Exit(code=2)
-        all_scores = [s for xs in by_task.values() for s in xs]
-        p = sum(all_scores) / len(all_scores)
-        n_tasks = len(by_task)
-        run = {"p": round(p, 6), "rho": rho, "n_tasks": n_tasks, "kind": kind}
-
-        ctx = event_context(experiment_dir, actor)
-        ledger_calibration_run(ledger_path, ctx, manifest, run, kind=kind)
-        manifest.save(manifest_path)
-        typer.echo(f"calibration ({kind}): p={p:.3f} n_tasks={n_tasks} → {manifest.calibration.status}")
+        with refusal_exit(CalibrateKindError, NoGradedTrialsError, ActorResolutionError):
+            outcome = corpus_calibrate(
+                experiment_dir, manifest_path=manifest_path, kind=kind, rho=rho, actor=actor
+            )
+        typer.echo(
+            f"calibration ({outcome.kind}): p={outcome.p:.3f} n_tasks={outcome.n_tasks} "
+            f"→ {outcome.status}"
+        )
 
     @corpus_app.command("admit")
-    def corpus_admit(
+    def admit_cmd(
         experiment_dir: Path = typer.Argument(..., help="Dir with ledger.ndjson"),
         manifest_path: Path = typer.Option(..., "--manifest", help="manifest.json"),
         candidate_id: str = typer.Option(..., "--candidate-id"),
@@ -386,85 +263,29 @@ def register(app: typer.Typer) -> None:
         actor: str = typer.Option(None, "--actor", help="Actor recorded on the admission [GR-12]"),
     ) -> None:
         """Admit a curated candidate — verifies the signed approval + clean baseline."""
-        from ..contamination.canary import CanaryError, derive_canary, embed_canary
-        from .admit import admit_task
-        from .attestation import KeyringFormatError, load_keyring
-        from .registry import CorpusError, CorpusManifest, assert_outside_instrument
+        from ..contamination.canary import CanaryError
+        from ..ledger.actor import ActorResolutionError
+        from .attestation import KeyringFormatError
+        from .registry import CorpusError
 
-        # EVAL-10 AC-2: read + validate the candidate content BEFORE admission,
-        # so a bad path/JSON refuses cleanly with nothing ledgered.
-        candidate_content = None
-        if candidate_json is not None:
-            try:
-                assert_outside_instrument(candidate_json)
-                candidate_content = json.loads(
-                    candidate_json.read_text(encoding="utf-8")
-                )
-            except (CorpusError, OSError, ValueError) as e:
-                typer.echo(str(e), err=True)
-                raise typer.Exit(code=2)
-
-        ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = event_context(experiment_dir, actor)
-        manifest = CorpusManifest.load(manifest_path)
-        # Load the keyring before the admit envelope: a legacy list-format keyring
-        # raises KeyringFormatError (a ValueError, not CorpusError), so evaluating
-        # it inside the `except CorpusError` block below would escape as a
-        # traceback instead of the clean exit-2 migration refusal [D-P7-3].
-        try:
-            authorized = load_keyring(keyring)
-        except KeyringFormatError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
-        # PRA-M11: validate the write destinations BEFORE ledgering, so a
-        # non-writable manifest/embedded-copy path fails closed with nothing torn
-        # rather than advancing the ledger and then tracebacking on save. The
-        # manifest already exists (we loaded it); check its dir, and the embedded
-        # sibling's dir, are writable up front.
-        for dest in (manifest_path, candidate_json):
-            if dest is not None and not os.access(dest.parent, os.W_OK):
-                typer.echo(
-                    f"admission destination {dest.parent} is not writable; refusing "
-                    "before ledgering [PRA-M11]", err=True,
-                )
-                raise typer.Exit(code=2)
-        try:
-            # admit_task validates the canary embed BEFORE ledgering, so an
-            # embed refusal (no prompt, double embed) leaves nothing torn.
-            admit_task(
-                manifest, ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
-                baseline_ref=baseline_ref, keyring=authorized,
-                candidate_content=candidate_content,
+        with refusal_exit(
+            AdmitInputError, ActorResolutionError, KeyringFormatError,
+            AdmitDestinationError, CorpusError, CanaryError,
+        ):
+            outcome = corpus_admit(
+                experiment_dir, manifest_path=manifest_path, candidate_id=candidate_id,
+                task_sha=task_sha, baseline_ref=baseline_ref, keyring=keyring,
+                candidate_json=candidate_json, actor=actor,
             )
-        except (CorpusError, CanaryError) as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
-        # EVAL-10 AC-2: persist the embedded copy ALONGSIDE the reviewed file —
-        # never over it. The reviewed bytes are what the curation approval and
-        # manifest sha are keyed to; destroying them would make every admitted
-        # task look post-review-tampered. embed_canary is pure, so this repeats
-        # the exact call admit_task already validated. A failure here (post-ledger)
-        # is reported loudly with the recovery hint, not swallowed [PRA-M11].
-        try:
-            if candidate_content is not None:
-                embedded = embed_canary(candidate_content, derive_canary(task_sha))
-                embedded_path = candidate_json.with_suffix(".embedded.json")
-                embedded_path.write_text(
-                    json.dumps(embedded, sort_keys=True, indent=2), encoding="utf-8"
-                )
-                typer.echo(f"canary-embedded content: {embedded_path}")
-            manifest.save(manifest_path)
-        except OSError as e:
-            typer.echo(
-                f"task_admitted was ledgered but persisting the manifest/embedded "
-                f"copy failed: {e}. The admission is on the chain; re-save the "
-                f"manifest to {manifest_path} to reconcile [PRA-M11]", err=True,
-            )
+        if outcome.embedded_path is not None:
+            typer.echo(f"canary-embedded content: {outcome.embedded_path}")
+        if outcome.persist_error is not None:
+            typer.echo(outcome.persist_error, err=True)
             raise typer.Exit(code=1)
         typer.echo(f"admitted {candidate_id} (sha={task_sha[:12]}…)")
 
     @corpus_app.command("baseline")
-    def corpus_baseline(
+    def baseline_cmd(
         experiment_dir: Path = typer.Argument(..., help="Dir with ledger.ndjson"),
         task_id: str = typer.Option(..., "--task-id"),
         task_sha: str = typer.Option(..., "--task-sha"),
@@ -488,29 +309,16 @@ def register(app: typer.Typer) -> None:
         completion; a transient grader outage is inconclusive — non-zero exit,
         nothing ledgered, no quarantine.
         """
-        from ..grade.baseline import DEFAULT_K, flake_baseline
-        from ..grade.container import (
-            DockerGradeRunner,
-            GraderUnavailableError,
-            GradingContainer,
-            LocalGradeRunner,
-        )
-        from ..grade.types import GradeTask
+        from ..grade.container import GraderUnavailableError
+        from ..ledger.actor import ActorResolutionError
 
         if runner not in ("docker", "local"):
             raise typer.BadParameter("--runner must be docker or local")
-        ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = event_context(experiment_dir, actor)
-        container = GradingContainer(
-            runner=LocalGradeRunner() if runner == "local" else DockerGradeRunner()
-        )
-        task = GradeTask(id=task_id, task_sha=task_sha, holdouts_dir=str(holdouts_dir))
         try:
-            outcome = flake_baseline(
-                task, ledger_path, ctx,
-                workspace=workspace, container=container,
-                k=k if k is not None else DEFAULT_K,
-                workspace_basis="reference_solution",
+            outcome = corpus_baseline(
+                experiment_dir, task_id=task_id, task_sha=task_sha,
+                workspace=workspace, holdouts_dir=holdouts_dir, k=k,
+                runner=runner, actor=actor,
             )
         except GraderUnavailableError as e:
             typer.echo(
@@ -518,12 +326,12 @@ def register(app: typer.Typer) -> None:
                 err=True,
             )
             raise typer.Exit(code=2)
-        except ValueError as e:  # k < 1 [GR-10]
+        except (ValueError, ActorResolutionError) as e:  # k < 1 [GR-10] / actor
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
         typer.echo(
             f"baseline {outcome.verdict}: {task_id} (sha={task_sha[:12]}…) "
-            f"over k={outcome.event['k']} run(s)"
+            f"over k={outcome.k} run(s)"
         )
         if outcome.verdict != "clean":
             raise typer.Exit(code=1)
