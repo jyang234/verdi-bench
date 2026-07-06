@@ -421,8 +421,9 @@ directory — never in the sha-locked `experiment.yaml`, never on the ledger:
 proxy:
   managed: true             # the harness stands the metering proxy up + tears it
                             # down around the run (no hand-rolled docker). It
-                            # supplies its own url + log_path — setting either
-                            # alongside `managed: true` is refused.
+                            # supplies its own url — setting `url` alongside
+                            # `managed: true` is refused; a `log_path` here is
+                            # honored as where the managed proxy's JSONL lands.
   # url: http://proxy:3128            # OR point at an EXTERNAL proxy you run:
   # log_path: /var/log/verdi/proxy.jsonl   #   set url + log_path, drop `managed`
   # allowlist: [...]        # OMIT if the spec declares model_hosts/infra_hosts —
