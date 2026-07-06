@@ -11,7 +11,6 @@ event is unrepresentable [AC-8]. There is no vendor allow/deny list [AC-1].
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from typing import Callable, Literal, Optional
 
@@ -42,7 +41,40 @@ from .schema import (
     confidence_bucket,
 )
 
-_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
+def _first_json_object(text: str) -> str:
+    """The first complete top-level ``{...}`` object in ``text``: brace-balanced
+    and string-aware (braces/quotes inside a JSON string do not count; backslash
+    escapes are honored). Raises ValueError when there is no complete object.
+
+    Replaces a greedy ``\\{.*\\}`` [refactor 05 §7] that spanned the FIRST brace to
+    the LAST one, so any trailing prose — or a stray ``}`` in it — was pulled into
+    an unparseable blob, turning a recoverable verdict into CANT_JUDGE(parse). A
+    genuinely malformed object still fails json.loads and stays fail-closed."""
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("no JSON object in judge output")
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    raise ValueError("no complete JSON object in judge output")
 
 
 class RawEvidence(BaseModel):
@@ -60,10 +92,7 @@ class RawVerdict(BaseModel):
 
 
 def _parse_raw(text: str) -> RawVerdict:
-    m = _JSON_RE.search(text or "")
-    if not m:
-        raise ValueError("no JSON object in judge output")
-    return RawVerdict.model_validate(json.loads(m.group(0)))
+    return RawVerdict.model_validate(json.loads(_first_json_object(text or "")))
 
 
 def _pos_to_arm(order: str) -> dict[int, str]:

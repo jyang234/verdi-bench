@@ -247,6 +247,66 @@ def test_ac1_no_vendor_denylist_in_code():
         assert "banned" not in text
 
 
+# --- balanced-brace verdict extraction [refactor 05 §7] ---------------------
+def test_first_json_object_leading_prose():
+    """Leading prose before the object is skipped to the first brace."""
+    from harness.judge.client import _first_json_object
+
+    obj = '{"winner": "1", "confidence": 0.9}'
+    assert _first_json_object(f"Here is my verdict: {obj}") == obj
+
+
+def test_first_json_object_trailing_prose_with_stray_brace():
+    """The greedy \\{.*\\} regression: trailing prose that itself contains a '}'
+    was swallowed into an unparseable blob. Balanced extraction stops at the first
+    complete object."""
+    from harness.judge.client import _first_json_object
+
+    obj = '{"winner": "1", "confidence": 0.9}'
+    assert _first_json_object(f"{obj} — note: mind the }} brace.") == obj
+
+
+def test_first_json_object_nested_and_string_aware():
+    """A nested object (evidence carries objects) extracts whole, and a '}' inside
+    a JSON string value never closes the object early (string-aware counter)."""
+    from harness.judge.client import _first_json_object
+
+    obj = '{"winner": "1", "evidence": [{"kind": "diff", "response": 1}], "note": "close }"}'
+    assert _first_json_object(f"prose {obj} trailing }}") == obj
+
+
+def test_first_json_object_missing_or_unterminated_fails_closed():
+    """No brace, or an unterminated object, raises ValueError → the client maps it
+    to CANT_JUDGE(parse); fail-closed behavior is preserved."""
+    import pytest
+
+    from harness.judge.client import _first_json_object
+
+    with pytest.raises(ValueError):
+        _first_json_object("no json here")
+    with pytest.raises(ValueError):
+        _first_json_object('{"winner": "1"')  # unterminated
+
+
+def test_trailing_prose_verdict_recovers_not_cant_judge(tmp_path):
+    """End to end: a judge that wraps its JSON in prose (and a stray '}') yields a
+    real verdict now, where the greedy extractor forced CANT_JUDGE(parse) — fewer
+    spurious parse failures, same fail-closed floor for genuine garbage [05 §7]."""
+    import json as _json
+
+    def chatty(winner, response):
+        body = _json.dumps({
+            "winner": winner, "reason": "ok",
+            "evidence": [{"kind": "diff", "response": response, "hunk": "@@"}],
+            "confidence": 0.9,
+        })
+        return f"Sure, here is my call: {body}\nThanks! (mind the }} brace)"
+
+    v, ledger = _run(tmp_path, FakeProvider([chatty("1", 1), chatty("2", 2)]))
+    assert v.winner == Winner.A  # recovered, not CANT_JUDGE(parse)
+    assert len(find_events(ledger, "judge_verdict")) == 1
+
+
 # --- JD-5 / JD-11 / D-P4-1 (arm_map) additions ------------------------------
 def _judge_verdict(comparison_id, winner):
     from harness.judge.schema import Verdict, VerdictProvenance, Winner
