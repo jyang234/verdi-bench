@@ -1,0 +1,18 @@
+arms:
+  # arm_a is the primary/contender: paired delta = arm_a - arm_b = treatment - control,
+  # so the pre-registered `delta_holdout_pass_rate > 0` reads "treatment improves over control".
+  # official.py overrides judge.model to a real provider; golden.py uses the fake judge as-is.
+  - {name: treatment, platform: codex,       model: openai/gpt-4o-2024-08-06,             payload: {}}
+  - {name: control,   platform: claude_code, model: anthropic/claude-3-5-sonnet-20241022, payload: {}}
+corpus: {id: shakedown-mini, version: "1.0.0"}
+repetitions: 3
+primary_metric: holdout_pass_rate
+decision_rule: "delta_holdout_pass_rate > 0"
+judge:
+  model: fake/deterministic-2026-01-01
+  rubric: rubric.md
+  orders: both
+  temperature: 0
+  escalation: {kappa_threshold: 0.6, min_human_verdicts: 1}
+seed: 1234
+cost_ceiling: {amount: 25.0, currency: USD}

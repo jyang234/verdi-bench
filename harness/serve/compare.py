@@ -24,6 +24,7 @@ from ..analyze.fence import official_fence_report
 from ..judge.assemble import comparisons_from_ledger
 from ..ledger import events
 from ..ledger.query import find_events
+from ..run.flight_recorder import resolve_flight_recorder
 from ..schema.errors import SpecError
 from ..schema.experiment import ExperimentSpec
 
@@ -58,15 +59,35 @@ def paired_comparisons(experiment_dir, *, corpus_manifest=None) -> dict:
         return {"error": f"cannot compare without a readable spec: {e}", "pairs": []}
 
     arm_a, arm_b = spec.arms[0].name, spec.arms[1].name
+    arm_a_model, arm_b_model = spec.arms[0].model, spec.arms[1].model
     grades = _binary_by_trial(ledger_path)
     verdicts = {
         (ev.get("verdict") or {}).get("comparison_id"): ev["verdict"]
         for ev in find_events(ledger_path, events.JUDGE_VERDICT)
     }
     trial_ids: dict[tuple, str] = {}
+    # trial_id → (artifacts_path, flight_recorder_sha) for operator-tier reasoning
+    # rendering [EVAL-24 AC-5]. The sha is the top-level trial-event field.
+    trial_meta: dict[str, tuple] = {}
     for ev in find_events(ledger_path, events.TRIAL):
         rec = ev["trial_record"]
         trial_ids[(rec["task_id"], rec.get("repetition", 0), rec["arm"])] = rec["trial_id"]
+        trial_meta[rec["trial_id"]] = (rec.get("artifacts_path"), ev.get("flight_recorder_sha"))
+
+    def _reasoning(trial_id):
+        """Per-arm reasoning for the operator compare view — unblinded, sha-verified,
+        None when the arm captured none [EVAL-24 AC-5]. Reasoning renders here and
+        ONLY here (operator tier): it is never in the judge packet or the fence."""
+        meta = trial_meta.get(trial_id)
+        if meta is None:
+            return None
+        _status, record = resolve_flight_recorder(meta[0], meta[1])
+        if record is None:
+            return None
+        return [
+            {"content": e.content, "tokens": e.tokens, "cost": e.cost, "agent": e.agent}
+            for e in record.entries
+        ]
 
     pairs: list[dict] = []
     for cmp_ in comparisons_from_ledger(ledger_path, spec):
@@ -88,11 +109,13 @@ def paired_comparisons(experiment_dir, *, corpus_manifest=None) -> dict:
                     "trial_id": tid_a,
                     "holdout_pass": pass_a,
                     "holdout_results": cmp_.response_a.holdout_results,
+                    "reasoning": _reasoning(tid_a),  # operator-tier, unblinded [AC-5]
                 },
                 "b": {
                     "trial_id": tid_b,
                     "holdout_pass": pass_b,
                     "holdout_results": cmp_.response_b.holdout_results,
+                    "reasoning": _reasoning(tid_b),  # operator-tier, unblinded [AC-5]
                 },
                 "judge": verdict,  # advisory tier, shown as its own line, never blended
                 "disagreement": holdout_differs or (judge_pick and not holdout_differs),
@@ -107,6 +130,8 @@ def paired_comparisons(experiment_dir, *, corpus_manifest=None) -> dict:
     return {
         "arm_a": arm_a,
         "arm_b": arm_b,
+        "arm_a_model": arm_a_model,
+        "arm_b_model": arm_b_model,
         "official_ready": fence["official_ready"],
         "summary": {
             "pairs": len(pairs),

@@ -142,6 +142,15 @@ OPERATOR_PAGE = """<!doctype html>
           line-height: 1.55; color: var(--ink-2); overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
   .code .add { background: var(--add); color: var(--ink-1); }
   .code .del { background: var(--del); color: var(--ink-1); }
+  .rz .role { font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; margin: 8px 0 3px; }
+  .rz .role:first-child { margin-top: 0; }
+  .rz .reason { font-size: 12px; line-height: 1.5; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; margin-bottom: 5px; }
+  .rz .none { color: var(--ink-3); font-size: 12px; }
+  .armhead { display: grid; grid-template-columns: 1fr 1fr; margin: 2px 0 4px; }
+  .armhead > div { font-size: 11px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.04em; padding: 0 2px; }
+  .armhead .amodel { text-transform: none; font-weight: 400; color: var(--ink-3); margin-left: 6px; letter-spacing: 0; }
+  .banner { font-size: 13px; }
+  .difflegend { margin: 4px 0 2px; }
   .kbdrow { color: var(--ink-3); font-size: 12px; }
   kbd { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; border: 1px solid var(--hairline);
         border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface-1); color: var(--ink-2); }
@@ -933,6 +942,34 @@ function renderTrial(app) {
   app.append(card);
 }
 
+function shortModel(m) { return m ? m.split("/").pop().replace(/-\\d{8}$/, "") : ""; }
+
+function armHead(c) {
+  // label the two-column layout so it's unambiguous which side is arm A vs B,
+  // and name the model each arm actually ran
+  return h("div", { class: "armhead" },
+    h("div", {}, "A \\u00b7 " + c.arm_a, h("span", { class: "amodel", text: shortModel(c.arm_a_model) })),
+    h("div", {}, "B \\u00b7 " + c.arm_b, h("span", { class: "amodel", text: shortModel(c.arm_b_model) })));
+}
+
+function reasoningCol(entries) {
+  // Flight recorder (reasoning), grouped by sub-agent role — the client-side
+  // mirror of slice_reasoning_by_agent [EVAL-24 AC-6], order preserved.
+  const col = h("div", {});
+  if (!entries || !entries.length) { col.append(h("div", { class: "none", text: "no reasoning captured" })); return col; }
+  const order = [], groups = {};
+  for (const e of entries) {
+    const role = e.agent || "unattributed";
+    if (!(role in groups)) { groups[role] = []; order.push(role); }
+    groups[role].push(e);
+  }
+  for (const role of order) {
+    col.append(h("div", { class: "role", text: role }));
+    for (const e of groups[role]) col.append(h("div", { class: "reason", text: e.content }));
+  }
+  return col;
+}
+
 function renderCompare(app) {
   const st = expState(S.route.exp);
   const c = st.compare;
@@ -940,12 +977,29 @@ function renderCompare(app) {
   if (c.error) { app.append(h("div", { class: "card", text: c.error })); return; }
   const only = S.route.params.get("only") === "disagreements";
   const head = h("div", { class: "toolbar card" });
-  head.append(h("b", { text: "Compare: " + c.arm_a + " vs " + c.arm_b + " (baseline: " + c.arm_a + ", lock order)" }),
+  head.append(h("b", { text: "Compare \\u2014 A: " + c.arm_a + " (" + shortModel(c.arm_a_model) + ")  vs  B: " + c.arm_b + " (" + shortModel(c.arm_b_model) + ")" }),
     h("span", { class: "chip" + (c.official_ready ? " ok" : ""), text: c.official_ready ? "official fence PASSES" : "EXPLORATORY \\u2014 official fence not passed" }));
   head.append(h("span", { class: "spacer" }),
     h("span", { class: "chip click" + (only ? " on" : ""), tabindex: "0", text: "only disagreements (" + c.summary.disagreements + ")" + (only ? " \\u2715" : ""),
       onclick: () => setParam("only", only ? null : "disagreements") }));
   app.append(head);
+  { // plain-language result banner: who won on the primary metric + advisory judge
+    const H = c.summary.holdout, J = c.summary.judge;
+    const pairs = H.a_only + H.b_only + H.both + H.neither;
+    const aPass = H.a_only + H.both, bPass = H.b_only + H.both;
+    const holdoutOut = aPass > bPass ? "\\u2192 " + c.arm_a : (bPass > aPass ? "\\u2192 " + c.arm_b : "\\u2192 tie");
+    const judgeLean = J.b > J.a ? "\\u2192 leans " + c.arm_b : (J.a > J.b ? "\\u2192 leans " + c.arm_a : "\\u2192 tie/mixed");
+    const banner = h("div", { class: "card banner" });
+    banner.append(
+      h("div", {}, h("span", { class: "dim", text: "Primary (holdout pass): " }),
+        c.arm_a + " " + aPass + "/" + pairs + " \\u00b7 " + c.arm_b + " " + bPass + "/" + pairs + "  ",
+        h("b", { text: holdoutOut })),
+      h("div", { style: "margin-top:3px" }, h("span", { class: "dim", text: "Judge: " }),
+        c.arm_a + " " + J.a + " \\u00b7 " + c.arm_b + " " + J.b + " \\u00b7 tie " + J.tie + "  ",
+        h("b", { text: judgeLean }),
+        h("span", { class: "dim3", text: "  \\u2014 advisory, not an official verdict" })));
+    app.append(banner);
+  }
   /* tallies are navigation [EVAL-19 AC-5]: every count filters to its slice,
      and the slice lives in the URL. Predicates mirror compare.py's summary
      arithmetic exactly, so a tally always equals its filtered row count. */
@@ -1002,6 +1056,8 @@ function renderCompare(app) {
     if (p.judge) bar.append(h("span", { class: "chip", text: "judge: " + p.judge.winner + " (ADVISORY)" }));
     if (p.disagreement) bar.append(h("span", { class: "chip", text: "disagreement" }));
     card.append(bar);
+    card.append(armHead(c));
+    card.append(h("div", { class: "dim3 difflegend", text: "diff \\u2014 red: only in A/" + c.arm_a + " \\u00b7 green: only in B/" + c.arm_b + " \\u00b7 unhighlighted: identical in both" }));
     const diff = h("div", { class: "diff2" });
     const left = h("div", {}, h("div", { class: "code" })), right = h("div", {}, h("div", { class: "code" }));
     for (const seg of p.segments) {
@@ -1015,6 +1071,13 @@ function renderCompare(app) {
     diff.append(left, right);
     card.append(diff);
     if (p.judge && p.judge.reason) card.append(h("div", { class: "dim3", style: "margin-top:6px", text: "judge reason: " + p.judge.reason }));
+    if ((p.a.reasoning && p.a.reasoning.length) || (p.b.reasoning && p.b.reasoning.length)) {
+      card.append(h("div", { class: "dim", style: "margin-top:10px;margin-bottom:4px", text: "Flight recorder \\u00b7 reasoning (operator-tier, unblinded)" }));
+      card.append(armHead(c));
+      const rz = h("div", { class: "diff2 rz" });
+      rz.append(reasoningCol(p.a.reasoning), reasoningCol(p.b.reasoning));
+      card.append(rz);
+    }
     app.append(card);
   }
 }

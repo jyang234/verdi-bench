@@ -84,6 +84,7 @@ def _read_workspace_diff(artifacts_path) -> str:
     parts: list[str] = []
     total = 0
     omitted = 0
+    binary_skipped = 0
     for p in sorted(workspace.rglob("*")):
         if p.is_symlink():
             continue
@@ -95,8 +96,19 @@ def _read_workspace_diff(artifacts_path) -> str:
             continue
         if p.name == _GRADER_OUTPUT:
             continue
+        # Generated/compiled trees and binary files are not a legible diff for a
+        # human or the judge — a .pyc rendered byte-by-byte is noise, and an agent
+        # that imports or builds routinely produces them. Exclude them (disclosed
+        # below), keeping the diff to the agent-authored TEXT [F-M-J1 legibility].
+        if "__pycache__" in p.parts:
+            binary_skipped += 1
+            continue
+        raw = p.read_bytes()
+        if b"\x00" in raw[:8192]:  # NUL byte ⇒ binary (git's heuristic)
+            binary_skipped += 1
+            continue
         rel = p.relative_to(workspace).as_posix()
-        content = p.read_text(encoding="utf-8", errors="replace")
+        content = raw.decode("utf-8", errors="replace")
         if len(content) > PER_FILE_DIFF_CAP:
             content = (
                 content[:PER_FILE_DIFF_CAP]
@@ -108,6 +120,10 @@ def _read_workspace_diff(artifacts_path) -> str:
             continue
         total += len(entry)
         parts.append(entry)
+    if binary_skipped:
+        parts.append(
+            f"--- [verdi: {binary_skipped} binary/generated file(s) excluded from the diff] ---"
+        )
     if omitted:
         parts.append(
             f"--- [verdi: {omitted} file(s) omitted — total diff budget "

@@ -24,6 +24,7 @@ from ..schema.experiment import Arm
 from .egress import undeclared_model_egress
 from .redact import redact_artifacts
 from .settings import MissingProviderKeyError
+from .flight_recorder import FlightRecorder, persist_flight_recorder
 from .trajectory import TrajectoryCorruptError, TrajectoryRecord, persist_trajectory
 from .types import RunConfig, Task, TrialRequest
 
@@ -201,6 +202,7 @@ def run_trial(
     # no trial event, and a second failure here would mask the engine's more
     # specific reason.
     trajectory_sha: Optional[str] = None
+    flight_recorder_sha: Optional[str] = None
     if result.outcome != Outcome.infra_failed:
         try:
             native_log = _redacted_native_log(Path(result.artifacts_dir), trial_id)
@@ -220,6 +222,23 @@ def run_trial(
             try:
                 trajectory_sha = persist_trajectory(
                     TrajectoryRecord(trial_id=trial_id, platform=arm.platform, steps=steps),
+                    result.artifacts_dir,
+                    extra_patterns,
+                )
+            except BaseException as exc:  # PRA-M8: carry the already-incurred spend
+                raise _attach_spend(exc)
+
+        # Flight recorder capture [EVAL-24 AC-1] — reasoning is a SEPARATE artifact
+        # from the graded trajectory, from the same already-scrubbed native log,
+        # through the same redaction door. No reasoning → None: no artifact, no
+        # sha (honest absence [AC-4]); a corrupt/unwritable recorder fails closed.
+        reasoning = (
+            adapter.normalize_reasoning(native_log) if native_log is not None else None
+        )
+        if reasoning is not None:
+            try:
+                flight_recorder_sha = persist_flight_recorder(
+                    FlightRecorder(trial_id=trial_id, platform=arm.platform, entries=reasoning),
                     result.artifacts_dir,
                     extra_patterns,
                 )
@@ -279,4 +298,5 @@ def run_trial(
         flags=flags,
         artifacts_path=str(result.artifacts_dir),
         trajectory_sha=trajectory_sha,
+        flight_recorder_sha=flight_recorder_sha,
     )

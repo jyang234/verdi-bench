@@ -1,0 +1,4 @@
+# generated run state (ledgers, workspaces, findings, dossiers, proxy logs)
+_run/
+# captured evidence logs
+*.log

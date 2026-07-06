@@ -55,9 +55,13 @@ VERSION_KEY = "verdi_log_version"
 # strict at EVERY level: a typo'd block name ("telemetrie") or a v2 feature
 # under a v1 declaration must fail loudly, never launder into honest absence —
 # the same rule extra="forbid" enforces inside the blocks.
+# "reasoning" is the EVAL-24 additive reasoning-capture extension: an OPTIONAL
+# top-level list, valid at any declared version (absent = no reasoning). Existing
+# logs without it parse unchanged forever; a log that opts in feeds the flight
+# recorder [EVAL-24 AC-1]. It is a separate artifact from the graded trajectory.
 _TOP_LEVEL_KEYS = {
-    1: frozenset({VERSION_KEY, "telemetry", "trajectory"}),
-    2: frozenset({VERSION_KEY, "telemetry", "trajectory", "telemetry_by_model"}),
+    1: frozenset({VERSION_KEY, "telemetry", "trajectory", "reasoning"}),
+    2: frozenset({VERSION_KEY, "telemetry", "trajectory", "telemetry_by_model", "reasoning"}),
 }
 
 
@@ -142,6 +146,35 @@ def normalize_generic_trajectory(native_log: dict) -> Optional[list[TrajectorySt
         except ValidationError as e:
             raise GenericLogError(f"trajectory[{i}] is not a valid step: {e}") from e
     return steps
+
+
+def normalize_generic_reasoning(native_log: dict) -> Optional[list[ReasoningEntry]]:
+    """The optional ``reasoning`` list → ordered :class:`ReasoningEntry` [EVAL-24 AC-1].
+
+    An absent ``reasoning`` key (or a non-verdi / undeclared log) is the honest
+    no-reasoning state (``None``), distinct from an empty list. Entries validate
+    through :class:`ReasoningEntry`; a declared log with a malformed ``reasoning``
+    block fails loud (the trajectory-block precedent), never a silent null.
+    """
+    from ..run.flight_recorder import ReasoningEntry  # lazy: breaks the adapters<->run load cycle
+
+    if declared_version(native_log) is None:
+        return None
+    raw = native_log.get("reasoning")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise GenericLogError(
+            f"reasoning must be a list of entries, got {type(raw).__name__}; "
+            "omit the key entirely for an honestly absent flight recorder"
+        )
+    entries: list[ReasoningEntry] = []
+    for i, item in enumerate(raw):
+        try:
+            entries.append(ReasoningEntry.model_validate(item))
+        except ValidationError as e:
+            raise GenericLogError(f"reasoning[{i}] is not a valid entry: {e}") from e
+    return entries
 
 
 def normalize_generic_by_model(

@@ -188,12 +188,19 @@ def record_trial(ledger_path, ctx: EventContext, *, trial_record: dict) -> dict:
     a round-trip). Absent field = pre-EVAL-12 trial or an honestly absent
     trajectory; no reader may require it, and legacy chains are never refused
     over it.
+
+    ``flight_recorder_sha`` (EVAL-24-D001) binds the per-trial reasoning artifact
+    the same insert-only-when-present way; absent = a trial that captured no
+    reasoning. It is operator-tier / advisory-review data, never a graded input.
     """
     trial_record = dict(trial_record)
     sha = trial_record.pop("trajectory_sha", None)
+    fr_sha = trial_record.pop("flight_recorder_sha", None)
     payload: dict = {"trial_record": trial_record}
     if sha is not None:
         payload["trajectory_sha"] = sha
+    if fr_sha is not None:
+        payload["flight_recorder_sha"] = fr_sha
     return emit(ledger_path, ctx, TRIAL, payload)
 
 

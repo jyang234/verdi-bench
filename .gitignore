@@ -11,3 +11,7 @@ htmlcov/
 # experiment notebooks / ledgers written during local runs
 /scratch/
 *.ndjson.local
+# provider API keys — never commit real secrets (load via `uv run --env-file .env`)
+.env
+.env.*
+!.env.example

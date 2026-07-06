@@ -1,0 +1,9 @@
+tasks:
+  - {id: t1, prompt: "Implement add(a, b) returning the sum.",         task_class: refactor, fake_behavior: {native_log: {total_cost_usd: 0.02}}}
+  - {id: t2, prompt: "Implement sub(a, b) returning the difference.",  task_class: refactor, fake_behavior: {native_log: {total_cost_usd: 0.02}}}
+  - {id: t3, prompt: "Implement mul(a, b) returning the product.",     task_class: refactor, fake_behavior: {native_log: {total_cost_usd: 0.02}}}
+  - {id: t4, prompt: "Fix off-by-one in rng(n).",                      task_class: bugfix,   fake_behavior: {native_log: {total_cost_usd: 0.02}}}
+  - {id: t5, prompt: "Fix null deref in parse(s).",                    task_class: bugfix,   fake_behavior: {native_log: {total_cost_usd: 0.02}}}
+  - {id: t6, prompt: "Fix race in cache.get(k).",                      task_class: bugfix,   fake_behavior: {native_log: {total_cost_usd: 0.02}}}
+  - {id: t7, prompt: "Add pagination to list_items().",               task_class: feature,  fake_behavior: {native_log: {total_cost_usd: 0.02}}}
+  - {id: t8, prompt: "Add retry to fetch(url).",                       task_class: feature,  fake_behavior: {native_log: {total_cost_usd: 0.02}}}

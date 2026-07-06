@@ -50,6 +50,23 @@ _AGENT_LABEL_RE = re.compile(
 UNATTRIBUTED = "unattributed"
 
 
+def validate_agent_label(v: Optional[str]) -> Optional[str]:
+    """Closed-vocabulary agent-role check, shared by the trajectory step and the
+    flight recorder's reasoning entry [EVAL-21 AC-3; EVAL-24 AC-6]: ``None``
+    (unattributed) or a ``role(-ordinal)`` label, else a ``ValueError`` the
+    generic parse surfaces as :class:`~harness.adapters.generic.GenericLogError`.
+    Identity leakage is unrepresentable, not scrubbed — a label outside the
+    vocabulary is refused."""
+    if v is None:
+        return v
+    if not _AGENT_LABEL_RE.fullmatch(v):
+        raise ValueError(
+            f"agent label {v!r} is not in the closed role vocabulary "
+            f"{sorted(AGENT_ROLES)} (optionally '-<ordinal>', e.g. 'worker-2') [EVAL-21 AC-3]"
+        )
+    return v
+
+
 class TrajectoryCorruptError(RuntimeError):
     """A trajectory could not be persisted or read back intact [AC-2].
 
@@ -95,18 +112,11 @@ class TrajectoryStep(BaseModel):
     @field_validator("agent")
     @classmethod
     def _agent_in_vocabulary(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
         # AC-3: identity leakage is unrepresentable, not scrubbed — a label
         # outside the closed vocabulary ('llama-planner', free text) is refused
         # at the schema, which the generic parse surfaces as GenericLogError.
-        if not _AGENT_LABEL_RE.fullmatch(v):
-            raise ValueError(
-                f"agent label {v!r} is not in the closed role vocabulary "
-                f"{sorted(AGENT_ROLES)} (optionally '-<ordinal>', e.g. "
-                "'worker-2') [EVAL-21 AC-3]"
-            )
-        return v
+        # Shared with the flight recorder's ReasoningEntry [EVAL-24 AC-6].
+        return validate_agent_label(v)
 
 
 class TrajectoryRecord(BaseModel):

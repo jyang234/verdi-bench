@@ -216,3 +216,94 @@ def test_ac5_feed_tail_ergonomics(tmp_path):
         assert out["__errors"] == []
     finally:
         srv.shutdown(); srv.server_close(); thread.join(timeout=5)
+
+
+def _reasoning_experiment(exp_dir):
+    """A 2-arm generic experiment whose native log carries agent-attributed
+    reasoning — for driving the compare screen's flight-recorder panel [EVAL-24]."""
+    from pathlib import Path
+
+    import yaml
+
+    from harness.judge.assemble import comparison_id_for
+    from harness.ledger.query import read_events
+    from harness.plan.interleave import derive_schedule, enumerate_trials
+    from harness.run.engines.fake import FakeEngine
+    from harness.run.interleave import schedule
+    from harness.run.types import RunConfig, Task
+    from tests.fixtures.builders import fixed_ctx, locked_experiment
+
+    arms_cfg = [
+        {"name": "control", "platform": "generic",
+         "model": "anthropic/claude-haiku-4-5-20251001", "payload": {}},
+        {"name": "treatment", "platform": "generic",
+         "model": "openai/gpt-4.1-mini-2025-04-14", "payload": {}},
+    ]
+    spec, _sp, ledger = locked_experiment(exp_dir, arms=arms_cfg, repetitions=1)
+    (exp_dir / "tasks.yaml").write_text(
+        yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "p"}]}), encoding="utf-8")
+    ctx = fixed_ctx(experiment_id=exp_dir.name)
+    arms = {a.name: a for a in spec.arms}
+    native = {"verdi_log_version": 1, "telemetry": {"tokens_out": 40},
+              "trajectory": [{"kind": "file_edit", "files_touched": ["solution.py"], "agent": "worker-1"}],
+              "reasoning": [
+                  {"content": "plan: decompose into add, then verify", "agent": "planner"},
+                  {"content": "add(a, b) returns a + b; handled overflow", "agent": "worker-1"}]}
+    tasks = {"t1": Task(id="t1", prompt="p", fake_behavior={"native_log": native})}
+    order = derive_schedule(spec.seed, enumerate_trials(["t1"], list(arms), 1))
+    schedule(order, tasks=tasks, arms=arms, workspace_root=exp_dir / "workspaces",
+             ledger_path=ledger, ctx=ctx, config=RunConfig(engine=FakeEngine()),
+             cost_ceiling=spec.cost_ceiling.amount)
+    trial_ids = {}
+    for ev in read_events(ledger):
+        if ev.get("event") == "trial":
+            rec = ev["trial_record"]
+            trial_ids[rec["arm"]] = rec["trial_id"]
+            ws = Path(rec["artifacts_path"]).parent
+            ws.mkdir(parents=True, exist_ok=True)
+            (ws / "solution.py").write_text(f"# {rec['arm']}\n", encoding="utf-8")
+    for arm, passed in (("control", False), ("treatment", True)):
+        ledger_events.record_grade(
+            ledger, ctx, trial_id=trial_ids[arm], task_sha="s",
+            assertions=[{"id": "h1", "source": "holdout_test",
+                         "result": "pass" if passed else "fail"}],
+            binary_score=passed)
+    ledger_events.append_verdict(ledger, ctx, verdict={
+        "comparison_id": comparison_id_for("t1", 0), "winner": "B", "reason": "x",
+        "provenance": {"judge_model": "google/gemini-1.5-pro-002", "rubric_sha256": "s"}})
+    return exp_dir
+
+
+def test_compare_renders_flight_recorder_reasoning_by_role(tmp_path):
+    """The compare screen renders per-arm reasoning grouped by sub-agent role —
+    the EVAL-24 flight recorder, operator-tier. Skips honest without the browser
+    stack (the docker-marker precedent); the compare-payload data itself is
+    covered locally by test_ac5/test_ac6 in test_eval24_flightrec.py."""
+    _reasoning_experiment(tmp_path / "exp-r")
+    srv, thread, base = _serve_root(tmp_path)
+    try:
+        body = """
+  await page.goto(BASE + '/#/exp/exp-r/compare', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(2000);
+  out.rz = await page.evaluate(() => ({
+    panels: document.querySelectorAll('.rz').length,
+    roles: [...document.querySelectorAll('.rz .role')].map(e => e.textContent),
+    hasContent: document.body.textContent.includes('decompose into add'),
+    armheads: [...document.querySelectorAll('.armhead')].map(e => e.textContent),
+    body: document.body.textContent,
+  }));
+"""
+        out = drive(base, body, tmp_path)
+        assert out["rz"]["panels"] >= 1                 # the reasoning panel renders
+        assert "planner" in out["rz"]["roles"]          # grouped by sub-agent role
+        assert "worker-1" in out["rz"]["roles"]
+        assert out["rz"]["hasContent"] is True          # reasoning content shown
+        # the columns are labeled with the arms (A · control / B · treatment)
+        assert any("control" in a and "treatment" in a for a in out["rz"]["armheads"])
+        # model names surfaced, plain-language result banner, and a diff legend
+        assert "claude-haiku" in out["rz"]["body"]
+        assert "Primary (holdout pass)" in out["rz"]["body"]
+        assert "red: only in A" in out["rz"]["body"]
+        assert out["__errors"] == []
+    finally:
+        srv.shutdown(); srv.server_close(); thread.join(timeout=5)
