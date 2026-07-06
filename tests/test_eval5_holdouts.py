@@ -1,0 +1,171 @@
+"""First-class polymorphic holdouts [refactor 05 §1].
+
+Exercises the declared-holdout hierarchy (materialize/execute/load), the
+host-side ``LocalExecutingGradeRunner`` (ADVISORY), the ``run_holdouts``
+in-image entrypoint's fenced/nonce discipline, the SDK inline-holdout sugar
+(compiled out to ``holdouts_dir``, never serialized), and the single-sourced
+``holdout_results.json`` constant. All non-docker; the real container path is
+proved in ``tests/test_e2e_run_holdouts.py``.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from harness.grade.deterministic import parse_holdout_output
+from harness.grade.holdouts import (
+    AssertionHoldout,
+    CommandHoldout,
+    PytestFileHoldout,
+    as_holdout,
+    assertions_to_raw,
+    load_declared_holdout,
+)
+
+
+def _solution(ws, body="def add(a, b):\n    return a + b\n"):
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "solution.py").write_text(body, encoding="utf-8")
+    return ws
+
+
+_ADD5 = "from solution import add; assert add(2, 3) == 5"
+
+
+# --- holdout.json v1 contract (A2) -----------------------------------------
+def test_assertion_holdout_json_is_v1_shape(tmp_path):
+    hd = tmp_path / "hd"
+    AssertionHoldout(expression=_ADD5, id="h1").materialize(hd)
+    spec = json.loads((hd / "holdout.json").read_text())
+    assert spec == {
+        "schema_version": 1, "kind": "assertion", "id": "h1", "expression": _ADD5,
+    }
+
+
+def test_pytest_holdout_writes_side_file_and_excludes_body(tmp_path):
+    hd = tmp_path / "hd"
+    body = "def test_add():\n    from solution import add\n    assert add(2, 3) == 5\n"
+    PytestFileHoldout(path="test_holdout.py", body=body, id="hp").materialize(hd)
+    spec = json.loads((hd / "holdout.json").read_text())
+    # the body is a materialize-time input, NOT part of the contract file
+    assert spec == {"schema_version": 1, "kind": "pytest", "id": "hp",
+                    "path": "test_holdout.py"}
+    assert (hd / "test_holdout.py").read_text() == body  # the side file IS the content
+
+
+def test_command_holdout_json_is_v1_shape(tmp_path):
+    hd = tmp_path / "hd"
+    CommandHoldout(argv=["true"], id="hc").materialize(hd)
+    spec = json.loads((hd / "holdout.json").read_text())
+    assert spec == {"schema_version": 1, "kind": "command", "id": "hc", "argv": ["true"]}
+
+
+# --- execution semantics (subprocess, exit 0 = pass) -----------------------
+def test_assertion_holdout_pass_and_fail(tmp_path):
+    h = AssertionHoldout(expression=_ADD5)
+    passed = h.execute(_solution(tmp_path / "ok"))
+    assert [a.result.value for a in passed] == ["pass"]
+    assert passed[0].source == "holdout_test" and passed[0].detail is None
+
+    failed = h.execute(_solution(tmp_path / "bad", "def add(a, b):\n    return a + b + 1\n"))
+    assert [a.result.value for a in failed] == ["fail"]
+    assert failed[0].detail  # a diagnostic is attached on failure
+
+
+def test_pytest_holdout_executes_after_reload(tmp_path):
+    hd = tmp_path / "hd"
+    PytestFileHoldout(
+        path="test_holdout.py",
+        body="def test_add():\n    from solution import add\n    assert add(2, 3) == 5\n",
+    ).materialize(hd)
+    # reload from disk (no body) — execute must still find the materialized file
+    loaded = load_declared_holdout(hd)
+    assert loaded.execute(_solution(tmp_path / "ws"))[0].result.value == "pass"
+
+
+def test_command_holdout_exit_code_is_the_verdict(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    assert CommandHoldout(argv=["python", "-c", "exit(0)"]).execute(ws)[0].result.value == "pass"
+    assert CommandHoldout(argv=["python", "-c", "exit(1)"]).execute(ws)[0].result.value == "fail"
+
+
+def test_execute_scrubs_fence_nonce_and_sets_no_bytecode(tmp_path, monkeypatch):
+    """The child that runs agent code must NOT see the fence nonce (deep-dive
+    §2.4) and must run with PYTHONDONTWRITEBYTECODE=1 (no __pycache__ in the
+    graded diff). Assert both from inside the executed subprocess."""
+    monkeypatch.setenv("VERDI_FENCE_NONCE", "super-secret-nonce")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    expr = (
+        "import os; "
+        "assert 'VERDI_FENCE_NONCE' not in os.environ, 'nonce leaked to child'; "
+        "assert os.environ.get('PYTHONDONTWRITEBYTECODE') == '1'"
+    )
+    assert AssertionHoldout(expression=expr).execute(ws)[0].result.value == "pass"
+
+
+def test_executed_assertions_flow_through_frozen_parser(tmp_path):
+    """assertions_to_raw + parse_holdout_output round-trips to holdout_test
+    assertions — the frozen deterministic parser is unchanged."""
+    assertions = AssertionHoldout(expression=_ADD5, id="hx").execute(_solution(tmp_path / "ws"))
+    reparsed = parse_holdout_output(assertions_to_raw(assertions))
+    assert [(a.id, a.source, a.result.value) for a in reparsed] == [("hx", "holdout_test", "pass")]
+
+
+# --- loader: opaque/bespoke stays unchanged (A2) ---------------------------
+def test_loader_none_for_missing_file(tmp_path):
+    assert load_declared_holdout(tmp_path / "nope") is None
+
+
+def test_loader_none_for_opaque_holdout_without_kind(tmp_path):
+    """A holdout.json without a ``kind`` is opaque input for a bespoke grader
+    image — nothing existing breaks; it must NOT be library-executed."""
+    hd = tmp_path / "hd"
+    hd.mkdir()
+    (hd / "holdout.json").write_text(
+        json.dumps({"fail_to_pass": ["t::x"], "test_patch": "diff ..."}), encoding="utf-8"
+    )
+    assert load_declared_holdout(hd) is None
+
+
+def test_loader_roundtrips_each_kind(tmp_path):
+    for h in (
+        AssertionHoldout(expression=_ADD5, id="a"),
+        PytestFileHoldout(path="t.py", body="def test_x():\n    assert True\n", id="p"),
+        CommandHoldout(argv=["true"], id="c"),
+    ):
+        hd = tmp_path / h.id
+        h.materialize(hd)
+        loaded = load_declared_holdout(hd)
+        assert type(loaded) is type(h) and loaded.id == h.id
+
+
+def test_loader_rejects_unknown_kind_loudly(tmp_path):
+    hd = tmp_path / "hd"
+    hd.mkdir()
+    (hd / "holdout.json").write_text(
+        json.dumps({"schema_version": 1, "kind": "sorcery"}), encoding="utf-8"
+    )
+    with pytest.raises(Exception):  # pydantic discriminator ValidationError
+        load_declared_holdout(hd)
+
+
+def test_loader_rejects_future_schema_version_loudly(tmp_path):
+    hd = tmp_path / "hd"
+    hd.mkdir()
+    (hd / "holdout.json").write_text(
+        json.dumps({"schema_version": 2, "kind": "assertion", "expression": "assert True"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(Exception):
+        load_declared_holdout(hd)
+
+
+def test_as_holdout_accepts_instance_and_dict():
+    inst = AssertionHoldout(expression="assert True")
+    assert as_holdout(inst) is inst
+    coerced = as_holdout({"kind": "assertion", "expression": "assert True"})
+    assert isinstance(coerced, AssertionHoldout)
