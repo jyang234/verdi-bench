@@ -276,15 +276,18 @@ def test_extract_assertion_values():
 
 
 # --- AC-3: the deterministic tier imports no LLM client ------------------------
-def test_ac3_deterministic_tier_llm_free():
+@pytest.mark.parametrize("module_rel", ["detectors.py", "assembler.py"])
+def test_ac3_deterministic_tier_llm_free(module_rel):
     """The contract is kept in lint-imports, and a planted provider import in
-    detectors.py actually breaks it [AC-3 VC] — the test_import_contracts
-    plant-and-restore pattern."""
+    each deterministic-tier module actually breaks it [AC-3 VC] — the
+    test_import_contracts plant-and-restore pattern. The assembler joined the
+    tier in the run_forensics decomposition [refactor 06 §5]: it prepares the
+    review transcript but requests no completion, so it must stay LLM-free."""
     cfg = (_REPO / ".importlinter").read_text(encoding="utf-8")
     assert "forensics-deterministic-tier-llm-free" in cfg
 
     lint = Path(sys.executable).parent / "lint-imports"
-    module = _REPO / "harness" / "forensics" / "detectors.py"
+    module = _REPO / "harness" / "forensics" / module_rel
     original = module.read_text(encoding="utf-8")
     injected = (
         original
@@ -297,7 +300,7 @@ def test_ac3_deterministic_tier_llm_free():
             [str(lint)], cwd=_REPO, capture_output=True, text=True, timeout=120
         )
         assert result.returncode != 0, (
-            "planting an LLM-client import in detectors.py did not break any "
+            f"planting an LLM-client import in {module_rel} did not break any "
             f"contract:\n{result.stdout}"
         )
         assert "BROKEN" in result.stdout, result.stdout
