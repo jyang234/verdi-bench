@@ -1,25 +1,25 @@
 """Engine base — the template-method contract every engine inherits [refactor 04 §2].
 
-Before this module the ``Engine`` contract was folklore reverse-engineered from
-Harbor: write ``artifacts/agent_log.json``, resolve an immutable image digest,
-confirm kill-on-timeout, honour the closed ``failure_reason`` vocabulary, and keep
-the in-memory ``native_log`` consistent with the on-disk pre-redaction bytes. Those
-obligations now live here as a shared post-run ladder so a new engine gets them by
-inheritance instead of by imitation. The normative statement of the contract is
-``docs/engines.md``.
+Before this module the ``Engine`` contract was folklore reverse-engineered from the
+one containerizing engine: write ``artifacts/agent_log.json``, resolve an immutable
+image digest, confirm kill-on-timeout, honour the closed ``failure_reason``
+vocabulary, and keep the in-memory ``native_log`` consistent with the on-disk
+pre-redaction bytes. Those obligations now live here as a shared post-run ladder so a
+new engine gets them by inheritance instead of by imitation. The normative statement
+of the contract is ``docs/engines.md``.
 
 :class:`EngineBase.run` is the FINAL template: ``_resolve_image`` (digest pin or
 refuse) → ``_execute`` (the only subclass-owned step) → the shared fail-closed
 readers ``_read_native_log`` (RN-17) and ``_scan_proxy_log`` (PRA-H4) → ``_assemble``
 (the outcome-downgrade precedence ``kill_failed > daemon_error > timeout >
 telemetry_corrupt > proxy_log_missing``). The first three of that precedence are
-determined by the engine inside ``_execute`` (Harbor from the container result, the
-fake from its script); the last two are the shared downgrades applied here, each
-only against a would-be-``completed`` trial so a more specific reason is never
-masked.
+determined by the engine inside ``_execute`` (a containerizing engine from the
+container result, a scripted engine from its script); the last two are the shared
+downgrades applied here, each only against a would-be-``completed`` trial so a more
+specific reason is never masked.
 
-This module names no engine: Harbor imports :class:`EngineBase`, never the reverse
-[EVAL-4 AC-1, the harbor-confinement contract + the AST seam sweep].
+This module names no engine: the engine modules import :class:`EngineBase`, never the
+reverse [EVAL-4 AC-1, the engine-confinement contract + the AST seam sweep].
 """
 
 from __future__ import annotations
@@ -35,10 +35,11 @@ from ..environment import stage_files
 from ..types import EngineResult, TrialRequest
 
 # The closed engine ``failure_reason`` vocabulary [refactor 04 §2/§6]. Every reason a
-# REAL engine (Harbor + the shared downgrades) may stamp onto an infra failure is a
-# member — the scheduler ledgers these verbatim and ``proxy_log_missing`` additionally
-# aborts the run in ``interleave.py``. The fake engine may script an ARBITRARY
-# ``infra_reason`` placeholder (a fixture affordance, not part of the contract).
+# REAL engine (a containerizing engine + the shared downgrades) may stamp onto an
+# infra failure is a member — the scheduler ledgers these verbatim and
+# ``proxy_log_missing`` additionally aborts the run in ``interleave.py``. A scripted
+# engine may script an ARBITRARY ``infra_reason`` placeholder (a fixture affordance,
+# not part of the contract).
 ENGINE_FAILURE_REASONS: frozenset[str] = frozenset(
     {"unpinned_image", "kill_failed", "daemon_error", "telemetry_corrupt", "proxy_log_missing"}
 )
@@ -78,8 +79,8 @@ class ResolvedImage:
 @dataclass
 class EgressObservation:
     """The per-trial egress a metering proxy attributed to a trial [RN-11]: the hosts
-    attempted, whether any was denied, and any metered cost. Harbor derives this from
-    the shared proxy-log scan; a scripted engine reports its own."""
+    attempted, whether any was denied, and any metered cost. A containerizing engine
+    derives this from the shared proxy-log scan; a scripted engine reports its own."""
 
     attempts: list[str] = field(default_factory=list)
     violation: bool = False
@@ -91,18 +92,18 @@ class ExecOutcome:
     """What a subclass's :meth:`EngineBase._execute` produces — the container/agent
     result BEFORE the shared fail-closed post-run ladder runs. ``outcome`` already
     carries the engine-determined head of the precedence (``kill_failed >
-    daemon_error > timeout`` for Harbor; the scripted outcome for the fake); the
-    shared ``_assemble`` layers ``telemetry_corrupt`` then ``proxy_log_missing`` on
-    top.
+    daemon_error > timeout`` for a containerizing engine; the scripted outcome for a
+    scripted engine); the shared ``_assemble`` layers ``telemetry_corrupt`` then
+    ``proxy_log_missing`` on top.
 
-    ``native_log`` is the engine's IN-MEMORY telemetry, set ONLY by a scripted
-    engine (the fake) so its telemetry stays decoupled from the on-disk log a
-    fixture may corrupt to exercise the seam's trajectory fail-closed path — the
-    dual-source invariant (telemetry from memory, trajectory from redacted disk).
-    Left ``None``, the shared ``_read_native_log`` reads the on-disk log with
-    fail-closed RN-17 semantics (Harbor's only telemetry source). ``egress`` is set
-    ONLY by an engine that reports its own egress (the fake); left ``None``, the
-    shared proxy-log scan is the egress source (Harbor)."""
+    ``native_log`` is the engine's IN-MEMORY telemetry, set ONLY by a scripted engine
+    so its telemetry stays decoupled from the on-disk log a fixture may corrupt to
+    exercise the seam's trajectory fail-closed path — the dual-source invariant
+    (telemetry from memory, trajectory from redacted disk). Left ``None``, the shared
+    ``_read_native_log`` reads the on-disk log with fail-closed RN-17 semantics (a
+    containerizing engine's only telemetry source). ``egress`` is set ONLY by an
+    engine that reports its own egress (a scripted engine); left ``None``, the shared
+    proxy-log scan is the egress source (a containerizing engine)."""
 
     outcome: Outcome
     exit_status: Optional[int] = None
@@ -181,8 +182,8 @@ class EngineBase(ABC):
 
     def _prepare_workspace(self, req: TrialRequest) -> None:
         """Make the artifacts dir and stage the task's declared fixture files into
-        ``/workspace`` before the agent runs [A3, refactor 03 §5] — shared so the
-        fake materializes the same tree a real container would see."""
+        ``/workspace`` before the agent runs [A3, refactor 03 §5] — shared so a
+        scripted engine materializes the same tree a real container would see."""
         self._artifacts_dir(req).mkdir(parents=True, exist_ok=True)
         stage_files(req.workspace, req.files or {})
 
@@ -284,7 +285,8 @@ class EngineBase(ABC):
         proxy_log_missing: bool,
     ) -> EngineResult:
         """Fold the execution result and the two fail-closed signals into the record
-        with the shared downgrade precedence [byte-preserved from the old harbor.run].
+        with the shared downgrade precedence [byte-preserved from the pre-refactor
+        containerizing engine's ``run`` body].
 
         ``telemetry_corrupt`` (RN-17) then ``proxy_log_missing`` (PRA-H4) each
         downgrade ONLY a would-be-``completed`` trial, so an engine-determined
