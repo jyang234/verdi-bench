@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -24,6 +24,7 @@ from harness.ledger.query import find_events, read_events
 from harness.review.serve import DEFAULT_HOST, make_review_server
 from tests.fixtures.browser import drive
 from tests.fixtures.builders import fixed_ctx, seed_trial_and_grade, write_experiment_yaml
+from tests.fixtures.servers import running_server
 
 runner = CliRunner()
 _ARMS = ("control", "treatment")
@@ -67,17 +68,10 @@ def reviewed_experiment(expdir: Path, *, tasks: int = 2) -> Path:
     return ledger
 
 
+@contextmanager
 def _serve(expdir: Path, reviewer: str = "alice"):
-    srv = make_review_server(expdir, reviewer=reviewer, port=0)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
-    return srv, thread, f"http://127.0.0.1:{srv.server_address[1]}"
-
-
-def _stop(srv, thread):
-    srv.shutdown()
-    srv.server_close()
-    thread.join(timeout=5)
+    with running_server(make_review_server(expdir, reviewer=reviewer, port=0)) as base:
+        yield base
 
 
 def _get(base: str, path: str) -> tuple[int, bytes]:
@@ -103,8 +97,7 @@ def _post(base: str, path: str, body: dict, *, headers: dict | None = None):
 def test_ac1_isolation_routes_imports_scrub(tmp_path):
     expdir = tmp_path / "exp"
     reviewed_experiment(expdir)
-    srv, thread, base = _serve(expdir)
-    try:
+    with _serve(expdir) as base:
         # the operator tier does not exist on this server
         for route in ("/api/status", "/api/events", "/api/timeline", "/api/compare",
                       "/api/trial", "/api/experiments", "/api/fence", "/artifact"):
@@ -123,8 +116,6 @@ def test_ac1_isolation_routes_imports_scrub(tmp_path):
         assert excinfo.value.code == 409
         assert "leaking packet" in json.loads(excinfo.value.read())["error"]
         packet_path.write_text(original, encoding="utf-8")
-    finally:
-        _stop(srv, thread)
 
     # the isolation is a contract, and it is load-bearing: a planted operator
     # import into the review subsystem breaks lint [the XC-5 plant pattern]
@@ -154,8 +145,7 @@ def test_ac1_isolation_routes_imports_scrub(tmp_path):
 def test_ac2_capture_then_reveal_one_event_each(tmp_path):
     expdir = tmp_path / "exp"
     ledger = reviewed_experiment(expdir)
-    srv, thread, base = _serve(expdir, reviewer="blind-bob")
-    try:
+    with _serve(expdir, reviewer="blind-bob") as base:
         # pre-verdict, nothing served carries an arm string
         _, queue_raw = _get(base, "/api/queue")
         _, page = _get(base, "/")
@@ -217,8 +207,6 @@ def test_ac2_capture_then_reveal_one_event_each(tmp_path):
         assert read_events(ledger)[-1]["event"] == "reveal"
         code, _ = _post(base, "/api/reveal", {"comparison_id": cid})
         assert code == 409  # one unblinding per comparison [RV-8]
-    finally:
-        _stop(srv, thread)
 
 
 # --- AC-3: mutation posture ---------------------------------------------------------
@@ -234,8 +222,7 @@ def test_ac3_mutation_posture(tmp_path, monkeypatch):
     assert result.exit_code == 2 and "--actor" in result.output
     assert DEFAULT_HOST == "127.0.0.1"
 
-    srv, thread, base = _serve(expdir)
-    try:
+    with _serve(expdir) as base:
         digest_before = sorted(
             (str(p.relative_to(expdir)), hashlib.sha256(p.read_bytes()).hexdigest())
             for p in expdir.rglob("*") if p.is_file()
@@ -254,8 +241,6 @@ def test_ac3_mutation_posture(tmp_path, monkeypatch):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(req)
         assert excinfo.value.code == 405
-    finally:
-        _stop(srv, thread)
 
     # no new event kinds arrived with this story
     from harness.ledger.events import REGISTERED_EVENTS
@@ -273,8 +258,7 @@ def test_ac4_queue_keyboard_drive(tmp_path):
 
     expdir = tmp_path / "exp"
     ledger = reviewed_experiment(expdir)
-    srv, thread, base = _serve(expdir, reviewer="kbd-reviewer")
-    try:
+    with _serve(expdir, reviewer="kbd-reviewer") as base:
         body = """
   await page.goto(BASE + '/', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1200);
@@ -311,8 +295,6 @@ def test_ac4_queue_keyboard_drive(tmp_path):
         assert out["__errors"] == []
         hv = find_events(ledger, "human_verdict")
         assert len(hv) == 1 and hv[0]["provenance"]["actor"] == "kbd-reviewer"
-    finally:
-        _stop(srv, thread)
 
 
 # --- AC-5: dual-server isolation, verbatim packet bytes ----------------------------------
@@ -322,12 +304,7 @@ def test_ac5_dual_server_isolation(tmp_path):
     expdir = tmp_path / "exp"
     reviewed_experiment(expdir)
 
-    operator = make_server(expdir, port=0)
-    op_thread = threading.Thread(target=operator.serve_forever, daemon=True)
-    op_thread.start()
-    op_base = f"http://127.0.0.1:{operator.server_address[1]}"
-    srv, thread, base = _serve(expdir)
-    try:
+    with running_server(make_server(expdir, port=0)) as op_base, _serve(expdir) as base:
         # every reviewer route stays arm-free while the operator, over the SAME
         # experiment, legitimately serves identities
         for route in ("/", "/api/queue", "/packet"):
@@ -341,8 +318,3 @@ def test_ac5_dual_server_isolation(tmp_path):
         # the packet served is the built file's bytes, verbatim [D004]
         _, served = _get(base, "/packet")
         assert served == (expdir / "review_packet.html").read_bytes()
-    finally:
-        _stop(srv, thread)
-        operator.shutdown()
-        operator.server_close()
-        op_thread.join(timeout=5)

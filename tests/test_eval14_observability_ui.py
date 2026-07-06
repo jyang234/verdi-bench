@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -22,11 +21,11 @@ from harness.judge.assemble import comparison_id_for
 from harness.ledger import events as ledger_events
 from harness.ledger.query import read_events
 from harness.serve.compare import paired_comparisons
-from harness.serve.server import make_server
 from harness.serve.workspace import scan_workspace
 from harness.status.trial import trial_detail
 from tests.fixtures.builders import fixed_ctx, locked_experiment
 from tests.fixtures.scenarios import rich_experiment
+from tests.fixtures.servers import serve_experiment, serve_root
 
 
 def _passing_fence(fx: dict) -> CorpusManifest:
@@ -49,22 +48,9 @@ def _passing_fence(fx: dict) -> CorpusManifest:
     )
 
 
-def _serve(target, *, root=False):
-    srv = make_server(None if root else target, root=target if root else None, port=0)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
-    return srv, thread, f"http://127.0.0.1:{srv.server_address[1]}"
-
-
 def _get_json(url: str):
     with urllib.request.urlopen(url) as resp:
         return json.loads(resp.read().decode("utf-8"))
-
-
-def _stop(srv, thread):
-    srv.shutdown()
-    srv.server_close()
-    thread.join(timeout=5)
 
 
 # --- AC-1: workspace scan ------------------------------------------------------
@@ -111,8 +97,7 @@ def test_ac1_workspace_scan_summaries(tmp_path):
     assert t["summary"] is None  # withheld, never zeros [fail closed]
 
     # the endpoint serves the same rows, and root mode demands exp= on scoped APIs
-    srv, thread, base = _serve(tmp_path, root=True)
-    try:
+    with serve_root(tmp_path) as base:
         assert _get_json(base + "/api/experiments")["experiments"] == json.loads(
             json.dumps(rows)
         )
@@ -124,8 +109,6 @@ def test_ac1_workspace_scan_summaries(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(base + "/api/status?exp=..%2Fexp-a")
         assert excinfo.value.code == 404  # name shape refused, never path-joined
-    finally:
-        _stop(srv, thread)
 
 
 # --- AC-2: trial drill-down ------------------------------------------------------
@@ -156,8 +139,7 @@ def test_ac2_trial_detail_aggregates(tmp_path):
     assert dq["quarantine"] == {"reason": "fixture quarantine"}
     assert dq["verdicts"] == []  # t2 was never judged
 
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with serve_experiment(tmp_path) as base:
         served = _get_json(base + f"/api/trial?id={flagged}")
         assert served == json.loads(json.dumps(d))
         with pytest.raises(urllib.error.HTTPError) as excinfo:
@@ -166,8 +148,6 @@ def test_ac2_trial_detail_aggregates(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(base + "/api/trial")
         assert excinfo.value.code == 400
-    finally:
-        _stop(srv, thread)
 
 
 # --- AC-6: paired compare + fence watermark ----------------------------------------
@@ -230,8 +210,7 @@ def test_ac7_fence_checklist_and_artifacts(tmp_path):
     (tmp_path / "findings.exploratory.dossier.html").write_text(
         "<!doctype html><p>fixture dossier</p>", encoding="utf-8"
     )
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with serve_experiment(tmp_path) as base:
         with urllib.request.urlopen(base + "/artifact?name=findings.json") as resp:
             assert resp.read() == b'{"fixture": true}'
             assert resp.headers["Content-Type"] == "application/json"
@@ -246,8 +225,6 @@ def test_ac7_fence_checklist_and_artifacts(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(base + "/artifact?name=findings.official.dossier.html")
         assert excinfo.value.code == 404  # allowlisted but not rendered: honest 404
-    finally:
-        _stop(srv, thread)
     kinds = [e["event"] for e in read_events(fx["ledger"])]
     assert "cant_analyze" not in kinds and "findings_rendered" not in kinds
 
@@ -265,8 +242,7 @@ def test_ac8_posture_all_routes(tmp_path):
 
     fx = rich_experiment(tmp_path / "exp-a")
     before = _dir_digest(tmp_path)
-    srv, thread, base = _serve(tmp_path, root=True)
-    try:
+    with serve_root(tmp_path) as base:
         # the page stays self-contained and carries the standing disclosure
         with urllib.request.urlopen(base + "/") as resp:
             page = resp.read().decode("utf-8")
@@ -291,8 +267,6 @@ def test_ac8_posture_all_routes(tmp_path):
                 urllib.request.urlopen(req)
             assert excinfo.value.code == 405
             assert excinfo.value.headers["Allow"] == "GET"
-    finally:
-        _stop(srv, thread)
 
     # structural posture: contracts cover the observability packages; no new
     # event kind and no entrypoint arrived with this story

@@ -12,24 +12,16 @@ from __future__ import annotations
 import threading
 
 from harness.ledger import events as ledger_events
-from harness.serve.server import make_server
 from tests.fixtures.browser import drive
 from tests.fixtures.scenarios import reasoning_experiment, rich_experiment
-
-
-def _serve_root(root):
-    srv = make_server(None, root=root, port=0)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
-    return srv, thread, f"http://127.0.0.1:{srv.server_address[1]}"
+from tests.fixtures.servers import serve_root
 
 
 # --- AC-3: deep links round-trip ------------------------------------------------
 def test_ac3_hash_routes_round_trip(tmp_path):
     fx = rich_experiment(tmp_path / "exp-a")
     flagged = fx["flagged"]
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   // each route loads directly (a shared link), renders its screen, keeps its state
   await page.goto(BASE + '/#/experiments', { waitUntil: 'networkidle' });
@@ -86,15 +78,12 @@ def test_ac3_hash_routes_round_trip(tmp_path):
         assert out["compare"]["pairCards"] == 1  # only the disagreement pair renders
         assert out["findings"]["items"] == 9  # +insulation [F-M-C3]
         assert out["__errors"] == []
-    finally:
-        srv.shutdown(); srv.server_close(); thread.join(timeout=5)
 
 
 # --- AC-4: facets, side panel, keyboard --------------------------------------------
 def test_ac4_facets_panel_keyboard(tmp_path):
     rich_experiment(tmp_path / "exp-a")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-a/trials', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1800);
@@ -145,14 +134,11 @@ def test_ac4_facets_panel_keyboard(tmp_path):
         assert out["escBack"].startswith("#/exp/exp-a/trials")
         assert out["clicked"]["panel"] is True and out["clicked"]["tableRows"] == 4
         assert out["__errors"] == []
-    finally:
-        srv.shutdown(); srv.server_close(); thread.join(timeout=5)
 
 
 # --- AC-5: feed tail ergonomics -----------------------------------------------------
 def test_ac5_feed_tail_ergonomics(tmp_path):
     fx = rich_experiment(tmp_path / "exp-a")
-    srv, thread, base = _serve_root(tmp_path)
 
     def append_events(n: int) -> None:
         for i in range(n):
@@ -161,7 +147,7 @@ def test_ac5_feed_tail_ergonomics(tmp_path):
                 reason="grader_unavailable",
             )
 
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-a', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2500);
@@ -214,8 +200,6 @@ def test_ac5_feed_tail_ergonomics(tmp_path):
         assert out["resumed"]["paused"] is False and out["resumed"]["newCount"] == 0
         assert out["resumed"]["rows"] >= out["frozenRows"] + 2
         assert out["__errors"] == []
-    finally:
-        srv.shutdown(); srv.server_close(); thread.join(timeout=5)
 
 
 def test_compare_renders_flight_recorder_reasoning_by_role(tmp_path):
@@ -224,8 +208,7 @@ def test_compare_renders_flight_recorder_reasoning_by_role(tmp_path):
     stack (the docker-marker precedent); the compare-payload data itself is
     covered locally by test_ac5/test_ac6 in test_eval24_flightrec.py."""
     reasoning_experiment(tmp_path / "exp-r")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-r/compare', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
@@ -249,5 +232,3 @@ def test_compare_renders_flight_recorder_reasoning_by_role(tmp_path):
         assert "Primary (holdout pass)" in out["rz"]["body"]
         assert "red: only in A" in out["rz"]["body"]
         assert out["__errors"] == []
-    finally:
-        srv.shutdown(); srv.server_close(); thread.join(timeout=5)
