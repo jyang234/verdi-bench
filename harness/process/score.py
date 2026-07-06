@@ -17,29 +17,27 @@ provenance model pins ``unblinded=True`` and is schema-required [AC-2].
 from __future__ import annotations
 
 import json
-import re
 from enum import Enum
 from typing import Callable, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..analyze.confounds import judge_vendor_overlap
-from ..judge.providers.base import (
-    Provider,
-    ProviderContextOverflow,
-    ProviderError,
-    get_provider,
-    provider_failure_reason,
+from ..judge.envelope import (
+    DEFAULT_MARGIN,
+    DEFAULT_MAX_CONTEXT_TOKENS,
+    PROVIDER_TRANSIENT_REASONS,
+    PacketRejected,
+    extract_json,
+    heuristic_token_count,
+    scored_completion,
 )
+from ..judge.providers.base import Provider
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import assert_chain, find_events
 from .packet import ProcessPacket, RedactionLeakError, build_process_packet
 from .rubric import ProcessRubric, SCALE_MAX, SCALE_MIN
-
-_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
-DEFAULT_MAX_CONTEXT_TOKENS = 100_000
-DEFAULT_MARGIN = 1.15  # conservative: assume the payload is 15% larger than counted
 
 
 # EVAL-9 D004: the transcript policy is full-or-CANT_SCORE — v1 never
@@ -68,17 +66,15 @@ class CantScoreReason(str, Enum):
 
 
 # PRA-M13: reasons a re-run should re-attempt — the scorer could not *run*
-# (transient network/provider hiccup), mirroring judge's TRANSIENT_CANT_JUDGE
-# and grade's TRANSIENT_CANT_GRADE. context_overflow/parse/etc. are
-# deterministic for a fixed transcript, so retrying reproduces them — terminal.
+# (transient network/provider hiccup), or the reply was call-specific garble
+# (F-M-J4), mirroring judge's TRANSIENT_CANT_JUDGE and grade's
+# TRANSIENT_CANT_GRADE. Derived from the shared envelope set so the tiers cannot
+# drift by hand — the former "kept in sync with TRANSIENT_CANT_JUDGE" comment is
+# now this derivation [refactor 06 §4]; each string is validated a CantScoreReason
+# member. context_overflow/out_of_range/etc. are deterministic for a fixed
+# transcript, so retrying reproduces them — terminal, stay skipped.
 TRANSIENT_CANT_SCORE = frozenset(
-    {
-        CantScoreReason.timeout.value,
-        CantScoreReason.provider_error.value,
-        # F-M-J4: kept in sync with TRANSIENT_CANT_JUDGE — a truncated/garbled
-        # reply is call-specific, not deterministic for a fixed packet.
-        CantScoreReason.parse.value,
-    }
+    CantScoreReason(reason).value for reason in PROVIDER_TRANSIENT_REASONS
 )
 
 
@@ -139,12 +135,6 @@ class ProcessScore(BaseModel):
         return self
 
 
-# --- token counting seam ---------------------------------------------------
-def _heuristic_token_count(text: str) -> int:
-    """Conservative chars/4 estimate; a real impl uses the provider's counter."""
-    return len(text) // 4 + 1
-
-
 def _emit(ledger_path, ctx, score: ProcessScore) -> ProcessScore:
     events.record_process_score(ledger_path, ctx, process_score=score.model_dump(mode="json"))
     return score
@@ -160,10 +150,9 @@ def _all_cant(
 
 
 def _parse_judge_scores(text: str, rubric: ProcessRubric) -> list[DimensionScore]:
-    m = _JSON_RE.search(text or "")
-    if not m:
-        raise ValueError("no JSON object in judge process output")
-    raw = json.loads(m.group(0)).get("scores", {})
+    # extract_json raises ValueError on no object; the shared envelope maps it
+    # (and the non-dict/JSONDecodeError paths below) to CANT_SCORE(parse).
+    raw = json.loads(extract_json(text)).get("scores", {})
     # PR-1: a non-object ``scores`` (e.g. a list) must fail closed to parse, not
     # raise AttributeError on ``raw.get`` and escape with no event.
     if not isinstance(raw, dict):
@@ -198,7 +187,7 @@ def score_trial_process(
     provider_model: str,
     spec,
     telemetry: Optional[dict] = None,
-    token_counter: Callable[[str], int] = _heuristic_token_count,
+    token_counter: Callable[[str], int] = heuristic_token_count,
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     margin: float = DEFAULT_MARGIN,
     comparison_id: Optional[str] = None,
@@ -231,54 +220,41 @@ def score_trial_process(
                          comparison_id=comparison_id, scores=scores, provenance=prov),
         )
 
-    # F-M-O3: a missing/empty transcript is fail-closed, exactly as the CLI
-    # docstring promises — the judge must never fabricate dimension scores from
-    # nothing. One event, no provider call.
-    if not transcript.strip():
-        return _score(_all_cant(rubric, CantScoreReason.missing_transcript))
+    # The shared fail-closed envelope runs empty → leak-scan → token-gate →
+    # provider → parse [refactor 06 §4]; every fail-closed path lands as one
+    # process_score whose every dimension carries the same CANT_SCORE reason.
+    # CantScoreReason stays this tier's closed set — the envelope only routes
+    # reasons it validates against it. (A stray AttributeError/TypeError in the
+    # parser still crashes loudly: the envelope catches only ValueError/
+    # ValidationError, so a real bug is never masqueraded as parse.)
+    def _on_cant(reason: str, *, tokens: Optional[int] = None) -> ProcessScore:
+        # PR-9: tokens ride only the context_overflow paths (the envelope passes
+        # the pre-flight count or the provider's reported prompt tokens there).
+        return _score(_all_cant(rubric, CantScoreReason(reason), tokens=tokens))
 
-    # PR-2: the redaction re-scan in build_process_packet raises RedactionLeakError;
-    # it must fail closed to CANT_SCORE(redaction_leak) (mirroring judge's
-    # identity_leak), never escape with no event.
-    try:
-        packet: ProcessPacket = build_process_packet(transcript, rubric, telemetry=telemetry)
-    except RedactionLeakError:
-        return _score(_all_cant(rubric, CantScoreReason.redaction_leak))
-    messages = packet.render_judge()
-
-    # Full-or-CANT_SCORE token gate [D004]: count the *rendered payload*, apply a
-    # conservative margin, and fail closed rather than truncate.
-    payload_text = "".join(m["content"] for m in messages)
-    counted = token_counter(payload_text)
-    if counted * margin > max_context_tokens:
-        return _score(_all_cant(rubric, CantScoreReason.context_overflow, tokens=counted))
-
-    # PR-3: resolve the provider inside the fail-closed envelope so an unknown
-    # prefix records CANT_SCORE(provider_error) instead of escaping.
-    if provider is None:
+    def _build(text: str) -> list[dict]:
+        # PR-2: build_process_packet's redaction re-scan raises RedactionLeakError;
+        # fail closed to CANT_SCORE(redaction_leak) (mirroring judge's identity_leak).
         try:
-            provider = get_provider(provider_model)
-        except ProviderError as e:
-            return _score(_all_cant(rubric, CantScoreReason(provider_failure_reason(e))))
-    # PR-4: timeout / refusal / provider_error via the one shared mapper the judge
-    # uses, so the two stages cannot drift on the classification [carry-forward].
-    try:
-        text = provider.complete(provider_model, messages, 0.0).text
-    except ProviderContextOverflow as e:
-        # PR-9: a provider-side context rejection is more specific than a generic
-        # provider_error — record context_overflow with the provider's token count
-        # when it reported one (else the pre-flight count is unavailable here).
-        return _score(_all_cant(rubric, CantScoreReason.context_overflow, tokens=e.prompt_tokens))
-    except ProviderError as e:
-        return _score(_all_cant(rubric, CantScoreReason(provider_failure_reason(e))))
-    try:
-        scores = _parse_judge_scores(text, rubric)
-    except (ValueError, json.JSONDecodeError):
-        # _parse_judge_scores type-checks a non-dict ``scores`` up front (raising
-        # ValueError), so a stray AttributeError/TypeError here would signal a real
-        # bug — let it crash loudly rather than masquerade as a parse failure.
-        return _score(_all_cant(rubric, CantScoreReason.parse))
-    return _score(scores)
+            packet: ProcessPacket = build_process_packet(text, rubric, telemetry=telemetry)
+        except RedactionLeakError:
+            raise PacketRejected(CantScoreReason.redaction_leak.value)
+        return packet.render_judge()
+
+    return scored_completion(
+        transcript,
+        reason_enum=CantScoreReason,
+        empty_reason=CantScoreReason.missing_transcript.value,  # F-M-O3
+        build_messages=_build,
+        parse=lambda text: _parse_judge_scores(text, rubric),
+        on_cant=_on_cant,
+        on_scored=_score,
+        provider=provider,
+        provider_model=provider_model,
+        token_counter=token_counter,
+        max_context_tokens=max_context_tokens,
+        margin=margin,
+    )
 
 
 def human_scores_from_mapping(

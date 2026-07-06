@@ -22,21 +22,22 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional, Sequence
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..blind.core import identity_pattern_list, secret_pattern_list
-from ..judge.providers.base import (
-    Provider,
-    ProviderContextOverflow,
-    ProviderError,
-    get_provider,
-    provider_failure_reason,
+from ..judge.envelope import (
+    DEFAULT_MARGIN,
+    DEFAULT_MAX_CONTEXT_TOKENS,
+    PacketRejected,
+    extract_json,
+    heuristic_token_count,
+    scored_completion,
 )
+from ..judge.providers.base import Provider
 from ..review.kappa import (
     FLOOR_INCLUSION_PROB,
     KappaEstimator,
@@ -58,9 +59,6 @@ FORENSIC_SYSTEM_PROMPT = (
 # content-derived fence so an injected instruction cannot escape the data
 # channel and pose as a directive to the reviewer (the JD-8 judge-packet pattern).
 FORENSIC_FENCE_FORMAT = "<<{}>>"
-DEFAULT_MAX_CONTEXT_TOKENS = 100_000
-DEFAULT_MARGIN = 1.15
-_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 _BINARY_CATEGORIES = [0, 1]
 DEFAULT_KAPPA_THRESHOLD = 0.6
 # The secret list takes no per-experiment extras here — compile it once, not
@@ -150,20 +148,13 @@ def build_forensic_packet(transcript: str) -> list[dict]:
     ]
 
 
-def _heuristic_token_count(text: str) -> int:
-    """Conservative chars/4 estimate — the EVAL-9 seam's default counter."""
-    return len(text) // 4 + 1
-
-
 def _parse_review(text: str) -> tuple[dict, str]:
     """Extract the JSON shape only — the ForensicReview model validator is the
     single source of truth for the suspicion-key contract, so the two can
-    never drift; its ValidationError is a ValueError the caller's fail-closed
-    envelope already maps to CANT_REVIEW(parse)."""
-    m = _JSON_RE.search(text or "")
-    if not m:
-        raise ValueError("no JSON object in forensic review output")
-    raw = json.loads(m.group(0))
+    never drift; its ValidationError is one the shared envelope maps to
+    CANT_REVIEW(parse). ``extract_json`` raises ValueError on no object, mapped
+    the same way [refactor 06 §4]."""
+    raw = json.loads(extract_json(text))
     suspicions = raw.get("suspicions")
     narrative = raw.get("narrative")
     if not isinstance(suspicions, dict) or not isinstance(narrative, str) or not narrative:
@@ -181,7 +172,7 @@ def forensic_review(
     provider: Optional[Provider] = None,
     provider_model: Optional[str] = None,
     max_reasoning_bytes: Optional[int] = None,
-    token_counter: Callable[[str], int] = _heuristic_token_count,
+    token_counter: Callable[[str], int] = heuristic_token_count,
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     margin: float = DEFAULT_MARGIN,
 ) -> ForensicReview:
@@ -201,66 +192,56 @@ def forensic_review(
     a named coverage gap, never a truncated or silently-skipped review.
     """
 
-    def _cant(reason: CantReviewReason) -> ForensicReview:
-        return ForensicReview(trial_id=trial_id, cant_review_reason=reason.value)
+    # The shared fail-closed envelope runs empty → leak-scan → token-gate →
+    # provider → parse [refactor 06 §4]; the blinding, byte-budget and
+    # suspicion-key contract are this tier's own, injected as the packet builder
+    # and parser. CantReviewReason stays this tier's closed set; the envelope
+    # only routes reasons it validates against it.
+    def _on_cant(reason: str, *, tokens: Optional[int] = None) -> ForensicReview:
+        # A completed review would pollute n_reviewed and the spot-check kappa
+        # join; a CANT_REVIEW is never a silent skip. ``tokens`` is unused here.
+        return ForensicReview(trial_id=trial_id, cant_review_reason=reason)
 
-    # A trial with no transcript has nothing to review — a provider would
-    # happily narrate an empty packet, which would then pollute n_reviewed and
-    # the spot-check kappa join. Fail closed instead.
-    if not transcript.strip():
-        return _cant(CantReviewReason.no_transcript)
-    # EVAL-24-D003: a flight-recorder-fed review is byte-budgeted — an over-budget
-    # reasoning transcript is a named coverage gap, never truncated or skipped.
-    if max_reasoning_bytes is not None and len(transcript.encode("utf-8")) > max_reasoning_bytes:
-        return _cant(CantReviewReason.context_overflow)
+    def _build(text: str) -> list[dict]:
+        # EVAL-24-D003: a flight-recorder-fed review is byte-budgeted BEFORE
+        # blinding — an over-budget reasoning transcript is a named coverage gap.
+        if max_reasoning_bytes is not None and len(text.encode("utf-8")) > max_reasoning_bytes:
+            raise PacketRejected(CantReviewReason.context_overflow.value)
+        # Blinding is fail-closed [AC-4]: scrub through the shared core, then
+        # re-scan with the SAME pattern list (one compile serves both passes) —
+        # an identity canary surviving the scrub blocks the call. Redaction is
+        # upstream (EVAL-4); a surviving secret canary must never reach a
+        # provider payload — the process-packet defense in depth.
+        identity_patterns = identity_pattern_list(extra_literals=canaries)
+        blinded, _ = identity_patterns.scrub(text)
+        if identity_patterns.contains(blinded):
+            raise PacketRejected(CantReviewReason.identity_leak.value)
+        if _SECRET_PATTERNS.contains(blinded):
+            raise PacketRejected(CantReviewReason.redaction_leak.value)
+        return build_forensic_packet(blinded)
 
-    # Blinding is fail-closed [AC-4]: scrub through the shared core, then
-    # re-scan with the SAME pattern list — an identity canary surviving the
-    # scrub blocks the call (and one compile serves both passes).
-    identity_patterns = identity_pattern_list(extra_literals=canaries)
-    blinded, _ = identity_patterns.scrub(transcript)
-    if identity_patterns.contains(blinded):
-        return _cant(CantReviewReason.identity_leak)
-    # Redaction is upstream (EVAL-4); a surviving secret canary must never
-    # reach a provider payload — the process-packet defense in depth.
-    if _SECRET_PATTERNS.contains(blinded):
-        return _cant(CantReviewReason.redaction_leak)
-
-    messages = build_forensic_packet(blinded)
-    payload_text = "".join(m["content"] for m in messages)
-    if token_counter(payload_text) * margin > max_context_tokens:
-        return _cant(CantReviewReason.context_overflow)
-
-    # Resolve the provider inside the fail-closed envelope (the PR-3 posture):
-    # an unknown prefix records CANT_REVIEW(provider_error), never escapes.
-    if provider is None:
-        # EVAL-24-D002: no hardcoded model default — an unconfigured model fails
-        # closed here rather than 404ing against a retired id.
-        if provider_model is None:
-            return _cant(CantReviewReason.provider_error)
-        try:
-            provider = get_provider(provider_model)
-        except ProviderError as e:
-            return _cant(CantReviewReason(provider_failure_reason(e)))
-    try:
-        text = provider.complete(provider_model, messages, 0.0).text
-    except ProviderContextOverflow:
-        return _cant(CantReviewReason.context_overflow)
-    except ProviderError as e:
-        return _cant(CantReviewReason(provider_failure_reason(e)))
-
-    try:
+    def _parse(text: str) -> ForensicReview:
         suspicions, narrative = _parse_review(text)
         # The model validator owns the suspicion-key contract; a wrong key set
-        # raises ValidationError (a ValueError) and fails closed here, not in
-        # the caller.
+        # raises ValidationError, mapped to CANT_REVIEW(parse) by the envelope.
         return ForensicReview(
-            trial_id=trial_id,
-            suspicions=suspicions,
-            narrative=f"{JUDGMENT_TAG} {narrative}",
+            trial_id=trial_id, suspicions=suspicions, narrative=f"{JUDGMENT_TAG} {narrative}"
         )
-    except (ValueError, json.JSONDecodeError, ValidationError):
-        return _cant(CantReviewReason.parse)
+
+    return scored_completion(
+        transcript,
+        reason_enum=CantReviewReason,
+        empty_reason=CantReviewReason.no_transcript.value,
+        build_messages=_build,
+        parse=_parse,
+        on_cant=_on_cant,
+        on_scored=lambda review: review,
+        provider=provider,
+        provider_model=provider_model,
+        token_counter=token_counter,
+        max_context_tokens=max_context_tokens,
+        margin=margin,
+    )
 
 
 # --- per-detector kappa calibration [AC-4] -----------------------------------
