@@ -4,7 +4,9 @@ How any test subject — an agent CLI, a custom harness, a tool suite, a
 multi-agent workflow — plugs into verdi-bench's telemetry and trajectory
 interfaces. Companion to `docs/deep-dive.md` §7; the code seams are
 `harness/adapters/` [EVAL-4 AC-2] and `harness/run/trajectory.py`
-[EVAL-12 AC-1].
+[EVAL-12 AC-1]. For the full trial-image contract (workspace layout,
+`request.json`, egress, `verdi_agent`), see `docs/images.md` §1 — the normative
+statement; this document is the FROZEN log-format half of it.
 
 ## What an adapter is
 
