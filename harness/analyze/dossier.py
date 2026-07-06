@@ -30,24 +30,22 @@ from typing import Literal, Optional
 from jinja2 import Environment, DictLoader
 from markupsafe import Markup
 
-from .report import (
+from .findings.extract import paired_task_rows
+from .findings.fence import validate_for_render
+from .findings.model import ComparisonFinding, FindingsDocument, display_mde
+from .findings.sections import (
     _WATERMARK,
-    ComparisonFinding,
-    FindingsDocument,
     _fmt,
     _forensics_lines,
     _integrity_line,
     _judge_calibration_lines,
     _judge_coverage_lines,
-    display_mde,
     _ledger_consistency_lines,
     _override_lines,
     _process_lines,
     _provenance_lines,
     _secondary_lines,
     _tier_lines,
-    paired_task_rows,
-    validate_for_render,
 )
 from .timeline import trial_timeline
 

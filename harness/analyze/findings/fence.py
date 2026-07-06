@@ -43,6 +43,7 @@ from .model import (
     UnregisteredOfficialError,
 )
 from .sections import asymmetry_line
+from ..selfcheck import latest_selfcheck, selfcheck_status
 
 
 # --- render-side pre-checks (not part of the official-calibration list) ------
@@ -258,10 +259,6 @@ def _eval_rubric(ctx: FenceContext) -> FenceOutcome:
 
 
 def _eval_selfcheck(ctx: FenceContext) -> FenceOutcome:
-    # function-local: analyze.selfcheck imports back through report, so a
-    # module-level import here would cycle until the facade migration.
-    from ..selfcheck import latest_selfcheck, selfcheck_status
-
     status = selfcheck_status(ctx.ledger_path)
     if status != "current":
         detail = {

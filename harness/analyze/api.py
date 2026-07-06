@@ -33,13 +33,10 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False,
     )
     from ..plan.lock import assert_lock
     from .dossier import render_dossier
-    from .report import (
-        AnalyzeError,
-        cant_analyze_reason,
-        compute_findings,
-        render_html,
-        render_markdown,
-    )
+    from .findings.extract import compute_findings
+    from .findings.model import AnalyzeError, cant_analyze_reason
+    from .findings.render_html import render_html
+    from .findings.render_md import render_markdown
 
     experiment_dir = Path(experiment_dir)
     spec_path = experiment_dir / "experiment.yaml"
@@ -81,7 +78,7 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False,
     # artifact itself BEFORE hashing, so the citable bytes are unambiguous.
     findings.mode = mode
     if mode != "official":
-        from .report import _WATERMARK
+        from .findings.sections import _WATERMARK
 
         findings.watermark = _WATERMARK
     findings_json = findings.model_dump_json()
