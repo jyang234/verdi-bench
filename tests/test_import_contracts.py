@@ -19,6 +19,11 @@ _CASES = [
     ("harness/blind/core.py", "import harness.ledger.chain", "ledger.chain"),
     # F-M-T3: the reviewer surface must not grow an LLM client
     ("harness/review/scrub.py", "import harness.judge.client", "judge.client"),
+    # G4 [refactor 11 §G4]: the sdk-is-a-leaf list BITES — a subsystem importing
+    # the sdk facade (the import direction reversed) turns the contract red. corpus
+    # is in the sdk-leaf source list and is a source of no strict llm-free contract,
+    # so the plant breaks only sdk-is-a-leaf, not another contract by accident.
+    ("harness/corpus/registry.py", "import harness.sdk", "harness.sdk"),
 ]
 
 
@@ -26,18 +31,36 @@ def test_baseline_contracts_are_green():
     assert run_lint().returncode == 0, "contracts must be green before planting"
 
 
-def test_ledger_contract_source_list_covers_every_harness_package():
-    """PRA-L6: the ledger contract's source list is hand-maintained, so a new
-    top-level harness package/module could import ledger.chain undetected until
-    someone remembers to add it. Assert the list is complete — every top-level
-    harness entry (except the ledger package itself, the contract's owner) is a
-    source, so the fail-open gap is closed with a mechanical check."""
+# The contracts whose source list must enumerate EVERY harness package except the
+# forbidden target's own top-level package (a contract cannot forbid a package from
+# importing itself). Each pairs a unique .importlinter name substring with that
+# excluded top-level dir name [refactor 11 §G4].
+_ALL_PACKAGE_CONTRACTS = [
+    ("Ledger appends flow only through typed constructors", "ledger"),
+    ("The SDK facade is a leaf consumer", "sdk"),
+    ("Harbor is imported only by the run engine seam", "run"),
+]
+
+
+@pytest.mark.parametrize("anchor, target_owner", _ALL_PACKAGE_CONTRACTS)
+def test_all_packages_contract_source_list_is_complete(anchor, target_owner):
+    """PRA-L6 generalized [refactor 11 §G4]: each all-packages contract's source
+    list is hand-maintained, so a new top-level harness package could import the
+    forbidden target undetected until someone remembers to add it. Assert every
+    discovered top-level harness entry (except the target's own top-level package)
+    is a source — closing the fail-open gap with a mechanical check for the
+    ledger-writes, sdk-is-a-leaf, AND harbor-confined lists, not the ledger alone.
+
+    A decomposed ``harness.run`` submodule (the harbor list names
+    ``harness.run.seam`` etc. so it can forbid only ``harness.run.engines.harbor``)
+    collapses to ``harness.run`` in the top-level scan, which is exactly the harbor
+    target's excluded owner — so the decomposition stays invisible here."""
     import re
 
     harness_dir = REPO / "harness"
     live: set[str] = set()
     for p in harness_dir.iterdir():
-        if p.name in ("__init__.py", "__pycache__", "ledger"):
+        if p.name in ("__init__.py", "__pycache__", target_owner):
             continue
         if p.is_dir() and (p / "__init__.py").exists():
             live.add(f"harness.{p.name}")
@@ -45,13 +68,17 @@ def test_ledger_contract_source_list_covers_every_harness_package():
             live.add(f"harness.{p.stem}")
 
     text = (REPO / ".importlinter").read_text()
-    block = text.split("Ledger appends flow only through typed constructors", 1)[1]
+    block = text.split(anchor, 1)[1]
     block = block.split("forbidden_modules", 1)[0]
+    # Only the source_modules region (drop the name/comment header, which may
+    # itself name a harness module in prose).
+    block = block.split("source_modules", 1)[1]
     listed = set(re.findall(r"harness\.[A-Za-z0-9_]+", block))
     missing = live - listed
     assert not missing, (
-        f"ledger import contract omits harness package(s) {sorted(missing)}; a "
-        "module absent from the source list could import ledger.chain undetected"
+        f"the {anchor!r} import contract omits harness package(s) {sorted(missing)}; "
+        "a module absent from the source list could import the forbidden target "
+        "undetected [refactor 11 §G4]"
     )
 
 

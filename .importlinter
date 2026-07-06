@@ -19,6 +19,7 @@ source_modules =
     harness.entrypoints
     harness._entrypoint_fixtures
     harness.version
+    harness.http_guard
     harness.schema
     harness.ledger
     harness.plan
