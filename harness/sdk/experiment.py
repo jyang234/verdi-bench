@@ -13,9 +13,12 @@ ceiling — both are required constructor arguments.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import TYPE_CHECKING, Optional, Union
+
+if TYPE_CHECKING:
+    from .workspace import ExperimentWorkspace
 
 
 @dataclass(frozen=True)
@@ -251,7 +254,7 @@ class Experiment:
         task_specs = [TaskSpec(**t.to_spec_dict()) for t in self._tasks]
         return spec, task_specs, self._rubric_text()
 
-    def write(self, dir) -> "object":
+    def write(self, dir) -> "ExperimentWorkspace":
         """Serialize the experiment pre-lock and return an ``ExperimentWorkspace``.
 
         Writes ``experiment.yaml`` (``spec_to_yaml``), ``tasks.yaml``
