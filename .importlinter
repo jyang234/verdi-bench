@@ -51,6 +51,7 @@ source_modules =
     harness.sdk
     harness.hermetic
     harness.images
+    harness.webkit
 forbidden_modules =
     harness.run.engines.harbor
 
@@ -113,6 +114,7 @@ source_modules =
     harness.sdk
     harness.hermetic
     harness.images
+    harness.webkit
 forbidden_modules =
     harness.ledger.chain
 
@@ -204,5 +206,6 @@ source_modules =
     harness.author
     harness.hermetic
     harness.images
+    harness.webkit
 forbidden_modules =
     harness.sdk
