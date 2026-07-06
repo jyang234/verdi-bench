@@ -7,6 +7,11 @@ proxy with the resolved allowlist **injected**, waits for readiness by *probing*
 (never a fixed timer), and yields a :class:`~harness.run.types.ProxyConfig`;
 ``__exit__`` always tears the whole thing down.
 
+The context-manager skeleton, readiness probe, container removal, and
+log-dir/basename resolution live once in :class:`~harness.hermetic.sidecar.ManagedSidecar`
+[refactor 11 §G2]; this module keeps only the proxy's deliberate divergences —
+the dual metered+egress network stand-up and the CONNECT allowlist injection.
+
 The proxy is the stdlib ``_proxy_container.py``, mounted read-only into a pinned
 ``python:3.12-alpine`` and run in place — no image build. Its JSONL contract and
 trial-id-as-userinfo auth are frozen [refactor 04 §1, §6].
@@ -15,9 +20,6 @@ trial-id-as-userinfo auth are frozen [refactor 04 §1, §6].
 from __future__ import annotations
 
 import os
-import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -31,6 +33,7 @@ from harness.hermetic.network import (
     create_network,
     remove_network,
 )
+from harness.hermetic.sidecar import ManagedSidecar, remove_managed_container
 from harness.run.types import ProxyConfig
 
 # The pinned base image the packaged proxy runs in — a multi-arch manifest-list
@@ -47,17 +50,6 @@ PROXY_BASE_IMAGE = os.environ.get(
 MANAGED_PROXY_NAME = "verdi-metering-proxy"
 PROXY_PORT = 3128
 _CONTAINER_LOG = "/var/log/verdi/verdi.jsonl"
-_READINESS_TIMEOUT_S = 30
-
-# Probe readiness by *connecting* to the proxy port from inside the container,
-# retrying until it accepts — bounded by the host-side ``docker exec`` timeout, so
-# a proxy that never binds fails loudly instead of a fixed timer guessing it is up.
-# The retry is a shell ``until`` loop, not a timed wait.
-_READY_PROBE = (
-    "until python3 -c "
-    "'import socket; socket.create_connection((\"127.0.0.1\", %d), 1)' 2>/dev/null; "
-    "do :; done"
-) % PROXY_PORT
 
 
 class MeteringProxyError(RuntimeError):
@@ -66,8 +58,23 @@ class MeteringProxyError(RuntimeError):
     working proxy would spend and egress unattributed [PRA-H4]."""
 
 
-class MeteringProxy:
-    """Context manager owning the metered proxy's whole lifecycle [refactor 04 §1]."""
+class MeteringProxy(ManagedSidecar):
+    """Context manager owning the metered proxy's whole lifecycle [refactor 04 §1].
+
+    A :class:`~harness.hermetic.sidecar.ManagedSidecar` whose divergence is the
+    dual network (metered + egress) and the CONNECT allowlist injected into the
+    proxy container; the readiness/teardown skeleton is inherited [refactor 11 §G2].
+    """
+
+    port = PROXY_PORT
+    _ERROR_CLS = MeteringProxyError
+    _NOUN = "metering proxy"
+    _DAEMON_UNAVAILABLE_MESSAGE = (
+        "docker daemon is unavailable — cannot stand up the managed "
+        "metering proxy; run without proxy.managed or start docker"
+    )
+    _LOG_PREFIX = "verdi-metering-"
+    _DEFAULT_LOG_BASENAME = "verdi.jsonl"
 
     def __init__(
         self,
@@ -79,23 +86,12 @@ class MeteringProxy:
         name: str = MANAGED_PROXY_NAME,
     ) -> None:
         self._allow = list(allow)
-        self._image = image
-        self._docker = docker or DockerClient()
-        self._name = name
         self._proxy_src = Path(__file__).resolve().parent / "_proxy_container.py"
-        # Resolve where the JSONL log lands. An explicit path is honored as-is:
-        # its parent dir is the mount AND its basename rides into the container
-        # via PROXY_LOG, so the proxy writes the operator's exact filename — a
-        # custom basename must never fall open as a touched-but-empty log while
-        # the proxy writes verdi.jsonl beside it [P3 interim review F1]. An
-        # absent path gets a managed temp dir removed on teardown.
-        self._owns_logdir = log_path is None
-        if log_path is None:
-            self._logdir = Path(tempfile.mkdtemp(prefix="verdi-metering-"))
-            self._logfile = self._logdir / "verdi.jsonl"
-        else:
-            self._logfile = Path(log_path)
-            self._logdir = self._logfile.parent
+        # log-dir/basename resolution: an explicit path is honored as-is (its
+        # basename rides into the container via PROXY_LOG so a custom filename is
+        # never left touched-but-empty beside verdi.jsonl [P3 interim review F1]);
+        # an absent path gets a managed temp dir removed on teardown [refactor 11 §G2].
+        super().__init__(log_path=log_path, image=image, docker=docker, name=name)
 
     @classmethod
     def managed(
@@ -104,32 +100,11 @@ class MeteringProxy:
         """Build a managed proxy over ``allow`` (see the class docstring)."""
         return cls(allow, log_path=log_path, image=image)
 
-    # --- context manager ------------------------------------------------------
-    def __enter__(self) -> ProxyConfig:
-        try:
-            return self.start()
-        except BaseException:
-            # A partial stand-up (networks made, proxy crashed) must not leak.
-            self.stop()
-            raise
-
-    def __exit__(self, *exc) -> None:
-        self.stop()
-
-    # --- lifecycle ------------------------------------------------------------
-    def start(self) -> ProxyConfig:
-        """Stand up networks + proxy, wait for readiness, return the ProxyConfig."""
-        if not self._docker.daemon_available():
-            raise MeteringProxyError(
-                "docker daemon is unavailable — cannot stand up the managed "
-                "metering proxy; run without proxy.managed or start docker"
-            )
-        # Provision the log dir and pre-create the file so a zero-egress trial still
-        # finds a (configured, present) log rather than tripping PRA-H4.
-        self._logdir.mkdir(parents=True, exist_ok=True)
-        self._logfile.touch(exist_ok=True)
-        # A stale container from a crashed prior run would collide on the name.
-        self._remove_container()
+    # --- divergent seams ------------------------------------------------------
+    def _stand_up(self) -> None:
+        """Stand up the metered + egress networks and the CONNECT proxy with the
+        allowlist **injected** (never a hardcoded set); the proxy alone bridges to
+        egress to reach the model APIs [refactor 04 §1]."""
         create_network(self._docker, METERED_NETWORK, internal=True)
         create_network(self._docker, EGRESS_NETWORK, internal=False)
         cmd = (
@@ -154,51 +129,17 @@ class MeteringProxy:
             )
         # The proxy (and only the proxy) bridges to egress to reach the model APIs.
         connect_network(self._docker, EGRESS_NETWORK, self._name)
-        self._await_ready()
+
+    def _config(self) -> ProxyConfig:
         return ProxyConfig(
             allowlist=list(self._allow),
             proxy_url=f"http://{self._name}:{PROXY_PORT}",
             log_path=str(self._logfile),
         )
 
-    def stop(self) -> None:
-        """Tear down proxy + networks; always safe to call (idempotent, loud-free)."""
-        self._remove_container()
+    def _teardown_networks(self) -> None:
         remove_network(self._docker, EGRESS_NETWORK)
         remove_network(self._docker, METERED_NETWORK)
-        if self._owns_logdir:
-            shutil.rmtree(self._logdir, ignore_errors=True)
-
-    # --- internals ------------------------------------------------------------
-    def _await_ready(self) -> None:
-        try:
-            proc = self._docker.run(
-                ["docker", "exec", self._name, "sh", "-c", _READY_PROBE],
-                timeout_s=_READINESS_TIMEOUT_S,
-            )
-        except subprocess.TimeoutExpired as e:
-            raise MeteringProxyError(
-                f"metering proxy {self._name!r} did not accept connections within "
-                f"{_READINESS_TIMEOUT_S}s:\n{self._container_logs()}"
-            ) from e
-        if proc.returncode != 0:
-            raise MeteringProxyError(
-                f"metering proxy {self._name!r} failed to become ready "
-                f"(exit {proc.returncode}):\n{self._container_logs()}"
-            )
-
-    def _remove_container(self) -> None:
-        try:
-            self._docker.run(["docker", "rm", "-f", self._name], timeout_s=30)
-        except (OSError, subprocess.SubprocessError):
-            pass
-
-    def _container_logs(self) -> str:
-        try:
-            proc = self._docker.run(["docker", "logs", self._name], timeout_s=15)
-            return ((proc.stdout or "") + (proc.stderr or "")).strip() or "<no logs>"
-        except (OSError, subprocess.SubprocessError):
-            return "<logs unavailable>"
 
 
 def teardown_managed(docker: Optional[DockerClient] = None, *, name: str = MANAGED_PROXY_NAME) -> None:
@@ -208,9 +149,6 @@ def teardown_managed(docker: Optional[DockerClient] = None, *, name: str = MANAG
     need the originating :class:`MeteringProxy` object (the names are constants).
     """
     docker = docker or DockerClient()
-    try:
-        docker.run(["docker", "rm", "-f", name], timeout_s=30)
-    except (OSError, subprocess.SubprocessError):
-        pass
+    remove_managed_container(name, docker)
     remove_network(docker, EGRESS_NETWORK)
     remove_network(docker, METERED_NETWORK)
