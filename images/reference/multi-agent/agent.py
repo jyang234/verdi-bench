@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A worked MULTI-AGENT, MULTI-TURN reference trial agent for the verdi harbor path.
+"""A worked MULTI-AGENT, MULTI-TURN reference trial agent for the verdi harbor path [refactor 03 §3].
 
 Demonstrates how a workflow agent stack reports its own sub-structure to verdi.
 An orchestrator runs an ITERATIVE team — all inside ONE container, ONE image, ONE
@@ -24,16 +24,17 @@ in the verdi generic v2 format:
                      "a file was edited".
   * ``telemetry_by_model`` — per-model spend summed across all the turns.
 
-Egress tunnels through the injected metering proxy (urllib honors HTTP(S)_PROXY,
-with the per-trial credential on CONNECT). Fail-visible: any error still writes an
-agent_log so the trial is scorable / absent-honest. The PURE ``build_agent_log``
+Extends ``verdi-base``: the workspace layout, the ``/verdi/request.json`` reader,
+the CONNECT-tunnel + ``Proxy-Authorization`` egress dance, and the generic-log
+writer all come from ``verdi_agent`` (stdlib-only, already on the base's
+PYTHONPATH), so this file is multi-agent ORCHESTRATION logic only — the tunnel and
+v2-log plumbing it used to hand-roll are gone. Fail-visible: any error still writes
+an agent_log (absent-honest) so the trial is scorable. The PURE ``build_agent_log``
 is import-safe so verdi validates the emitted shape deterministically — see
 tests/test_eval24_multi_agent_reference.py.
 """
 from __future__ import annotations
 
-import base64
-import http.client
 import json
 import os
 import pathlib
@@ -41,10 +42,8 @@ import re
 import subprocess
 import sys
 import time
-import urllib.parse
 
-WS = pathlib.Path("/workspace")
-ART = WS / "artifacts"
+from verdi_agent import ARTIFACTS, WORKSPACE, AgentLog, post_json, read_request
 
 PLANNER_SYS = ("You are the PLANNER of a multi-agent coding team. Break the task into 2 "
                "concrete sub-tasks, one per line, no prose.")
@@ -55,33 +54,11 @@ CRITIC_SYS = ("You are the CRITIC. In one or two sentences, note any remaining b
               "in the proposed solution.")
 
 
-def post_json(host, path, headers, body):
-    """POST JSON to https://host/path, CONNECT-tunneling through HTTP(S)_PROXY when
-    set and sending the per-trial credential (userinfo → Proxy-Authorization), the
-    harbor metering-proxy contract (stdlib will not add it on a CONNECT)."""
-    data = json.dumps(body).encode()
-    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
-    if proxy:
-        pu = urllib.parse.urlparse(proxy)
-        conn = http.client.HTTPSConnection(pu.hostname, pu.port or 3128, timeout=180)
-        tunnel_headers = {}
-        if pu.username is not None:
-            cred = base64.b64encode(f"{pu.username}:{pu.password or ''}".encode()).decode()
-            tunnel_headers["Proxy-Authorization"] = "Basic " + cred
-        conn.set_tunnel(host, 443, headers=tunnel_headers)
-    else:
-        conn = http.client.HTTPSConnection(host, 443, timeout=180)
-    conn.request("POST", path, body=data, headers={**headers, "content-type": "application/json"})
-    resp = conn.getresponse()
-    raw = resp.read()
-    if resp.status >= 400:
-        raise RuntimeError(f"HTTP {resp.status}: {raw[:200]!r}")
-    return json.loads(raw)
-
-
 def call_model(system, prompt, model):
     """One sub-agent turn → (reasoning, text, tokens_out). Anthropic models expose
-    extended-thinking reasoning (budget_tokens < max_tokens); others return none."""
+    extended-thinking reasoning (budget_tokens < max_tokens); others return none.
+    Egress rides ``verdi_agent.post_json`` — the metering proxy + per-trial
+    credential on CONNECT."""
     bare = model.split("/", 1)[-1]
     if model.startswith("anthropic/"):
         r = post_json("api.anthropic.com", "/v1/messages",
@@ -104,6 +81,29 @@ def _strip_fences(text):
     return (m.group(1) if m else text or "").strip()
 
 
+def _record_turn(log, i, t):
+    """Append turn ``i``'s reasoning span (if any) + its trajectory step onto
+    ``log`` [EVAL-21 + EVAL-24]. The step carries the turn's RESPONSE in ``detail``;
+    the turn's measured tokens ride the reasoning entry (and telemetry), never the
+    step. Each reasoning entry declares ``turn: i`` — its own step's index — so
+    verdi interleaves thought and action into ONE process timeline [flight-recorder
+    charter]. A worker's draft and revise are two entries under the same role, so
+    the iteration is visible; a metered turn is legible against the unmetered
+    orchestrator (which reports no tokens — honest absence)."""
+    role = t["agent"]
+    if t.get("reasoning") is not None:
+        log.reasoning(t["reasoning"] or "(no native reasoning)", agent=role, turn=i,
+                      tokens=t.get("tokens"), relative_ts=t.get("ts"))
+    kind, ts = t.get("kind", "message"), t.get("ts")
+    if kind == "file_edit":
+        log.file_edit(t.get("files") or [], detail=t.get("detail"), agent=role, relative_ts=ts)
+    elif kind == "test_run":
+        log.test_run(t.get("command"), detail=t.get("detail"), exit_code=t.get("exit_code"),
+                     agent=role, relative_ts=ts)
+    else:
+        log.message(t.get("detail"), agent=role, relative_ts=ts)
+
+
 def build_agent_log(*, model, turns, totals=None):
     """PURE: the verdi generic v2 log from an ordered list of sub-agent TURNS
     [EVAL-21 + EVAL-24]. Each turn is a dict:
@@ -111,57 +111,37 @@ def build_agent_log(*, model, turns, totals=None):
        model?, ts?}
     ``ts`` is the turn's measured seconds since trial start; it rides both the
     trajectory step (relative_ts) and the reasoning entry (v3 linkage), and each
-    reasoning entry declares ``turn: i`` — its own step's index — so verdi can
-    interleave thought and action into one process timeline.
-    Emits one reasoning entry per turn that HAS reasoning (agent-attributed — a
-    worker's draft and revise are two entries under the same role, so iteration is
-    visible — carrying the turn's measured tokens when reported), one trajectory
-    step per turn carrying the turn's RESPONSE in `detail`, and telemetry_by_model
-    summed per model."""
-    reasoning, trajectory, by_model = [], [], {}
+    reasoning entry declares ``turn: i`` — its own step's index.
+
+    The generic-format assembly (v2 shape, per-step/entry construction, version
+    selection) is ``verdi_agent.AgentLog``'s job now; this only MAPS this workflow's
+    turns onto it and sums the per-model / whole-trial telemetry (the whole-trial
+    ``telemetry`` block stays the sole authoritative stream — honest-null tokens
+    when nothing was measured). It stays PURE (AgentLog's no-I/O ``_build``, the
+    seam's test-reuse builder) so the eval24 test can validate the emitted shape
+    without docker or real keys."""
+    log = AgentLog()
     for i, t in enumerate(turns):
-        role = t["agent"]
-        if t.get("reasoning") is not None:
-            entry = {"content": t["reasoning"] or "(no native reasoning)", "agent": role,
-                     # v3 linkage [flight-recorder charter]: this reasoning span
-                     # belongs to trajectory step i — one turn, one step, declared
-                     "turn": i}
-            # attribute the turn's measured output tokens to its reasoning entry,
-            # so a metered model turn is legible against an unmeasured one (the
-            # deterministic orchestrator step reports none — honest absence)
-            if t.get("tokens") is not None:
-                entry["tokens"] = t["tokens"]
-            if t.get("ts") is not None:
-                entry["relative_ts"] = t["ts"]
-            reasoning.append(entry)
-        step = {"kind": t.get("kind", "message"), "agent": role}
-        if t.get("detail") is not None:
-            step["detail"] = t["detail"]
-        if t.get("files"):
-            step["files_touched"] = t["files"]
-        if t.get("command") is not None:
-            step["command"] = t["command"]
-        if t.get("exit_code") is not None:
-            step["exit_code"] = t["exit_code"]
-        if t.get("ts") is not None:
-            step["relative_ts"] = t["ts"]
-        trajectory.append(step)
+        _record_turn(log, i, t)
+    doc = log._build()
+    by_model: dict[str, dict] = {}
+    for t in turns:
         tok = t.get("tokens")
         if tok is not None:
             by_model.setdefault(t.get("model") or model, {"tokens_out": 0})["tokens_out"] += tok
     if totals is None:
         total = sum(t["tokens"] for t in turns if t.get("tokens") is not None)
         totals = {"tokens_out": total or None}
-    log = {"verdi_log_version": 2, "telemetry": totals, "trajectory": trajectory, "reasoning": reasoning}
+    doc["telemetry"] = totals
     if by_model:
-        log["telemetry_by_model"] = by_model
-    return log
+        doc["telemetry_by_model"] = by_model
+    return doc
 
 
 def main():
-    ART.mkdir(parents=True, exist_ok=True)
-    req = json.loads(pathlib.Path("/verdi/request.json").read_text())
-    prompt, model = req["prompt"], req["model"]
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    req = read_request()
+    prompt, model = req.prompt, req.model
     turns: list[dict] = []
     t0 = time.monotonic()
 
@@ -207,9 +187,9 @@ def main():
         # from which turns, what happened to the critique, and the real exit
         # code of an import smoke check it actually runs. No model call — the
         # closing statement is the workflow's own truthful bookkeeping.
-        (WS / "solution.py").write_text(combined + "\n", encoding="utf-8")
+        (WORKSPACE / "solution.py").write_text(combined + "\n", encoding="utf-8")
         check = subprocess.run(
-            [sys.executable, "-c", "import solution"], cwd=str(WS), timeout=60,
+            [sys.executable, "-c", "import solution"], cwd=str(WORKSPACE), timeout=60,
             capture_output=True, text=True,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},  # no __pycache__ in the graded diff
         )
@@ -231,9 +211,10 @@ def main():
     except Exception as e:  # fail-visible: an absent-honest log still makes the trial scorable
         turns.append({"agent": "orchestrator", "reasoning": f"workflow failed: {e}",
                       "kind": "message", "ts": ts()})
-        (ART / "agent_log.json").write_text(json.dumps(build_agent_log(model=model, turns=turns)), encoding="utf-8")
+        (ARTIFACTS / "agent_log.json").write_text(
+            json.dumps(build_agent_log(model=model, turns=turns)), encoding="utf-8")
         raise
-    (ART / "agent_log.json").write_text(json.dumps(log), encoding="utf-8")
+    (ARTIFACTS / "agent_log.json").write_text(json.dumps(log), encoding="utf-8")
 
 
 if __name__ == "__main__":

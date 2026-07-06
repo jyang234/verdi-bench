@@ -28,8 +28,9 @@ verdi then slices reasoning/trajectory by sub-agent (`slice_reasoning_by_agent`,
 ## The harbor compliance contract (what any image must satisfy)
 
 > The normative statement of this contract is `docs/images.md` §1; the table
-> below is the worked, per-image view. This reference could also extend
-> `verdi-base` and drop the hand-rolled tunnel/log code for `verdi_agent`.
+> below is the worked, per-image view. This reference extends `verdi-base`, so the
+> request reader, the CONNECT-tunnel egress dance, and the generic-log writer all
+> come from `verdi_agent` and `agent.py` is multi-agent orchestration only.
 
 | Requirement | How this image meets it |
 |---|---|
@@ -54,9 +55,12 @@ one image dispatches both stacks on `request.arm`.
 ## Build, pin, use
 
 ```bash
-docker build -t verdi/multi-agent-reference:local images/reference/multi-agent
+# builds verdi-base first (this image's FROM depends on it), then this context,
+# and pins the result to a sha256 digest:
+bench images build images/reference/multi-agent --pin
+bench images verify <pinned-ref>        # offline compliance check, no keys
 # harbor runs the digest-pinned local image; reference it as the task's image:
-#   tasks.yaml:  - id: t1   image: verdi/multi-agent-reference:local   ...
+#   tasks.yaml:  - id: t1   image: <pinned-ref>   ...
 ```
 
 ## Verified compliant

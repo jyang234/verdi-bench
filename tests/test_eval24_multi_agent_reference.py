@@ -8,6 +8,7 @@ compliant without docker or real keys. [images/reference/multi-agent/README.md]
 from __future__ import annotations
 
 import importlib.util
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -15,10 +16,17 @@ from harness.adapters.generic import GenericAdapter, normalize_generic_by_model
 from harness.run.flight_recorder import FlightRecorder, slice_reasoning_by_agent
 
 _AGENT = Path(__file__).resolve().parents[1] / "images" / "reference" / "multi-agent" / "agent.py"
+# The rebased agent `import verdi_agent` (the stdlib-only in-image SDK at
+# images/base, on the image's PYTHONPATH=/opt/verdi). Put that dir on sys.path so
+# exec_module resolves the import here, mirroring how the base image does it in the
+# container [refactor 03 §3].
+_BASE = Path(__file__).resolve().parents[1] / "images" / "base"
 _MODEL = "anthropic/claude-haiku-4-5-20251001"
 
 
 def _load_agent():
+    if str(_BASE) not in sys.path:
+        sys.path.insert(0, str(_BASE))
     spec = importlib.util.spec_from_file_location("_ma_ref_agent", _AGENT)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # import-safe: main() is guarded, build_agent_log is pure
