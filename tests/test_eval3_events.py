@@ -49,10 +49,9 @@ def test_ac6_all_shipped_events_registered():
        ``REGISTERED_EVENTS`` — nothing registers a kind outside the table and no
        row is dead;
     2. every registered kind is bound to an UPPERCASE module constant;
-    3. every registered kind has a typed write path — its constant is the
-       event-type argument of a ``build_event`` call (the generic funnel, first
-       positional) or, while the table conversion is in flight, a direct ``emit``
-       call (``emit(ledger, ctx, TYPE, payload)`` — third positional).
+    3. every registered kind is written by a constructor through the generic
+       builder — its constant is ``build_event``'s first positional argument, so
+       no kind is registered without a typed write path.
     """
     tree = ast.parse(inspect.getsource(events))
 
@@ -89,17 +88,11 @@ def test_ac6_all_shipped_events_registered():
         f"{sorted(set(const_by_name.values()) ^ events.REGISTERED_EVENTS)}"
     )
 
-    # 3. every kind has a typed write path (build_event funnel first-positional,
-    #    or a direct emit third-positional while the conversion is in flight).
-    written = set()
-    for c in calls:
-        name = _const_at(c, 0) if c.func.id == "build_event" else (
-            _const_at(c, 2) if c.func.id == "emit" else None
-        )
-        if name is not None:
-            written.add(name)
-    assert written == events.REGISTERED_EVENTS, (
-        f"registered kinds no constructor writes: {sorted(events.REGISTERED_EVENTS - written)}"
+    # 3. every kind is written through the generic builder — its constant is
+    #    build_event's first positional argument.
+    built = {n for c in calls if c.func.id == "build_event" and (n := _const_at(c, 0))}
+    assert built == events.REGISTERED_EVENTS, (
+        f"registered kinds no constructor builds: {sorted(events.REGISTERED_EVENTS - built)}"
     )
 
     # PL-14: the acknowledgment folded into experiment_locked; the separate event

@@ -952,18 +952,12 @@ def record_control_reused(
     the ``[{task_id, repetition}]`` cells materialized. This is the auditable
     attestation that a set of ``reused_trial`` / ``reused_grade`` events came from
     a provably-unchanged source, not fabricated. Exactly one per import."""
-    return emit(
-        ledger_path,
-        ctx,
-        CONTROL_REUSED,
-        {
-            "source_experiment_id": source_experiment_id,
-            "source_ledger_head_hash": source_ledger_head_hash,
-            "bundle_sha256": bundle_sha256,
-            "fingerprint": fingerprint,
-            "control_arm": control_arm,
-            "cells": list(cells),
-        },
+    return build_event(
+        CONTROL_REUSED, ledger_path, ctx,
+        source_experiment_id=source_experiment_id,
+        source_ledger_head_hash=source_ledger_head_hash,
+        bundle_sha256=bundle_sha256, fingerprint=fingerprint,
+        control_arm=control_arm, cells=list(cells),
     )
 
 
@@ -983,10 +977,10 @@ def record_reused_trial(
     ``diff_sha256`` (additive, insert-when-present) binds the judged-diff snapshot
     stashed on disk at import to the chain — the trajectory_sha precedent: the
     large diff lives beside the ledger, its hash inside it."""
-    payload: dict = {"trial_record": trial_record, "reused_from": reused_from}
-    if diff_sha256 is not None:
-        payload["diff_sha256"] = diff_sha256
-    return emit(ledger_path, ctx, REUSED_TRIAL, payload)
+    return build_event(
+        REUSED_TRIAL, ledger_path, ctx,
+        trial_record=trial_record, reused_from=reused_from, diff_sha256=diff_sha256,
+    )
 
 
 def record_reused_grade(
@@ -995,10 +989,7 @@ def record_reused_grade(
     """A control grade imported from a bundle, verbatim, tagged ``reused_from``.
     Distinct from ``grade`` for the same structural-exclusion reason. Exactly one
     per imported cell."""
-    return emit(
-        ledger_path, ctx, REUSED_GRADE,
-        {"grade": grade, "reused_from": reused_from},
-    )
+    return build_event(REUSED_GRADE, ledger_path, ctx, grade=grade, reused_from=reused_from)
 
 
 def append_reused_verdict(
@@ -1008,7 +999,6 @@ def append_reused_verdict(
     ``reused_from``. Distinct from ``judge_verdict`` so official judge_preference
     and calibration (which read ``judge_verdict``) never see it — a reused-control
     verdict is exploratory-only. Exactly one per judged comparison."""
-    return emit(
-        ledger_path, ctx, REUSED_JUDGE_VERDICT,
-        {"verdict": verdict, "reused_from": reused_from},
+    return build_event(
+        REUSED_JUDGE_VERDICT, ledger_path, ctx, verdict=verdict, reused_from=reused_from
     )
