@@ -1,129 +1,27 @@
-"""``bench analyze`` [EVAL-6 §M6].
+"""``bench analyze`` / ``selfcheck`` / ``card`` [EVAL-6 §M6] — thin shells over
+:mod:`harness.analyze.api`.
 
-Asserts the experiment lock, computes findings as a pure function of
-``(ledger, seed)``, renders official or exploratory, and writes only the
-findings outputs plus a single ``findings_rendered`` provenance event. The
-self-contained comparison dossier (``findings.<mode>.dossier.html``) rides the
-same invocation as an additional artifact behind the same fence — no new verb,
-no extra event [EVAL-12 AC-7, D004]. Official renders refuse off-registration
-metrics and an un-calibrated corpus; exploratory renders carry the watermark on
-every section.
+Argument parsing, actor resolution, refusal→exit mapping, echo; the findings
+computation, selfcheck, and card rendering live in the stage API [refactor 02
+§3]. ``run_analyze`` / ``run_selfcheck_cli`` are re-exported so the analyze tests
+keep importing them from ``harness.analyze.cli``, and the one-event property
+registrations fire here at import time [EVAL-3 §M7, XC-3].
 """
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 import typer
 
-
-def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False,
-                actor: str = "unknown"):
-    """Render findings, ledgering exactly one event either way [EVAL-6 §M6, AN-3].
-
-    Returns the render path on success (after emitting ``findings_rendered``), or
-    ``None`` on a fail-closed refusal (after emitting exactly one ``cant_analyze``).
-    A refused render never escapes with zero events, and on success the event is
-    written *before* the findings files (re-derivable render, no orphan artifacts).
-    """
-    from ..ledger.events import (
-        EventContext,
-        record_cant_analyze,
-        record_findings_rendered,
-    )
-    from ..plan.lock import assert_lock
-    from .dossier import render_dossier
-    from .report import (
-        AnalyzeError,
-        cant_analyze_reason,
-        compute_findings,
-        render_html,
-        render_markdown,
-    )
-
-    experiment_dir = Path(experiment_dir)
-    spec_path = experiment_dir / "experiment.yaml"
-    ledger_path = experiment_dir / "ledger.ndjson"
-    spec = assert_lock(spec_path, ledger_path).spec  # PRA-M1: no second spec read
-    ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
-
-    # AN-3: a refused render lands exactly one cant_analyze event, never escapes.
-    # The corpus-manifest load is inside the envelope too, so a malformed --corpus
-    # fails closed to cant_analyze rather than escaping with no event.
-    try:
-        manifest = None
-        if corpus is not None:
-            from ..corpus.registry import CorpusManifest
-
-            try:
-                manifest = CorpusManifest.load(corpus)
-            except Exception as e:  # bad path / malformed manifest JSON
-                raise AnalyzeError(f"could not load corpus manifest {corpus}: {e}") from e
-        # F-H7: the multi-arm decision policy comes from the sha-locked spec —
-        # there is deliberately no analyze-time knob for it.
-        findings = compute_findings(ledger_path, spec, spec.seed, corpus_manifest=manifest)
-        renderer = render_html if html else render_markdown
-        rendered = renderer(findings, ledger_path, mode, corpus_manifest=manifest)
-        # EVAL-12 AC-7/D004: the dossier rides the same invocation as a third
-        # artifact — same fence (render_dossier delegates to render_markdown's
-        # validators), same single findings_rendered event, no new verb.
-        dossier = render_dossier(findings, ledger_path, mode, corpus_manifest=manifest)
-    except AnalyzeError as e:
-        record_cant_analyze(
-            ledger_path, ctx, mode=mode, reason=cant_analyze_reason(e).value, detail=str(e)
-        )
-        return None
-
-    suffix = "html" if html else "md"
-    out_json = experiment_dir / "findings.json"
-    out_render = experiment_dir / f"findings.{mode}.{suffix}"
-    # F-L7: stamp the mode (and the exploratory watermark) into the JSON
-    # artifact itself BEFORE hashing, so the citable bytes are unambiguous.
-    findings.mode = mode
-    if mode != "official":
-        from .report import _WATERMARK
-
-        findings.watermark = _WATERMARK
-    findings_json = findings.model_dump_json()
-
-    # AN-3: ledger the render *before* writing the files, so an interrupted write
-    # leaves a re-derivable provenance record rather than orphan artifacts.
-    record_findings_rendered(
-        ledger_path,
-        ctx,
-        mode=mode,
-        primary_metric=findings.primary_metric,
-        ledger_head_hash=findings.provenance.ledger_head_hash,
-        findings_sha256=hashlib.sha256(findings_json.encode("utf-8")).hexdigest(),
-        # F-H7: the APPLIED policy — "none" when there is no multi-arm family
-        # (n_pairs == 1), the spec-locked value otherwise.
-        multi_arm_correction=(findings.multi_arm or {}).get("correction", "none"),
-    )
-    out_json.write_text(findings_json, encoding="utf-8")
-    out_render.write_text(rendered, encoding="utf-8")
-    (experiment_dir / f"findings.{mode}.dossier.html").write_text(dossier, encoding="utf-8")
-    return out_render
-
-
-def run_selfcheck_cli(experiment_dir, *, actor: str = "unknown", n_sim: int = 200,
-                      n_boot: int = 10_000) -> dict:
-    """Compute + ledger the D008 coverage selfcheck; return the result [7I-1].
-
-    Appends exactly one additive ``selfcheck`` event. The seed derives from the
-    locked spec seed, so the check is deterministic and cannot be re-rolled."""
-    from ..ledger.events import EventContext, record_selfcheck
-    from ..plan.lock import assert_lock
-    from .selfcheck import run_selfcheck
-
-    experiment_dir = Path(experiment_dir)
-    spec_path = experiment_dir / "experiment.yaml"
-    ledger_path = experiment_dir / "ledger.ndjson"
-    spec = assert_lock(spec_path, ledger_path).spec  # PRA-M1: no second spec read
-    ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
-    result = run_selfcheck(ledger_path, spec, n_sim=n_sim, n_boot=n_boot)
-    record_selfcheck(ledger_path, ctx, **result)
-    return result
+from ..cli_common import refusal_exit, resolve_actor_or_exit
+from .api import (  # noqa: F401 — run_analyze/run_selfcheck_cli re-exported for tests
+    compare_card_files,
+    emit_card,
+    run_analyze,
+    run_selfcheck_cli,
+)
+from .card import CardError
 
 
 def register(app: typer.Typer) -> None:
@@ -133,13 +31,7 @@ def register(app: typer.Typer) -> None:
         actor: str = typer.Option(None, "--actor", help="Actor recorded on the selfcheck event [GR-12]"),
     ) -> None:
         """Run the D008 coverage selfcheck; official render requires it to pass."""
-        from ..ledger.actor import ActorResolutionError, resolve_actor
-
-        try:
-            resolved_actor = resolve_actor(actor)
-        except ActorResolutionError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
+        resolved_actor = resolve_actor_or_exit(actor)
         result = run_selfcheck_cli(experiment_dir, actor=resolved_actor)
         status = "PASS" if result["passed"] else "FAIL"
         typer.echo(
@@ -169,16 +61,10 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Render pre-registered official or exploratory findings."""
-        from ..ledger.actor import ActorResolutionError, resolve_actor
-
         if official and exploratory:
             raise typer.BadParameter("choose at most one of --official/--exploratory")
         mode = "official" if official else "exploratory"
-        try:
-            resolved_actor = resolve_actor(actor)
-        except ActorResolutionError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
+        resolved_actor = resolve_actor_or_exit(actor)
         out = run_analyze(experiment_dir, mode=mode, corpus=corpus, html=html,
                           actor=resolved_actor)
         if out is None:
@@ -210,45 +96,17 @@ def register(app: typer.Typer) -> None:
         The `json` form is the canonical, comparable artifact (feed it to
         `card compare`); `md`/`html` are human renders of the same card.
         """
-        from ..corpus.commit import load_task_dicts
-        from ..plan.lock import assert_lock
-        from .card import (
-            CardError, build_card, render_card_html, render_card_markdown, serialize_card,
-        )
-
         if fmt not in ("json", "md", "html"):
             raise typer.BadParameter("--format must be json, md, or html")
-        spec = assert_lock(
-            experiment_dir / "experiment.yaml", experiment_dir / "ledger.ndjson"
-        ).spec
-        manifest = None
-        if corpus is not None:
-            from ..corpus.registry import CorpusManifest
-
-            manifest = CorpusManifest.load(corpus)
-        task_ids = [t["id"] for t in load_task_dicts(experiment_dir)]
-        try:
-            card = build_card(
-                experiment_dir / "ledger.ndjson", spec,
-                task_ids=task_ids, corpus_manifest=manifest,
-            )
-        except CardError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
-        text = (
-            serialize_card(card) if fmt == "json"
-            else render_card_markdown(card) if fmt == "md"
-            else render_card_html(card)
-        )
+        with refusal_exit(CardError):
+            outcome = emit_card(experiment_dir, corpus=corpus, fmt=fmt, out=out)
         if out is not None:
-            Path(out).write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
-            b = card["battery"]
             typer.echo(
                 f"card ({fmt}) → {out} "
-                f"(battery_sha={b['battery_sha'][:12]}…, basis={b['battery_basis']})"
+                f"(battery_sha={outcome.battery_sha[:12]}…, basis={outcome.battery_basis})"
             )
         else:
-            typer.echo(text)
+            typer.echo(outcome.text)
 
     @card_app.command("compare")
     def card_compare(
@@ -258,15 +116,8 @@ def register(app: typer.Typer) -> None:
         """Compare two cards; refuse loudly if they graded different task sets/metrics."""
         import json as _json
 
-        from .card import CardError, compare_cards
-
-        a = _json.loads(Path(card_a).read_text(encoding="utf-8"))
-        b = _json.loads(Path(card_b).read_text(encoding="utf-8"))
-        try:
-            result = compare_cards(a, b)
-        except CardError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
+        with refusal_exit(CardError):
+            result = compare_card_files(card_a, card_b)
         typer.echo(_json.dumps(result, indent=2, sort_keys=True))
 
     app.add_typer(card_app, name="card")
