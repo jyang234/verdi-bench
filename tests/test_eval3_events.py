@@ -35,65 +35,64 @@ def test_ac6_reserved_keys_rejected(tmp_path):
 
 
 def test_ac6_all_shipped_events_registered():
-    """Sweep the LIVE registry against the events module's own registrations
-    [refactor 01 §4 D9].
+    """Sweep the LIVE registry against the events module's declarative table
+    [refactor 01 §4 D9; refactor 06 §2].
 
-    The previous version pinned a hand-written list of 14 of the (then) 31
-    event types, so a shipped-but-unlisted type sat outside the guard forever
-    — the exact drift a registry meta-test exists to prevent. Everything below
-    is derived from the module source + live attributes, so a future event
-    type joins the sweep automatically:
+    Registration is now table-driven: every event kind is one ``EventSpec`` row
+    in ``_EVENT_SPECS`` and ``REGISTERED_EVENTS`` derives from it. The sweep is
+    re-pointed from the retired ``register_event("…")`` literals to the table —
+    each row is ``EventSpec(<CONST>, …)``, its name the event-name CONSTANT — so
+    the same invariants still hold against source + live attributes and a future
+    event type joins the sweep automatically:
 
-    1. the ``register_event("…")`` literals in events.py, with no duplicates,
-       are exactly ``REGISTERED_EVENTS`` — nothing registers an event kind
-       anywhere else, and no registration is dead;
+    1. the ``EventSpec`` rows, with no duplicates, name exactly
+       ``REGISTERED_EVENTS`` — nothing registers a kind outside the table and no
+       row is dead;
     2. every registered kind is bound to an UPPERCASE module constant;
-    3. every registered kind is emitted by at least one constructor in the
-       module (its constant appears as ``emit``'s event-type argument), so no
-       kind is registered without a typed write path.
+    3. every registered kind is written by a constructor through the generic
+       builder — its constant is ``build_event``'s first positional argument, so
+       no kind is registered without a typed write path.
     """
     tree = ast.parse(inspect.getsource(events))
 
-    # 1. source registrations == live registry, duplicate-free.
-    source_names = [
-        node.args[0].value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "register_event"
-        and node.args
-        and isinstance(node.args[0], ast.Constant)
+    # Uppercase string module constants — the event-name constants.
+    const_by_name = {k: v for k, v in vars(events).items() if k.isupper() and isinstance(v, str)}
+
+    def _const_at(call, idx):
+        """The event-name string of ``call`` whose positional arg ``idx`` is an
+        event-name CONSTANT, else ``None``."""
+        args = call.args
+        if len(args) > idx and isinstance(args[idx], ast.Name) and args[idx].id in const_by_name:
+            return const_by_name[args[idx].id]
+        return None
+
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     ]
-    assert len(source_names) == len(set(source_names)), (
-        f"duplicate register_event() calls: {sorted(set(n for n in source_names if source_names.count(n) > 1))}"
+
+    # 1. table rows == live registry, duplicate-free.
+    spec_names = [n for c in calls if c.func.id == "EventSpec" and (n := _const_at(c, 0))]
+    assert len(spec_names) == len(set(spec_names)), (
+        f"duplicate EventSpec rows: {sorted(n for n in set(spec_names) if spec_names.count(n) > 1)}"
     )
-    assert set(source_names) == events.REGISTERED_EVENTS, (
-        "live registry and events.py registrations disagree — an event kind was "
-        "registered outside the events module (or a registration went dead): "
-        f"{sorted(set(source_names) ^ events.REGISTERED_EVENTS)}"
+    assert set(spec_names) == events.REGISTERED_EVENTS, (
+        "live registry and the EventSpec table disagree — a kind was registered "
+        "outside the table (or a row went dead): "
+        f"{sorted(set(spec_names) ^ events.REGISTERED_EVENTS)}"
     )
 
     # 2. every kind is a named UPPERCASE module constant.
-    constants = {v for k, v in vars(events).items() if k.isupper() and isinstance(v, str)}
-    assert constants == events.REGISTERED_EVENTS, (
+    assert set(const_by_name.values()) == events.REGISTERED_EVENTS, (
         f"registered kinds without a module constant (or stale constants): "
-        f"{sorted(constants ^ events.REGISTERED_EVENTS)}"
+        f"{sorted(set(const_by_name.values()) ^ events.REGISTERED_EVENTS)}"
     )
 
-    # 3. every kind has a constructor that emits it.
-    const_by_name = {k: v for k, v in vars(events).items() if k.isupper() and isinstance(v, str)}
-    emitted = {
-        const_by_name[node.args[2].id]
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "emit"
-        and len(node.args) >= 3
-        and isinstance(node.args[2], ast.Name)
-        and node.args[2].id in const_by_name
-    }
-    assert emitted == events.REGISTERED_EVENTS, (
-        f"registered kinds no constructor emits: {sorted(events.REGISTERED_EVENTS - emitted)}"
+    # 3. every kind is written through the generic builder — its constant is
+    #    build_event's first positional argument.
+    built = {n for c in calls if c.func.id == "build_event" and (n := _const_at(c, 0))}
+    assert built == events.REGISTERED_EVENTS, (
+        f"registered kinds no constructor builds: {sorted(events.REGISTERED_EVENTS - built)}"
     )
 
     # PL-14: the acknowledgment folded into experiment_locked; the separate event
