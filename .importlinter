@@ -42,6 +42,7 @@ source_modules =
     harness.run.settings
     harness.run.trajectory
     harness.run.heartbeat
+    harness.run.engines.base
     harness.run.engines.fake
     harness.status
     harness.serve

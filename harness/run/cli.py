@@ -22,6 +22,7 @@ from .api import (
     run_experiment,
 )
 from .control_reuse import ControlReuseError
+from .engines import engine_choices
 from .reuse import ControlBundleError
 
 
@@ -29,7 +30,7 @@ def register(app: typer.Typer) -> None:
     @app.command()
     def run(
         experiment_dir: Path = typer.Argument(..., help="Directory with experiment.yaml"),
-        engine: str = typer.Option("fake", "--engine", help="fake | harbor"),
+        engine: str = typer.Option("fake", "--engine", help=engine_choices()),
         corpus_manifest: Path = typer.Option(
             None, "--corpus-manifest", help="Manifest gating schedulability (is_schedulable) [CO-2]"
         ),

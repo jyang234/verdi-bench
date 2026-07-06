@@ -8,6 +8,14 @@ through :class:`~harness.hermetic.docker.HardenedCommand` and runs it through a
 hermetic layer — the old "only this module talks to Docker" claim was already
 false via ``grade/container.py`` and is re-scoped honestly here.
 
+Harbor is now a :class:`~harness.run.engines.base.EngineBase` subclass [refactor
+04 §2]: it fills only the two engine-specific seams — ``_resolve_image`` (pin the
+image to an immutable digest or refuse) and ``_execute`` (run the container and
+map its result) — and inherits the shared fail-closed telemetry/egress readers and
+the outcome-downgrade precedence. The reason vocabulary and the fail-closed error
+signals now live in ``base``; they are re-exported here so callers that name Harbor
+(the confined seam) still reach ``ProxyLogMissingError``/``TelemetryCorruptError``.
+
 Hermetic posture [D001, D005]:
 * Pinned image ref (digest captured into provenance).
 * Pinned CPU/mem quotas [D003].
@@ -42,8 +50,29 @@ from ...hermetic.docker import (
 )
 from ...hermetic.network import METERED_NETWORK
 from ...hermetic.network import ensure_metered_network as _ensure_metered_network
-from ..environment import stage_files
-from ..types import EngineResult, TrialRequest
+from ..types import TrialRequest
+from .base import (
+    EngineBase,
+    ExecOutcome,
+    ProxyLogMissingError,
+    ResolvedImage,
+    TelemetryCorruptError,
+)
+
+# Re-exported for callers confined to the Harbor seam (tests + the metering e2e
+# import these from here); the definitions now live in ``base`` so every engine
+# shares them [refactor 04 §2].
+__all__ = [
+    "HARBOR_VERSION",
+    "TRIAL_REQUEST_MOUNT",
+    "METERED_NETWORK",
+    "RunOutput",
+    "CommandRunner",
+    "DockerCliRunner",
+    "HarborEngine",
+    "ProxyLogMissingError",
+    "TelemetryCorruptError",
+]
 
 HARBOR_VERSION = "harbor-pinned-0.1.0"  # version-pinned in images [D005]
 
@@ -75,21 +104,6 @@ def _with_trial_auth(proxy_url: str, trial_id: str) -> str:
     if "@" in rest:
         return proxy_url
     return f"{scheme}://{trial_id}@{rest}"
-
-
-class TelemetryCorruptError(RuntimeError):
-    """The agent's native telemetry log was present but not valid JSON [RN-17].
-
-    Distinct from an absent log (legitimately no telemetry): corruption must
-    fail the trial closed, never silently become "no telemetry"."""
-
-
-class ProxyLogMissingError(RuntimeError):
-    """A configured metering-proxy log file is absent [PRA-H4].
-
-    The proxy is dead or misconfigured; treating this as "no egress, no cost, no
-    violation" is a silent fail-open of the cost guard and the egress fence, so
-    the scan raises and the trial fails infra_failed(proxy_log_missing)."""
 
 
 @dataclass
@@ -225,7 +239,7 @@ class DockerCliRunner:
         return RunOutput(exit_status=proc.returncode)
 
 
-class HarborEngine:
+class HarborEngine(EngineBase):
     name = "harbor"
 
     def __init__(
@@ -294,32 +308,25 @@ class HarborEngine:
         hc.workdir("/workspace").image(image)
         return hc.build()
 
-    def run(self, request: TrialRequest) -> EngineResult:
-        image = request.image
-        pinned = self._runner.resolve_pinned(image)
-        artifacts = Path(request.workspace) / "artifacts"
-        artifacts.mkdir(parents=True, exist_ok=True)
-        # A3: stage the task's declared fixture files into /workspace before the
-        # container runs, so a real trial sees them at /workspace/<rel> [refactor 03 §5].
-        stage_files(request.workspace, request.files or {})
+    def _resolve_image(self, req: TrialRequest) -> ResolvedImage:
+        """Pin the image to a runnable immutable ref, or refuse [D005/RN-12].
 
+        A tag-only or otherwise unresolvable image fails the trial closed
+        (``infra_failed``, reason ``unpinned_image``) rather than silently running
+        an unpinned tag."""
+        pinned = self._runner.resolve_pinned(req.image)
         if pinned is None:
-            # D005/RN-12: a trial must run a digest-pinned image. A tag-only or
-            # otherwise unresolvable image fails the trial closed (infra_failed,
-            # a real reason) rather than silently running an unpinned tag.
-            return EngineResult(
-                outcome=Outcome.infra_failed,
-                native_log={},
-                artifacts_dir=artifacts,
-                image_digest=None,
-                engine=self.name,
-                quotas=request.quotas or Quotas(),
-                executed_at=request.ts,
-                failure_reason="unpinned_image",
-            )
-        pinned_ref, digest = pinned
+            return ResolvedImage(refusal_reason="unpinned_image")
+        ref, digest = pinned
+        return ResolvedImage(ref=ref, digest=digest)
 
-        if request.proxy is not None:
+    def _execute(self, req: TrialRequest, resolved: ResolvedImage) -> ExecOutcome:
+        """Run the digest-pinned container and map its result to an
+        :class:`ExecOutcome`. Egress is left to the shared proxy-log scan (harbor
+        does not report its own); the ``kill_failed > daemon_error > timeout``
+        head of the precedence is decided here from the container result [PRA-M7,
+        RN-10]."""
+        if req.proxy is not None:
             # ensure the restricted metering network exists before a trial joins
             # it — it was referenced by --network but never created [RN-11].
             self._runner.ensure_metered_network()
@@ -330,95 +337,42 @@ class HarborEngine:
         try:
             request_file = req_dir / "request.json"
             request_file.write_text(
-                json.dumps(self._trial_request_payload(request)), encoding="utf-8"
+                json.dumps(self._trial_request_payload(req)), encoding="utf-8"
             )
             # F-M-I2: run the resolved immutable ref, never the mutable tag.
-            cmd = self.build_run_command(request, pinned_ref, request_file)
+            cmd = self.build_run_command(req, resolved.ref, request_file)
             result = self._runner.run_container(
-                cmd, request.timeout_s, env=request.provider_keys or {}
+                cmd, req.timeout_s, env=req.provider_keys or {}
             )
         finally:
             shutil.rmtree(req_dir, ignore_errors=True)
 
-        failure_reason: Optional[str] = None
         if result.kill_failed:
             # PRA-M7: the timeout kill could not be confirmed, so a live container
-            # may still be writing the workspace — do not trust redaction; fail
-            # the trial closed with a specific reason rather than reporting a plain
+            # may still be writing the workspace — do not trust redaction; fail the
+            # trial closed with a specific reason rather than reporting a plain
             # timeout whose (possibly unredacted) artifacts we would then capture.
-            outcome = Outcome.infra_failed
-            failure_reason = "kill_failed"
+            outcome, failure_reason = Outcome.infra_failed, "kill_failed"
         elif result.daemon_error:
-            outcome = Outcome.infra_failed
             # the docker daemon/config error (exit 125) — a real reason the
             # scheduler can ledger, not the fake-only placeholder [RN-14]
-            failure_reason = "daemon_error"
+            outcome, failure_reason = Outcome.infra_failed, "daemon_error"
         elif result.timed_out:
-            outcome = Outcome.timeout
+            outcome, failure_reason = Outcome.timeout, None
         else:
             # a nonzero agent exit is still a completed *trial* (the agent ran);
             # grading decides pass/fail. infra vs timeout are the only
             # non-completions, so a completed run is unconditionally `completed`.
-            outcome = Outcome.completed
+            outcome, failure_reason = Outcome.completed, None
 
-        try:
-            native_log = self._read_native_log(artifacts)
-        except TelemetryCorruptError:
-            # RN-17: corrupt telemetry fails the trial closed rather than
-            # silently becoming "no telemetry". Only a completed trial is
-            # downgraded — a daemon/timeout failure keeps its more specific reason.
-            native_log = {}
-            if outcome == Outcome.completed:
-                outcome = Outcome.infra_failed
-                failure_reason = "telemetry_corrupt"
-        try:
-            egress_attempts, egress_violation, metered_cost = self._scan_proxy_log(request)
-        except ProxyLogMissingError:
-            # PRA-H4: fail closed — a missing proxy log means we cannot vouch for
-            # egress confinement or metered cost for this trial. Only downgrade a
-            # would-be-completed trial; a daemon/timeout/kill failure keeps its
-            # more specific reason.
-            egress_attempts, egress_violation, metered_cost = [], False, None
-            if outcome == Outcome.completed:
-                outcome = Outcome.infra_failed
-                failure_reason = "proxy_log_missing"
-
-        return EngineResult(
+        return ExecOutcome(
             outcome=outcome,
-            native_log=native_log,
-            artifacts_dir=artifacts,
             exit_status=result.exit_status,
-            image_digest=digest,
-            agent_binary_version=self._agent_version(request),
-            harbor_version=self.harbor_version,
-            engine=self.name,
-            quotas=request.quotas or Quotas(),
-            egress_violation=egress_violation,
-            egress_attempts=egress_attempts,
-            executed_at=request.ts,
+            agent_binary_version=self._agent_version(req),
+            engine_version=self.harbor_version,
             failure_reason=failure_reason,
-            # cost the metering proxy attributed to this trial — feeds the cost
-            # guard when the arm can't self-report [RN-2]. None until the proxy
-            # emits per-request cost in its JSONL.
-            proxy_metered_cost=metered_cost,
+            egress=None,  # harbor derives egress from the shared proxy-log scan
         )
-
-    @staticmethod
-    def _read_native_log(artifacts: Path) -> dict:
-        """Parse the agent's native telemetry log.
-
-        An **absent** log is legitimate (the arm may emit none) and reads as
-        ``{}``. A **present but corrupt** log is not — silently mapping it to
-        ``{}`` would launder corrupt telemetry into "no telemetry", so raise
-        :class:`TelemetryCorruptError` and let the caller fail the trial closed
-        [RN-17]."""
-        log = artifacts / "agent_log.json"
-        if not log.exists():
-            return {}
-        try:
-            return json.loads(log.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            raise TelemetryCorruptError(f"{log}: {e}") from e
 
     @staticmethod
     def _trial_request_payload(request: TrialRequest) -> dict:
@@ -441,56 +395,3 @@ class HarborEngine:
     @staticmethod
     def _agent_version(request: TrialRequest) -> Optional[str]:
         return (request.arm.payload or {}).get("agent_binary_version")
-
-    @staticmethod
-    def _scan_proxy_log(request: TrialRequest) -> tuple[list[str], bool, Optional[float]]:
-        """Parse the metering proxy's structured JSONL, keyed on trial [RN-11].
-
-        Each line is ``{"trial","host","decision":"allow|deny"[,"cost"]}``; only
-        lines for this trial count (per-trial attribution via the injected proxy
-        credential). Any ``deny`` is an egress violation, and a per-line ``cost``
-        (when the proxy meters it) sums into the trial's metered cost so a
-        null-telemetry-cost arm is still enforceable on the real path [RN-2].
-
-        A line that is not a JSON object is skipped without crashing (a bare
-        ``42``/``null``/``[...]`` must not abort the whole run); unparseable lines
-        are skipped — the metering proxy is expected to emit valid JSONL, so a
-        malformed line is an operational fault of the proxy, not this trial's.
-
-        PRA-H4: a *configured but absent* log is NOT treated as "no egress, no
-        cost, no violation" — that silent fail-open let a null-telemetry arm spend
-        invisibly against the ceiling and shed egress-violation evidence when the
-        proxy was dead or its path was wrong. A configured proxy whose log file is
-        missing raises :class:`ProxyLogMissingError`, and the trial fails closed
-        infra_failed(proxy_log_missing)."""
-        if request.proxy is None or not request.proxy.log_path:
-            return [], False, None
-        p = Path(request.proxy.log_path)
-        if not p.exists():
-            raise ProxyLogMissingError(
-                f"proxy log {p} is configured but absent — the metering proxy is "
-                "dead or misconfigured; refusing to treat this as zero egress/cost "
-                "[PRA-H4]"
-            )
-        attempts: list[str] = []
-        violation = False
-        metered: Optional[float] = None
-        for line in p.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(rec, dict) or rec.get("trial") != request.trial_id:
-                continue
-            host = rec.get("host")
-            if host:
-                attempts.append(host)
-            if rec.get("decision") == "deny":
-                violation = True
-            cost = rec.get("cost")
-            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-                metered = (metered or 0.0) + float(cost)
-        return attempts, violation, metered
