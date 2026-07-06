@@ -16,15 +16,7 @@ from typing import Optional
 
 import typer
 
-
-def _resolve_actor_or_exit(actor_flag: Optional[str]) -> str:
-    from ..ledger.actor import ActorResolutionError, resolve_actor
-
-    try:
-        return resolve_actor(actor_flag)
-    except ActorResolutionError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(code=2)
+from ..cli_common import event_context
 
 
 def register(app: typer.Typer) -> None:
@@ -53,16 +45,13 @@ def register(app: typer.Typer) -> None:
         """Probe every arm model for training-set membership [AC-3, D002]."""
         from ..corpus.commit import load_task_dicts
         from ..corpus.registry import CorpusManifest
-        from ..ledger.events import EventContext
         from ..plan.lock import assert_lock
         from .overlap import OverlapError
         from .probe import ProbeError, ProbeTask, run_memory_probe
         from .scan import TaskReferences, scan_trials
 
         ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = EventContext(
-            experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor)
-        )
+        ctx = event_context(experiment_dir, actor)
         # PRA-M2: contamination is a ledgered stage, so it must gate on the lock
         # like every other stage — otherwise a post-lock-mutated spec is probed
         # and its results chained. assert_lock chain-verifies and returns the spec

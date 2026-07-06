@@ -15,6 +15,7 @@ type = forbidden
 allow_indirect_imports = True
 source_modules =
     harness.cli
+    harness.cli_common
     harness.entrypoints
     harness.version
     harness.schema
@@ -81,6 +82,7 @@ type = forbidden
 allow_indirect_imports = True
 source_modules =
     harness.cli
+    harness.cli_common
     harness.entrypoints
     harness.version
     harness.http_guard

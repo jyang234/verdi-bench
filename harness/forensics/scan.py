@@ -22,6 +22,7 @@ from ..ledger.events import (
     record_forensic_quarantine,
     record_forensics_report,
 )
+from ..run.artifacts import read_transcript
 from .detectors import (
     TrialEvidence,
     detail_evaluable,
@@ -70,19 +71,6 @@ def _holdout_assertion_values(root: Path) -> tuple[str, ...]:
             if v not in values:
                 values.append(v)
     return tuple(values)
-
-
-def _read_transcript(artifacts_path) -> str:
-    """Post-redaction transcript, or "" if absent — the EVAL-9 reader's exact
-    semantics (``errors="replace"``, absent ⇒ empty, a read error raises): an
-    empty transcript fails closed to CANT_REVIEW(no_transcript) downstream,
-    never a fabricated review."""
-    if not artifacts_path:
-        return ""
-    p = Path(artifacts_path) / "transcript.txt"
-    if not p.is_file():
-        return ""
-    return p.read_text(encoding="utf-8", errors="replace")
 
 
 def run_forensics(
@@ -215,7 +203,7 @@ def run_forensics(
             )
 
         if review:
-            transcript = _read_transcript(artifacts_path)
+            transcript = read_transcript(artifacts_path)
             # Reasoning is the richest pathology signal: the advisory review reads
             # the flight recorder (blinded, fail-closed, byte-bounded) ahead of the
             # transcript [EVAL-24 AC-3]. resolve_flight_recorder verifies the sha —

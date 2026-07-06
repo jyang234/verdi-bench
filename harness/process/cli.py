@@ -12,28 +12,8 @@ from pathlib import Path
 
 import typer
 
-from ..ledger.actor import ActorResolutionError, resolve_actor
-
-
-def _resolve_actor_or_exit(flag_value):
-    """Resolve the ledgered actor or exit 2 with the named refusal [GR-12]."""
-    try:
-        return resolve_actor(flag_value)
-    except ActorResolutionError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(code=2)
-
-
-def _read_transcript(artifacts_path) -> str:
-    """The trial's post-redaction transcript (``artifacts/transcript.txt``), or an
-    empty string if absent — an empty transcript scores fail-closed, never a
-    fabricated one."""
-    if not artifacts_path:
-        return ""
-    p = Path(artifacts_path) / "transcript.txt"
-    if not p.is_file():
-        return ""
-    return p.read_text(encoding="utf-8", errors="replace")
+from ..cli_common import resolve_actor_or_exit
+from ..run.artifacts import read_transcript
 
 
 def register(app: typer.Typer) -> None:
@@ -76,7 +56,7 @@ def register(app: typer.Typer) -> None:
             raise typer.Exit(code=2)
 
         rubric = ProcessRubric.from_yaml(rubric_path) if rubric_path else default_rubric()
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
+        ctx = EventContext(experiment_id=experiment_dir.name, actor=resolve_actor_or_exit(actor))
         # PRA-M13: a process score whose every dimension failed *transiently*
         # (the scorer could not run — timeout / provider_error) is not counted as
         # done, so a re-run re-attempts it. A score with any real dimension, or a
@@ -104,7 +84,7 @@ def register(app: typer.Typer) -> None:
             trial_id = rec["trial_id"]
             if trial_id in already:
                 continue
-            transcript = _read_transcript(rec.get("artifacts_path"))
+            transcript = read_transcript(rec.get("artifacts_path"))
             score_trial_process(
                 trial_id, transcript, rubric, ledger_path=ledger_path, ctx=ctx,
                 ts=ctx.clock(), scorer_id=spec.judge.model, spec=spec,
@@ -142,7 +122,7 @@ def register(app: typer.Typer) -> None:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
 
-        who = _resolve_actor_or_exit(actor)
+        who = resolve_actor_or_exit(actor)
         ledger_path = experiment_dir / "ledger.ndjson"
         ctx = EventContext(experiment_id=experiment_dir.name, actor=who)
         try:

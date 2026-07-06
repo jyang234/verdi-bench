@@ -16,16 +16,7 @@ from pathlib import Path
 
 import typer
 
-from ..ledger.actor import ActorResolutionError, resolve_actor
-
-
-def _resolve_actor_or_exit(flag_value):
-    """Resolve the ledgered actor or exit 2 with the named refusal [GR-12]."""
-    try:
-        return resolve_actor(flag_value)
-    except ActorResolutionError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(code=2)
+from ..cli_common import event_context, resolve_actor_or_exit
 
 
 # Known tasks.yaml drift traps — singular/plural keys the lenient run/grade reader
@@ -211,7 +202,7 @@ def register(app: typer.Typer) -> None:
         # interrupted run cannot leave the manifest showing a draw the chain never
         # recorded (the ledger is the auditable, tamper-evident source of truth).
         if ledger is not None:
-            ctx = EventContext(experiment_id=manifest.corpus_id, actor=_resolve_actor_or_exit(actor))
+            ctx = EventContext(experiment_id=manifest.corpus_id, actor=resolve_actor_or_exit(actor))
             ledger_subset_draw(ledger, ctx, manifest, subset)
         manifest.save(manifest_path)
         typer.echo(f"subset: {len(subset.task_ids)} task(s) over {len(subset.strata['sizes'])} strata")
@@ -231,7 +222,7 @@ def register(app: typer.Typer) -> None:
         from .mine import MergeRequest, MRFile, mine_mr
         from .registry import CorpusError, CorpusManifest, assert_outside_instrument
 
-        who = _resolve_actor_or_exit(miner)
+        who = resolve_actor_or_exit(miner)
         data = json.loads(mr_json.read_text(encoding="utf-8"))
         mr = MergeRequest(
             parent_sha=data["parent_sha"],
@@ -341,7 +332,6 @@ def register(app: typer.Typer) -> None:
         gate [PL-5]. ``rho`` is a recorded assumption (full estimation is Phase 5).
         """
         from ..ledger import events
-        from ..ledger.events import EventContext
         from ..ledger.query import find_events
         from .ledger_ops import ledger_calibration_run
         from .registry import CorpusManifest
@@ -370,7 +360,7 @@ def register(app: typer.Typer) -> None:
         n_tasks = len(by_task)
         run = {"p": round(p, 6), "rho": rho, "n_tasks": n_tasks, "kind": kind}
 
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
+        ctx = event_context(experiment_dir, actor)
         ledger_calibration_run(ledger_path, ctx, manifest, run, kind=kind)
         manifest.save(manifest_path)
         typer.echo(f"calibration ({kind}): p={p:.3f} n_tasks={n_tasks} → {manifest.calibration.status}")
@@ -397,7 +387,6 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         """Admit a curated candidate — verifies the signed approval + clean baseline."""
         from ..contamination.canary import CanaryError, derive_canary, embed_canary
-        from ..ledger.events import EventContext
         from .admit import admit_task
         from .attestation import KeyringFormatError, load_keyring
         from .registry import CorpusError, CorpusManifest, assert_outside_instrument
@@ -416,7 +405,7 @@ def register(app: typer.Typer) -> None:
                 raise typer.Exit(code=2)
 
         ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
+        ctx = event_context(experiment_dir, actor)
         manifest = CorpusManifest.load(manifest_path)
         # Load the keyring before the admit envelope: a legacy list-format keyring
         # raises KeyringFormatError (a ValueError, not CorpusError), so evaluating
@@ -507,14 +496,11 @@ def register(app: typer.Typer) -> None:
             LocalGradeRunner,
         )
         from ..grade.types import GradeTask
-        from ..ledger.events import EventContext
 
         if runner not in ("docker", "local"):
             raise typer.BadParameter("--runner must be docker or local")
         ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = EventContext(
-            experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor)
-        )
+        ctx = event_context(experiment_dir, actor)
         container = GradingContainer(
             runner=LocalGradeRunner() if runner == "local" else DockerGradeRunner()
         )

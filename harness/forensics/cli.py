@@ -11,22 +11,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 import typer
 
-from ..ledger.actor import ActorResolutionError, resolve_actor
+from ..cli_common import event_context
 from ..ledger.events import EventContext, record_forensic_spotcheck
 from .detectors import DETECTOR_IDS
 from .scan import UnknownTrialError, quarantine_trial, run_forensics
-
-
-def _resolve_actor_or_exit(flag_value: Optional[str]) -> str:
-    try:
-        return resolve_actor(flag_value)
-    except ActorResolutionError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(code=2)
 
 
 def register(app: typer.Typer) -> None:
@@ -48,9 +39,7 @@ def register(app: typer.Typer) -> None:
         actor: str = typer.Option(None, "--actor", help="Actor on the report event [GR-12]"),
     ) -> None:
         """Scan every trial; append exactly one forensics_report event."""
-        ctx = EventContext(
-            experiment_id=Path(experiment_dir).name, actor=_resolve_actor_or_exit(actor)
-        )
+        ctx = event_context(experiment_dir, actor)
         report = run_forensics(
             Path(experiment_dir), ctx=ctx, review=review, provider_model=model
         )
@@ -83,9 +72,7 @@ def register(app: typer.Typer) -> None:
                 err=True,
             )
             raise typer.Exit(code=2)
-        ctx = EventContext(
-            experiment_id=Path(experiment_dir).name, actor=_resolve_actor_or_exit(actor)
-        )
+        ctx = event_context(experiment_dir, actor)
         record_forensic_spotcheck(
             Path(experiment_dir) / "ledger.ndjson", ctx,
             trial_id=trial_id, labels=labels, stratum=stratum,
@@ -100,9 +87,7 @@ def register(app: typer.Typer) -> None:
         actor: str = typer.Option(None, "--actor", help="Operator identity [GR-12]"),
     ) -> None:
         """Ledger the operator disposition: exclude a trial, disclosed [D007]."""
-        ctx = EventContext(
-            experiment_id=Path(experiment_dir).name, actor=_resolve_actor_or_exit(actor)
-        )
+        ctx = event_context(experiment_dir, actor)
         try:
             quarantine_trial(
                 Path(experiment_dir), ctx=ctx, trial_id=trial_id, reason=reason

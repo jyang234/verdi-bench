@@ -12,16 +12,7 @@ from pathlib import Path
 
 import typer
 
-from ..ledger.actor import ActorResolutionError, resolve_actor
-
-
-def _resolve_actor_or_exit(flag_value):
-    """Resolve the ledgered actor or exit 2 with the named refusal [GR-12]."""
-    try:
-        return resolve_actor(flag_value)
-    except ActorResolutionError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(code=2)
+from ..cli_common import event_context, resolve_actor_or_exit
 
 
 def register(app: typer.Typer) -> None:
@@ -40,7 +31,6 @@ def register(app: typer.Typer) -> None:
             assert_task_commitment,
             load_task_dicts,
         )
-        from ..ledger.events import EventContext
         from ..plan.lock import assert_lock
         from .build import build_review
 
@@ -59,7 +49,7 @@ def register(app: typer.Typer) -> None:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2)
 
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
+        ctx = event_context(experiment_dir, actor)
         html, n = build_review(ledger_path, spec, task_dicts, ctx, seed=spec.seed)
         out = out or (experiment_dir / "review_packet.html")
         out.write_text(html, encoding="utf-8")
@@ -88,12 +78,11 @@ def register(app: typer.Typer) -> None:
         ``review_packet_built`` map, so the kappa join is frame-correct (RV-6/RV-9).
         """
         from ..judge.schema import Evidence, Verdict, VerdictProvenance, Winner
-        from ..ledger.events import EventContext
         from ..schema.experiment import ExperimentSpec
         from .record import ReviewError, record_human_verdict, review_packet_built_for
 
         ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
+        ctx = event_context(experiment_dir, actor)
 
         if winner not in ("1", "2", "TIE", "CANT_JUDGE"):
             typer.echo("--winner must be one of: 1 | 2 | TIE | CANT_JUDGE", err=True)
@@ -149,11 +138,10 @@ def register(app: typer.Typer) -> None:
         actor: str = typer.Option(None, "--actor", help="Actor recorded on the reveal [GR-12]"),
     ) -> None:
         """Unblind a comparison — refuses before a verdict exists."""
-        from ..ledger.events import EventContext
         from .record import RevealError, reveal_comparison
 
         ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=_resolve_actor_or_exit(actor))
+        ctx = event_context(experiment_dir, actor)
         try:
             rec = reveal_comparison(ledger_path, ctx, comparison_id=comparison_id)
         except RevealError as e:
@@ -178,7 +166,7 @@ def register(app: typer.Typer) -> None:
         """Blinded capture-then-reveal queue (its own surface — never the operator view)."""
         from .serve import DEFAULT_HOST, DEFAULT_REVIEW_PORT, make_review_server
 
-        resolved = _resolve_actor_or_exit(reviewer)
+        resolved = resolve_actor_or_exit(reviewer)
         srv = make_review_server(
             Path(experiment_dir),
             reviewer=resolved,
