@@ -1,8 +1,9 @@
-"""``bench process …`` [EVAL-9 §M3].
+"""``bench process …`` [EVAL-9 §M3] — thin shell over :mod:`harness.process.api`.
 
 ``record`` captures a **human** process score and is reachable only after the
-comparison's EVAL-7 reveal (the CLI refuses earlier). ``score`` runs the isolated
-**judge** process-scoring path over a post-redaction transcript.
+comparison's EVAL-7 reveal (the API refuses earlier). ``score`` runs the isolated
+**judge** process-scoring path over a post-redaction transcript. The verbs map
+the enumerated refusals to exit codes and echo the count.
 """
 
 from __future__ import annotations
@@ -12,8 +13,12 @@ from pathlib import Path
 
 import typer
 
-from ..cli_common import resolve_actor_or_exit
-from ..run.artifacts import read_transcript
+from ..cli_common import refusal_exit
+from ..corpus.commit import TaskCommitmentError
+from ..ledger.actor import ActorResolutionError
+from .api import process_record, process_score
+from .rubric import ProcessRubric, default_rubric
+from .score import ProcessSequencingError
 
 
 def register(app: typer.Typer) -> None:
@@ -21,81 +26,18 @@ def register(app: typer.Typer) -> None:
                               no_args_is_help=True)
 
     @process_app.command("score")
-    def process_score(
+    def score_cmd(
         experiment_dir: Path = typer.Argument(..., help="Dir with experiment.yaml"),
         rubric_path: Path = typer.Option(None, "--rubric", help="Rubric YAML (default: v1)"),
         actor: str = typer.Option(None, "--actor", help="Actor recorded on the score events [GR-12]"),
     ) -> None:
         """Judge-score every unscored trial's process from its transcript [AC-4]."""
-        from ..corpus.commit import (
-            TaskCommitmentError,
-            assert_task_commitment,
-            load_task_dicts,
-        )
-        from ..judge.assemble import comparison_id_for
-        from ..ledger import events
-        from ..ledger.events import EventContext
-        from ..ledger.query import find_events
-        from ..plan.lock import assert_lock
-        from .rubric import ProcessRubric, default_rubric
-        from .score import score_trial_process
-
-        experiment_dir = Path(experiment_dir)
-        spec_path = experiment_dir / "experiment.yaml"
-        ledger_path = experiment_dir / "ledger.ndjson"
-        _lock = assert_lock(spec_path, ledger_path)
-        lock_event, spec = _lock.event, _lock.spec  # PRA-M1: no second spec read
-        task_dicts = load_task_dicts(experiment_dir)
-        try:
-            assert_task_commitment(
-                lock_event, task_dicts,
-                corpus_id=spec.corpus.id, semver=spec.corpus.version,
-            )
-        except TaskCommitmentError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
-
-        rubric = ProcessRubric.from_yaml(rubric_path) if rubric_path else default_rubric()
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=resolve_actor_or_exit(actor))
-        # PRA-M13: a process score whose every dimension failed *transiently*
-        # (the scorer could not run — timeout / provider_error) is not counted as
-        # done, so a re-run re-attempts it. A score with any real dimension, or a
-        # terminal cant reason, stays skipped (re-running would only duplicate the
-        # good dimensions or reproduce the deterministic failure).
-        from .score import TRANSIENT_CANT_SCORE
-
-        def _fully_transient(ps: dict) -> bool:
-            scores = ps.get("scores") or []
-            return bool(scores) and all(
-                d.get("score") is None
-                and d.get("cant_score_reason") in TRANSIENT_CANT_SCORE
-                for d in scores
-            )
-
-        already = {
-            ev["process_score"]["trial_id"]
-            for ev in find_events(ledger_path, events.PROCESS_SCORE)
-            if not _fully_transient(ev["process_score"])
-        }
-
-        n = 0
-        for ev in find_events(ledger_path, events.TRIAL):
-            rec = ev["trial_record"]
-            trial_id = rec["trial_id"]
-            if trial_id in already:
-                continue
-            transcript = read_transcript(rec.get("artifacts_path"))
-            score_trial_process(
-                trial_id, transcript, rubric, ledger_path=ledger_path, ctx=ctx,
-                ts=ctx.clock(), scorer_id=spec.judge.model, spec=spec,
-                provider_model=spec.judge.model,
-                comparison_id=comparison_id_for(rec["task_id"], rec["repetition"]),
-            )
-            n += 1
-        typer.echo(f"process-scored {n} trial(s)")
+        with refusal_exit(TaskCommitmentError, ActorResolutionError):
+            outcome = process_score(experiment_dir, rubric_path=rubric_path, actor=actor)
+        typer.echo(f"process-scored {outcome.scored} trial(s)")
 
     @process_app.command("record")
-    def process_record(
+    def record_cmd(
         experiment_dir: Path = typer.Argument(..., help="Dir with ledger.ndjson"),
         trial_id: str = typer.Option(..., "--trial-id"),
         comparison_id: str = typer.Option(..., "--comparison-id"),
@@ -104,35 +46,15 @@ def register(app: typer.Typer) -> None:
         actor: str = typer.Option(None, "--actor", help="Human scorer identity [GR-12]"),
     ) -> None:
         """Record a human process score — refused before the EVAL-7 reveal."""
-        from ..ledger.events import EventContext
-        from .rubric import ProcessRubric, default_rubric
-        from .score import (
-            ProcessSequencingError,
-            human_scores_from_mapping,
-            record_human_process_score,
-        )
-
+        # A malformed --rubric is a loud error (traceback), kept outside the
+        # refusal envelope so it is never confused with a bad --scores mapping.
         rubric = ProcessRubric.from_yaml(rubric_path) if rubric_path else default_rubric()
         raw = json.loads(scores_json.read_text(encoding="utf-8"))
-        # PR-7: a typoed/unknown or missing dimension is a loud error, not a silent
-        # CANT_SCORE("human_cant") that degrades a real score.
-        try:
-            dimension_scores = human_scores_from_mapping(raw, rubric)
-        except ValueError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
-
-        who = resolve_actor_or_exit(actor)
-        ledger_path = experiment_dir / "ledger.ndjson"
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=who)
-        try:
-            record_human_process_score(
-                trial_id, rubric, dimension_scores, ledger_path=ledger_path, ctx=ctx,
-                ts=ctx.clock(), scorer_id=who, comparison_id=comparison_id,
+        with refusal_exit(ValueError, ActorResolutionError, ProcessSequencingError):
+            process_record(
+                experiment_dir, trial_id=trial_id, comparison_id=comparison_id,
+                scores=raw, rubric=rubric, actor=actor,
             )
-        except ProcessSequencingError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
         typer.echo(f"recorded human process score for {trial_id}")
 
     app.add_typer(process_app, name="process")
