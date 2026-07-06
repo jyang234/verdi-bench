@@ -295,6 +295,9 @@ function renderValidation() {
     ul.append(h("li", {}, h("span", { class: "chip" + (v.spec.rubric_present ? " ok" : " bad"),
       text: v.spec.rubric_present ? "\\u2713 rubric" : "\\u2715 rubric missing" }),
       h("span", { class: "dim3", text: v.spec.rubric })));
+    if (v.platform) ul.append(h("li", {}, h("span", { class: "chip" + (v.platform.ok ? " ok" : " bad"),
+      text: v.platform.ok ? "\\u2713 platforms" : "\\u2715 " + v.platform.error_class }),
+      h("span", { class: "dim3", text: v.platform.ok ? v.spec.arms.join(", ") : "unrunnable arm platform \\u2014 the lock will refuse" })));
   } else {
     ul.append(h("li", {}, h("span", { class: "chip bad", text: "\\u2715 " + v.spec.error_class })));
     card.append(ul, h("pre", { class: "msg", text: v.spec.error }));
@@ -346,7 +349,8 @@ function renderCeremony() {
     return card;
   }
   const ok = S.validate && S.validate.spec && S.validate.spec.ok && S.validate.tasks && S.validate.tasks.ok
-             && S.validate.spec.rubric_present && !Object.keys(S.dirty).length;
+             && S.validate.spec.rubric_present && (!S.validate.platform || S.validate.platform.ok)
+             && !Object.keys(S.dirty).length;
   card.append(h("div", { class: "dim", style: "margin-bottom:8px",
     text: "Locks the saved bytes (sha above) with a ledgered attestation; the lock recomputes power at full fidelity. One lock per experiment — there is no amend." }));
   const attested = h("input", { class: "field", placeholder: "attested_by (who vouches)" });
@@ -358,7 +362,7 @@ function renderCeremony() {
   card.append(h("div", { class: "toolbar" }, attested, button));
   card.append(ackWrap);
   if (!ok) card.append(h("div", { class: "dim3", style: "margin-top:6px",
-    text: "requires: valid spec + tasks, rubric present, no unsaved changes" }));
+    text: "requires: valid spec + tasks, registered arm platforms, rubric present, no unsaved changes" }));
   if (S.lockError) card.append(
     h("div", { style: "margin-top:8px" }, h("span", { class: "chip bad", text: "\\u2715 " + S.lockError.cls })),
     h("pre", { class: "msg", text: S.lockError.message }));

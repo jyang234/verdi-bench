@@ -979,7 +979,7 @@ def test_dp7_6_legacy_lock_official_caveat(tmp_path):
     # a LEGACY lock — no rubric_sha256 field
     record_experiment_locked(
         ledger, ctx, spec_sha256=spec_sha256(spec_path), spec_path=str(spec_path),
-        seed=spec.seed, mde=mde, attested_by="t", method="m",
+        seed=spec.seed, mde=mde.to_event_payload(), attested_by="t", method="m",
     )
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
     seed_full_calibration(ledger, ctx)

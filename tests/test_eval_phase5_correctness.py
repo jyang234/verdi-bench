@@ -135,7 +135,7 @@ def test_exit_clustered_power_not_optimistic():
                           n_tasks=10, repetitions=3, **fast)
     flat = mde_check(ExperimentSpec.from_dict(valid_experiment_dict(repetitions=1)),
                      AssumedVariance(p=0.5, rho=0.6, n_tasks=999), n_tasks=30, repetitions=1, **fast)
-    assert clustered["mde"] is None or (flat["mde"] is not None and clustered["mde"] >= flat["mde"])
+    assert clustered.mde is None or (flat.mde is not None and clustered.mde >= flat.mde)
 
 
 def test_exit_alias_false_passes_fixed():

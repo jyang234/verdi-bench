@@ -12,7 +12,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -21,7 +21,7 @@ from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import assert_chain, find_events
 from ..schema.experiment import ExperimentSpec
-from .power import AssumedVariance, VarianceSource, mde_check
+from .power import AssumedVariance, MdeReport, VarianceSource, mde_check
 
 
 class LockError(RuntimeError):
@@ -70,8 +70,175 @@ def spec_sha256(spec_path) -> str:
 class LockOutcome:
     spec: ExperimentSpec
     spec_sha256: str
-    mde: dict
+    mde: dict  # the mde payload embedded in the lock event (today's keys) [seam]
     event: dict
+    mde_report: MdeReport  # the typed power result the payload was rendered from
+
+
+# --- preflight steps [refactor 02 §4] --------------------------------------
+# ``lock_experiment`` is decomposed into these independently callable, typed
+# steps so the same list can be composed by the lock (inside the flock) and by
+# the author preview (a pure read) — parity by construction. Each raises the one
+# ``LockError`` subtype its job owns; none writes to the ledger.
+
+
+@dataclass
+class ParsedSpec:
+    """The spec parsed from the very bytes whose sha is recorded [PL-2]."""
+
+    spec: ExperimentSpec
+    spec_bytes: bytes
+    sha256: str
+
+
+def parse_and_hash_spec(spec_path) -> ParsedSpec:
+    """Preflight: read the spec bytes once, then parse *and* hash the same buffer.
+
+    PL-2: the recorded sha is provably the sha of the validated content — no
+    window for the file to change between the parse read and a second hash read.
+    Raises ``SpecError`` (pre-registration refusal) when the shape is invalid.
+    """
+    spec_bytes = Path(spec_path).read_bytes()
+    spec = ExperimentSpec.from_yaml_text(spec_bytes.decode("utf-8"), source=str(spec_path))
+    return ParsedSpec(spec=spec, spec_bytes=spec_bytes, sha256=_sha256_bytes(spec_bytes))
+
+
+def check_arm_platforms(spec: ExperimentSpec) -> None:
+    """Preflight: every arm platform must have a registered telemetry adapter.
+
+    ``run_trial`` resolves ``get_adapter(arm.platform)`` on every trial, so an
+    unregistered platform is unrunnable (see ``UnknownArmPlatformError``). The
+    schema stays a pure shape contract; whether this environment can *run* a
+    platform is a capability check, so it lives at lock — like the rubric-presence
+    check. Composed identically by the author preview so a green preview cannot
+    then refuse at lock.
+    """
+    registered = known_platforms()
+    unknown = [(a.name, a.platform) for a in spec.arms if a.platform not in registered]
+    if unknown:
+        listed = ", ".join(f"arm {n!r} has platform {p!r}" for n, p in unknown)
+        raise UnknownArmPlatformError(
+            f"{listed}: no registered telemetry adapter; registered platforms: "
+            f"{registered}. Add an adapter in harness/adapters/ "
+            "(docs/deep-dive.md §7) or use a registered platform."
+        )
+
+
+def check_chain_integrity(ledger_path) -> None:
+    """Preflight: verify the existing chain before trusting or appending to it.
+
+    7A-3: an absent/empty ledger is the fresh-experiment path (``assert_chain`` is
+    silent there); a pre-existing tampered or truncated ledger is refused
+    (``ChainIntegrityError``) rather than chained onto. A ledger-state check, so
+    the author preview of an unlocked draft legitimately skips it.
+    """
+    assert_chain(ledger_path)
+
+
+def check_single_lock(ledger_path) -> None:
+    """Preflight *and* the flock-internal recheck: refuse a second lock [PL-3].
+
+    A re-lock would append a second ``experiment_locked`` event while
+    ``assert_lock`` keys the first, telling the operator a spec is locked when it
+    isn't. One lock per ledger, period. This single definition is called twice by
+    ``lock_experiment`` — once as an early-refusal preflight step and once inside
+    the flock as the authoritative recheck (PRA-M3) — so the message lives in one
+    place. A ledger-state check, so the author preview skips it.
+    """
+    if find_events(ledger_path, events.EXPERIMENT_LOCKED):
+        raise AlreadyLockedError(
+            f"{ledger_path} already has an experiment_locked event; re-lock is "
+            "refused. Start a fresh ledger to re-plan."
+        )
+
+
+def run_power_gate(
+    spec: ExperimentSpec,
+    variance_source: VarianceSource,
+    *,
+    n_task_clusters: Optional[int],
+    acknowledge_underpowered: bool,
+    mde_kwargs: dict,
+) -> tuple[MdeReport, Optional[dict]]:
+    """Preflight: compute power and enforce the underpowered gate [PL-1, D001].
+
+    Returns the ``MdeReport`` and the inline acknowledgment payload (``None``
+    unless an underpowered design was locked with acknowledgment [PL-14]).
+
+    PL-1 + D-P5-4: power is computed at the design's real size — the corpus's
+    task-*cluster* count, with ``repetitions`` correlated reps per task — when the
+    task source is available, not the variance source's calibration n_tasks. The
+    power sim clusters by task and resamples clusters, the same variance model
+    EVAL-6's analysis uses, so the pre-registration power model and the
+    realized-data analysis cannot disagree.
+
+    Underpowered check [D001, AC-4]: refuse unless acknowledged. A ``None`` MDE
+    means the design could not detect *any* swept effect — the maximally
+    underpowered case — so it must NOT fail open: treat it as underpowered.
+    Omitting ``hypothesized_effect`` skips the gate entirely; the skip is recorded
+    as a lock-stage ``power_gate_skipped`` flag on the report (folded into the
+    event by ``to_event_payload``), so it is a ledgered decision, not a silent
+    no-check — and *not* an in-place mutation of power's return.
+    """
+    report = mde_check(spec, variance_source, n_tasks=n_task_clusters, **mde_kwargs)
+    ack_payload: Optional[dict] = None
+    if spec.hypothesized_effect is not None:
+        mde_val = report.mde
+        underpowered = mde_val is None or spec.hypothesized_effect < mde_val
+        if underpowered:
+            mde_desc = (
+                "incomputable (no swept effect reached target power)"
+                if mde_val is None
+                else str(mde_val)
+            )
+            if not acknowledge_underpowered:
+                raise UnderpoweredError(
+                    f"hypothesized_effect {spec.hypothesized_effect} vs MDE "
+                    f"{mde_desc}: design is underpowered. Re-run with "
+                    "acknowledge_underpowered=True to lock with a ledgered "
+                    "acknowledgment."
+                )
+            ack_payload = {
+                "mde": mde_val,
+                "hypothesized_effect": spec.hypothesized_effect,
+            }
+    else:
+        report = replace(report, power_gate_skipped=True)
+    return report, ack_payload
+
+
+def commit_rubric(spec_path, spec: ExperimentSpec) -> str:
+    """Preflight: commit the judging rubric's content hash into the lock [D-P7-6].
+
+    The rubric is part of the pre-registration, so an absent rubric file refuses
+    the lock; else the hash is the same normalized-text hash the verdict
+    provenance carries (judge/packet.py), so lock ↔ verdict comparability is exact
+    and CRLF-checkout drift is a non-event.
+    """
+    rubric_path = Path(spec_path).parent / spec.judge.rubric
+    if not rubric_path.is_file():
+        raise RubricCommitmentError(
+            f"judge rubric {spec.judge.rubric!r} not found at {rubric_path}; the "
+            "rubric is part of the pre-registration and must be present to lock "
+            "[D-P7-6]"
+        )
+    return _sha256_bytes(rubric_path.read_text(encoding="utf-8").encode("utf-8"))
+
+
+def commit_tasks(spec: ExperimentSpec, task_dicts: Optional[list]) -> Optional[dict]:
+    """Preflight: pin the task-content commitment [PL-7, D-6].
+
+    So run/grade can refuse a post-lock swap of prompts, canaries, holdout
+    scripts, or scoring. ``None`` when the plan flow carries no task source.
+    Delegates to ``corpus.commit.compute_commitment`` — never reimplements it.
+    """
+    if not task_dicts:
+        return None
+    from ..corpus.commit import compute_commitment
+
+    return compute_commitment(
+        task_dicts, corpus_id=spec.corpus.id, semver=spec.corpus.version
+    )
 
 
 def lock_experiment(
@@ -96,140 +263,54 @@ def lock_experiment(
     curation-approval signatures).
     """
     attested_by = attested_by or ctx.actor
-    # PL-2: read the spec bytes once, then parse *and* hash the same buffer, so
-    # the recorded sha is provably the sha of the validated content — no window
-    # for the file to change between the parse read and a second hash read.
-    spec_bytes = Path(spec_path).read_bytes()
-    spec = ExperimentSpec.from_yaml_text(
-        spec_bytes.decode("utf-8"), source=str(spec_path)
-    )
-    sha = _sha256_bytes(spec_bytes)
 
-    # Every arm platform must have a registered telemetry adapter, or the arm
-    # is unrunnable (see UnknownArmPlatformError). The schema stays a pure
-    # shape contract; whether this environment can *run* a platform is a
-    # capability check, so it lives at lock — like the rubric-presence check.
-    registered = known_platforms()
-    unknown = [(a.name, a.platform) for a in spec.arms if a.platform not in registered]
-    if unknown:
-        listed = ", ".join(f"arm {n!r} has platform {p!r}" for n, p in unknown)
-        raise UnknownArmPlatformError(
-            f"{listed}: no registered telemetry adapter; registered platforms: "
-            f"{registered}. Add an adapter in harness/adapters/ "
-            "(docs/deep-dive.md §7) or use a registered platform."
-        )
-
-    # 7A-3: before trusting anything the ledger already contains (the lock-count
-    # check below, or any later append onto it), verify its chain. An
-    # absent/empty ledger is the fresh-experiment path — assert_chain is silent
-    # there — but a pre-existing tampered or truncated ledger is refused rather
-    # than chained onto.
-    assert_chain(ledger_path)
-
-    # PL-3: refuse a second lock. A re-lock would append a second
-    # experiment_locked event while assert_lock keys the first, telling the
-    # operator a spec is locked when it isn't. One lock per ledger, period.
-    if find_events(ledger_path, events.EXPERIMENT_LOCKED):
-        raise AlreadyLockedError(
-            f"{ledger_path} already has an experiment_locked event; re-lock is "
-            "refused. Start a fresh ledger to re-plan."
-        )
+    # Preflight steps, composed in order (same list the author preview composes).
+    # Each is independently callable and raises the one LockError its job owns.
+    parsed = parse_and_hash_spec(spec_path)          # 1. spec-parse + hash [PL-2]
+    spec = parsed.spec
+    sha = parsed.sha256
+    check_arm_platforms(spec)                         # 2. platform capability
+    check_chain_integrity(ledger_path)                # 3. chain integrity [7A-3]
+    check_single_lock(ledger_path)                    # 4. single-lock (outer) [PL-3]
 
     if variance_source is None:
         variance_source = AssumedVariance()
-    # PL-1 + D-P5-4: compute power at the design's real size — the corpus's
-    # task-*cluster* count, with ``repetitions`` correlated reps per task — when the
-    # task source is available, not the variance source's calibration n_tasks
-    # (default 50, which ignored the actual design). The power sim clusters by task
-    # and resamples clusters, the same variance model EVAL-6's analysis uses, so the
-    # pre-registration power model and the realized-data analysis cannot disagree.
-    # When repetitions > 1 the correlated reps carry less information than
-    # independent observations, so the MDE is honestly larger (no longer optimistic).
     n_task_clusters = len(task_dicts) if task_dicts else None
-    mde = mde_check(spec, variance_source, n_tasks=n_task_clusters, **mde_kwargs)
-
-    # Underpowered check [D001, AC-4]: refuse unless acknowledged. A None MDE
-    # means the design could not detect *any* swept effect — the maximally
-    # underpowered case — so it must NOT fail open: treat it as underpowered.
-    ack_underpowered = False
-    mde_val = None
-    if spec.hypothesized_effect is not None:
-        mde_val = mde["mde"]
-        underpowered = mde_val is None or spec.hypothesized_effect < mde_val
-        if underpowered:
-            mde_desc = "incomputable (no swept effect reached target power)" if mde_val is None else str(mde_val)
-            if not acknowledge_underpowered:
-                raise UnderpoweredError(
-                    f"hypothesized_effect {spec.hypothesized_effect} vs MDE "
-                    f"{mde_desc}: design is underpowered. Re-run with "
-                    "acknowledge_underpowered=True to lock with a ledgered "
-                    "acknowledgment."
-                )
-            ack_underpowered = True
-    else:
-        # PL-1: omitting hypothesized_effect skips the power gate entirely. Record
-        # that it was skipped so it is a ledgered decision, not a silent no-check.
-        if "power_gate_skipped" not in mde["flags"]:
-            mde["flags"].append("power_gate_skipped")
-
-    # D-P7-6: commit the judging rubric's content hash into the lock. The rubric
-    # is part of the pre-registration, so an absent rubric file refuses the lock;
-    # else the hash is the same normalized-text hash the verdict provenance
-    # carries (judge/packet.py), so lock ↔ verdict comparability is exact and
-    # CRLF-checkout drift is a non-event.
-    rubric_path = Path(spec_path).parent / spec.judge.rubric
-    if not rubric_path.is_file():
-        raise RubricCommitmentError(
-            f"judge rubric {spec.judge.rubric!r} not found at {rubric_path}; the "
-            "rubric is part of the pre-registration and must be present to lock "
-            "[D-P7-6]"
-        )
-    rubric_sha256 = _sha256_bytes(
-        rubric_path.read_text(encoding="utf-8").encode("utf-8")
+    report, ack_payload = run_power_gate(             # 5. power gate [PL-1, D001]
+        spec,
+        variance_source,
+        n_task_clusters=n_task_clusters,
+        acknowledge_underpowered=acknowledge_underpowered,
+        mde_kwargs=mde_kwargs,
     )
+    rubric_sha256 = commit_rubric(spec_path, spec)    # 6. rubric commitment [D-P7-6]
+    task_commitment = commit_tasks(spec, task_dicts)  # 7. task commitment [PL-7]
 
-    # PL-7 / D-6: pin the task-content commitment so run/grade can refuse a
-    # post-lock swap of prompts, canaries, holdout scripts, or scoring.
-    task_commitment = None
-    if task_dicts:
-        from ..corpus.commit import compute_commitment
+    # The mde payload the event embeds: today's keys, with the lock-stage
+    # power_gate_skipped flag folded in — never a mutation of power's return.
+    mde_payload = report.to_event_payload()
 
-        task_commitment = compute_commitment(
-            task_dicts, corpus_id=spec.corpus.id, semver=spec.corpus.version
-        )
-
-    # PL-14: the lock is the single genesis event. An underpowered acknowledgment
-    # rides *inline* on the lock event (not a second event), so locking an
-    # acknowledged-underpowered design is one attempted operation ⇒ one event,
-    # and the lock stays the chain genesis (prev_hash all-zeros).
-    ack_payload = (
-        {"mde": mde_val, "hypothesized_effect": spec.hypothesized_effect}
-        if ack_underpowered
-        else None
-    )
     # PRA-M3: serialize concurrent `bench plan` on this ledger so the
     # check-then-append is atomic. Without the guard two concurrent invocations
-    # both pass the earlier find_events check and both append experiment_locked;
+    # both pass the outer single-lock check and both append experiment_locked;
     # assert_lock now refuses the resulting >1-lock ledger, but preventing it here
     # is cleaner. Use a separate lock file — flock on the ledger fd itself would
     # deadlock against append_event's own flock inside record_experiment_locked.
+    # PL-14: the lock is the single genesis event; any underpowered acknowledgment
+    # rides inline on it (ack_payload), so one attempted operation ⇒ one event.
     guard = Path(str(ledger_path) + ".planlock")
     guard.parent.mkdir(parents=True, exist_ok=True)
     gfd = os.open(guard, os.O_WRONLY | os.O_CREAT, 0o644)
     try:
         fcntl.flock(gfd, fcntl.LOCK_EX)
-        if find_events(ledger_path, events.EXPERIMENT_LOCKED):
-            raise AlreadyLockedError(
-                f"{ledger_path} already has an experiment_locked event; re-lock "
-                "is refused. Start a fresh ledger to re-plan."
-            )
+        check_single_lock(ledger_path)  # authoritative recheck inside the flock
         event = events.record_experiment_locked(
             ledger_path,
             ctx,
             spec_sha256=sha,
             spec_path=str(spec_path),
             seed=spec.seed,
-            mde=mde,
+            mde=mde_payload,
             attested_by=attested_by,
             method=attestation_method,
             task_commitment=task_commitment,
@@ -241,7 +322,9 @@ def lock_experiment(
             fcntl.flock(gfd, fcntl.LOCK_UN)
         finally:
             os.close(gfd)
-    return LockOutcome(spec=spec, spec_sha256=sha, mde=mde, event=event)
+    return LockOutcome(
+        spec=spec, spec_sha256=sha, mde=mde_payload, event=event, mde_report=report
+    )
 
 
 @dataclass
