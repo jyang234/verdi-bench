@@ -4,7 +4,7 @@
 scripts hand-rolled (and were already diverging on) with one context manager:
 ``__enter__`` stands up the metered + egress networks and the packaged CONNECT
 proxy with the resolved allowlist **injected**, waits for readiness by *probing*
-(no ``sleep`` guess), and yields a :class:`~harness.run.types.ProxyConfig`;
+(never a fixed timer), and yields a :class:`~harness.run.types.ProxyConfig`;
 ``__exit__`` always tears the whole thing down.
 
 The proxy is the stdlib ``_proxy_container.py``, mounted read-only into a pinned
@@ -51,8 +51,8 @@ _READINESS_TIMEOUT_S = 30
 
 # Probe readiness by *connecting* to the proxy port from inside the container,
 # retrying until it accepts — bounded by the host-side ``docker exec`` timeout, so
-# a proxy that never binds fails loudly instead of a fixed ``sleep`` guessing it is
-# up. No ``sleep``: the retry is a shell ``until`` loop, not a timed wait.
+# a proxy that never binds fails loudly instead of a fixed timer guessing it is up.
+# The retry is a shell ``until`` loop, not a timed wait.
 _READY_PROBE = (
     "until python3 -c "
     "'import socket; socket.create_connection((\"127.0.0.1\", %d), 1)' 2>/dev/null; "
