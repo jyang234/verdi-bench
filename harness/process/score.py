@@ -263,7 +263,7 @@ def score_trial_process(
     # PR-4: timeout / refusal / provider_error via the one shared mapper the judge
     # uses, so the two stages cannot drift on the classification [carry-forward].
     try:
-        text = provider.complete(provider_model, messages, 0.0)
+        text = provider.complete(provider_model, messages, 0.0).text
     except ProviderContextOverflow as e:
         # PR-9: a provider-side context rejection is more specific than a generic
         # provider_error — record context_overflow with the provider's token count

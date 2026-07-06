@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from .base import MAX_OUTPUT_TOKENS, Provider, ProviderError, normalize_usage
+from .base import (
+    MAX_OUTPUT_TOKENS,
+    Completion,
+    Provider,
+    ProviderError,
+    normalize_usage,
+)
 from ._http import post_json, require_key
 
 
@@ -22,7 +28,7 @@ def _content(resp: dict) -> str:
 
 
 class GoogleProvider(Provider):
-    def complete(self, model_id: str, messages: list[dict], temperature: float) -> str:
+    def complete(self, model_id: str, messages: list[dict], temperature: float) -> Completion:
         model = model_id.split("/", 1)[1]
         contents = [
             {"role": "user" if m["role"] != "assistant" else "model", "parts": [{"text": m["content"]}]}
@@ -33,15 +39,16 @@ class GoogleProvider(Provider):
         # the request line leaks through any proxy/access log. Mirrors the
         # x-api-key / Authorization headers of the sibling providers.
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        self.last_usage = None  # F-M-J3
         resp = post_json(
             url,
             {"contents": contents, "generationConfig": {"temperature": temperature,
                                                         "maxOutputTokens": MAX_OUTPUT_TOKENS}},
             {"x-goog-api-key": key},
         )
-        usage = resp.get("usageMetadata") or {}
-        self.last_usage = normalize_usage(
-            usage.get("promptTokenCount"), usage.get("candidatesTokenCount")
+        usage = resp.get("usageMetadata") or {}  # F-M-J3: usage rides the return value
+        return Completion(
+            text=_content(resp),
+            usage=normalize_usage(
+                usage.get("promptTokenCount"), usage.get("candidatesTokenCount")
+            ),
         )
-        return _content(resp)

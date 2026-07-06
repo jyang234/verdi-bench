@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from .base import MAX_OUTPUT_TOKENS, Provider, ProviderError, ProviderRefusal, normalize_usage
+from .base import (
+    MAX_OUTPUT_TOKENS,
+    Completion,
+    Provider,
+    ProviderError,
+    ProviderRefusal,
+    normalize_usage,
+)
 from ._http import post_json, require_key
 
 
@@ -23,7 +30,7 @@ def _content(resp: dict) -> str:
 
 
 class AnthropicProvider(Provider):
-    def complete(self, model_id: str, messages: list[dict], temperature: float) -> str:
+    def complete(self, model_id: str, messages: list[dict], temperature: float) -> Completion:
         model = model_id.split("/", 1)[1]
         system = "\n".join(m["content"] for m in messages if m["role"] == "system")
         turns = [{"role": m["role"], "content": m["content"]} for m in messages if m["role"] != "system"]
@@ -34,12 +41,16 @@ class AnthropicProvider(Provider):
             "system": system,
             "messages": turns,
         }
-        self.last_usage = None  # F-M-J3: reset so a failed call can't reuse stale usage
         resp = post_json(
             "https://api.anthropic.com/v1/messages",
             body,
             {"x-api-key": require_key("ANTHROPIC_API_KEY"), "anthropic-version": "2023-06-01"},
         )
+        # F-M-J3: return the provider-reported usage for THIS call alongside the
+        # text, so the token ceiling accumulates from the return value, never a
+        # side-channel that a failed or re-issued call could leave stale.
         usage = resp.get("usage") or {}
-        self.last_usage = normalize_usage(usage.get("input_tokens"), usage.get("output_tokens"))
-        return _content(resp)
+        return Completion(
+            text=_content(resp),
+            usage=normalize_usage(usage.get("input_tokens"), usage.get("output_tokens")),
+        )

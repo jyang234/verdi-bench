@@ -168,9 +168,11 @@ class _RecordingProvider:
              "narrative": "steady work, nothing suspicious"}
         )
 
-    def complete(self, model_id: str, messages: list[dict], temperature: float) -> str:
+    def complete(self, model_id: str, messages: list[dict], temperature: float):
+        from harness.judge.providers.base import Completion
+
         self.seen.append(messages)
-        return self._response
+        return Completion(text=self._response)
 
 
 def _experiment_with_identity_detail(tmp_path):

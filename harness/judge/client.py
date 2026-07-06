@@ -90,11 +90,11 @@ def _map_call(raw: RawVerdict, order: str) -> tuple[str, list[Evidence], str]:
 
 def _call(provider: Provider, model: str, packet: Packet, order: str, temperature: float):
     call_id = f"call-{uuid.uuid4().hex[:12]}"
-    text = provider.complete(model, packet.render(order), temperature)
-    # F-M-J3: provider-reported usage for THIS call, read before parsing so a
-    # parse failure still accounts for the spend the call incurred.
-    usage = getattr(provider, "last_usage", None)
-    return _parse_raw(text), call_id, usage
+    completion = provider.complete(model, packet.render(order), temperature)
+    # F-M-J3: the completion carries the provider-reported usage for THIS call (or
+    # None) on its return value, so the spend is summed onto the verdict without a
+    # mutable side-channel a caller could forget to read.
+    return _parse_raw(completion.text), call_id, completion.usage
 
 
 def judge_pair(

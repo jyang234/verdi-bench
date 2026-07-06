@@ -16,7 +16,7 @@ import json
 import re
 from typing import Callable, Union
 
-from .base import Provider
+from .base import Completion, Provider
 
 # Holdout results are fenced with a content-derived delimiter [JD-8]; read the
 # JSON between the open/close fence markers, not the fence line itself.
@@ -113,13 +113,15 @@ class DeterministicFakeProvider(Provider):
     depending on the packet's system prompt; every completion is a pure function
     of the rendered packet, so no external call is ever made."""
 
-    def complete(self, model_id: str, messages: list[dict], temperature: float) -> str:
+    def complete(self, model_id: str, messages: list[dict], temperature: float) -> Completion:
         system = messages[0]["content"] if messages else ""
+        # No network ⇒ no provider-reported usage; usage stays None (honest
+        # absence), so a fake-path judge accumulates zero against the token ceiling.
         if _PROCESS_SYSTEM_MARKER in system:
-            return deterministic_process_scores(messages)
+            return Completion(text=deterministic_process_scores(messages))
         if _FORENSIC_SYSTEM_MARKER in system:
-            return deterministic_forensic_review(messages)
-        return deterministic_verdict(messages)
+            return Completion(text=deterministic_forensic_review(messages))
+        return Completion(text=deterministic_verdict(messages))
 
 
 class FakeProviderExhausted(RuntimeError):
@@ -136,10 +138,10 @@ class FakeProvider(Provider):
         self._i = 0
         self.calls: list[dict] = []
 
-    def complete(self, model_id: str, messages: list[dict], temperature: float) -> str:
+    def complete(self, model_id: str, messages: list[dict], temperature: float) -> Completion:
         self.calls.append({"model_id": model_id, "messages": messages, "temperature": temperature})
         if callable(self._responses):
-            return self._responses(messages)
+            return Completion(text=self._responses(messages))
         if self._i >= len(self._responses):
             raise FakeProviderExhausted(
                 f"FakeProvider exhausted: {len(self._responses)} scripted "
@@ -149,4 +151,4 @@ class FakeProvider(Provider):
         self._i += 1
         if isinstance(item, Exception):
             raise item
-        return item
+        return Completion(text=item)

@@ -211,7 +211,7 @@ def run_memory_probe(
                             _canary_probe_body(task),
                         ),
                         0.0,
-                    )
+                    ).text
                     measured = True
                     if canary in completion:
                         hits.append("canary_regurgitation")
@@ -224,7 +224,7 @@ def run_memory_probe(
                             prefix,
                         ),
                         0.0,
-                    )
+                    ).text
                     # F-M-C2: the CONTROL condition — the same ask over the
                     # identifier-perturbed prefix, scored against the
                     # identically-perturbed remainder. Doubles the provider
@@ -240,7 +240,7 @@ def run_memory_probe(
                             c_prefix,
                         ),
                         0.0,
-                    )
+                    ).text
                     measured = True
                     continuation = solution_overlap(
                         completion, oracle=remainder, threshold=resolved_threshold

@@ -243,7 +243,7 @@ def forensic_review(
         except ProviderError as e:
             return _cant(CantReviewReason(provider_failure_reason(e)))
     try:
-        text = provider.complete(provider_model, messages, 0.0)
+        text = provider.complete(provider_model, messages, 0.0).text
     except ProviderContextOverflow:
         return _cant(CantReviewReason.context_overflow)
     except ProviderError as e:

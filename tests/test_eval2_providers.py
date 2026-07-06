@@ -82,7 +82,7 @@ def test_google_key_travels_in_header_not_url(monkeypatch):
     monkeypatch.setattr(google_mod, "post_json", fake_post_json)
 
     out = google_mod.GoogleProvider().complete("google/gemini-1.5-pro-002", [{"role": "user", "content": "hi"}], 0.0)
-    assert out == "ok"
+    assert out.text == "ok"
     assert "SECRET-KEY" not in captured["url"]
     assert "key=" not in captured["url"]
     assert captured["headers"]["x-goog-api-key"] == "SECRET-KEY"
@@ -237,7 +237,7 @@ def test_m_j4_parse_is_transient_for_reruns():
 
 def test_m_j3_provider_usage_extracted_and_normalized(monkeypatch):
     """F-M-J3: every provider previously discarded the response's usage block.
-    Each now records normalized {input_tokens, output_tokens} on last_usage;
+    Each now returns normalized {input_tokens, output_tokens} on the Completion;
     an unreported usage stays None — honest absence, never zero-imputed."""
     import harness.judge.providers.anthropic as a_mod
     import harness.judge.providers.google as g_mod
@@ -252,31 +252,27 @@ def test_m_j3_provider_usage_extracted_and_normalized(monkeypatch):
         "content": [{"type": "text", "text": "x"}],
         "usage": {"input_tokens": 10, "output_tokens": 3},
     })
-    p = a_mod.AnthropicProvider()
-    p.complete("anthropic/m", [{"role": "user", "content": "p"}], 0.0)
-    assert p.last_usage == {"input_tokens": 10, "output_tokens": 3}
+    c = a_mod.AnthropicProvider().complete("anthropic/m", [{"role": "user", "content": "p"}], 0.0)
+    assert c.usage == {"input_tokens": 10, "output_tokens": 3}
 
     monkeypatch.setattr(o_mod, "post_json", lambda *a, **k: {
         "choices": [{"message": {"content": "x"}}],
         "usage": {"prompt_tokens": 7, "completion_tokens": 2},
     })
-    p = o_mod.OpenAIProvider()
-    p.complete("openai/m", [{"role": "user", "content": "p"}], 0.0)
-    assert p.last_usage == {"input_tokens": 7, "output_tokens": 2}
+    c = o_mod.OpenAIProvider().complete("openai/m", [{"role": "user", "content": "p"}], 0.0)
+    assert c.usage == {"input_tokens": 7, "output_tokens": 2}
 
     monkeypatch.setattr(g_mod, "post_json", lambda *a, **k: {
         "candidates": [{"content": {"parts": [{"text": "x"}]}}],
         "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 1},
     })
-    p = g_mod.GoogleProvider()
-    p.complete("google/m", [{"role": "user", "content": "p"}], 0.0)
-    assert p.last_usage == {"input_tokens": 5, "output_tokens": 1}
+    c = g_mod.GoogleProvider().complete("google/m", [{"role": "user", "content": "p"}], 0.0)
+    assert c.usage == {"input_tokens": 5, "output_tokens": 1}
 
     # unreported usage is honest absence
     monkeypatch.setattr(o_mod, "post_json", lambda *a, **k: {
         "choices": [{"message": {"content": "x"}}],
     })
-    p = o_mod.OpenAIProvider()
-    p.complete("openai/m", [{"role": "user", "content": "p"}], 0.0)
-    assert p.last_usage is None
+    c = o_mod.OpenAIProvider().complete("openai/m", [{"role": "user", "content": "p"}], 0.0)
+    assert c.usage is None
     assert normalize_usage(None, 5) is None and normalize_usage(3, None) is None
