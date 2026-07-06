@@ -1,13 +1,9 @@
-"""``bench grade`` [EVAL-5 §M5].
+"""``bench grade`` [EVAL-5 §M5] — thin shell over :mod:`harness.grade.api`.
 
-Asserts the experiment lock and the task-content commitment first, then grades
-every ungraded trial in the ledger, appending exactly one grade/cant_grade event
-each. ``--runner docker`` (default) runs the real network-less grading container;
-``--runner local`` is the no-daemon fake/test path that reads a pre-placed
-``holdout_results.json`` from the workspace.
-
-Fractional scoring is taken from the **lock** (pre-registration), not runtime
-config [AC-3].
+Parses the flags, maps the enumerated refusals to exit codes, and echoes the
+graded count; the grading logic lives in the stage API [refactor 02 §3]. The
+underscore helpers are re-exported so the white-box grade tests keep importing
+them from ``harness.grade.cli``.
 """
 
 from __future__ import annotations
@@ -16,91 +12,18 @@ from pathlib import Path
 
 import typer
 
-
-def _grade_tasks_from_dicts(task_dicts: list) -> dict:
-    """Map the committed task dicts to grader tasks.
-
-    The task sha is recomputed from content (not self-attested) and matches the
-    lock commitment; the fake scripting fields are **not** read from the task
-    source — they exist only for fixtures/the fake engine [GR-5].
-    """
-    from ..corpus.commit import task_content_sha
-    from .types import GradeTask
-
-    tasks = {}
-    for t in task_dicts:
-        tasks[t["id"]] = GradeTask(
-            id=t["id"],
-            task_sha=task_content_sha(t),
-            holdouts_dir=t.get("holdouts_dir", ""),
-            plugin_ids=t.get("plugin_ids", []),
-        )
-    return tasks
-
-
-class RetryTerminalError(RuntimeError):
-    """A ``--retry-terminal`` target is not an overridable terminal cant_grade."""
-
-
-def _resolve_terminal_overrides(ledger_path, trial_ids: list) -> dict:
-    """Validate each ``--retry-terminal`` target and map it to the line hash of
-    the terminal ``cant_grade`` it overrides [D-P7-2].
-
-    Each named trial must have a **terminal** ``cant_grade`` and no ``grade``;
-    otherwise refuse, naming what was found. The returned hash is the
-    ledger-native reference stamped as ``override_of`` on the re-attempt's
-    event."""
-    from ..ledger import events
-    from ..ledger.query import event_line_hash, find_events
-    from .deterministic import TRANSIENT_CANT_GRADE
-
-    # The common `bench grade` invocation passes no --retry-terminal; skip the two
-    # full-ledger scans below when there is nothing to resolve.
-    if not trial_ids:
-        return {}
-
-    graded = {e["trial_id"] for e in find_events(ledger_path, events.GRADE)}
-    cant_by_trial: dict = {}
-    for e in find_events(ledger_path, events.CANT_GRADE):
-        cant_by_trial.setdefault(e["trial_id"], []).append(e)
-
-    overrides: dict = {}
-    for tid in trial_ids:
-        if tid in graded:
-            raise RetryTerminalError(
-                f"--retry-terminal {tid!r}: trial already has a grade — override refused"
-            )
-        cants = cant_by_trial.get(tid, [])
-        terminal = [e for e in cants if e["reason"] not in TRANSIENT_CANT_GRADE]
-        if not terminal:
-            found = (
-                f"only transient cant_grade {[e['reason'] for e in cants]}"
-                if cants
-                else "no cant_grade at all"
-            )
-            raise RetryTerminalError(
-                f"--retry-terminal {tid!r}: expected a terminal cant_grade to "
-                f"override but found {found}"
-            )
-        overrides[tid] = event_line_hash(terminal[-1])
-    return overrides
-
-
-def _completed_trials(ledger_path) -> set:
-    """Trials that must not be (re)graded: any with a grade, or a cant_grade
-    whose reason is terminal. A transient cant_grade (e.g. a docker outage) is
-    left regradeable [GR-11]. One ledger pass rather than two scans."""
-    from ..ledger.query import iter_events
-    from .deterministic import TRANSIENT_CANT_GRADE
-
-    done: set = set()
-    for e in iter_events(ledger_path):
-        kind = e.get("event")
-        if kind == "grade":
-            done.add(e["trial_id"])
-        elif kind == "cant_grade" and e["reason"] not in TRANSIENT_CANT_GRADE:
-            done.add(e["trial_id"])
-    return done
+from ..cli_common import refusal_exit
+from ..corpus.commit import TaskCommitmentError
+from ..ledger.actor import ActorResolutionError
+from .api import (  # noqa: F401 — re-exported for the white-box grade tests
+    GradeOutcome,
+    GraderUnavailableRefusal,
+    RetryTerminalError,
+    _completed_trials,
+    _grade_tasks_from_dicts,
+    _resolve_terminal_overrides,
+    grade_experiment,
+)
 
 
 def register(app: typer.Typer) -> None:
@@ -120,124 +43,16 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Grade every ungraded trial deterministically."""
-        from ..corpus.commit import (
-            TaskCommitmentError,
-            assert_task_commitment,
-            load_task_dicts,
-        )
-        from ..ledger import events
-        from ..ledger.actor import ActorResolutionError, resolve_actor
-        from ..ledger.events import EventContext
-        from ..ledger.query import find_events
-        from ..plan.lock import assert_lock
-        from .container import (
-            DockerGradeRunner,
-            GraderUnavailableError,
-            GradingContainer,
-            LocalGradeRunner,
-        )
-        from .deterministic import (
-            REASON_ARTIFACTS_MISSING,
-            REASON_DAEMON,
-            REASON_UNKNOWN_TASK,
-            grade_trial,
-        )
-
         # F-M-I3: a typo'd runner must refuse, never silently select docker —
         # validated before any I/O, like analyze's flag validation.
         if runner not in ("docker", "local"):
             raise typer.BadParameter("--runner must be docker or local")
-        experiment_dir = Path(experiment_dir)
-        spec_path = experiment_dir / "experiment.yaml"
-        ledger_path = experiment_dir / "ledger.ndjson"
-        _lock = assert_lock(spec_path, ledger_path)
-        lock_event, spec = _lock.event, _lock.spec  # PRA-M1: no second spec read
-
-        task_dicts = load_task_dicts(experiment_dir)
-        # PL-7/D-6: refuse tasks swapped after the lock before grading anything.
-        try:
-            assert_task_commitment(
-                lock_event, task_dicts,
-                corpus_id=spec.corpus.id, semver=spec.corpus.version,
-            )
-        except TaskCommitmentError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
-        grade_tasks = _grade_tasks_from_dicts(task_dicts)
-        already = _completed_trials(ledger_path)
-
-        # D-P7-2: --retry-terminal re-attempts named trials whose grade was a
-        # terminal cant_grade. Validate each (must be terminal, not already
-        # graded), drop it from the skip set, and stamp the resulting event with
-        # override_of = the overridden cant_grade's line hash.
-        try:
-            overrides = _resolve_terminal_overrides(ledger_path, retry_terminal)
-        except RetryTerminalError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
-        already = already - set(overrides)
-
-        try:
-            resolved_actor = resolve_actor(actor)
-        except ActorResolutionError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=resolved_actor)
-        runner_impl = LocalGradeRunner() if runner == "local" else DockerGradeRunner()
-        container = GradingContainer(runner=runner_impl)
-
-        # 7B-1/GR-8: probe the grader once before the batch. A down docker daemon
-        # makes `docker run` exit 1, which the per-trial path would misclassify as
-        # terminal container_failure — permanently quarantining healthy trials. On
-        # probe failure, mark every pending trial cant_grade(grader_unavailable) —
-        # transient/regradeable — and exit nonzero naming the daemon.
-        try:
-            container.preflight()
-        except GraderUnavailableError as e:
-            pending = [
-                ev["trial_record"]["trial_id"]
-                for ev in find_events(ledger_path, "trial")
-                if ev["trial_record"]["trial_id"] not in already
-            ]
-            for tid in pending:
-                events.record_cant_grade(
-                    ledger_path, ctx, trial_id=tid, reason=REASON_DAEMON,
-                    override_of=overrides.get(tid),
+        # A down grader marks pending trials transient and refuses (exit 1); the
+        # pre-registration refusals map to exit 2 [7B-1/GR-8, PL-7/D-6, D-P7-2].
+        with refusal_exit(GraderUnavailableRefusal, code=1):
+            with refusal_exit(TaskCommitmentError, RetryTerminalError, ActorResolutionError):
+                outcome = grade_experiment(
+                    experiment_dir, runner=runner,
+                    retry_terminal=retry_terminal, actor=actor,
                 )
-            typer.echo(
-                f"grader unavailable: {e}; marked {len(pending)} trial(s) "
-                "grader_unavailable (transient, regradeable)",
-                err=True,
-            )
-            raise typer.Exit(code=1)
-
-        graded = 0
-        for ev in find_events(ledger_path, "trial"):
-            rec = ev["trial_record"]
-            tid = rec["trial_id"]
-            if tid in already:
-                continue
-            task = grade_tasks.get(rec["task_id"])
-            if task is None:
-                # GR-7: an unknown task is a fail-closed cant_grade, not a silent
-                # skip that leaves the trial ungraded and unrecorded forever.
-                # Thread override_of so a --retry-terminal re-attempt that lands
-                # here is still linked to the terminal event it overrode [D-P7-2].
-                events.record_cant_grade(ledger_path, ctx, trial_id=tid,
-                                         reason=REASON_UNKNOWN_TASK,
-                                         override_of=overrides.get(tid))
-                continue
-            if not rec.get("artifacts_path"):
-                events.record_cant_grade(
-                    ledger_path, ctx, trial_id=tid, reason=REASON_ARTIFACTS_MISSING,
-                    override_of=overrides.get(tid),
-                )
-                continue
-            workspace = Path(rec["artifacts_path"]).parent
-            grade_trial(
-                tid, task, workspace, ledger_path, ctx,
-                container=container, fractional=spec.fractional_scoring,
-                override_of=overrides.get(tid),
-            )
-            graded += 1
-        typer.echo(f"graded {graded} trial(s)")
+        typer.echo(f"graded {outcome.graded} trial(s)")
