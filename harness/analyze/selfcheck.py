@@ -21,16 +21,9 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from ..schema.metrics import PrimaryMetric
 from ..plan.seeds import sub_seed
 from .nullsim import NULL_INSUFFICIENT, coverage_from_deltas, coverage_of_method
-from .report import (
-    _METRIC_TELEMETRY_FIELD,
-    _comparison_series,
-    _holdout_values,
-    _null_model_for_metric,
-    _telemetry_values,
-)
+from .report import _comparison_series, metric_def
 
 # 95% two-sided normal quantile — the Monte-Carlo interval level [D008 (c)].
 _Z95 = 1.959963984540054
@@ -55,17 +48,11 @@ def _primary_comparison_deltas(ledger_path, spec):
     """The realized per-task-cluster deltas of the primary (first) comparison and
     the metric-appropriate null model — the same extraction analyze uses."""
     primary = spec.primary_metric.value
-    if primary == PrimaryMetric.holdout_pass_rate.value:
-        per_task = _holdout_values(ledger_path)
-    elif primary in _METRIC_TELEMETRY_FIELD:
-        per_task = _telemetry_values(ledger_path, _METRIC_TELEMETRY_FIELD[primary])
-    elif primary == PrimaryMetric.judge_preference.value:
-        per_task = None
-    else:  # pragma: no cover - the metric enum is closed
-        raise ValueError(f"unsupported primary metric {primary!r}")
+    mdef = metric_def(primary)
+    per_task = mdef.extract(ledger_path)
     arm_a, arm_b = spec.arms[0].name, spec.arms[1].name
     _, _, deltas = _comparison_series(primary, per_task, ledger_path, arm_a, arm_b)
-    return deltas, _null_model_for_metric(primary)
+    return deltas, mdef.null_model
 
 
 def run_selfcheck(

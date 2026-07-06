@@ -166,7 +166,7 @@ def emit_card(experiment_dir, *, corpus=None, fmt: str = "json", out=None) -> Ca
     )
     if out is not None:
         Path(out).write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
-    b = card["battery"]
+    b = card.battery  # typed ResultCard [refactor 07 §5]
     return CardEmitOutcome(text=text, battery_sha=b["battery_sha"], battery_basis=b["battery_basis"])
 
 

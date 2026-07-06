@@ -126,6 +126,65 @@ def test_duplicate_instance_id_is_refused(tmp_path):
         SweBenchSource(export).fetch()
 
 
+# --- the importer registry [refactor 07 §3] ---------------------------------
+def test_importer_registry_lists_the_valid_benchmarks():
+    """The valid --benchmark set lives in exactly one place: the IMPORTERS
+    registry. The flag help and the refusal message DERIVE from it (they were
+    three hand-synced strings), so a new importer's name + description appear
+    without editing a second copy."""
+    from harness.corpus.benchmarks import IMPORTERS, importer_help, importer_names
+
+    assert set(IMPORTERS) == {"dir", "swebench"}
+    assert all(name == spec.name for name, spec in IMPORTERS.items())
+    assert importer_names() == "dir | swebench"
+    assert importer_help() == (
+        "Source format: 'dir' (harbor json dir) | 'swebench' (SWE-bench export)"
+    )
+
+
+def test_corpus_import_refuses_unknown_benchmark_with_derived_message(tmp_path):
+    from harness.corpus.api import UnknownBenchmarkError, corpus_import
+
+    with pytest.raises(
+        UnknownBenchmarkError, match=r"unknown --benchmark 'nope' \(dir \| swebench\)"
+    ):
+        corpus_import(tmp_path, cache=tmp_path / "c", benchmark="nope")
+
+
+def test_corpus_import_swebench_through_the_registry(tmp_path):
+    """--benchmark swebench routes through IMPORTERS to SweBenchSource + the
+    swe-bench dataset identity, unchanged from the hand-synced dispatch."""
+    from harness.corpus.api import corpus_import
+    from harness.corpus.registry import CorpusManifest
+
+    export = _write_export(tmp_path / "instances.jsonl", [_INSTANCE])
+    cache = tmp_path / "cache"
+    outcome = corpus_import(export, cache=cache, benchmark="swebench")
+    assert outcome.n_tasks == 1
+    m = CorpusManifest.load(cache / "manifest.json")
+    assert m.dataset.name == "swe-bench"
+    assert m.dataset.version == "SWE-bench_Verified"
+    assert m.corpus_id == "swe-bench"
+
+
+def test_corpus_import_dir_through_the_registry(tmp_path):
+    """--benchmark dir routes through IMPORTERS to DirectorySource + the
+    terminal-bench default identity."""
+    from harness.corpus.api import corpus_import
+    from harness.corpus.registry import CorpusManifest
+
+    ds = tmp_path / "ds"
+    ds.mkdir()
+    (ds / "t1.json").write_text(json.dumps({"id": "t1", "prompt": "p"}), encoding="utf-8")
+    cache = tmp_path / "cache"
+    outcome = corpus_import(ds, cache=cache, benchmark="dir")
+    assert outcome.n_tasks == 1
+    m = CorpusManifest.load(cache / "manifest.json")
+    assert m.dataset.name == "terminal-bench"
+    assert m.dataset.version == "2.0"
+    assert m.corpus_id == "terminal-bench"
+
+
 # --- materialization (runnable + insulated) ---------------------------------
 def test_materialize_is_runnable_and_hides_the_tests(tmp_path):
     export = _write_export(tmp_path / "instances.jsonl", [_INSTANCE])

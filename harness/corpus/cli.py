@@ -21,7 +21,6 @@ from .api import (
     AdmitInputError,
     CalibrateKindError,
     CandidateStagingError,
-    NoGradedTrialsError,
     UnknownBenchmarkError,
     ValidateTasksFileError,
     corpus_admit,
@@ -34,6 +33,8 @@ from .api import (
     corpus_subset,
     validate_tasks,
 )
+from .benchmarks import importer_help
+from .ledger_ops import NoGradedTrialsError
 
 
 def register(app: typer.Typer) -> None:
@@ -47,7 +48,7 @@ def register(app: typer.Typer) -> None:
         cache: Path = typer.Option(..., "--cache", help="Local cache dir"),
         benchmark: str = typer.Option(
             "dir", "--benchmark",
-            help="Source format: 'dir' (harbor json dir) | 'swebench' (SWE-bench export)",
+            help=importer_help(),  # derived from the importer registry [07 §3]
         ),
         corpus_id: str = typer.Option(None, "--corpus-id", help="Default: the benchmark name"),
         semver: str = typer.Option("1.0.0", "--semver"),
