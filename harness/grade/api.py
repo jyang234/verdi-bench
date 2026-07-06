@@ -152,9 +152,9 @@ def grade_experiment(
     from ..ledger.events import EventContext
     from ..ledger.query import find_events
     from ..plan.lock import assert_lock
-    from .container import (
+    from .fence import GraderUnavailableError
+    from .runners import (
         DockerGradeRunner,
-        GraderUnavailableError,
         GradingContainer,
         LocalExecutingGradeRunner,
         LocalGradeRunner,

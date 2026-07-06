@@ -18,7 +18,8 @@ from typing import Optional
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..run.workspace import WORKSPACE_WALK_VERSION, workspace_sha256
-from .container import GradingContainer, GradingContainerError, GraderUnavailableError
+from .fence import GraderUnavailableError, GradingContainerError
+from .runners import GradingContainer
 from .types import Assertion, AssertionResult, GradeTask
 
 
@@ -191,7 +192,7 @@ def _grade_entrypoint(ctx_dir: str) -> None:
     import json
 
     from ..ledger.events import EventContext
-    from .container import GradingContainer, LocalGradeRunner
+    from .runners import GradingContainer, LocalGradeRunner
 
     d = Path(ctx_dir)
     ws = d / "ws"

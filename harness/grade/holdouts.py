@@ -70,7 +70,7 @@ DEFAULT_TIMEOUT_S = 300
 def assertions_to_raw(assertions: list[Assertion]) -> dict:
     """Pack executed assertions into the wire shape the grader parses.
 
-    Both in-run consumers (:class:`~harness.grade.container.LocalExecutingGradeRunner`
+    Both in-run consumers (:class:`~harness.grade.runners.LocalExecutingGradeRunner`
     and the in-image ``run_holdouts`` entrypoint) emit
     ``{"assertions": [{"id", "result", "detail"?}]}`` so it flows through the
     FROZEN ``deterministic.parse_holdout_output`` (which re-stamps

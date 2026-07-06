@@ -27,8 +27,9 @@ from typing import Optional
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import find_events
-from .container import GraderUnavailableError, GradingContainer, GradingContainerError
 from .deterministic import compute_binary_score, parse_holdout_output
+from .fence import GraderUnavailableError, GradingContainerError
+from .runners import GradingContainer
 from .types import GradeTask
 
 DEFAULT_K = 5
@@ -131,7 +132,7 @@ def load_quarantine(ledger_path) -> set[tuple[str, str]]:
 def _baseline_entrypoint(ctx_dir: str) -> None:
     import json
 
-    from .container import LocalGradeRunner
+    from .runners import LocalGradeRunner
 
     d = Path(ctx_dir)
     ws = d / "ws"
