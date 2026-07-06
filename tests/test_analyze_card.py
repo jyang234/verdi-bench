@@ -97,6 +97,26 @@ def test_card_is_byte_deterministic(tmp_path):
     assert serialize_card(_card(expdir, spec)) == serialize_card(_card(expdir, spec))
 
 
+def test_card_is_a_typed_model_mirroring_the_dict_exactly(tmp_path):
+    """[refactor 07 §5] build_card returns the typed ResultCard whose dump IS
+    today's card dict: same field set, mapping reads equal to attribute reads,
+    and serialize_card over the model vs its re-loaded dict form is
+    byte-identical (golden_card.json separately pins the absolute bytes)."""
+    from harness.analyze.card import ResultCard
+
+    expdir, spec = _graded_analyzed(tmp_path)
+    card = _card(expdir, spec)
+    assert isinstance(card, ResultCard)
+    dumped = json.loads(serialize_card(card))
+    assert set(dumped) == set(ResultCard.model_fields)
+    assert serialize_card(dumped) == serialize_card(card)   # dict form: same bytes
+    assert card["battery"] == card.battery                  # mapping = attribute
+    assert card.get("comparison") == card.comparison
+    assert card.get("no_such_field") is None
+    with pytest.raises(KeyError):
+        card["no_such_field"]
+
+
 def test_exploratory_card_never_claims_official(tmp_path):
     """An exploratory render must not present a fenced 'official' decision — the
     card carries the multi-arm primary-pair flag, not a fence result, and the
