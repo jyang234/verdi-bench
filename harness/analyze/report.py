@@ -25,10 +25,7 @@ from __future__ import annotations
 import html as _html
 from collections import defaultdict
 from dataclasses import dataclass
-from enum import Enum
 from typing import Callable, Literal, Optional
-
-from pydantic import BaseModel, ConfigDict
 
 from ..contamination.summary import contamination_summary, latest_probe, probe_asymmetries
 from ..ledger import events
@@ -40,6 +37,29 @@ from ..schema.metrics import PrimaryMetric
 from ..version import instrument_identity
 from .confounds import asymmetric_null_fields, flag_confounds
 from .effect import effect_sizes
+from .findings.model import (  # noqa: F401 — facade re-export while importers migrate [refactor 07 §1]
+    AnalyzeError,
+    AsymmetricContaminationError,
+    CalibrationIncompleteError,
+    CantAnalyzeReason,
+    ComparisonFinding,
+    ComparisonStats,
+    CorpusMismatchError,
+    CorrectionMismatchError,
+    Decision,
+    DisclosureError,
+    EffectBlock,
+    FindingsDocument,
+    InsulationAlarmError,
+    MDEBlock,
+    Provenance,
+    ProvenanceError,
+    RubricMismatchError,
+    SelfcheckRequiredError,
+    UnregisteredOfficialError,
+    cant_analyze_reason,
+    display_mde,
+)
 from .nullsim import NULL_BINARY, NULL_CONTINUOUS, coverage_from_deltas
 from .stats import DEFAULT_CI_LEVEL, BootstrapResult, paired_bootstrap
 
@@ -47,203 +67,6 @@ from .stats import DEFAULT_CI_LEVEL, BootstrapResult, paired_bootstrap
 _RAW_TOKEN_FIELDS = ("tokens_in", "tokens_out", "tokens_cache")
 # Cross-vendor comparisons are restricted to these dimensions.
 _CROSS_VENDOR_ALLOWED = ("cost", "wall_time_s", "tool_calls")
-
-
-class AnalyzeError(RuntimeError):
-    """Base for analyze-stage failures."""
-
-
-class UnregisteredOfficialError(AnalyzeError):
-    """Official render requested for a non-pre-registered metric [AC-5]."""
-
-
-class CalibrationIncompleteError(AnalyzeError):
-    """Official render requested before the corpus is full-run-validated."""
-
-
-class CorpusMismatchError(AnalyzeError):
-    """Official render requested against a corpus that is not the pre-registered
-    one — a different id/semver, or one missing tasks the experiment ran [AN-2]."""
-
-
-class RubricMismatchError(AnalyzeError):
-    """Official render requested where a verdict's rubric hash disagrees with the
-    lock's committed rubric_sha256 — the rubric was swapped after lock [D-P7-6]."""
-
-
-class SelfcheckRequiredError(AnalyzeError):
-    """Official render requested without a passed ledgered selfcheck [EVAL-1-D008]."""
-
-
-class ProvenanceError(AnalyzeError):
-    """A finding is missing provenance, or the head hash no longer verifies."""
-
-
-class DisclosureError(AnalyzeError):
-    """Process scores rendered without the unblinded disclosure block [EVAL-9 AC-2]."""
-
-
-class AsymmetricContaminationError(AnalyzeError):
-    """Official render requested with asymmetric flagged contamination — one
-    arm's model flagged on a task another arm is not, so the pairing itself is
-    invalid; exploratory still renders, watermarked [EVAL-10 AC-5, D001]."""
-
-
-class InsulationAlarmError(AnalyzeError):
-    """Official render requested while the latest contamination probe carries a
-    holdout-leak insulation alarm [F-M-C3, EVAL-4 AC-9] — an insulation
-    VIOLATION that must be investigated (and, if intentional, resolved through
-    the ledgered quarantine ceremony + re-scan), never rendered past."""
-
-
-class CorrectionMismatchError(AnalyzeError):
-    """Official render whose multi-arm correction differs from a prior official
-    render's recorded correction [F-H7] — one experiment, one pre-registered
-    decision procedure; a second official procedure is the post-hoc degree of
-    freedom the lock exists to prevent."""
-
-
-class CantAnalyzeReason(str, Enum):
-    """Closed set of fail-closed analyze-refusal reasons [AN-3]."""
-
-    calibration_incomplete = "calibration_incomplete"
-    corpus_mismatch = "corpus_mismatch"
-    unregistered_metric = "unregistered_metric"
-    disclosure_missing = "disclosure_missing"
-    provenance_invalid = "provenance_invalid"
-    rubric_mismatch = "rubric_mismatch"
-    selfcheck_required = "selfcheck_required"
-    asymmetric_contamination = "asymmetric_contamination"
-    insulation_alarm = "insulation_alarm"
-    correction_mismatch = "correction_mismatch"
-    analyze_error = "analyze_error"
-
-
-def cant_analyze_reason(exc: AnalyzeError) -> CantAnalyzeReason:
-    """Map an ``AnalyzeError`` to its enumerated ``cant_analyze`` reason.
-
-    Every official-fence refusal must carry its own distinguishable reason in
-    this closed set [AN-3] — a generic ``analyze_error`` fallback would erase
-    which gate refused. The Phase-7 fence checks (rubric-swap, missing/failed
-    selfcheck) are mapped here alongside the calibration/corpus/disclosure ones.
-    """
-    return {
-        CalibrationIncompleteError: CantAnalyzeReason.calibration_incomplete,
-        CorpusMismatchError: CantAnalyzeReason.corpus_mismatch,
-        UnregisteredOfficialError: CantAnalyzeReason.unregistered_metric,
-        DisclosureError: CantAnalyzeReason.disclosure_missing,
-        ProvenanceError: CantAnalyzeReason.provenance_invalid,
-        RubricMismatchError: CantAnalyzeReason.rubric_mismatch,
-        SelfcheckRequiredError: CantAnalyzeReason.selfcheck_required,
-        AsymmetricContaminationError: CantAnalyzeReason.asymmetric_contamination,
-        InsulationAlarmError: CantAnalyzeReason.insulation_alarm,
-        CorrectionMismatchError: CantAnalyzeReason.correction_mismatch,
-    }.get(type(exc), CantAnalyzeReason.analyze_error)
-
-
-# --- schema ----------------------------------------------------------------
-class Provenance(BaseModel):
-    # every field required ⇒ a render missing any provenance fails validation [AC-6]
-    model_config = ConfigDict(extra="forbid")
-    instrument_version: str
-    instrument_git_sha: str
-    corpus: Optional[dict]
-    ledger_head_hash: str
-    chain_ok: bool
-    judge: dict
-
-
-class ComparisonFinding(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    label: str
-    arm_a: str
-    arm_b: str
-    n_tasks: int
-    stats: dict
-    effect: dict
-    decision: dict
-    # AN-6: machine-checkable provenance of the claim — "computed" (a deterministic
-    # function of the ledger) vs "judgment" (rests on the advisory judge)
-    claim_tag: Literal["computed", "judgment"]
-    excluded_from_official: bool = False
-    exclusion_reason: Optional[str] = None
-    # PRA-M4: in a >2-arm design, only the pre-registered primary pair
-    # (arms[0] vs arms[1]) carries an official decision by default; additional
-    # pairs render their CI/effect but are exploratory (no decision), because the
-    # spec pre-registers exactly one decision_rule. With --multi-arm-correction
-    # =holm every pair is official under a Holm-adjusted family. Absent field on a
-    # 2-arm finding = the single official pair.
-    official_decision: bool = True
-
-
-class MDEBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    value: Optional[float]
-    assumption_based_mde: bool
-    acknowledged_underpowered: bool
-    # F-M-S3: the plan-time MDE assumed the plan-time cluster count; when
-    # quarantines/missing grades shrank the realized N, quoting the plan figure
-    # overstates sensitivity. The achieved figure is a DISCLOSED 1/sqrt(n)
-    # scaling of the plan MDE at the realized N — present only when realized N
-    # is smaller than planned; the null phrasing then uses it.
-    achieved_value: Optional[float] = None
-    realized_n_tasks: Optional[int] = None
-
-
-class FindingsDocument(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    experiment_id: str
-    seed: int
-    primary_metric: str
-    decision_rule: str
-    # the pre-registered corpus identity, so the official fence can bind a cited
-    # manifest to the spec's corpus without re-reading the spec at render [AN-2]
-    spec_corpus: dict
-    comparisons: list[ComparisonFinding]
-    mde: MDEBlock
-    ci_selection: dict
-    confounds: list[dict]
-    secondary_metrics: dict
-    integrity: dict
-    # AN-9: orphan grades (no matching trial) counted, never silently dropped
-    ledger_consistency: dict
-    # AN-11: grade-trust tiers — local/fake results are ADVISORY, surfaced not stamped
-    tier: dict
-    # D-P7-2: terminal-override disclosure — count of --retry-terminal re-attempts
-    overrides: dict = {}
-    # D-P7-6: whether the lock committed a rubric_sha256; a legacy lock (False)
-    # gets a caveat line in the official render instead of a refusal.
-    rubric_committed: bool = True
-    # EVAL-10 AC-5: per-arm contamination summary (tri-state counts + flagged
-    # task ids + asymmetry) — disclosed in BOTH renders, fenced when asymmetric.
-    contamination: dict = {}
-    # F-M-J1: judge coverage — terminal CANT_JUDGE comparisons are silently
-    # excluded from judge_preference and calibration (a biased missing-data
-    # channel when exclusions correlate with outcomes, e.g. a canary salted
-    # only on losing trials); the counts are disclosed in both renders.
-    judge_coverage: dict = {}
-    # F-L7: the render mode stamped INTO findings.json — the citable byte
-    # string was mode-ambiguous (nothing in the file said whether it was an
-    # official or exploratory computation), and exploratory JSON carried no
-    # watermark. Set by run_analyze before serialization, so findings_sha256
-    # covers it; None only on a bare compute_findings call that never renders.
-    mode: Optional[str] = None
-    watermark: Optional[str] = None
-    # PRA-M4: multi-arm disclosure — {n_arms, correction, note}. Non-empty and
-    # non-optional in the render whenever >2 arms were compared, so k-1
-    # simultaneous decisions can never be presented without saying so.
-    multi_arm: dict = {}
-    process: Optional[dict] = None
-    judge_calibration: Optional[dict] = None
-    # EVAL-11: forensic flags/coverage/kappa + operator quarantines — additive,
-    # disclosure-only (never a fence input, never a primary metric) [D004]
-    forensics: Optional[dict] = None
-    # control-reuse plan: the EXPLORATORY, UNPAIRED reuse section — an imported
-    # control vs the fresh contender. Additive, None on non-reuse ledgers (so
-    # official output is byte-identical there); never an official decision, read
-    # from the reused_* kinds the official path cannot see.
-    reuse: Optional[dict] = None
-    provenance: Provenance
 
 
 # --- metric extraction -----------------------------------------------------
@@ -655,12 +478,6 @@ def _mde_block(ledger_path, realized_n_tasks: Optional[int] = None) -> MDEBlock:
         achieved_value=achieved,
         realized_n_tasks=realized_n_tasks,
     )
-
-
-def display_mde(mde: MDEBlock) -> Optional[float]:
-    """The sensitivity figure honest at the REALIZED N [F-M-S3]: the achieved
-    MDE when the realized cluster count fell below plan, else the plan MDE."""
-    return mde.achieved_value if mde.achieved_value is not None else mde.value
 
 
 def _judge_summary(ledger_path) -> dict:
