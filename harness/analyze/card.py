@@ -27,7 +27,8 @@ from pydantic import BaseModel, ConfigDict
 from ..corpus.commit import content_sha
 from ..ledger import events
 from ..ledger.query import find_events, read_events, verify
-from .report import asymmetry_line, compute_findings, per_arm_absolute_scores
+from .findings.extract import compute_findings, per_arm_absolute_scores
+from .findings.sections import asymmetry_line
 
 CARD_SCHEMA_VERSION = 2
 

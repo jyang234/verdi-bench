@@ -23,7 +23,7 @@ from typing import Optional
 
 from ..plan.seeds import sub_seed
 from .nullsim import NULL_INSUFFICIENT, coverage_from_deltas, coverage_of_method
-from .report import _comparison_series, metric_def
+from .findings.extract import _comparison_series, metric_def
 
 # 95% two-sided normal quantile — the Monte-Carlo interval level [D008 (c)].
 _Z95 = 1.959963984540054

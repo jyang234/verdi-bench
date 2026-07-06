@@ -136,11 +136,12 @@ def pin_instrument() -> Iterator[None]:
     """Pin instrument identity for every provenance-stamping consumer.
 
     ``instrument_identity`` is imported *by name* into ``harness.ledger.events``
-    and ``harness.analyze.report``, so each bound reference must be swapped —
-    patching only ``harness.version`` would leave the consumers reading the
-    live git sha [refactor 01 §1 item 2 trap].
+    and ``harness.analyze.findings.extract`` (where ``compute_findings`` stamps
+    provenance since the report.py decomposition [refactor 07 §1]), so each bound
+    reference must be swapped — patching only ``harness.version`` would leave the
+    consumers reading the live git sha [refactor 01 §1 item 2 trap].
     """
-    import harness.analyze.report as report_mod
+    import harness.analyze.findings.extract as extract_mod
     import harness.ledger.events as events_mod
     import harness.version as version_mod
 
@@ -150,7 +151,7 @@ def pin_instrument() -> Iterator[None]:
             "git_sha": PINNED_INSTRUMENT_GIT_SHA,
         }
 
-    targets = (version_mod, events_mod, report_mod)
+    targets = (version_mod, events_mod, extract_mod)
     originals = [t.instrument_identity for t in targets]
     for t in targets:
         t.instrument_identity = pinned
