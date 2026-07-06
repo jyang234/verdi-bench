@@ -260,6 +260,55 @@ def test_m_c3_official_fence_refuses_on_insulation_alarm(tmp_path):
     )
 
 
+def test_probe_payload_model_dump_byte_compatible():
+    """The typed ContaminationProbePayload.model_dump() reproduces the hand-built
+    dict byte-for-byte [refactor 06 §3] — typing, never a shape change. reason is
+    always emitted (None on complete); alarms/skipped/task_id/arms/canary_sha256
+    are omit-if-None; a nested arm's oracle_scores omits when it never ran."""
+    from harness.contamination.channels import ArmProbe, ContaminationProbePayload
+
+    complete = ContaminationProbePayload(
+        status="complete", reason=None, threshold=0.5, overlap_flags={"control": {"t": True}},
+        alarms=None, skipped=None,
+        arms={
+            "control": ArmProbe(model="m1", outcomes={"t": "flagged"}, evidence={"t": ["oracle_prefix"]},
+                                oracle_scores={"t": {"true": 0.6, "control": 0.1, "margin": 0.5}}),
+            "treatment": ArmProbe(model="m2", outcomes={"t": "negative"}, evidence={"t": []},
+                                  oracle_scores=None),
+        },
+        canary_sha256={"t": "ab"},
+    )
+    assert complete.model_dump() == {
+        "status": "complete", "reason": None, "threshold": 0.5,
+        "overlap_flags": {"control": {"t": True}},
+        "arms": {
+            "control": {"model": "m1", "outcomes": {"t": "flagged"}, "evidence": {"t": ["oracle_prefix"]},
+                        "oracle_scores": {"t": {"true": 0.6, "control": 0.1, "margin": 0.5}}},
+            "treatment": {"model": "m2", "outcomes": {"t": "negative"}, "evidence": {"t": []}},
+        },
+        "canary_sha256": {"t": "ab"},
+    }
+
+    # cant preflight carries task_id; alarms/skipped ride when provided
+    cant_pre = ContaminationProbePayload(
+        status="cant_probe", reason="canary_in_prompt", task_id="t1",
+        threshold=0.5, overlap_flags={}, alarms=["a"], skipped=["s"],
+    )
+    assert cant_pre.model_dump() == {
+        "status": "cant_probe", "reason": "canary_in_prompt", "threshold": 0.5,
+        "overlap_flags": {}, "alarms": ["a"], "skipped": ["s"], "task_id": "t1",
+    }
+
+    # cant on provider error: no task_id, no arms, alarms/skipped omitted
+    cant_prov = ContaminationProbePayload(
+        status="cant_probe", reason="timeout", threshold=0.5, overlap_flags={},
+        alarms=None, skipped=None,
+    )
+    assert cant_prov.model_dump() == {
+        "status": "cant_probe", "reason": "timeout", "threshold": 0.5, "overlap_flags": {},
+    }
+
+
 def test_m_c2_perturb_identifiers_is_deterministic():
     from harness.contamination.probe import perturb_identifiers
 
