@@ -175,6 +175,9 @@ OPERATOR_PAGE = """<!doctype html>
   details.fr > summary { cursor: pointer; color: var(--ink-2); font-size: 12px; margin: 10px 0 4px; }
   details.fr > summary:hover { color: var(--ink-1); }
   .steps .agent { color: var(--ink-3); font-size: 11px; flex: none; }
+  .steps li.thought { background: var(--soft); border-radius: 4px; padding-left: 6px; padding-right: 6px; }
+  .steps .ico.think { color: var(--meter); }
+  .steps .reasonrow { font-size: 12px; line-height: 1.5; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; }
   .pairjump { scroll-margin-top: 12px; }
   .sparkrow { display: flex; align-items: center; gap: 6px; }
   .sparkrow svg { flex: none; }
@@ -1157,6 +1160,103 @@ function pairVerdict(st, taskId, rep) {
   return null;
 }
 
+/* one trajectory step as a timeline row — shared by the trajectory tab and
+   the process view, so an action renders identically in both */
+function stepLi(s) {
+  const headline = s.command ? s.command : (s.files_touched || []).join(", ");
+  const li = h("li", {},
+    h("span", { class: "t", text: s.relative_ts === null || s.relative_ts === undefined ? "\\u2014" : fmt(s.relative_ts, 0) + "s" }),
+    h("span", { class: "ico", text: s.kind }));
+  /* multi-agent attribution [EVAL-21]: name the sub-agent when the
+     record carries it; single-agent/pre-v3 records stay unlabeled */
+  if (s.agent) li.append(h("span", { class: "agent", text: s.agent }));
+  // v3 step content [EVAL-14-D004]: shown when captured; a null detail
+  // on a contentless step is the honest pre-v3 / not-exposed state
+  const body = h("div", { style: "min-width:0; flex:1" });
+  if (headline) body.append(h("div", { class: "mono dim", text: headline }));
+  if (s.detail !== null && s.detail !== undefined && s.detail !== "" && s.detail !== headline)
+    body.append(h("pre", { class: "code", style: "margin-top:2px", text: s.detail }));
+  if (!headline && (s.detail === null || s.detail === undefined))
+    body.append(h("div", { class: "mono dim3", text: "(not captured in this record version)" }));
+  li.append(body,
+    h("span", { class: "dim3", text: (s.exit_code === null || s.exit_code === undefined ? "" : " exit " + s.exit_code) +
+      (s.tokens === null || s.tokens === undefined ? "" : " \\u00b7 " + fmt(s.tokens, 0) + " tok") }));
+  return li;
+}
+/* one reasoning span as a timeline row — visually a THOUGHT, not an action */
+function thoughtLi(e) {
+  const li = h("li", { class: "thought" },
+    h("span", { class: "t", text: e.relative_ts === null || e.relative_ts === undefined ? "\\u2014" : fmt(e.relative_ts, 0) + "s" }),
+    h("span", { class: "ico think", text: "thought" }));
+  if (e.agent) li.append(h("span", { class: "agent", text: e.agent }));
+  const body = h("div", { style: "min-width:0; flex:1" });
+  body.append(h("div", { class: "reasonrow", text: e.content }));
+  li.append(body,
+    h("span", { class: "dim3", text: e.tokens === null || e.tokens === undefined ? "" : fmt(e.tokens, 0) + " tok" }));
+  return li;
+}
+/* The unified process view [flight-recorder charter]: ONE timeline tracing the
+   stack's thought AND action to the solution. Interleaving uses only what the
+   record DECLARES — a reasoning entry with a v3 ``turn`` renders before its
+   step (thought precedes action); one with only ``relative_ts`` merges by the
+   shared trial clock; one with neither is listed unlinked in capture order.
+   Nothing is inferred, reordered by guesswork, or dropped. */
+function renderProcess(card, d) {
+  const steps = d.trajectory.steps;
+  const fr = d.flight_recorder || {};
+  const entries = fr.entries || [];
+  if (fr.status && fr.status !== "verified" && fr.status !== "absent")
+    card.append(h("div", { class: "gerr", style: "margin-bottom:8px",
+      text: "flight recorder " + fr.status + " \\u2014 reasoning withheld (its bytes must match the ledgered sha)" }));
+  if (steps === null && !entries.length) {
+    card.append(h("div", { class: "empty", text: "trajectory " + d.trajectory.status + (fr.status === "absent" ? " \\u00b7 no reasoning captured" : "") + " \\u2014 no process to show" }));
+    return;
+  }
+  card.append(h("div", { class: "dim3", style: "margin-bottom:8px",
+    text: "one timeline \\u2014 thought (flight recorder) interleaved with action (trajectory), both sha-verified; placement is the stack's own declared linkage, never inferred" }));
+  const byTurn = {}, tsOnly = [], unlinked = [];
+  for (const e of entries) {
+    const hasTurn = e.turn !== null && e.turn !== undefined;
+    if (hasTurn && steps !== null && e.turn < steps.length)
+      (byTurn[e.turn] = byTurn[e.turn] || []).push(e);
+    else if (hasTurn)
+      /* a DECLARED link whose step is unavailable is a broken link to state,
+         never a license to re-place the thought by some other signal */
+      unlinked.push({ entry: e, note: "declared turn " + e.turn + " \\u2014 step unavailable" });
+    else if (e.relative_ts !== null && e.relative_ts !== undefined) tsOnly.push(e);
+    else unlinked.push({ entry: e, note: null });
+  }
+  tsOnly.sort((a, b) => a.relative_ts - b.relative_ts);  /* stable: capture order breaks ties */
+  const ul = h("ul", { class: "steps" });
+  let cursor = 0;
+  const flushTs = (limit) => {
+    while (cursor < tsOnly.length && (limit === null || tsOnly[cursor].relative_ts <= limit)) {
+      ul.append(thoughtLi(tsOnly[cursor])); cursor += 1;
+    }
+  };
+  (steps || []).forEach((s, i) => {
+    if (s.relative_ts !== null && s.relative_ts !== undefined) flushTs(s.relative_ts);
+    for (const e of byTurn[i] || []) ul.append(thoughtLi(e));  /* thought precedes its action */
+    ul.append(stepLi(s));
+  });
+  flushTs(null);
+  card.append(ul);
+  if (unlinked.length) {
+    card.append(h("h2", { style: "margin-top:12px", text: "Unlinked reasoning (capture order)" }));
+    card.append(h("div", { class: "dim3", style: "margin-bottom:4px",
+      text: "spans whose position in the timeline is not declared \\u2014 they belong to this trial, placement unknown (honest, not hidden)" }));
+    const ul2 = h("ul", { class: "steps" });
+    for (const u of unlinked) {
+      const li = thoughtLi(u.entry);
+      if (u.note) li.append(h("span", { class: "gerr", text: " " + u.note }));
+      ul2.append(li);
+    }
+    card.append(ul2);
+  }
+  if (!entries.length && fr.status === "absent")
+    card.append(h("div", { class: "dim3", style: "margin-top:8px", text: "no reasoning captured for this trial \\u2014 the timeline above is action only" }));
+}
+
 function renderTrial(app) {
   const st = expState(S.route.exp);
   const d = st.trial[S.route.id];
@@ -1191,7 +1291,7 @@ function renderTrial(app) {
 
   const tab = S.route.params.get("tab") || "trajectory";
   const tabs = h("div", { class: "toolbar" });
-  for (const name of ["trajectory", "grade", "forensics", "egress", "raw"])
+  for (const name of ["trajectory", "process", "grade", "forensics", "egress", "raw"])
     tabs.append(h("span", { class: "chip click" + (tab === name ? " on" : ""), tabindex: "0", text: name, onclick: () => setParam("tab", name) }));
   app.append(tabs);
 
@@ -1202,29 +1302,11 @@ function renderTrial(app) {
     else if (!steps.length) card.append(h("div", { class: "empty", text: "trajectory verified, zero steps" }));
     else {
       const ul = h("ul", { class: "steps" });
-      for (const s of steps) {
-        const headline = s.command ? s.command : (s.files_touched || []).join(", ");
-        const li = h("li", {},
-          h("span", { class: "t", text: s.relative_ts === null || s.relative_ts === undefined ? "\\u2014" : fmt(s.relative_ts, 0) + "s" }),
-          h("span", { class: "ico", text: s.kind }));
-        /* multi-agent attribution [EVAL-21]: name the sub-agent when the
-           record carries it; single-agent/pre-v3 records stay unlabeled */
-        if (s.agent) li.append(h("span", { class: "agent", text: s.agent }));
-        // v3 step content [EVAL-14-D004]: shown when captured; a null detail
-        // on a contentless step is the honest pre-v3 / not-exposed state
-        const body = h("div", { style: "min-width:0; flex:1" });
-        if (headline) body.append(h("div", { class: "mono dim", text: headline }));
-        if (s.detail !== null && s.detail !== undefined && s.detail !== "" && s.detail !== headline)
-          body.append(h("pre", { class: "code", style: "margin-top:2px", text: s.detail }));
-        if (!headline && (s.detail === null || s.detail === undefined))
-          body.append(h("div", { class: "mono dim3", text: "(not captured in this record version)" }));
-        li.append(body,
-          h("span", { class: "dim3", text: (s.exit_code === null || s.exit_code === undefined ? "" : " exit " + s.exit_code) +
-            (s.tokens === null || s.tokens === undefined ? "" : " \\u00b7 " + fmt(s.tokens, 0) + " tok") }));
-        ul.append(li);
-      }
+      for (const s of steps) ul.append(stepLi(s));
       card.append(ul);
     }
+  } else if (tab === "process") {
+    renderProcess(card, d);
   } else if (tab === "grade") {
     if (!d.grade.grades.length && !d.grade.cant_grades.length) card.append(h("div", { class: "empty", text: "not graded yet" }));
     for (const g of d.grade.grades) {

@@ -374,6 +374,68 @@ def test_compare_flight_recorder_stays_open_across_polls(tmp_path):
         _stop(srv, thread)
 
 
+# --- trial process view: one timeline of thought and action ------------------------
+def test_process_view_interleaves_thought_and_action(tmp_path):
+    """The process tab renders ONE timeline: turn-linked reasoning precedes its
+    step, clock-only reasoning merges by the trial clock, undeclared spans land
+    in an explicit unlinked section — and a reasoning-less trial is honestly
+    action-only. Placement is the stack's declaration, never inferred."""
+    from tests.test_flight_recorder_v3 import _linked_experiment
+
+    trial_ids = _linked_experiment(tmp_path / "exp-l")
+    rich_experiment(tmp_path / "exp-a")  # no reasoning: the action-only case
+    srv, thread, base = _serve_root(tmp_path)
+    try:
+        body = """
+  await page.goto(BASE + '/#/exp/exp-l/trial/""" + trial_ids[0] + """?tab=process', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(2000);
+  out.linked = await page.evaluate(() => {
+    const app = document.getElementById('app');
+    const rows = [...app.querySelectorAll('ul.steps li')].map(li => ({
+      thought: li.className.includes('thought'),
+      text: li.textContent.slice(0, 60) }));
+    return { rows, order: ['thought before planning', 'the plan', 'clock-only note',
+                           'thought before editing', 'the code', 'ambient unlinked note']
+      .map(s => app.textContent.indexOf(s)),
+      unlinkedHeading: app.textContent.includes('Unlinked reasoning (capture order)'),
+      processTabOn: !!([...document.querySelectorAll('.chip.on')].find(c => c.textContent === 'process')) };
+  });
+"""
+        out = drive(base, body, tmp_path)
+        # thought/action alternation: t(planner), step, t(clock-only), t(worker), step + 1 unlinked
+        assert [r["thought"] for r in out["linked"]["rows"]] == [True, False, True, True, False, True]
+        # the six anchors appear in strict timeline order in the rendered app
+        idx = out["linked"]["order"]
+        assert all(i >= 0 for i in idx) and idx == sorted(idx)
+        assert out["linked"]["unlinkedHeading"] is True
+        assert out["linked"]["processTabOn"] is True
+        assert out["__errors"] == []
+    finally:
+        _stop(srv, thread)
+
+
+def test_process_view_without_reasoning_is_action_only(tmp_path):
+    fx = rich_experiment(tmp_path / "exp-a")
+    srv, thread, base = _serve_root(tmp_path)
+    try:
+        body = """
+  await page.goto(BASE + '/#/exp/exp-a/trial/""" + fx["flagged"] + """?tab=process', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(1800);
+  out.p = await page.evaluate(() => {
+    const app = document.getElementById('app');
+    return { actionOnly: app.textContent.includes('the timeline above is action only'),
+             steps: app.querySelectorAll('ul.steps li').length,
+             thoughts: app.querySelectorAll('ul.steps li.thought').length };
+  });
+"""
+        out = drive(base, body, tmp_path)
+        assert out["p"]["actionOnly"] is True
+        assert out["p"]["steps"] == 3 and out["p"]["thoughts"] == 0
+        assert out["__errors"] == []
+    finally:
+        _stop(srv, thread)
+
+
 # --- compare: reasoning entries show measured usage; absence stays absent ----------
 def test_compare_reasoning_entries_show_measured_usage(tmp_path):
     """A reasoning entry's measured tokens/cost render beside its content, so a
