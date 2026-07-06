@@ -706,6 +706,18 @@ def test_coverage_insufficient_echoes_ci_level():
     assert sel.nominal == 0.90
 
 
+def test_coverage_of_method_type_hints_resolve():
+    """[refactor 01 §4 D7] ``Optional`` was used in coverage_of_method's return
+    annotation but never imported — masked by ``from __future__ import
+    annotations`` until anything evaluated the hints (NameError)."""
+    import typing
+
+    from harness.analyze.nullsim import coverage_of_method
+
+    hints = typing.get_type_hints(coverage_of_method)
+    assert hints["return"] == typing.Optional[float]
+
+
 def test_an11_advisory_tier_surfaced(tmp_path):
     """AN-11: local/fake results are ADVISORY-tier; the render surfaces the tier so
     'Local = ADVISORY' is honestly reflected, not silently stamped."""
