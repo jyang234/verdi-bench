@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 
 import pytest
 from hypothesis import given, settings
@@ -10,6 +11,7 @@ from hypothesis import strategies as st
 
 from harness.judge.packet import (
     IdentityLeakError,
+    Packet,
     ResponseArtifacts,
     SecretLeakError,
     build_packet,
@@ -73,6 +75,93 @@ def test_l4_secret_in_packet_blocks_send():
 
 def test_l4_clean_packet_secret_free():
     validate_secret_free(make_packet())  # no raise
+
+
+def test_secret_in_holdout_results_blocks_send():
+    """[refactor 01 §4 D5] repro: the secret scan omitted the holdout-result
+    blobs that the identity scan already covers, so a provider-key-shaped
+    secret riding in holdout results reached the judge provider unscanned."""
+    pkt = build_packet(
+        ResponseArtifacts(diff="clean", holdout_results=[
+            {"id": "h1", "result": "fail", "detail": "leaked sk-abcdefghij0123456789"}]),
+        ResponseArtifacts(diff="clean", holdout_results=[]),
+        task_prompt="task",
+        rubric="rubric",
+    )
+    with pytest.raises(SecretLeakError):
+        validate_secret_free(pkt)
+
+
+# --- meta-test: the two scans cover every text-bearing field [refactor 01 §4 D5]
+# Derived hex digests, recomputed by build_packet FROM already-scanned content;
+# they are not free-form text channels. Anything else with text in it must be
+# scanned by BOTH validators, and a future field lands in the sweep below
+# automatically — extending it (and both scans) is forced, so the
+# hand-maintained blob lists can never silently drift again.
+_HASH_FIELDS = {"rubric_sha256", "packet_sha256"}
+
+
+def _planted_packets(payload):
+    """One packet per text-bearing field of Packet/ResponseArtifacts with
+    ``payload`` planted in exactly that field, discovered by dataclass
+    introspection — not a hand-maintained field list."""
+    import dataclasses
+
+    def plant(pkt, obj, fld):
+        current = getattr(obj, fld.name)
+        if isinstance(current, str):
+            setattr(obj, fld.name, f"benign text {payload} more text")
+        elif isinstance(current, list):
+            setattr(obj, fld.name, [{"id": "h1", "detail": payload}])
+        else:
+            pytest.fail(
+                f"unhandled field type on {type(obj).__name__}.{fld.name}: "
+                "extend this meta-test AND both packet scans to cover it"
+            )
+
+    for f in dataclasses.fields(Packet):
+        if f.name in _HASH_FIELDS:
+            continue
+        if f.name in ("response_a", "response_b"):
+            for rf in dataclasses.fields(ResponseArtifacts):
+                pkt = make_packet()
+                plant(pkt, getattr(pkt, f.name), rf)
+                yield f"{f.name}.{rf.name}", pkt
+        else:
+            pkt = make_packet()
+            plant(pkt, pkt, f)
+            yield f.name, pkt
+
+
+def test_hash_field_exclusions_are_actually_digests():
+    # the exclusion set stays honest: a free-text field cannot hide in it
+    pkt = make_packet()
+    for name in _HASH_FIELDS:
+        value = getattr(pkt, name)
+        assert re.fullmatch(r"[0-9a-f]{64}", value), (
+            f"Packet.{name} is excluded from the scan sweep as a derived hex "
+            f"digest but holds {value!r} — a text channel must be scanned"
+        )
+
+
+def test_every_text_field_is_covered_by_the_secret_scan():
+    for path, pkt in _planted_packets("sk-" + "Zz0" * 8):
+        try:
+            validate_secret_free(pkt)
+        except SecretLeakError:
+            continue
+        pytest.fail(f"secret planted in Packet.{path} was not caught by validate_secret_free")
+
+
+def test_every_text_field_is_covered_by_the_identity_scan():
+    canary = "IDCANARY-XQZV-7"
+    for path, pkt in _planted_packets(canary):
+        try:
+            validate_identity_free(pkt, canaries=[canary])
+        except IdentityLeakError:
+            continue
+        pytest.fail(f"identity canary planted in Packet.{path} was not caught "
+                    "by validate_identity_free")
 
 
 def test_ac2_packet_allowlist_only():

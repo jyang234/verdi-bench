@@ -210,7 +210,10 @@ def validate_secret_free(packet: Packet) -> None:
 
     Raises :class:`SecretLeakError` on any hit. Redaction at trial time is the
     primary barrier; this catches a secret that slipped past it (or arrived via
-    a symlink escape) rather than shipping it to the judge provider.
+    a symlink escape) rather than shipping it to the judge provider. Scans the
+    same blob set as :func:`validate_identity_free` — including the holdout
+    results, previously the one judge-visible channel this scan omitted
+    [refactor 01 §4 D5].
     """
     patterns = secret_pattern_list()
     blobs = [
@@ -218,6 +221,8 @@ def validate_secret_free(packet: Packet) -> None:
         packet.rubric,
         packet.response_a.diff,
         packet.response_b.diff,
+        _canonical(packet.response_a.holdout_results),
+        _canonical(packet.response_b.holdout_results),
     ]
     for blob in blobs:
         if patterns.contains(blob):
