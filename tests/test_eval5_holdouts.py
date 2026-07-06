@@ -277,3 +277,43 @@ def test_cli_grade_runner_local_exec_end_to_end(tmp_path):
     assert grades and all(g["grader"] == "local-exec" for g in grades)
     assert all(g["binary_score"] is True for g in grades)
     assert runner.invoke(app, ["verify-chain", str(ledger)]).exit_code == 0
+
+
+# --- run_holdouts in-image entrypoint (fence + nonce) ----------------------
+def test_run_holdouts_entrypoint_emits_nonce_authenticated_fence(tmp_path, monkeypatch):
+    import io
+    from contextlib import redirect_stdout
+
+    import harness.grade.run_holdouts as rh
+    from harness.grade.container import parse_fenced_stdout
+
+    hd = tmp_path / "holdouts"
+    AssertionHoldout(expression=_ADD5).materialize(hd)
+    ws = _solution(tmp_path / "workspace")
+    monkeypatch.setattr(rh, "_HOLDOUTS_MOUNT", hd)
+    monkeypatch.setattr(rh, "_WORKSPACE", ws)
+    monkeypatch.setenv("VERDI_FENCE_NONCE", "nonce-xyz")
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = rh.main(["run_holdouts"])
+    assert rc == 0
+    # only the marker carrying the injected nonce authenticates the channel
+    parsed = parse_fenced_stdout(buf.getvalue(), 0, nonce="nonce-xyz")
+    assert parsed.raw_output == {"assertions": [{"id": "h1", "result": "pass"}]}
+    # main dropped the nonce from os.environ (shallow defense-in-depth)
+    import os
+
+    assert "VERDI_FENCE_NONCE" not in os.environ
+
+
+def test_run_holdouts_entrypoint_fails_closed_without_declared_kind(tmp_path, monkeypatch):
+    import harness.grade.run_holdouts as rh
+
+    hd = tmp_path / "holdouts"
+    hd.mkdir()
+    (hd / "holdout.json").write_text(json.dumps({"fail_to_pass": ["x"]}), encoding="utf-8")
+    monkeypatch.setattr(rh, "_HOLDOUTS_MOUNT", hd)
+    monkeypatch.setattr(rh, "_WORKSPACE", tmp_path / "ws")
+    # no fence emitted, nonzero exit → host reads the channel absent (terminal)
+    assert rh.main(["run_holdouts"]) == 1
