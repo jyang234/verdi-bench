@@ -188,3 +188,15 @@ def test_non_list_provider_key_names_fail_loudly():
     with pytest.raises(Exception) as exc:
         RunConfigFile.parse({"provider_key_names_by_arm": {"control": "OPENAI_API_KEY"}})
     assert "provider_key_names_by_arm" in str(exc.value) or "control" in str(exc.value)
+
+
+def test_otlp_explicit_without_log_path_is_refused(tmp_path):
+    """[OTLP review F1] An explicit endpoint with no log_path silently disabled
+    capture: _read_span_log returns None when request.otlp.log_path is empty, so
+    a configured collector degraded to zero telemetry with no error — bypassing
+    the A12 configured-means-required posture. Endpoint ⇒ log_path, refused loudly."""
+    (tmp_path / "run.config.yaml").write_text(
+        "otlp:\n  endpoint: http://collector:4318\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="no otlp.log_path"):
+        load_run_settings(tmp_path, env={})

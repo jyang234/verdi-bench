@@ -305,6 +305,18 @@ def load_run_settings(
                     "run.config.yaml 'otlp' sets no endpoint and is not managed; set "
                     "otlp.endpoint or otlp.managed: true [refactor 09 §4]"
                 )
+            if not cfg.otlp.log_path:
+                # A configured collector with no readable envelope log would
+                # silently disable capture (_read_span_log sees no log_path and
+                # returns nothing) — the A12 posture is configured ⇒ required,
+                # fail closed, so the explicit form demands both halves
+                # [OTLP review F1].
+                raise ValueError(
+                    "run.config.yaml sets otlp.endpoint but no otlp.log_path; the "
+                    "explicit form needs the collector's envelope log to extract "
+                    "spans from — set otlp.log_path or use otlp.managed: true "
+                    "[refactor 09 §4]"
+                )
             otlp = OtlpConfig(endpoint=cfg.otlp.endpoint, log_path=cfg.otlp.log_path)
 
     # An explicit ``null`` must NOT silently un-pin a quota (which would break

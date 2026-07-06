@@ -95,6 +95,21 @@ def _span(draw, index: int, parents: list[str]):
         "name": _CANARY,  # the span name is not a whitelisted source
         "startTimeUnixNano": str(draw(st.integers(0, 5_000_000_000_000_000_000))),
         "attributes": attrs,
+        # [OTLP review F4] span EVENTS are a reasoning source (gen_ai.reasoning /
+        # verdi.reasoning names, whitelisted `content` attribute only) — lace the
+        # canary through an event's NON-whitelisted attributes and through a
+        # non-reasoning event's name, so the event pathway is under the same
+        # identity property as span attributes and the span name.
+        "events": [
+            {
+                "name": "gen_ai.reasoning" if draw(st.booleans()) else _CANARY,
+                "attributes": [
+                    {"key": "content", "value": _sv("brief thought")},
+                    {"key": "gen_ai.request.model", "value": _sv(_CANARY)},
+                    {"key": "session.vendor", "value": _sv(_CANARY)},
+                ],
+            }
+        ],
     }
     parent = draw(st.none() | (st.sampled_from(parents) if parents else st.none()))
     if parent is not None:
