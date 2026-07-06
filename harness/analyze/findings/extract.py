@@ -766,33 +766,48 @@ def _two_sided_bootstrap_p(deltas, seed: int, n_boot: int) -> float:
 MIN_DETECTION_CLUSTERS = 2
 
 
-def _apply_holm(comparisons, deltas_by_pair, parsed_rule, seed: int, *, n_boot: int, alpha: float) -> None:
+@dataclass
+class _PairedComparison:
+    """A comparison finding bundled with the per-task deltas it was computed from
+    [refactor 07 §1].
+
+    Replaces the index-coupled ``comparisons`` / ``deltas_by_pair`` parallel
+    lists the Holm step-down threaded through — one object per pair, so the
+    finding and its deltas can never drift out of lockstep. ``deltas`` is
+    ``None`` for an excluded / no-data pair, which the Holm adjustment skips."""
+
+    finding: ComparisonFinding
+    deltas: Optional[list]
+
+
+def _apply_holm(pairs: list[_PairedComparison], parsed_rule, seed: int, *,
+                n_boot: int, alpha: float) -> None:
     """Holm-Bonferroni step-down across the computable pairwise comparisons,
     rewriting each pair's decision in place [PRA-M4]. Non-computable pairs
     (excluded / no data) are skipped. Every adjusted pair stays official.
     The minimum-cluster floor binds here too [F-H7]: the selfcheck's <2-cluster
     gate only ever inspects the primary pair, so without it a single-task
     secondary pair is declared an official detected effect at p≈1/(n_boot+1)."""
-    idxs = [i for i, d in enumerate(deltas_by_pair) if d]
-    pvals = {i: _two_sided_bootstrap_p(deltas_by_pair[i], seed, n_boot) for i in idxs}
-    m = len(idxs)
-    order = sorted(idxs, key=lambda i: (pvals[i], comparisons[i].label))
-    reject: dict = {}
+    computable = [p for p in pairs if p.deltas]
+    pvals = [_two_sided_bootstrap_p(p.deltas, seed, n_boot) for p in computable]
+    m = len(computable)
+    order = sorted(range(m), key=lambda k: (pvals[k], computable[k].finding.label))
+    reject = [False] * m
     failed = False
-    for rank, i in enumerate(order):
-        if failed or pvals[i] > alpha / (m - rank):
-            reject[i] = False
+    for rank, k in enumerate(order):
+        if failed or pvals[k] > alpha / (m - rank):
+            reject[k] = False
             failed = True  # step-down: once one holds, all remaining hold
         else:
-            reject[i] = True
-    for i in idxs:
-        cf = comparisons[i]
-        floored = len(deltas_by_pair[i]) < MIN_DETECTION_CLUSTERS
-        detected = bool(reject.get(i, False)) and not floored
+            reject[k] = True
+    for k, p in enumerate(computable):
+        cf = p.finding
+        floored = len(p.deltas) < MIN_DETECTION_CLUSTERS
+        detected = reject[k] and not floored
         observed = cf.decision["observed_delta"]
         cf.decision["detected"] = detected
         cf.decision["decides_positive"] = detected and parsed_rule.decides_positive(observed)
-        cf.decision["holm_p"] = pvals[i]
+        cf.decision["holm_p"] = pvals[k]
         cf.decision["correction"] = "holm"
         if floored:
             cf.decision["floor"] = "insufficient_clusters"
@@ -946,8 +961,7 @@ def compute_findings(
     claim_tag = mdef.claim_tag
     null_model = mdef.null_model
 
-    comparisons: list[ComparisonFinding] = []
-    deltas_by_pair: list = []  # per-comparison deltas, lockstep with `comparisons` [PRA-M4]
+    pairs: list[_PairedComparison] = []  # each finding bundled with its deltas [PRA-M4]
     selection = None  # the primary (first) comparison's coverage selection → ci_selection
     for other in spec.arms[1:]:
         arm_b = other.name
@@ -971,7 +985,7 @@ def compute_findings(
         if excluded:
             # Asymmetric nulls ⇒ the metric is excluded from official comparison
             # and flagged, never imputed [AC-7] — regardless of any partial data.
-            comparisons.append(
+            pairs.append(_PairedComparison(
                 ComparisonFinding(
                     label=f"{arm_a} vs {arm_b}", arm_a=arm_a, arm_b=arm_b,
                     n_tasks=len(deltas), stats={}, effect={}, claim_tag=claim_tag,
@@ -982,13 +996,13 @@ def compute_findings(
                         f"telemetry field {metric_field!r} has asymmetric nulls; "
                         "excluded from official comparison, never imputed [AC-7]"
                     ),
-                )
-            )
-            deltas_by_pair.append(None)
+                ),
+                None,
+            ))
             continue
         if not deltas:
             # no paired data — record an explicit empty finding rather than crash
-            comparisons.append(
+            pairs.append(_PairedComparison(
                 ComparisonFinding(
                     label=f"{arm_a} vs {arm_b}", arm_a=arm_a, arm_b=arm_b, n_tasks=0,
                     stats={}, effect={}, claim_tag=claim_tag,
@@ -996,9 +1010,9 @@ def compute_findings(
                               "detected": None, "decides_positive": None},
                     excluded_from_official=True,
                     exclusion_reason="no paired task data",
-                )
-            )
-            deltas_by_pair.append(None)
+                ),
+                None,
+            ))
             continue
 
         boot: BootstrapResult = paired_bootstrap(deltas, seed, ci_method, n_boot=n_boot)
@@ -1020,7 +1034,7 @@ def compute_findings(
         }
         if floored:
             decision["floor"] = "insufficient_clusters"
-        comparisons.append(
+        pairs.append(_PairedComparison(
             ComparisonFinding(
                 label=f"{arm_a} vs {arm_b}",
                 arm_a=arm_a,
@@ -1037,19 +1051,20 @@ def compute_findings(
                     if excluded
                     else None
                 ),
-            )
-        )
-        deltas_by_pair.append(deltas)
+            ),
+            deltas,
+        ))
 
     # PRA-M4: multi-arm decision policy. With >2 arms the loop above produced
     # k-1 pairwise findings, each with its own detected/decides_positive. The spec
     # pre-registers ONE decision_rule, so k-1 simultaneous official 95% decisions
     # would inflate the family-wise error rate. Resolve per REVIEW-D-P8-1.
+    comparisons: list[ComparisonFinding] = [p.finding for p in pairs]
     multi_arm: dict = {}
     n_pairs = len(comparisons)
     if n_pairs > 1:
         if spec.multi_arm_correction == "holm":
-            _apply_holm(comparisons, deltas_by_pair, parsed_rule, seed, n_boot=n_boot,
+            _apply_holm(pairs, parsed_rule, seed, n_boot=n_boot,
                         alpha=1.0 - DEFAULT_CI_LEVEL)
             multi_arm = {
                 "n_arms": len(spec.arms),
