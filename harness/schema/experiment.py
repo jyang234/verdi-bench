@@ -112,7 +112,7 @@ class Arm(BaseModel):
         if model_vendor(v) is None:
             raise ArmModelError(
                 f"arm.model {v!r} must be '<provider>/<id>' (e.g. "
-                "'anthropic/claude-3-5-sonnet-20241022') so the judge/arm vendor "
+                "'anthropic/claude-haiku-4-5-20251001') so the judge/arm vendor "
                 "overlap is well-defined [JD-7]"
             )
         return v
