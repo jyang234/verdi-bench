@@ -37,4 +37,5 @@ packages = ["harness"]
 testpaths = ["tests"]
 markers = [
     "docker: tests that require a live Docker daemon (deselect with '-m \"not docker\"')",
+    "browser: tests that drive the served page in a real Chromium via node playwright (the CI browser job runs '-m browser' under VERDI_REQUIRE_BROWSER=1)",
 ]

@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from harness.ledger import events as ledger_events
 from tests.fixtures.browser import drive
 from tests.fixtures.scenarios import reasoning_experiment, rich_experiment
 from tests.fixtures.servers import serve_root
+
+pytestmark = pytest.mark.browser
 
 
 # --- AC-3: deep links round-trip ------------------------------------------------

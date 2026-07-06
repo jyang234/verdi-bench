@@ -26,6 +26,8 @@ from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and
 from tests.fixtures.scenarios import rich_experiment
 from tests.fixtures.servers import serve_root
 
+pytestmark = pytest.mark.browser
+
 runner = CliRunner()
 _REPO = Path(__file__).resolve().parents[1]
 _NEEDLES = ("http://", "https://", "src=", "href=", "url(", "@import", "<link")

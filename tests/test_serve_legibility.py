@@ -20,6 +20,7 @@ Browser drives skip honestly without the node/playwright/chromium stack
 
 from __future__ import annotations
 
+import pytest
 import yaml
 
 from harness.adapters.base import Flags, Outcome, Provenance, Telemetry, TrialRecord
@@ -98,6 +99,7 @@ def test_status_spec_summary_names_arm_models(tmp_path):
 
 
 # --- fail-closed rendering on a broken chain ---------------------------------------
+@pytest.mark.browser
 def test_broken_chain_withholds_every_screen_without_lying(tmp_path):
     _tampered_fixture(tmp_path / "exp-t")
     with serve_root(tmp_path) as base:
@@ -151,6 +153,7 @@ def test_broken_chain_withholds_every_screen_without_lying(tmp_path):
 
 
 # --- home rows: arms, truthful lifecycle states, denominators ----------------------
+@pytest.mark.browser
 def test_home_rows_surface_arms_states_and_denominators(tmp_path):
     rich_experiment(tmp_path / "exp-a")
     # locked with a plan but nothing run: "ready · locked", never "unplanned"
@@ -187,6 +190,7 @@ def test_home_rows_surface_arms_states_and_denominators(tmp_path):
 
 
 # --- overview: result strip mirrors compare; stages navigate; feed deep-links ------
+@pytest.mark.browser
 def test_overview_result_strip_stage_nav_and_feed_links(tmp_path):
     fx = rich_experiment(tmp_path / "exp-a")
     with serve_root(tmp_path) as base:
@@ -237,6 +241,7 @@ def test_overview_result_strip_stage_nav_and_feed_links(tmp_path):
 
 
 # --- trials: sortable by URL state, units in headers, verdict in the panel ---------
+@pytest.mark.browser
 def test_trials_sort_units_and_panel_verdict(tmp_path):
     _paired_fixture(tmp_path / "exp-p")
     with serve_root(tmp_path) as base:
@@ -269,6 +274,7 @@ def test_trials_sort_units_and_panel_verdict(tmp_path):
 
 
 # --- trial detail: telemetry + advisory verdict + forensics three-state ------------
+@pytest.mark.browser
 def test_trial_detail_surfaces_telemetry_verdict_and_forensics_state(tmp_path):
     fx = rich_experiment(tmp_path / "exp-a")
     _paired_fixture(tmp_path / "exp-p")  # no forensics scan on this ledger
@@ -300,6 +306,7 @@ def test_trial_detail_surfaces_telemetry_verdict_and_forensics_state(tmp_path):
 
 
 # --- compare: an opened flight recorder must survive the poll re-render ------------
+@pytest.mark.browser
 def test_compare_flight_recorder_stays_open_across_polls(tmp_path):
     """The open/closed state of a flight-recorder panel is VIEW state: it must
     live in the URL like every other view knob (panel/facets/slice), so the
@@ -339,6 +346,7 @@ def test_compare_flight_recorder_stays_open_across_polls(tmp_path):
 
 
 # --- trial process view: one timeline of thought and action ------------------------
+@pytest.mark.browser
 def test_process_view_interleaves_thought_and_action(tmp_path):
     """The process tab renders ONE timeline: turn-linked reasoning precedes its
     step, clock-only reasoning merges by the trial clock, undeclared spans land
@@ -373,6 +381,7 @@ def test_process_view_interleaves_thought_and_action(tmp_path):
         assert out["__errors"] == []
 
 
+@pytest.mark.browser
 def test_process_view_without_reasoning_is_action_only(tmp_path):
     fx = rich_experiment(tmp_path / "exp-a")
     with serve_root(tmp_path) as base:
@@ -393,6 +402,7 @@ def test_process_view_without_reasoning_is_action_only(tmp_path):
 
 
 # --- compare: reasoning entries show measured usage; absence stays absent ----------
+@pytest.mark.browser
 def test_compare_reasoning_entries_show_measured_usage(tmp_path):
     """A reasoning entry's measured tokens/cost render beside its content, so a
     post-reveal human can tell a metered model turn from an unmeasured one (the
@@ -418,6 +428,7 @@ def test_compare_reasoning_entries_show_measured_usage(tmp_path):
 
 
 # --- compare: ungraded stays neutral; the pair index navigates ---------------------
+@pytest.mark.browser
 def test_compare_ungraded_pair_neutral_and_index(tmp_path):
     _paired_fixture(tmp_path / "exp-p")
     with serve_root(tmp_path) as base:

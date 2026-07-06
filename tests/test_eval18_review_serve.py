@@ -26,6 +26,8 @@ from tests.fixtures.browser import drive
 from tests.fixtures.builders import fixed_ctx, seed_trial_and_grade, write_experiment_yaml
 from tests.fixtures.servers import running_server
 
+pytestmark = pytest.mark.browser
+
 runner = CliRunner()
 _ARMS = ("control", "treatment")
 

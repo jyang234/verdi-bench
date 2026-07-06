@@ -26,6 +26,8 @@ from harness.schema.experiment import ExperimentSpec
 from tests.fixtures.browser import drive
 from tests.fixtures.servers import running_server
 
+pytestmark = pytest.mark.browser
+
 _QUICK = {"n_sim": 8, "n_boot": 40, "deltas": [0.2, 0.4]}
 
 SPEC = """arms:
