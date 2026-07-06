@@ -370,24 +370,16 @@ def record_experiment_locked(
     acknowledged_underpowered: Optional[dict] = None,
     rubric_sha256: Optional[str] = None,
 ) -> dict:
-    """Genesis lock event [AC-2, D004, D008].
+    """Genesis lock event [AC-2, D004, D008]. ``attested_by``/``method`` nest
+    under the ``attestation`` block.
 
-    ``task_commitment`` (additive field, EVAL-1-D-6) pins the corpus id/semver
-    and a hash over the per-task content shas, so run/grade can refuse tasks
-    that were swapped after lock [PL-7]. Optional for compatibility with
-    task-less plan flows; required by run/grade when real tasks are present.
-
-    ``rubric_sha256`` (additive field, D-P7-6) commits the judging rubric's
-    content hash — the same normalized-text hash the verdict provenance carries
-    (``sha256(rubric.read_text("utf-8").encode("utf-8"))``) — so a post-lock
-    rubric swap is detectable. Absent on a pre-Phase-7 lock (warn, not refuse).
-
-    ``acknowledged_underpowered`` (additive field, PL-14) carries the
-    ``{mde, hypothesized_effect}`` acknowledgment inline **on the lock event**
-    when an underpowered design is locked with acknowledgment — one attempted
-    operation, one event. It replaces the former separate
-    ``acknowledged_underpowered`` event so the one-event-per-operation property
-    holds for the documented underpowered path.
+    Additive omit-if-None fields: ``task_commitment`` (EVAL-1-D-6) pins the
+    corpus id/semver + a hash over the task content shas so run/grade can refuse
+    post-lock task swaps [PL-7]; ``rubric_sha256`` (D-P7-6) commits the judging
+    rubric's normalized-text hash so a post-lock rubric swap is detectable;
+    ``acknowledged_underpowered`` (PL-14) carries the
+    ``{mde, hypothesized_effect}`` acknowledgment inline on the lock event, so
+    the underpowered path stays one-operation-one-event.
     """
     return build_event(
         EXPERIMENT_LOCKED,
@@ -417,22 +409,16 @@ def record_chain_anchor(
 def record_trial(ledger_path, ctx: EventContext, *, trial_record: dict) -> dict:
     """Embeds a normalized TrialRecord [AC-2].
 
-    ``trajectory_sha`` (additive field, EVAL-12-D001) binds the persisted
-    per-trial trajectory artifact to the chain, following the
-    ``task_commitment``/``rubric_sha256`` insert-only-when-present precedent.
-    Its single source is the ``TrialRecord`` dump itself: the spec hoists the
-    embedded field out of the payload (:func:`_reshape_trial`), so the
-    ``trial_record`` shape on the event is unchanged from pre-EVAL-12 and the sha
-    lives in exactly one place — the top-level event field. Readers must take it
-    from the EVENT (``ev.get("trajectory_sha")``), never from a re-validated
-    ``TrialRecord`` (whose field is transport-only and always ``None`` after a
-    round-trip). Absent field = pre-EVAL-12 trial or an honestly absent
-    trajectory; no reader may require it, and legacy chains are never refused
-    over it.
-
-    ``flight_recorder_sha`` (EVAL-24-D001) binds the per-trial reasoning artifact
-    the same insert-only-when-present way; absent = a trial that captured no
-    reasoning. It is operator-tier / advisory-review data, never a graded input.
+    ``trajectory_sha`` (additive, EVAL-12-D001) and ``flight_recorder_sha``
+    (EVAL-24-D001) bind the persisted per-trial trajectory / reasoning artifacts
+    to the chain. Their single source is the ``TrialRecord`` dump: the spec hoists
+    each out of the payload (:func:`_reshape_trial`) into a top-level omit-if-None
+    field, so the ledgered ``trial_record`` keeps its pre-EVAL-12 shape and each
+    sha lives in exactly one place. Readers take the sha from the EVENT
+    (``ev.get("trajectory_sha")``), never from a round-tripped ``TrialRecord``
+    (transport-only, always ``None`` after re-validation). Absent = an honestly
+    absent artifact; no reader may require it and legacy chains are never refused
+    over it. ``flight_recorder_sha`` is operator/advisory data, never graded.
     """
     return build_event(TRIAL, ledger_path, ctx, trial_record=trial_record)
 
@@ -441,12 +427,11 @@ def record_trial_infra_failed(
     ledger_path, ctx: EventContext, *, trial_id: str, task_id: str, arm: str,
     reason: str, cost: Optional[float] = None
 ) -> dict:
-    """A per-trial infra failure. ``cost`` (additive field [PRA-M8]) carries any
-    spend the attempt already incurred before it failed — a post-engine failure
-    (redaction/trajectory) happens AFTER the container ran and the proxy metered
-    it, so recording that cost keeps it enforceable against the pre-registered
-    ceiling and durable across resume. Absent/None = no spend attributed (the
-    pre-M8 default; the attempt never reached the engine)."""
+    """A per-trial infra failure. Additive omit-if-None ``cost`` [PRA-M8] carries
+    any spend already incurred before the failure — a post-engine failure
+    (redaction/trajectory) happens after the proxy metered the run, so recording
+    it keeps the spend enforceable against the ceiling and durable across resume.
+    Absent = no spend attributed (the attempt never reached the engine)."""
     return build_event(
         TRIAL_INFRA_FAILED, ledger_path, ctx,
         trial_id=trial_id, task_id=task_id, arm=arm, reason=reason, cost=cost,
@@ -485,20 +470,16 @@ def record_grade(
     workspace_sha256: Optional[str] = None,
     workspace_walk_version: Optional[int] = None,
 ) -> dict:
-    """``grader`` (additive field) records which grader produced the verdict —
-    e.g. ``"docker"`` (a trusted network-less container) vs ``"local"`` (the
-    no-daemon path that reads a pre-placed file, ADVISORY). It lets an audit
-    distinguish a trusted grade from an advisory/forgeable one.
+    """Deterministic grade. Additive omit-if-None fields:
 
-    ``override_of`` (additive) is the sha256 line hash of a terminal
-    ``cant_grade`` this grade re-attempts via ``bench grade --retry-terminal``,
-    so a manual override is visible in the event itself [D-P7-2].
-
-    ``workspace_sha256`` + ``workspace_walk_version`` (additive [F-H3]) commit
-    the graded workspace's solution bytes to the chain, so the forensic and
-    contamination scanners can verify the evidence they read instead of
-    trusting live disk — pre-existing chains simply lack them and degrade to
-    a disclosed coverage gap, never a hard failure."""
+    ``grader`` — which grader produced it: ``"docker"`` (trusted, network-less)
+    vs ``"local"`` (ADVISORY, reads a pre-placed file), so an audit can tell a
+    trusted grade from a forgeable one. ``override_of`` — the sha256 line hash of
+    a terminal ``cant_grade`` this grade re-attempts via ``--retry-terminal``, so
+    the override is visible [D-P7-2]. ``workspace_sha256`` +
+    ``workspace_walk_version`` [F-H3] commit the graded solution bytes so the
+    forensic/contamination scanners verify evidence instead of trusting live
+    disk; pre-existing chains lack them and degrade to a disclosed coverage gap."""
     return build_event(
         GRADE, ledger_path, ctx,
         trial_id=trial_id, task_sha=task_sha, assertions=assertions,
@@ -568,13 +549,11 @@ def append_human_verdict(
     """Human verdict — the only event that closes a comparison [D004, AC-7].
 
     Shares the Verdict schema family with judge verdicts so kappa is directly
-    computable. When captured through the EVAL-7 review flow it additionally
-    carries the **blinding-integrity** answers ``{arm_recognized, arm_guess}``
-    plus the harness-known ``actual_arm`` (for guess-accuracy scoring); these
-    are captured strictly before any reveal [EVAL-7 §4.3, AC-4]. The bare form
-    (no integrity) remains valid so the low-level constructor stays reusable.
-    The ``integrity`` block is present iff ``arm_recognized`` is supplied; inside
-    it, ``arm_guess`` / ``actual_arm`` are always present but nullable.
+    computable. When captured through the EVAL-7 review flow it also carries the
+    **blinding-integrity** block ``{arm_recognized, arm_guess, actual_arm}``,
+    recorded strictly before any reveal [EVAL-7 §4.3, AC-4]. The block is present
+    iff ``arm_recognized`` is supplied (inside it ``arm_guess``/``actual_arm`` are
+    always present but nullable); the bare form stays valid for reuse.
     """
     integrity = None
     if arm_recognized is not None:
@@ -607,18 +586,14 @@ def record_selfcheck(
 ) -> dict:
     """Harness self-validation result [EVAL-1-D008; master plan §7.7].
 
-    Records the coverage self-check: the selected CI method's estimated coverage
-    under the recentered null at the realized N, its Monte-Carlo (Wilson 95%)
-    interval, and whether the nominal level lies within it (``passed``). A **new
-    additive event kind** — old ledgers simply lack it, so no existing hash chain
-    is invalidated. The official fence requires a ``passed=true`` selfcheck.
-    ``coverage`` / ``mc_interval`` are always present but nullable (byte-distinct
-    from omit-if-none).
-
-    ``validation_coverage`` / ``validation_n_sim`` (additive [F-M-S1]): the
-    selected method's coverage re-estimated on an independent sub-seeded
-    stream — the estimate the pass/fail gate actually uses; ``coverage``
-    remains the selection-stream figure. Pre-existing chains lack them."""
+    The selected CI method's estimated coverage under the recentered null at the
+    realized N, its Monte-Carlo (Wilson 95%) ``mc_interval``, and whether the
+    nominal level lies within it (``passed``); the official fence requires
+    ``passed=true``. ``coverage`` / ``mc_interval`` are always present but
+    nullable (byte-distinct from omit-if-none). Additive omit-if-None
+    ``validation_coverage`` / ``validation_n_sim`` [F-M-S1] carry the coverage
+    re-estimated on an independent sub-seeded stream — the figure the gate
+    actually uses; ``coverage`` stays the selection-stream figure."""
     return build_event(
         SELFCHECK, ledger_path, ctx,
         selected_method=selected_method, nominal=nominal, coverage=coverage,
@@ -633,11 +608,9 @@ def record_cant_analyze(
 ) -> dict:
     """Fail-closed refusal of an analyze render [EVAL-6 §7.2, AN-3].
 
-    A refused official/exploratory render (calibration incomplete, provenance
-    invalid, disclosure missing, unregistered metric) lands exactly one event
-    instead of escaping the CLI with none. **Additive event type** — old ledgers
-    simply lack it, so no existing hash chain is invalidated (EVAL-6 decisions
-    ledger + migration note)."""
+    A refused render (calibration incomplete, provenance invalid, disclosure
+    missing, unregistered metric) lands exactly one event instead of escaping the
+    CLI with none. Additive kind — old ledgers simply lack it."""
     return build_event(CANT_ANALYZE, ledger_path, ctx, mode=mode, reason=reason, detail=detail)
 
 
@@ -654,11 +627,9 @@ def record_findings_rendered(
     """Provenance of a findings render [EVAL-6 §M6].
 
     ``analyze`` is a pure function of ``(ledger, seed)``; the CLI writes only the
-    findings output and this single event recording what was rendered (the
-    ``ledger_head_hash`` argument lands as the ``rendered_head_hash`` field).
-    ``multi_arm_correction`` is an additive field [F-H7]: the applied >2-arm
-    decision policy, so the chain shows which decision procedure produced each
-    render — inserted only when present, so pre-existing chains keep their shape.
+    findings output and this single event (the ``ledger_head_hash`` argument
+    lands as the ``rendered_head_hash`` field). Additive omit-if-None
+    ``multi_arm_correction`` [F-H7] records the applied >2-arm decision policy.
     """
     return build_event(
         FINDINGS_RENDERED, ledger_path, ctx,
@@ -691,13 +662,12 @@ def record_review_batch(
     comparison_ids: list,
     seed: int,
 ) -> dict:
-    """The reviewed QUEUE as a unit [F-M-O2] — the selected comparison ids one
+    """The reviewed QUEUE as a unit [F-M-O2] — the comparison ids one
     ``bench review build`` invocation put in front of the reviewer. The reveal
-    gate refuses any reveal in a batch until EVERY batched comparison has a
-    human verdict, closing the per-item loophole where revealing item 1 (arm
-    identities + judge verdict) unblinds the reviewer for items 2..n. A **new
-    additive event kind** — comparisons on legacy chains belong to no batch
-    and keep per-item semantics, disclosed by absence."""
+    gate refuses any reveal in a batch until EVERY batched comparison has a human
+    verdict, closing the loophole where revealing item 1 unblinds items 2..n.
+    Additive kind — legacy comparisons belong to no batch (per-item semantics,
+    disclosed by absence)."""
     return build_event(
         REVIEW_BATCH, ledger_path, ctx,
         batch_id=batch_id, comparison_ids=list(comparison_ids), seed=seed,
@@ -716,12 +686,10 @@ def record_review_packet_built(
 ) -> dict:
     """The Response-1/2 ↔ arm map for one blinded review comparison [D-P4-1].
 
-    Emitted by ``bench review build`` when it renders a comparison into the
-    packet. ``response_map`` is ``{"1": arm, "2": arm}`` — the authoritative,
-    hash-chained record of which arm the human saw as Response 1 vs 2. Reveal,
-    ``review record`` (actual_arm / guess accuracy), and EVAL-9 process scoring
-    all key off it, so the shape is a versioned contract — additive event type,
-    old ledgers simply lack it.
+    ``response_map`` is ``{"1": arm, "2": arm}`` — the authoritative, hash-chained
+    record of which arm the human saw as Response 1 vs 2. Reveal, ``review
+    record`` (guess accuracy), and EVAL-9 process scoring all key off it, so the
+    shape is a versioned contract. Additive kind — old ledgers lack it.
     """
     return build_event(
         REVIEW_PACKET_BUILT, ledger_path, ctx,
@@ -737,11 +705,10 @@ def record_reveal(
     verdict_event_id: str,
     revealed: dict,
 ) -> dict:
-    """Unblinding checkpoint [EVAL-7 §4.3, AC-4].
-
-    Appendable only after the referenced human verdict exists; discloses the
-    judge verdict id and arm identities. This is also the unlock EVAL-9's human
-    process scoring keys off [EVAL-9 AC-3] — keep the shape stable.
+    """Unblinding checkpoint [EVAL-7 §4.3, AC-4]. Appendable only after the
+    referenced human verdict exists; discloses the judge verdict id and arm
+    identities. Also the unlock EVAL-9 human process scoring keys off [EVAL-9
+    AC-3] — keep the shape stable.
     """
     return build_event(
         REVEAL, ledger_path, ctx, verdict_event_id=verdict_event_id, revealed=revealed
@@ -759,12 +726,10 @@ def record_task_admitted(
     task_sha: str,
     baseline_ref: str,
 ) -> dict:
-    """Ledger a corpus admission decision [EVAL-8 §7.2, CO-4].
-
-    Admission (curation approval AND a clean baseline, both chain-verified) flips
-    a candidate to ``admitted``; this event puts that decision on the chain rather
-    than only in mutable manifest JSON. **Additive event type** — old ledgers lack
-    it, so no existing chain is invalidated."""
+    """Ledger a corpus admission decision [EVAL-8 §7.2, CO-4]. Admission (curation
+    approval AND a clean baseline, both chain-verified) flips a candidate to
+    ``admitted``; this event puts that decision on the chain rather than only in
+    mutable manifest JSON. Additive kind — old ledgers lack it."""
     return build_event(
         TASK_ADMITTED, ledger_path, ctx,
         candidate_id=candidate_id, task_sha=task_sha, baseline_ref=baseline_ref,
@@ -781,11 +746,9 @@ def record_calibration_run(
     run: dict,
     status: str,
 ) -> dict:
-    """Ledger a corpus calibration run [EVAL-8 §7.2, AC-2, CO-4].
-
-    Calibration status must be chain-anchored, not hand-editable manifest JSON —
-    a hand-edited ``full-run-validated`` status otherwise passes the official
-    fence. **Additive event type**."""
+    """Ledger a corpus calibration run [EVAL-8 §7.2, AC-2, CO-4]. Calibration
+    status must be chain-anchored, not hand-editable manifest JSON — a hand-edited
+    ``full-run-validated`` status otherwise passes the official fence. Additive."""
     return build_event(
         CALIBRATION_RUN, ledger_path, ctx,
         corpus_id=corpus_id, semver=semver, kind=kind, run=run, status=status,
@@ -827,10 +790,9 @@ def record_curation_approval(
 ) -> dict:
     """Human curation approval of a mined candidate [EVAL-8 §4.2, AC-4, D-P4-3].
 
-    Admission is this event AND a clean flake baseline — both mechanical
-    preconditions; no code path admits a task without this event. ``signature`` /
-    ``signer_public_key`` are the approver's Ed25519 attestation over
-    ``{candidate_id, task_sha, approver}`` (additive fields): admission verifies
+    Admission is this event AND a clean flake baseline; no code path admits a task
+    without it. ``signature`` / ``signer_public_key`` are the approver's Ed25519
+    attestation over ``{candidate_id, task_sha, approver}`` — admission verifies
     the signature, that the key is an authorized curator, and that the approver is
     not the miner. Old ledgers simply lack the fields.
     """
@@ -853,15 +815,12 @@ def record_process_score(
 ) -> dict:
     """Openly-unblinded process score [EVAL-9 §4.2, AC-2].
 
-    Subsumes CANT_SCORE via per-dimension ``CANT_SCORE`` values. The score is
-    unrepresentable without unblinded provenance (schema-required).
-
-    ``rubric_sha256`` (additive omit-if-None field, [refactor 06 §7 P4-RUBRIC])
-    commits the content hash of the rubric FILE that scored — the same
-    normalized-text hash the lock's rubric commitment carries — so a score's
-    rubric provenance is recoverable and analyze can honestly attribute custom
-    dimensions later. Absent on a pre-P4 score (old bytes unchanged), following
-    the ledger's additive-optional precedent (experiment_locked's rubric_sha256)."""
+    Subsumes CANT_SCORE via per-dimension ``CANT_SCORE`` values; unrepresentable
+    without unblinded provenance (schema-required). Additive omit-if-None
+    ``rubric_sha256`` [refactor 06 §7 P4-RUBRIC] commits the content hash of the
+    rubric FILE that scored (the lock's normalized-text hash), so a score's rubric
+    provenance is recoverable and analyze can attribute custom dimensions later.
+    Absent on a pre-P4 score (old bytes unchanged)."""
     return build_event(
         PROCESS_SCORE, ledger_path, ctx, process_score=process_score, rubric_sha256=rubric_sha256
     )
@@ -875,12 +834,11 @@ def record_forensics_report(
 ) -> dict:
     """One forensics scan: metrics, flags, coverage, advisory reviews [EVAL-11].
 
-    Additive event kind — old ledgers simply lack it. The payload stamps its
-    ``vocabulary_version`` [AC-1]; per-trial CANT_REVIEW rides inside the
-    ``reviews`` block, so a scan is one event whether the advisory pass
-    succeeded, failed closed, or was skipped. The spec's ``validate`` refuses a
-    report missing ``vocabulary_version``, a non-list ``flags``, or a
-    ``coverage`` block without ``trials``/``covered``/``gaps``."""
+    Additive kind. The payload stamps its ``vocabulary_version`` [AC-1]; per-trial
+    CANT_REVIEW rides inside the ``reviews`` block, so a scan is one event whether
+    the advisory pass succeeded, failed closed, or was skipped. The spec's
+    ``validate`` refuses a report missing ``vocabulary_version``, a non-list
+    ``flags``, or a ``coverage`` block without ``trials``/``covered``/``gaps``."""
     return build_event(FORENSICS_REPORT, ledger_path, ctx, forensics_report=forensics_report)
 
 
@@ -919,9 +877,8 @@ def record_contamination_probe(
 ) -> dict:
     """One contamination-probe run: per-(arm, task) tri-state outcomes, or a
     fail-closed CANT_PROBE with a reason — never a silent partial probe
-    [EVAL-10 §4.4, AC-3]. Canary values are unrepresentable here: the payload
-    carries ``sha256(canary)`` only [AC-2]. Additive event type — old ledgers
-    simply lack it, no chain invalidated."""
+    [EVAL-10 §4.4, AC-3]. Canary values are unrepresentable: the payload carries
+    ``sha256(canary)`` only [AC-2]. Additive kind — old ledgers lack it."""
     return build_event(CONTAMINATION_PROBE, ledger_path, ctx, probe=probe)
 
 
@@ -946,12 +903,12 @@ def record_control_reused(
 ) -> dict:
     """Summary of one control-bundle import [control-reuse plan].
 
-    Records, in the importing ledger's own chain, exactly what was pulled and
-    from where: the source experiment id + its ledger head hash, the imported
-    bundle's self sha, the matched control fingerprint, the control arm name, and
-    the ``[{task_id, repetition}]`` cells materialized. This is the auditable
-    attestation that a set of ``reused_trial`` / ``reused_grade`` events came from
-    a provably-unchanged source, not fabricated. Exactly one per import."""
+    Records in the importing chain exactly what was pulled and from where: the
+    source experiment id + its ledger head hash, the bundle's self sha, the
+    matched control fingerprint, the control arm, and the
+    ``[{task_id, repetition}]`` cells materialized — the auditable attestation
+    that the accompanying ``reused_trial`` / ``reused_grade`` events came from a
+    provably-unchanged source, not fabricated. Exactly one per import."""
     return build_event(
         CONTROL_REUSED, ledger_path, ctx,
         source_experiment_id=source_experiment_id,
@@ -971,12 +928,9 @@ def record_reused_trial(
 ) -> dict:
     """A control trial imported from a bundle, verbatim, tagged ``reused_from``
     ``{source_experiment_id, bundle_sha256}``. A DISTINCT kind from ``trial`` so
-    the official paired path (which reads ``trial``) never sees it; only the
-    exploratory reuse path does. Exactly one per imported cell.
-
-    ``diff_sha256`` (additive, insert-when-present) binds the judged-diff snapshot
-    stashed on disk at import to the chain — the trajectory_sha precedent: the
-    large diff lives beside the ledger, its hash inside it."""
+    the official paired path never sees it; only exploratory reuse does. Additive
+    omit-if-None ``diff_sha256`` binds the judged-diff snapshot stashed on disk at
+    import (the trajectory_sha precedent). Exactly one per imported cell."""
     return build_event(
         REUSED_TRIAL, ledger_path, ctx,
         trial_record=trial_record, reused_from=reused_from, diff_sha256=diff_sha256,
