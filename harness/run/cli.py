@@ -1,12 +1,8 @@
-"""``bench run`` [EVAL-4 §M6].
+"""``bench run`` [EVAL-4 §M6] — thin shell over :mod:`harness.run.api`.
 
-Asserts the experiment lock first, resolves tasks, derives the interleave from
-the locked seed, and executes the schedule producing chained trial events and
-redacted artifacts. Defaults to the fake engine (fast, hermetic-by-fiat); the
-Harbor engine is selected with ``--engine harbor`` and requires local Docker.
-
-Task resolution: EVAL-8 owns corpus import; until it lands, ``bench run`` reads a
-``tasks.yaml`` in the experiment dir as the task source (a documented stand-in).
+Parses the flags, maps the enumerated refusals to exit codes, and echoes the
+counts; the execution logic (lock assertion, task resolution, interleave,
+schedule) lives in the stage API [refactor 02 §3].
 """
 
 from __future__ import annotations
@@ -15,21 +11,18 @@ from pathlib import Path
 
 import typer
 
-from ..ledger.actor import ActorResolutionError, resolve_actor
-from ..plan.interleave import derive_schedule, enumerate_trials
-from .types import RunConfig, Task
-
-
-def _task_from_dict(t: dict, task_sha: str) -> Task:
-    return Task(
-        id=t["id"],
-        prompt=t.get("prompt", ""),
-        image=t.get("image", Task.__dataclass_fields__["image"].default),
-        timeout_s=t.get("timeout_s"),
-        holdout_canaries=t.get("holdout_canaries", []),
-        fake_behavior=t.get("fake_behavior", {}),
-        task_sha=task_sha,
-    )
+from ..cli_common import refusal_exit
+from ..corpus.commit import TaskCommitmentError
+from ..ledger.actor import ActorResolutionError
+from ..plan.lock import LockError
+from .api import (
+    CorpusManifestMismatchError,
+    NoTasksError,
+    export_control_bundle,
+    run_experiment,
+)
+from .control_reuse import ControlReuseError
+from .reuse import ControlBundleError
 
 
 def register(app: typer.Typer) -> None:
@@ -51,152 +44,34 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Execute the locked experiment's interleaved trials."""
-        from ..corpus.commit import (
-            TaskCommitmentError,
-            assert_task_commitment,
-            load_task_dicts,
-            task_content_sha,
-        )
-        from ..corpus.registry import CorpusManifest
-        from ..grade.baseline import load_quarantine
-        from ..ledger.events import EventContext
-        from ..plan.lock import assert_lock
-        from .heartbeat import HEARTBEAT_FILENAME
-        from .interleave import QuarantinedTaskError, schedule
-
-        experiment_dir = Path(experiment_dir)
-        spec_path = experiment_dir / "experiment.yaml"
-        ledger_path = experiment_dir / "ledger.ndjson"
-        _lock = assert_lock(spec_path, ledger_path)
-        lock_event, spec = _lock.event, _lock.spec  # PRA-M1: no second spec read
-
-        task_dicts = load_task_dicts(experiment_dir)
-        if not task_dicts:
-            raise typer.BadParameter(f"no tasks.yaml in {experiment_dir}")
-        # PL-7/D-6: refuse tasks that were swapped after the lock.
         try:
-            assert_task_commitment(
-                lock_event, task_dicts,
-                corpus_id=spec.corpus.id, semver=spec.corpus.version,
-            )
-        except TaskCommitmentError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
-        tasks = [_task_from_dict(t, task_content_sha(t)) for t in task_dicts]
-        task_map = {t.id: t for t in tasks}
-        arm_map = {a.name: a for a in spec.arms}
-        # RN-5: honor the flake quarantine — a quarantined task version (its clean
-        # baseline never established) must not be scheduled [EVAL-5, D-2].
-        quarantine = load_quarantine(ledger_path)
-
-        # CO-2 / D-P4-2: when a corpus manifest is supplied, gate scheduling on
-        # is_schedulable so pending/quarantined tasks don't run. tasks.yaml +
-        # task_commitment stay the integrity fence; the manifest is the
-        # schedulability source. Fail closed on drift: every scheduled task must
-        # exist in the manifest, else the two sources disagree.
-        schedulable = None
-        if corpus_manifest is not None:
-            manifest = CorpusManifest.load(corpus_manifest)
-            missing = [t.id for t in tasks if manifest.task(t.id) is None]
-            if missing:
-                typer.echo(
-                    f"tasks {sorted(missing)} are not in corpus manifest "
-                    f"{manifest.corpus_id!r}; tasks.yaml and the manifest disagree "
-                    "[fail-closed, D-P4-2]", err=True,
+            with refusal_exit(
+                TaskCommitmentError, CorpusManifestMismatchError,
+                ControlReuseError, ControlBundleError, ActorResolutionError,
+            ):
+                outcome = run_experiment(
+                    experiment_dir, engine=engine, corpus_manifest=corpus_manifest,
+                    actor=actor, reuse_control=reuse_control,
                 )
-                raise typer.Exit(code=2)
-            schedulable = {t.id for t in tasks if manifest.is_schedulable(t.id)}
+        except NoTasksError as e:
+            raise typer.BadParameter(str(e))
 
-        trials = enumerate_trials(
-            [t.id for t in tasks], [a.name for a in spec.arms], spec.repetitions
-        )
-        order = derive_schedule(spec.seed, trials)
-
-        from .engines import get_engine
-        from .settings import load_run_settings
-
-        eng = get_engine(engine)
-        # Operational config (proxy, quotas, provider keys) from run.config.yaml +
-        # env — NOT from the sha-locked spec or the ledger [RN-13, D-9, AC-8].
-        # Exception [EVAL-20 AC-6]: a spec that pre-registers egress hosts
-        # derives the proxy allowlist from those locked bytes.
-        settings = load_run_settings(experiment_dir, spec=spec)
-        config = RunConfig(
-            engine=eng,
-            proxy=settings.proxy,
-            quotas=settings.quotas,
-            provider_keys=settings.provider_keys,
-            provider_key_names_by_arm=settings.provider_key_names_by_arm,  # PRA-M2
-        )
-        try:
-            resolved_actor = resolve_actor(actor)
-        except ActorResolutionError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
-        ctx = EventContext(experiment_id=experiment_dir.name, actor=resolved_actor)
-
-        # Operational reuse surface: --reuse-control, or a reuse_control.bundle key
-        # in run.config.yaml (operational config, never the sha-locked spec). The
-        # bundle path was already parsed+resolved by load_run_settings above — no
-        # second raw read of the same file [refactor 04 §4].
-        if reuse_control is None:
-            reuse_control = settings.reuse_control_bundle
-
-        # Control reuse [control-reuse plan]: import the bundle's control-arm data
-        # under the reused_* kinds (preflight refuses on any fingerprint drift),
-        # then drop that arm's cells from the schedule — they are supplied by the
-        # bundle, not run. The official paired analysis then has no fresh control
-        # to pair against (honest: reuse is exploratory, validation is a full run).
-        if reuse_control is not None:
-            from .control_reuse import ControlReuseError
-            from .reuse import ControlBundleError, import_bundle, load_bundle
-
-            try:
-                bundle = load_bundle(reuse_control)
-                reused_arm = import_bundle(
-                    experiment_dir, bundle, ctx, engine=engine, spec=spec, settings=settings,
-                )
-            except (ControlReuseError, ControlBundleError) as e:
-                typer.echo(str(e), err=True)
-                raise typer.Exit(code=2)
-            typer.echo(f"reusing control arm {reused_arm!r} from bundle ({len(bundle['cells'])} cells)")
-
-        # Drop EVERY arm already imported as a reused control from the schedule —
-        # read from the LEDGER, not just this invocation's flag. A resume that
-        # omits --reuse-control must not run the control arm fresh: that would
-        # give the official paired analysis a control to pair against, from a
-        # non-interleaved cross-session schedule [control-reuse].
-        from .reuse import reused_arms
-
-        _reused = reused_arms(ledger_path)
-        if _reused:
-            order = [t for t in order if t.arm not in _reused]
-
-        try:
-            result = schedule(
-                order,
-                tasks=task_map,
-                arms=arm_map,
-                workspace_root=experiment_dir / "workspaces",
-                ledger_path=ledger_path,
-                ctx=ctx,
-                config=config,
-                cost_ceiling=spec.cost_ceiling.amount,
-                quarantined_tasks=quarantine,
-                schedulable_tasks=schedulable,
-                # Liveness sidecar for live observers [EVAL-13 AC-1]: operational
-                # telemetry beside the ledger, never in it.
-                heartbeat_path=experiment_dir / HEARTBEAT_FILENAME,
+        if outcome.reused_arm is not None:
+            typer.echo(
+                f"reusing control arm {outcome.reused_arm!r} from bundle "
+                f"({outcome.reused_cells} cells)"
             )
-        except QuarantinedTaskError as e:
-            typer.echo(str(e), err=True)
+        # PRA-M9-adjacent: a scheduled quarantined task refuses (exit 2), echoed
+        # after any reuse notice — exactly as the inline body ordered them.
+        if outcome.quarantine_error is not None:
+            typer.echo(outcome.quarantine_error, err=True)
             raise typer.Exit(code=2)
         typer.echo(
-            f"ran {len(result.records)} trials "
-            f"(infra_failures={result.infra_failures}, "
-            f"stopped_cost_ceiling={result.stopped_cost_ceiling})"
+            f"ran {outcome.n_trials} trials "
+            f"(infra_failures={outcome.infra_failures}, "
+            f"stopped_cost_ceiling={outcome.stopped_cost_ceiling})"
         )
-        if result.aborted_proxy_unavailable:
+        if outcome.aborted_proxy_unavailable:
             # PRA-M9: a dead/misconfigured metering proxy aborted the run; exit
             # nonzero so the operator does not mistake a truncated run for a
             # complete one.
@@ -225,16 +100,9 @@ def register(app: typer.Typer) -> None:
         Snapshots each control trial's judged diff while the workspaces are still
         readable, so the bundle survives the source environment being reclaimed.
         """
-        from ..plan.lock import LockError
-        from .reuse import ControlBundleError, build_bundle, write_bundle
-
-        try:
-            bundle = build_bundle(experiment_dir, arm)
-        except (ControlBundleError, LockError) as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(code=2)
-        write_bundle(bundle, out)
+        with refusal_exit(ControlBundleError, LockError):
+            outcome = export_control_bundle(experiment_dir, arm=arm, out=out)
         typer.echo(
-            f"exported control bundle: arm {arm!r}, {len(bundle['cells'])} cell(s) "
-            f"-> {out} (sha {bundle['bundle_sha256'][:12]}…)"
+            f"exported control bundle: arm {arm!r}, {outcome.n_cells} cell(s) "
+            f"-> {out} (sha {outcome.bundle_sha256[:12]}…)"
         )

@@ -35,6 +35,7 @@ source_modules =
     harness.run.interleave
     harness.run.budget
     harness.run.cli
+    harness.run.api
     harness.run.egress
     harness.run.redact
     harness.run.types
