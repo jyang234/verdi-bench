@@ -456,4 +456,8 @@ def run_trial(
         artifacts_path=str(result.artifacts_dir),
         trajectory_sha=trajectory_sha,
         flight_recorder_sha=flight_recorder_sha,
+        # refactor 09 §5: the OTLP span-capture sha the engine's _read_span_log
+        # produced (None when no collector was configured). record_trial hoists it
+        # onto the trial event beside trajectory_sha/flight_recorder_sha (A13).
+        spans_sha=result.spans_sha,
     )

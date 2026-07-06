@@ -9,17 +9,19 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from harness.adapters.base import ADVISORY, Outcome, Quotas, TrialRecord
+from harness.hermetic.otlp_decode import resolve_spans
 from harness.run.engines import ENGINES
 from harness.run.engines.base import ENGINE_FAILURE_REASONS
 from harness.run.engines.fake import FakeEngine
 from harness.run.engines.harbor import HarborEngine
 from harness.run.seam import run_trial
-from harness.run.types import ProxyConfig, RunConfig, Task, TrialRequest
+from harness.run.types import OtlpConfig, ProxyConfig, RunConfig, Task, TrialRequest
 from harness.schema.experiment import Arm
 from tests.fixtures.run_fakes import FakeDockerRunner
 
@@ -120,6 +122,82 @@ def test_ac1_failure_reason_in_closed_vocabulary(tmp_path):
     assert frec.outcome == Outcome.infra_failed
     assert frec.flags.failure_reason == "proxy_log_missing"
     assert frec.flags.failure_reason in ENGINE_FAILURE_REASONS
+
+
+# --- the OTLP span-capture ladder step, run through BOTH engines [refactor 09 §4] ---
+# _read_span_log is inherited from EngineBase, so both engines drive one code path.
+# The collector log is a host-side file (written by the real collector, or the fake's
+# scripted parity); here the test pre-writes it, so the same log feeds both engines.
+def _env_line(trial: str, seq: int, body: dict) -> str:
+    return json.dumps(
+        {"trial": trial, "seq": seq, "content_type": "application/json", "body_json": body}
+    )
+
+
+def _run_with_span_log(engine_name: str, root: Path, *, lines=None, write_log: bool = True):
+    root.mkdir(parents=True, exist_ok=True)
+    log = root / "otlp.jsonl"
+    if write_log:
+        log.write_text("".join(ln + "\n" for ln in (lines or [])), encoding="utf-8")
+    otlp = OtlpConfig(endpoint="http://verdi-trace-collector:4318", log_path=str(log))
+    config = replace(_configs()[engine_name], otlp=otlp)
+    # the fake scripts no otlp_spans, so it does not also write — both engines read
+    # exactly the pre-written host-side log through the shared _read_span_log.
+    return run_trial(_task_for(engine_name), _arm(), root / "ws", config, trial_id="fixed-trial")
+
+
+@pytest.mark.parametrize("engine_name", list(ENGINES))
+def test_ac1_span_ladder_captures_and_verifies(engine_name, tmp_path):
+    body = {"resourceSpans": [{"scopeSpans": [{"spans": [{"name": "op"}]}]}]}
+    rec = _run_with_span_log(engine_name, tmp_path, lines=[_env_line("fixed-trial", 0, body)])
+    assert rec.outcome == Outcome.completed
+    assert rec.spans_sha is not None
+    status, decoded = resolve_spans(rec.artifacts_path, rec.spans_sha)
+    assert status == "verified"  # ledgered sha matches the on-disk artifact
+    assert decoded.batches[0].resource_spans == body["resourceSpans"]
+
+
+@pytest.mark.parametrize("engine_name", list(ENGINES))
+def test_ac1_span_ladder_fail_closed_on_missing_log(engine_name, tmp_path):
+    """A12 fail-closed, both engines: a configured collector whose log never
+    appeared fails the trial infra_failed(span_log_missing), never 'zero spans'."""
+    rec = _run_with_span_log(engine_name, tmp_path, write_log=False)
+    assert rec.outcome == Outcome.infra_failed
+    assert rec.flags.failure_reason == "span_log_missing"
+    assert rec.flags.failure_reason in ENGINE_FAILURE_REASONS
+
+
+@pytest.mark.parametrize("engine_name", list(ENGINES))
+def test_ac1_span_ladder_zero_spans_is_empty_batches(engine_name, tmp_path):
+    """Honest emptiness, both engines: a present-but-empty log yields an
+    empty-batches artifact WITH a sha — distinct from absence (no collector)."""
+    rec = _run_with_span_log(engine_name, tmp_path, lines=[])
+    assert rec.outcome == Outcome.completed
+    assert rec.spans_sha is not None
+    status, decoded = resolve_spans(rec.artifacts_path, rec.spans_sha)
+    assert status == "verified"
+    assert decoded.batches == []
+
+
+def test_ac1_both_engines_produce_identical_spans_sha(tmp_path):
+    """One decode path: the same envelope log yields byte-identical span artifacts
+    (and thus shas) regardless of which engine ran the trial."""
+    body = {"resourceSpans": [{"k": "v"}]}
+    line = _env_line("fixed-trial", 0, body)
+    fake = _run_with_span_log("fake", tmp_path / "f", lines=[line])
+    harbor = _run_with_span_log("harbor", tmp_path / "h", lines=[line])
+    assert fake.spans_sha == harbor.spans_sha is not None
+
+
+def test_ac1_no_otlp_configured_no_span_sha(tmp_path):
+    """Absence: with no collector configured, no artifact and no sha — the
+    honest 'not configured' state, distinct from empty-batches [refactor 09 §4]."""
+    for engine_name in ENGINES:
+        rec = run_trial(
+            _task_for(engine_name), _arm(), tmp_path / engine_name, _configs()[engine_name]
+        )
+        assert rec.spans_sha is None
+        assert resolve_spans(rec.artifacts_path, rec.spans_sha) == ("absent", None)
 
 
 # Only the engine module and the engine factory may name Harbor.

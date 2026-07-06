@@ -10,13 +10,15 @@ of the contract is ``docs/engines.md``.
 
 :class:`EngineBase.run` is the FINAL template: ``_resolve_image`` (digest pin or
 refuse) → ``_execute`` (the only subclass-owned step) → the shared fail-closed
-readers ``_read_native_log`` (RN-17) and ``_scan_proxy_log`` (PRA-H4) → ``_assemble``
-(the outcome-downgrade precedence ``kill_failed > daemon_error > timeout >
-telemetry_corrupt > proxy_log_missing``). The first three of that precedence are
+readers ``_read_native_log`` (RN-17), ``_scan_proxy_log`` (PRA-H4), and
+``_read_span_log`` (refactor 09 §4) → ``_assemble`` (the outcome-downgrade
+precedence ``kill_failed > daemon_error > timeout > telemetry_corrupt >
+proxy_log_missing > span_log_missing``). The first three of that precedence are
 determined by the engine inside ``_execute`` (a containerizing engine from the
-container result, a scripted engine from its script); the last two are the shared
+container result, a scripted engine from its script); the last three are the shared
 downgrades applied here, each only against a would-be-``completed`` trial so a more
-specific reason is never masked.
+specific reason is never masked — egress evidence (proxy_log_missing) outranks
+telemetry evidence (span_log_missing).
 
 This module names no engine: the engine modules import :class:`EngineBase`, never the
 reverse [EVAL-4 AC-1, the engine-confinement contract + the AST seam sweep].
@@ -25,6 +27,7 @@ reverse [EVAL-4 AC-1, the engine-confinement contract + the AST seam sweep].
 from __future__ import annotations
 
 import json
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,14 +37,25 @@ from ...adapters.base import Outcome, Quotas
 from ..environment import stage_files
 from ..types import EngineResult, TrialRequest
 
-# The closed engine ``failure_reason`` vocabulary [refactor 04 §2/§6]. Every reason a
-# REAL engine (a containerizing engine + the shared downgrades) may stamp onto an
-# infra failure is a member — the scheduler ledgers these verbatim and
+# The closed engine ``failure_reason`` vocabulary [refactor 04 §2/§6, A12]. Every
+# reason a REAL engine (a containerizing engine + the shared downgrades) may stamp
+# onto an infra failure is a member — the scheduler ledgers these verbatim and
 # ``proxy_log_missing`` additionally aborts the run in ``interleave.py``. A scripted
 # engine may script an ARBITRARY ``infra_reason`` placeholder (a fixture affordance,
 # not part of the contract).
+#
+# ``span_log_missing`` (A12): a configured OTLP collector whose envelope log vanished
+# is infrastructure breakage, never "zero spans" — the shared ``_read_span_log``
+# fails the trial closed with it, after ``proxy_log_missing`` in the precedence.
+# ``spans_corrupt`` (A12) is RESERVED for spec 10's span→trajectory normalizer, which
+# wires its raise path when an OTLP span structure cannot be normalized; it is added
+# to the closed vocabulary now (so both A12 values land together) but is NOT raised by
+# this spec — do not treat its absence of a raise site as a gap.
 ENGINE_FAILURE_REASONS: frozenset[str] = frozenset(
-    {"unpinned_image", "kill_failed", "daemon_error", "telemetry_corrupt", "proxy_log_missing"}
+    {
+        "unpinned_image", "kill_failed", "daemon_error", "telemetry_corrupt",
+        "proxy_log_missing", "span_log_missing", "spans_corrupt",
+    }
 )
 
 
@@ -58,6 +72,16 @@ class ProxyLogMissingError(RuntimeError):
     The proxy is dead or misconfigured; treating this as "no egress, no cost, no
     violation" is a silent fail-open of the cost guard and the egress fence, so the
     scan raises and the trial fails ``infra_failed(proxy_log_missing)``."""
+
+
+class SpanLogMissingError(RuntimeError):
+    """A configured OTLP collector's envelope log is absent [refactor 09 §4, A12].
+
+    The collector is dead or misconfigured; treating this as "zero spans" would
+    launder infrastructure breakage into honest emptiness and lose the datapoint
+    silently, so ``_read_span_log`` raises and the trial fails
+    ``infra_failed(span_log_missing)`` — the ``proxy_log_missing`` discipline for
+    telemetry evidence. A configured collector means telemetry is REQUIRED (A12)."""
 
 
 @dataclass
@@ -152,6 +176,15 @@ class EngineBase(ABC):
             proxy_log_missing = False
         except ProxyLogMissingError:
             attempts, violation, metered_cost, proxy_log_missing = [], False, None, True
+        # In-trial OTLP span capture [refactor 09 §4]: extract + persist this trial's
+        # slice of the shared collector log. A configured-but-absent log fails closed
+        # (span_log_missing), the same precedence SIGNAL the assembler downgrades on —
+        # slotted AFTER proxy_log_missing (egress evidence outranks telemetry).
+        try:
+            spans_sha = self._read_span_log(req)
+            span_log_missing = False
+        except SpanLogMissingError:
+            spans_sha, span_log_missing = None, True
         return self._assemble(
             req,
             resolved,
@@ -160,6 +193,8 @@ class EngineBase(ABC):
             telemetry_corrupt=telemetry_corrupt,
             scanned=EgressObservation(attempts, violation, metered_cost),
             proxy_log_missing=proxy_log_missing,
+            spans_sha=spans_sha,
+            span_log_missing=span_log_missing,
         )
 
     # --- subclass seams ----------------------------------------------------
@@ -258,6 +293,49 @@ class EngineBase(ABC):
                 metered = (metered or 0.0) + float(cost)
         return attempts, violation, metered
 
+    @staticmethod
+    def _read_span_log(request: TrialRequest) -> Optional[str]:
+        """Extract + persist this trial's OTLP span slice; return its sha [refactor 09 §4].
+
+        The shared sibling of :meth:`_scan_proxy_log`, running for every engine:
+
+        1. ``request.otlp is None`` (or no ``log_path``) → not configured: no
+           artifact, no sha (the ``_scan_proxy_log`` unconfigured return).
+        2. Configured but the envelope log is absent → :class:`SpanLogMissingError`
+           — fail-closed (A12); a configured collector whose output vanished is
+           infrastructure breakage, never "zero spans".
+        3. Filter the shared log by ``rec["trial"] == request.trial_id`` (the
+           ``_scan_proxy_log`` selection rule), decode (§5), and persist
+           ``artifacts/otlp_spans.json`` — BEFORE the seam's whole-workspace
+           redaction, so span payloads pass the same scrub as every other artifact.
+        4. Zero matching lines → an empty-``batches`` artifact with a sha: honest
+           emptiness ("collector ran, this trial emitted nothing"), distinct from
+           absence ("no collector configured").
+
+        The provider-key literals scrub as ``extra_patterns`` (RN-9), matching the
+        seam's redaction so the second (workspace) scrub is a byte-identical no-op
+        and the ledgered ``spans_sha`` still matches the on-disk artifact.
+        """
+        if request.otlp is None or not request.otlp.log_path:
+            return None
+        # Lazy import: keeps the opentelemetry-proto chain (and hermetic) out of the
+        # engine's import surface until a trial actually has a collector configured.
+        from ...hermetic.otlp_decode import decode_envelope_lines, persist_spans
+
+        p = Path(request.otlp.log_path)
+        if not p.exists():
+            raise SpanLogMissingError(
+                f"otlp collector log {p} is configured but absent — the collector is "
+                "dead or misconfigured; refusing to treat this as zero spans "
+                "[refactor 09 §4, A12]"
+            )
+        lines = p.read_text(encoding="utf-8").splitlines()
+        record = decode_envelope_lines(lines, request.trial_id)
+        extra_patterns = [
+            re.escape(v) for v in (request.provider_keys or {}).values() if v
+        ]
+        return persist_spans(record, EngineBase._artifacts_dir(request), extra_patterns)
+
     # --- shared assembly / precedence --------------------------------------
     def _refused_result(self, req: TrialRequest, resolved: ResolvedImage) -> EngineResult:
         """The infra-failed record for a refused image [D005/RN-12] — no container
@@ -283,15 +361,19 @@ class EngineBase(ABC):
         telemetry_corrupt: bool,
         scanned: EgressObservation,
         proxy_log_missing: bool,
+        spans_sha: Optional[str] = None,
+        span_log_missing: bool = False,
     ) -> EngineResult:
-        """Fold the execution result and the two fail-closed signals into the record
-        with the shared downgrade precedence [byte-preserved from the pre-refactor
-        containerizing engine's ``run`` body].
+        """Fold the execution result and the three fail-closed signals into the
+        record with the shared downgrade precedence [byte-preserved from the
+        pre-refactor containerizing engine's ``run`` body, extended for spans].
 
-        ``telemetry_corrupt`` (RN-17) then ``proxy_log_missing`` (PRA-H4) each
-        downgrade ONLY a would-be-``completed`` trial, so an engine-determined
-        ``kill_failed``/``daemon_error``/``timeout`` keeps its more specific reason,
-        and telemetry corruption outranks a missing proxy log."""
+        ``telemetry_corrupt`` (RN-17), then ``proxy_log_missing`` (PRA-H4), then
+        ``span_log_missing`` (refactor 09 §4, A12) each downgrade ONLY a
+        would-be-``completed`` trial, so an engine-determined
+        ``kill_failed``/``daemon_error``/``timeout`` keeps its more specific reason.
+        The order is the frozen precedence: telemetry corruption outranks a missing
+        proxy log, and egress evidence (proxy) outranks telemetry evidence (spans)."""
         outcome = exec_.outcome
         failure_reason = exec_.failure_reason
         if telemetry_corrupt:
@@ -310,6 +392,13 @@ class EngineBase(ABC):
             egress = exec_.egress  # a scripted engine reports its own egress
         else:
             egress = scanned  # the metering proxy log is the egress source
+        if span_log_missing:
+            # The span sha is emptied whether or not this downgrades the outcome —
+            # a missing collector log is never read as a trustworthy zero-span sha.
+            spans_sha = None
+            if outcome == Outcome.completed:
+                outcome = Outcome.infra_failed
+                failure_reason = "span_log_missing"
         return EngineResult(
             outcome=outcome,
             native_log=native_log,
@@ -325,4 +414,5 @@ class EngineBase(ABC):
             executed_at=req.ts,
             failure_reason=failure_reason,
             proxy_metered_cost=egress.metered_cost,
+            spans_sha=spans_sha,
         )
