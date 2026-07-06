@@ -24,7 +24,7 @@ make shakedown        # L1 golden path + L3 tripwire matrix (no keys, no Docker)
 
 | Layer | Proves | How |
 |---|---|---|
-| **L0** self-integrity | the instrument's own tests + structural contracts | `make verify` — 922 tests, 8 import contracts, AC coverage enforced |
+| **L0** self-integrity | the instrument's own tests + structural contracts | `make verify` — the full test suite, 10 import contracts, AC coverage enforced |
 | **L1** golden path | the full pipeline recovers a known effect | `scripts/shakedown/golden.py` (fake engine, fake judge) |
 | **L2** official + real judge | the pre-registration fence can be *earned* | `scripts/shakedown/official.py` (real Anthropic judge) |
 | **L3** tripwire matrix | every fence fires on an attack | `scripts/shakedown/tripwires.py` (18 vectors) |
@@ -117,17 +117,14 @@ Each row is an adversarial input; the fence must produce the exact disposition.
   (kill-on-timeout, plugin net-isolation, the egress emitter) — unavailable on a
   macOS host. Their mechanisms are unit-tested in L0; kill-on-timeout can be
   demonstrated live via `DockerCliRunner().run_container([...], timeout_s=2)`.
-- **The reference `deploy/metering-proxy/` Squid config rejects harbor's
-  credential.** Harbor injects the trial id as a basic-auth *username with an
-  empty password* (`_with_trial_auth`), which Squid 6 refuses in core — the
-  "validate against your Squid version" caveat that now lives only in
-  `deploy/metering-proxy/README.md`, where the external Squid path lives on. The
-  **shipped** metering path is the managed proxy: the stdlib CONNECT proxy
-  `harness/hermetic/_proxy_container.py`, stood up and torn down by
-  `MeteringProxy` (`run.config` `proxy.managed`, which L6 uses), which accepts
-  the username-only credential and emits the `{"trial","host","decision"}` JSONL
-  `_scan_proxy_log` parses — genuine per-trial egress attribution, no external
-  Squid required.
+
+The former "reference Squid config rejects harbor's credential" caveat is no
+longer a shakedown caveat: the **shipped** metering path is the managed proxy
+(`run.config` `proxy.managed`, which L6 stands up and tears down around the run),
+whose stdlib CONNECT proxy accepts the username-only credential and emits the
+`{"trial","host","decision"}` JSONL `_scan_proxy_log` parses — no external Squid
+required. The Squid-version caveat lives on where the external path does, in
+[`deploy/metering-proxy/README.md`](../../deploy/metering-proxy/README.md).
 
 ## Executed baseline — 2026-07-05 (main @31b5be9)
 
