@@ -30,6 +30,31 @@ class CorpusManifestMismatchError(RuntimeError):
     and the manifest disagree, so scheduling fails closed [CO-2/D-P4-2]."""
 
 
+class OtlpCoherenceError(RuntimeError):
+    """An arm declares ``platform: otlp`` but the run configures no OTLP collector
+    [refactor 10 §1, D-10-1].
+
+    The span-derived trajectory source is pre-registered per arm; a run that cannot
+    capture spans for such an arm would fail every one of its trials at capture time
+    with a missing artifact. This is a run-preflight refusal — the platform capability
+    check lives at plan/lock, but collector *coherence* needs the run config, which
+    the locked spec cannot see, so it is validated here before any trial spends,
+    naming both settings rather than surfacing mid-run."""
+
+
+def _assert_otlp_coherence(arms, run_otlp) -> None:
+    """Refuse a run whose ``platform: otlp`` arm has no collector configured, before
+    any trial executes [refactor 10 §1, D-10-1]. A no-op when no arm is otlp."""
+    otlp_arms = [a.name for a in arms if a.platform == "otlp"]
+    if otlp_arms and run_otlp is None:
+        raise OtlpCoherenceError(
+            f"arm(s) {otlp_arms} declare platform: otlp but the run configures no OTLP "
+            "collector (run.config.yaml 'otlp.endpoint' or 'otlp.managed: true') — the "
+            "span-derived trajectory has no source. Configure a collector or use a "
+            "log-reading platform [refactor 10 §1, D-10-1]."
+        )
+
+
 @dataclass(frozen=True)
 class RunOutcome:
     """What ``bench run`` computed, for the shell to render in order.
@@ -233,6 +258,11 @@ def run_experiment(
             provider_keys=settings.provider_keys,
             provider_key_names_by_arm=settings.provider_key_names_by_arm,  # PRA-M2
         )
+
+        # refactor 10 §1 / D-10-1: an otlp arm with no collector configured has no
+        # span source — refuse here (run preflight, before any trial spends) rather
+        # than fail every otlp trial mid-run with a missing artifact.
+        _assert_otlp_coherence(spec.arms, run_otlp)
 
         # Operational reuse surface: reuse_control arg, or a reuse_control.bundle
         # key in run.config.yaml — already parsed+resolved by load_run_settings [04 §4].

@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from ..adapters import get_adapter
 from ..adapters.base import Adapter, Flags, Outcome, Provenance, TrialRecord
 from ..adapters.generic import by_model_delta, normalize_generic_by_model
+from ..adapters.otlp import SpanMappingError
 from ..schema.experiment import Arm
 from .egress import undeclared_model_egress
 from .redact import redact_artifacts
@@ -82,30 +83,41 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _redacted_native_log(artifacts_dir: Path, trial_id: str) -> dict:
-    """The post-redaction agent_log.json — trajectory capture's only input.
+def _redacted_native_log(
+    artifacts_dir: Path,
+    trial_id: str,
+    *,
+    filename: str = "agent_log.json",
+    corrupt_error: type[Exception] = TrajectoryCorruptError,
+) -> dict:
+    """The post-redaction on-disk capture input — the capture stages' only source.
 
-    Absent ⇒ ``{}`` (a log-less engine is legitimate; the adapter then reports
-    an absent trajectory). Present but unparseable after the scrub ⇒
-    :class:`TrajectoryCorruptError` — capture never falls back to the
-    pre-redaction in-memory log, that would bypass the scrub [EVAL-12 AC-2].
+    ``filename`` is the arm's capture artifact [refactor 10 §1 seam accommodation]:
+    ``agent_log.json`` for the log-reading adapters, ``otlp_spans.json`` for the
+    ``otlp`` platform (the dual-source invariant honored for spans too — the
+    redacted on-disk bytes, never the raw in-trial log). Absent ⇒ ``{}`` (a
+    log-less engine is legitimate; the adapter then reports an absent trajectory).
+    Present but unparseable after the scrub ⇒ ``corrupt_error``
+    (:class:`TrajectoryCorruptError`, or :class:`SpanMappingError` for otlp) —
+    capture never falls back to the pre-redaction in-memory log, that would bypass
+    the scrub [EVAL-12 AC-2, refactor 10 §3].
     """
-    path = artifacts_dir / "agent_log.json"
+    path = artifacts_dir / filename
     if not path.exists():
         return {}
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
-        raise TrajectoryCorruptError(
-            f"post-redaction native log {path} for {trial_id} is unreadable; "
-            "trajectory capture fails closed [EVAL-12 AC-2]: " + str(e)
+        raise corrupt_error(
+            f"post-redaction capture artifact {path} for {trial_id} is unreadable; "
+            "capture fails closed [EVAL-12 AC-2, refactor 10 §3]: " + str(e)
         ) from e
     if not isinstance(parsed, dict):
         # engines serialize a dict; anything else means the artifact was
         # rewritten out from under the trial — corrupt, not merely absent.
-        raise TrajectoryCorruptError(
-            f"post-redaction native log {path} for {trial_id} is not an object; "
-            "trajectory capture fails closed [EVAL-12 AC-2]"
+        raise corrupt_error(
+            f"post-redaction capture artifact {path} for {trial_id} is not an object; "
+            "capture fails closed [EVAL-12 AC-2, refactor 10 §3]"
         )
     return parsed
 
@@ -230,15 +242,29 @@ class CapturePipeline:
     def _read_redacted_log(
         self, outcome: Outcome, ctx: _CaptureContext
     ) -> Optional[dict]:
+        # refactor 10 §1 seam accommodation: the otlp platform's capture input is
+        # the redacted otlp_spans.json (spans → BOTH trajectory and reasoning), and
+        # a corrupt/lying one is spans_corrupt, not trajectory_corrupt. Everything
+        # else — the read, the scrub-already-ran ordering, the timeout carve-out —
+        # is byte-identical to the agent_log.json path. "otlp_spans.json" is the
+        # frozen artifact name (spec 09 SPANS_FILENAME), hardcoded here the way
+        # "agent_log.json" is, so the seam stays free of the span-decoder import.
+        if ctx.platform == "otlp":
+            filename, corrupt_error = "otlp_spans.json", SpanMappingError
+        else:
+            filename, corrupt_error = "agent_log.json", TrajectoryCorruptError
         try:
-            return _redacted_native_log(Path(ctx.artifacts_dir), ctx.trial_id)
-        except TrajectoryCorruptError as exc:
+            return _redacted_native_log(
+                Path(ctx.artifacts_dir), ctx.trial_id,
+                filename=filename, corrupt_error=corrupt_error,
+            )
+        except corrupt_error as exc:
             if outcome != Outcome.timeout:
                 # PRA-M8: carry the already-incurred spend, typed
                 raise self._failed(exc) from exc
-            # Timeout carve-out: a truncated log is honest absence, not corrupt —
-            # keep the RN-17 timeout datapoint (and its spend) instead of erasing
-            # it as trajectory_corrupt.
+            # Timeout carve-out: a truncated log/artifact is honest absence, not
+            # corrupt — keep the RN-17 timeout datapoint (and its spend) instead of
+            # erasing it as trajectory_corrupt / spans_corrupt.
             return None
 
     def _run_stage(
@@ -246,7 +272,14 @@ class CapturePipeline:
     ) -> Optional[str]:
         if native_log is None:
             return None
-        content = stage.normalize(ctx.adapter, native_log)
+        try:
+            content = stage.normalize(ctx.adapter, native_log)
+        except SpanMappingError as exc:
+            # refactor 10 §3: a span mapping violation (verdi.agent outside the
+            # closed vocabulary, an invalid wrapper) is declared telemetry that
+            # lies — fail closed carrying the already-incurred spend (PRA-M8, the
+            # persist-failure discipline); the scheduler maps it to spans_corrupt.
+            raise self._failed(exc) from exc
         if content is None:
             return None  # honest absence — no artifact, no sha
         record = stage.build(ctx, content)

@@ -27,6 +27,7 @@ from typing import Optional
 from ..adapters import UnknownPlatformError
 from ..adapters.base import Outcome, TrialRecord
 from ..adapters.generic import GenericLogError
+from ..adapters.otlp import SpanMappingError
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import find_events
@@ -57,6 +58,12 @@ _PER_TRIAL_REASONS: dict[type, str] = {
     RedactionError: "redaction_error",
     TrajectoryCorruptError: "trajectory_corrupt",
     FlightRecorderCorruptError: "flight_recorder_corrupt",
+    # refactor 10 §3 / A12: an otlp_spans.json that cannot be normalized (invalid
+    # wrapper, or a verdi.agent outside the closed vocabulary) fails the trial
+    # closed as spans_corrupt — the seam raises it inside the capture pipeline
+    # (wrapped in PostEngineFailure so it carries the incurred spend), and its
+    # cause maps here, the TrajectoryCorruptError discipline.
+    SpanMappingError: "spans_corrupt",
 }
 
 

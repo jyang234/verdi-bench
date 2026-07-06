@@ -18,6 +18,7 @@ from ..plan.lock import LockError
 from .api import (
     CorpusManifestMismatchError,
     NoTasksError,
+    OtlpCoherenceError,
     export_control_bundle,
     run_experiment,
 )
@@ -51,6 +52,7 @@ def register(app: typer.Typer) -> None:
             with refusal_exit(
                 TaskCommitmentError, CorpusManifestMismatchError,
                 ControlReuseError, ControlBundleError, ActorResolutionError,
+                OtlpCoherenceError,  # refactor 10 §1: otlp arm, no collector → exit 2
             ):
                 outcome = run_experiment(
                     experiment_dir, engine=engine, corpus_manifest=corpus_manifest,
