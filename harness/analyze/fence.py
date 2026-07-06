@@ -30,7 +30,14 @@ from ..ledger import events
 from ..ledger.query import find_events, verify
 from ..schema.errors import SpecError
 from ..schema.experiment import ExperimentSpec
-from .report import _judge_summary, _ledgered_calibration_status, _task_ids_run
+from .report import (
+    CorrectionMismatchError,
+    _assert_correction_consistent,
+    _judge_summary,
+    _ledgered_calibration_status,
+    _task_ids_run,
+    effective_multi_arm_correction,
+)
 from .selfcheck import latest_selfcheck, selfcheck_status
 
 
@@ -202,6 +209,25 @@ def official_fence_report(experiment_dir, *, corpus_manifest=None) -> dict:
             "" if not alarms else f"{len(alarms)} insulation alarm(s)",
         )
     )
+
+    # 9. multi-arm correction consistency [F-H7, refactor 01 §4 D8]: evaluated
+    # through the render fence's own helper, so this projection cannot show
+    # ready while `bench analyze --official` refuses CorrectionMismatchError
+    # over a chain carrying a differently-corrected prior official render.
+    if spec is None:
+        items.append(_item("correction", "multi-arm correction consistent",
+                           "unchecked", "experiment.yaml missing or unreadable"))
+    else:
+        try:
+            _assert_correction_consistent(
+                effective_multi_arm_correction(spec), ledger_path
+            )
+        except CorrectionMismatchError as e:
+            items.append(_item("correction", "multi-arm correction consistent",
+                               "failed", str(e)))
+        else:
+            items.append(_item("correction", "multi-arm correction consistent",
+                               "ok", ""))
 
     return {
         "official_ready": all(i["state"] == "ok" for i in items),

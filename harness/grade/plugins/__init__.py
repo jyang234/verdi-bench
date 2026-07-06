@@ -51,3 +51,28 @@ def get_plugin(plugin_id: str) -> GraderPlugin:
         raise UnknownPluginError(
             f"no grader plugin {plugin_id!r}; known: {sorted(_REGISTRY)}"
         ) from None
+
+
+# The built-in plugin modules, imported below so importing THIS package
+# registers them [refactor 01 §4 D3]. Registration must ride the package
+# import itself: the in-container entrypoint (``harness.grade.run_plugin``)
+# and the in-process ``LocalGradeRunner`` resolve plugins after importing only
+# this package — a side-effect import parked in an unrelated module
+# (grade/cli.py formerly held it) never runs inside the grader container,
+# which made every real containerized plugin run an ``UnknownPluginError``.
+BUILTIN_PLUGINS: tuple[str, ...] = ("groundwork",)
+
+
+def _register_builtins() -> None:
+    """Import every built-in plugin module so it self-registers.
+
+    Runs at the bottom of the package body: the plugin modules import
+    :class:`GraderPlugin` / :func:`register_plugin` from this package, so they
+    are importable only once those names exist above."""
+    from importlib import import_module
+
+    for name in BUILTIN_PLUGINS:
+        import_module(f".{name}", __name__)
+
+
+_register_builtins()

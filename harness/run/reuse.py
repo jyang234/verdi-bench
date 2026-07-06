@@ -74,7 +74,10 @@ def _control_fingerprint(
     settings, spec, instrument_git_sha: str,
 ) -> dict:
     proxy_allowlist = settings.proxy.allowlist if settings.proxy is not None else []
-    plugin_ids = sorted({p for t in task_dicts for p in (t.get("plugins") or [])})
+    # "plugin_ids" is the documented task key and the one grading actually reads
+    # (harness/grade/cli.py, docs/usage-guide.md); reading the non-doc "plugins"
+    # key left the grader component blind to plugin drift [refactor 01 §4 D2, A4].
+    plugin_ids = sorted({p for t in task_dicts for p in (t.get("plugin_ids") or [])})
     return compute_fingerprint(
         arm=arm,
         task_dicts=task_dicts,

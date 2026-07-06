@@ -195,7 +195,7 @@ def score_trial_process(
     ts: str,
     scorer_id: str,
     provider: Optional[Provider] = None,
-    provider_model: str = "anthropic/claude-3-5-sonnet-20241022",
+    provider_model: str,
     spec,
     telemetry: Optional[dict] = None,
     token_counter: Callable[[str], int] = _heuristic_token_count,
@@ -207,6 +207,11 @@ def score_trial_process(
 
     Full-or-CANT_SCORE: no silent truncation; an over-context transcript fails
     closed to CANT_SCORE(context_overflow) with token counts recorded.
+
+    ``provider_model`` is required — the caller resolves it from configuration
+    (the CLI passes ``spec.judge.model``), mirroring the forensics D002 posture:
+    no hardcoded model default, so this tier cannot silently rot against a
+    retired model id [refactor 01 §4 D4].
     """
     # PR-9: spec is required (production always passes it), so judge/arm vendor
     # overlap is honest again — it no longer silently degrades to False when the
@@ -390,7 +395,7 @@ def _process_entrypoint(ctx_dir: str) -> None:
     fp = FakeProvider([json.dumps({"scores": {dim: 3 for dim in r.dimension_ids}})])
     spec = ExperimentSpec.from_dict({
         "arms": [
-            {"name": "control", "platform": "claude_code", "model": "anthropic/claude-3-5-sonnet-20241022", "payload": {}},
+            {"name": "control", "platform": "claude_code", "model": "anthropic/claude-haiku-4-5-20251001", "payload": {}},
             {"name": "treatment", "platform": "codex", "model": "openai/gpt-4o-2024-08-06", "payload": {}},
         ],
         "corpus": {"id": "public-mini", "version": "1.0.0"},
@@ -404,7 +409,7 @@ def _process_entrypoint(ctx_dir: str) -> None:
     score_trial_process(
         "trial-x", "clean transcript", r, ledger_path=d / "ledger.ndjson",
         ctx=EventContext(experiment_id="prop"), ts="t0", scorer_id="judge", provider=fp,
-        spec=spec,
+        provider_model=spec.judge.model, spec=spec,
     )
 
 

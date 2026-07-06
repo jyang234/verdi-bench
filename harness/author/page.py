@@ -115,7 +115,7 @@ window.__vb = () => ({ route: location.hash, name: S.name, locked: !!(S.doc && S
 
 const TPL_SPEC = [
   "arms:",
-  "  - {name: control, platform: claude_code, model: anthropic/claude-3-5-sonnet-20241022, payload: {}}",
+  "  - {name: control, platform: claude_code, model: anthropic/claude-haiku-4-5-20251001, payload: {}}",
   "  - {name: treatment, platform: claude_code, model: anthropic/claude-3-7-sonnet-20250219, payload: {}}",
   "corpus: {id: my-corpus, version: 1.0.0}",
   "repetitions: 2",

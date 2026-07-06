@@ -212,7 +212,7 @@ def test_compare_matches_same_battery(tmp_path):
     assert result["arms"]["b"]["treatment"]["absolute_score"] == 1.0
     # the side-by-side carries the model, so unlike models under a shared arm
     # name are not silently compared
-    assert result["arms"]["a"]["control"]["model"] == "anthropic/claude-3-5-sonnet-20241022"
+    assert result["arms"]["a"]["control"]["model"] == "anthropic/claude-haiku-4-5-20251001"
 
 
 def test_compare_refuses_different_battery(tmp_path):

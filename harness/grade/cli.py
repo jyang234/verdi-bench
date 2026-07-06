@@ -16,9 +16,6 @@ from pathlib import Path
 
 import typer
 
-# import so the groundwork plugin self-registers
-from .plugins import groundwork  # noqa: F401
-
 
 def _grade_tasks_from_dicts(task_dicts: list) -> dict:
     """Map the committed task dicts to grader tasks.

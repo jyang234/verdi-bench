@@ -69,6 +69,35 @@ def test_ac4_groundwork_registered():
     assert isinstance(get_plugin("groundwork"), GroundworkGrader)
 
 
+def test_builtin_plugins_resolve_on_the_run_plugin_path_without_cli():
+    """[refactor 01 §4 D3] The in-container entrypoint imports only
+    ``harness.grade.run_plugin`` / ``harness.grade.plugins`` — never
+    ``harness.grade.cli`` — so registration must ride the plugins package
+    itself. Before the fix the only registration transport was a side-effect
+    import in grade/cli.py, leaving every real containerized plugin run an
+    ``UnknownPluginError``. Fresh interpreter: this suite imports the CLI
+    in-process, which would mask the defect."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "import harness.grade.run_plugin  # the in-container entrypoint module\n"
+        "from harness.grade.plugins import BUILTIN_PLUGINS, get_plugin\n"
+        "assert 'harness.grade.cli' not in sys.modules, 'cli leaked into the entrypoint path'\n"
+        "assert 'groundwork' in BUILTIN_PLUGINS\n"
+        "print(type(get_plugin('groundwork')).__name__)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, (
+        "a registered built-in plugin must resolve on the run_plugin path "
+        f"without grade/cli having been imported;\nstderr:\n{result.stderr}"
+    )
+    assert result.stdout.strip() == "GroundworkGrader"
+
+
 def test_ac4_unknown_plugin_fails_closed(tmp_path):
     ws = write_workspace(tmp_path)
     ledger = tmp_path / "l.ndjson"

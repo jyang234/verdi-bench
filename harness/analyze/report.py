@@ -1777,13 +1777,13 @@ def _assert_official_calibration(findings: FindingsDocument, corpus_manifest, le
             f"{detail}. The pairing is invalid for these tasks; exploratory "
             "still renders, watermarked, with the full summary [EVAL-10 AC-5]"
         )
-    # 8. holdout-leak insulation alarms [F-M-C3, EVAL-4 AC-9]: an alarm on the
+    # 7. holdout-leak insulation alarms [F-M-C3, EVAL-4 AC-9]: an alarm on the
     # latest ledgered probe is an insulation VIOLATION — holdout content
     # reproduced in a solution — and refuses the official render until it is
     # investigated: quarantine the offending trial (ledgered), re-run the scan
     # (quarantined trials are skipped, disclosed) and the probe.
     _assert_no_insulation_alarms(ledger_path)
-    # 7. multi-arm correction consistency [F-H7]: one pre-registered decision
+    # 8. multi-arm correction consistency [F-H7]: one pre-registered decision
     # procedure per experiment. The policy lives in the sha-locked spec, so two
     # official renders cannot legitimately differ through the tool; this is
     # defense in depth against a chain produced under a different policy.
@@ -1804,6 +1804,20 @@ def _assert_no_insulation_alarms(ledger_path) -> None:
             "if intentional, quarantine the trial (ledgered) and re-run "
             "`bench contamination probe` [F-M-C3, EVAL-4 AC-9]"
         )
+
+
+def effective_multi_arm_correction(spec) -> str:
+    """The multi-arm correction an official render of ``spec`` would apply —
+    the value the render fence gates on [F-H7, refactor 01 §4 D8].
+
+    Mirrors ``compute_findings``: the ``multi_arm`` block (and with it a
+    correction) exists only for a >2-arm family — one comparison is built per
+    arm beyond ``arms[0]``, so with two arms there is a single pre-registered
+    pair, no decision family, and the render passes ``"none"`` regardless of
+    the spec field. The observer fence (``analyze/fence.py``) evaluates the
+    correction-consistency item with this value so it cannot show ready while
+    the render refuses; structurally unified with the render in Phase 5."""
+    return spec.multi_arm_correction if len(spec.arms) > 2 else "none"
 
 
 def _assert_correction_consistent(correction: str, ledger_path) -> None:
@@ -1905,7 +1919,7 @@ def _render_official_md(findings: FindingsDocument) -> str:
     out += [f"- {c['flag']}" for c in findings.confounds] or ["- none"]
     out += ["", "## Contamination (disclosed, non-suppressing)"]
     out += _contamination_lines(findings)
-    out += ["", f"## Blinding integrity", f"- {_integrity_line(findings)}"]
+    out += ["", "## Blinding integrity", f"- {_integrity_line(findings)}"]
     tier = _tier_lines(findings)
     if tier:
         out += ["", "## Grade tier", *tier]

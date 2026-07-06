@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 
 import pytest
+import yaml
 
 from harness.adapters.base import Quotas
 from harness.corpus.commit import holdout_content_sha
@@ -17,7 +18,10 @@ from harness.run.control_reuse import (
     assert_fingerprint_match,
     compute_fingerprint,
 )
-from harness.schema.experiment import Arm
+from harness.run.reuse import current_fingerprint
+from harness.run.settings import RunSettings
+from harness.schema.experiment import Arm, ExperimentSpec
+from tests.fixtures.builders import valid_experiment_dict
 
 
 def _arm(model="anthropic/claude-3-5-sonnet-20241022", **kw):
@@ -25,8 +29,11 @@ def _arm(model="anthropic/claude-3-5-sonnet-20241022", **kw):
 
 
 def _tasks():
+    # "plugin_ids" is the documented task key (docs/usage-guide.md) and the one
+    # grading reads (harness/grade/cli.py) — the fixture previously modeled the
+    # non-doc "plugins" key, corrected under decision A4 [refactor 01 §4 D2].
     return [
-        {"id": "t1", "prompt": "solve it", "holdouts_dir": "holdouts/t1", "plugins": ["groundwork"]},
+        {"id": "t1", "prompt": "solve it", "holdouts_dir": "holdouts/t1", "plugin_ids": ["groundwork"]},
         {"id": "t2", "prompt": "and this", "holdouts_dir": "holdouts/t2"},
     ]
 
@@ -109,6 +116,39 @@ def test_repetitions_drift_refuses(tmp_path):
     other = _fingerprint(tmp_path, repetitions=5)
     with pytest.raises(ControlReuseFingerprintError, match=r"repetitions changed"):
         assert_fingerprint_match(other, recorded)
+
+
+# --- the doc-conformant task key reaches the grader component [refactor 01 §4 D2]
+def _write_tasks_yaml(exp_dir, plugin_ids):
+    (exp_dir / "tasks.yaml").write_text(
+        yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "solve it",
+                                   "plugin_ids": list(plugin_ids)}]}),
+        encoding="utf-8",
+    )
+
+
+def test_doc_conformant_plugin_ids_reach_the_grader_component(tmp_path):
+    """A ``plugin_ids:`` task (the documented key, docs/usage-guide.md; the key
+    grading reads, harness/grade/cli.py) must move the fingerprint's GRADER
+    component when the plugin list changes — otherwise the 'grader changed
+    (plugin ids...)' refusal can never fire for doc-conformant tasks
+    [refactor 01 §4 D2, decision A4]."""
+    spec = ExperimentSpec.from_dict(valid_experiment_dict())
+    settings = RunSettings()
+
+    _write_tasks_yaml(tmp_path, ["groundwork"])
+    with_plugin = current_fingerprint(
+        tmp_path, spec, "control", engine="fake", settings=settings
+    )
+    _write_tasks_yaml(tmp_path, [])
+    without_plugin = current_fingerprint(
+        tmp_path, spec, "control", engine="fake", settings=settings
+    )
+
+    assert with_plugin["grader"] != without_plugin["grader"]
+    # and the preflight gate names the grader as what drifted
+    with pytest.raises(ControlReuseFingerprintError, match=r"grader changed"):
+        assert_fingerprint_match(without_plugin, with_plugin)
 
 
 def test_version_mismatch_refuses(tmp_path):

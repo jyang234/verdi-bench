@@ -325,6 +325,7 @@ def test_ac7_fence_checklist_and_artifacts(tmp_path):
         "chain": "ok", "lock": "ok", "corpus_identity": "ok", "corpus_coverage": "ok",
         "calibration": "ok", "rubric": "ok", "selfcheck": "ok", "contamination": "ok",
         "insulation": "ok",  # F-M-C3
+        "correction": "ok",  # F-H7 / refactor 01 §4 D8
     }
     assert report2["official_ready"] is True
 

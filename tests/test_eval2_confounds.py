@@ -43,7 +43,7 @@ def test_ac6_cross_vendor_clean():
 
 def test_ac6_vendor_overlap_flagged():
     data = valid_experiment_dict()
-    data["judge"]["model"] = "anthropic/claude-3-5-sonnet-20241022"  # same as control arm
+    data["judge"]["model"] = "anthropic/claude-haiku-4-5-20251001"  # same as control arm
     ov = judge_vendor_overlap(ExperimentSpec.from_dict(data))
     assert ov.overlap is True
     assert "control" in ov.overlapping_arms
