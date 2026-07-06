@@ -16,7 +16,7 @@ import pytest
 
 from harness.adapters.base import ADVISORY, Outcome, Quotas, TrialRecord
 from harness.hermetic.otlp_decode import resolve_spans
-from harness.run.engines import ENGINES
+from harness.run.engines import ENGINES, get_engine, manages_real_infra
 from harness.run.engines.base import ENGINE_FAILURE_REASONS
 from harness.run.engines.fake import FakeEngine
 from harness.run.engines.harbor import HarborEngine
@@ -122,6 +122,26 @@ def test_ac1_failure_reason_in_closed_vocabulary(tmp_path):
     assert frec.outcome == Outcome.infra_failed
     assert frec.flags.failure_reason == "proxy_log_missing"
     assert frec.flags.failure_reason in ENGINE_FAILURE_REASONS
+
+
+@pytest.mark.parametrize("engine_name", list(ENGINES))
+def test_ac1_engine_declares_infra_capability(engine_name):
+    """[refactor 11 §G5c] Every registered engine declares manages_real_infra, so
+    the managed proxy/collector wrapping (run/api.py) derives from the engine
+    declaration via the registry helper — never an ``engine == "fake"`` string a new
+    offline engine would have to know to imitate. The registry helper agrees with
+    the engine's own class attribute."""
+    flag = get_engine(engine_name).manages_real_infra
+    assert isinstance(flag, bool)
+    assert manages_real_infra(engine_name) is flag
+
+
+def test_ac1_infra_capability_gates_fake_and_harbor():
+    """The two engines declare explicitly: the fake is hermetic-by-fiat (no infra),
+    Harbor containerizes — so the managed sidecars no-op the fake and wrap Harbor,
+    byte-identically to the removed ``engine == "fake"`` literal [refactor 11 §G5c]."""
+    assert manages_real_infra("fake") is False
+    assert manages_real_infra("harbor") is True
 
 
 # --- the OTLP span-capture ladder step, run through BOTH engines [refactor 09 §4] ---

@@ -53,3 +53,16 @@ def get_engine(name: str) -> EngineBase:
         expected = " or ".join(repr(k) for k in ENGINES)
         raise ValueError(f"unknown engine {name!r}; expected {expected}") from None
     return factory()
+
+
+def manages_real_infra(name: str) -> bool:
+    """Whether the engine registered under ``name`` manages real infrastructure
+    (docker) that the managed metering proxy / OTLP collector must wrap around
+    [refactor 11 §G5c].
+
+    Reads the engine's own :attr:`EngineBase.manages_real_infra` declaration, so
+    infra gating derives from the registry instead of an ``engine == "fake"``
+    string literal a new offline engine would have to know to imitate. Constructing
+    the engine to read the flag is cheap and side-effect-free (no daemon probe at
+    construction) and honours the lazy harbor import the registry seam depends on."""
+    return get_engine(name).manages_real_infra
