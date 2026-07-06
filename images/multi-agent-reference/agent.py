@@ -10,7 +10,11 @@ trial (the whole workflow is the agent's internal business):
 Each sub-agent turn contributes a step, so verdi sees the real trajectory: the
 planner's decomposition, each worker's DRAFT then its REVISE (multiple reasoning
 entries per sub-agent — the iteration is visible), a critic's review, and the
-aggregation. It emits ``artifacts/agent_log.json`` in the verdi generic v2 format:
+orchestrator's CLOSING REPORT — a deterministic (unmetered, honest-null tokens)
+final statement of what was delivered, assembled from which workers' outputs,
+that the critic's note was recorded but not auto-applied, and the real exit code
+of an import smoke check it actually runs. It emits ``artifacts/agent_log.json``
+in the verdi generic v2 format:
 
   * ``reasoning``  — a per-turn ``agent`` role [EVAL-24 AC-6]: planner, worker-N
                      (twice: draft + revise), critic.
@@ -34,6 +38,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import urllib.parse
 
@@ -101,16 +106,23 @@ def _strip_fences(text):
 def build_agent_log(*, model, turns, totals=None):
     """PURE: the verdi generic v2 log from an ordered list of sub-agent TURNS
     [EVAL-21 + EVAL-24]. Each turn is a dict:
-      {agent, reasoning?, kind, detail?, files?, command?, tokens?, model?}
+      {agent, reasoning?, kind, detail?, files?, command?, exit_code?, tokens?, model?}
     Emits one reasoning entry per turn that HAS reasoning (agent-attributed — a
     worker's draft and revise are two entries under the same role, so iteration is
-    visible), one trajectory step per turn carrying the turn's RESPONSE in `detail`,
-    and telemetry_by_model summed per model."""
+    visible — carrying the turn's measured tokens when reported), one trajectory
+    step per turn carrying the turn's RESPONSE in `detail`, and telemetry_by_model
+    summed per model."""
     reasoning, trajectory, by_model = [], [], {}
     for t in turns:
         role = t["agent"]
         if t.get("reasoning") is not None:
-            reasoning.append({"content": t["reasoning"] or "(no native reasoning)", "agent": role})
+            entry = {"content": t["reasoning"] or "(no native reasoning)", "agent": role}
+            # attribute the turn's measured output tokens to its reasoning entry,
+            # so a metered model turn is legible against an unmeasured one (the
+            # deterministic orchestrator step reports none — honest absence)
+            if t.get("tokens") is not None:
+                entry["tokens"] = t["tokens"]
+            reasoning.append(entry)
         step = {"kind": t.get("kind", "message"), "agent": role}
         if t.get("detail") is not None:
             step["detail"] = t["detail"]
@@ -118,6 +130,8 @@ def build_agent_log(*, model, turns, totals=None):
             step["files_touched"] = t["files"]
         if t.get("command") is not None:
             step["command"] = t["command"]
+        if t.get("exit_code") is not None:
+            step["exit_code"] = t["exit_code"]
         trajectory.append(step)
         tok = t.get("tokens")
         if tok is not None:
@@ -165,11 +179,30 @@ def main():
         turns.append({"agent": "critic", "reasoning": c_reason, "kind": "message",
                       "detail": (c_text or "").strip()[:400], "tokens": c_tok, "model": model})
 
-        # ORCHESTRATOR — write the aggregated solution into the graded workspace
+        # ORCHESTRATOR — write the aggregated solution, then CLOSE the workflow
+        # with a complete deterministic report: what was delivered, assembled
+        # from which turns, what happened to the critique, and the real exit
+        # code of an import smoke check it actually runs. No model call — the
+        # closing statement is the workflow's own truthful bookkeeping.
         (WS / "solution.py").write_text(combined + "\n", encoding="utf-8")
-        turns.append({"agent": "orchestrator", "reasoning": f"aggregated {len(code_parts)} revised worker outputs",
-                      "kind": "test_run", "command": "python -c 'import solution'",
-                      "detail": "wrote solution.py"})
+        check = subprocess.run(
+            [sys.executable, "-c", "import solution"], cwd=str(WS), timeout=60,
+            capture_output=True, text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},  # no __pycache__ in the graded diff
+        )
+        defs = re.findall(r"(?m)^def\s+(\w+)", combined)
+        turns.append({
+            "agent": "orchestrator",
+            "reasoning": (
+                f"final deliverable: solution.py ({len(combined.splitlines())} lines"
+                + (f", defining {', '.join(defs)}" if defs else "")
+                + f") assembled from {len(code_parts)} workers' revised outputs "
+                + f"({len(turns) - 1} model turns total); critic note recorded above, "
+                + f"not auto-applied; import smoke check exit {check.returncode}"
+            ),
+            "kind": "test_run", "command": f"{pathlib.Path(sys.executable).name} -c 'import solution'",
+            "detail": (check.stderr.strip() or "import ok"), "exit_code": check.returncode,
+        })
         log = build_agent_log(model=model, turns=turns)
     except Exception as e:  # fail-visible: an absent-honest log still makes the trial scorable
         turns.append({"agent": "orchestrator", "reasoning": f"workflow failed: {e}", "kind": "message"})

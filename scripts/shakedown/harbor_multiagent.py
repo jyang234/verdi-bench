@@ -149,7 +149,7 @@ def main():
             if turns.get("worker-1", 0) >= 2 or turns.get("worker-2", 0) >= 2:
                 multi_turn_ok = True
             print(f"\n  {rec['arm']}/{rec['task_id']}  roles+turns={dict(turns)}  by_model={ {m: v.get('tokens_out') for m, v in (by_model or {}).items()} }")
-            for role in ("planner", "worker-1", "worker-2", "critic"):
+            for role in ("planner", "worker-1", "worker-2", "critic", "orchestrator"):
                 for j, e in enumerate(groups.get(role, [])):
                     print(f"    [{role}:{j}] {e.content.replace(chr(10),' ')[:80]}")
 

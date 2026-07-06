@@ -42,8 +42,15 @@ def _sample_log():
          "files": ["solution.py"], "tokens": 14, "model": _MODEL},
         {"agent": "critic", "reasoning": "checks out; no bugs", "kind": "message",
          "detail": "looks correct", "tokens": 10, "model": _MODEL},
-        {"agent": "orchestrator", "reasoning": "aggregated 2 revised worker outputs",
-         "kind": "test_run", "command": "python -c 'import solution'", "detail": "wrote solution.py"},
+        # the closing report: deterministic (no tokens — honest null), stating the
+        # deliverable, its provenance, the critique's disposition, and a REAL
+        # import-check exit code [the aggregation must not end the record mutely]
+        {"agent": "orchestrator", "reasoning":
+            "final deliverable: solution.py (4 lines, defining add, is_palindrome) "
+            "assembled from 2 workers' revised outputs (6 model turns total); critic "
+            "note recorded above, not auto-applied; import smoke check exit 0",
+         "kind": "test_run", "command": "python3 -c 'import solution'",
+         "detail": "import ok", "exit_code": 0},
     ]
     return agent.build_agent_log(model=_MODEL, turns=turns)
 
@@ -74,6 +81,17 @@ def test_reference_log_is_multi_turn_agent_attributed_and_compliant():
     rec = FlightRecorder(trial_id="t", platform="generic", entries=entries)
     groups = slice_reasoning_by_agent(rec)
     assert len(groups["worker-1"]) == 2 and groups["worker-1"][0].content.startswith("draft")
+
+    # per-turn usage rides the reasoning entry when measured; the deterministic
+    # orchestrator turn reports none and reads back null — never zero [EVAL-4-D004]
+    assert [e.tokens for e in groups["worker-1"]] == [15, 12]
+    assert groups["orchestrator"][0].tokens is None
+    # ... and its closing report is a complete final statement with the REAL
+    # smoke-check exit code on the step, not a mute "aggregated N outputs"
+    assert groups["orchestrator"][0].content.startswith("final deliverable:")
+    assert "not auto-applied" in groups["orchestrator"][0].content
+    (orch_step,) = [s for s in steps if s.agent == "orchestrator"]
+    assert orch_step.kind == "test_run" and orch_step.exit_code == 0
 
 
 def test_reference_log_survives_the_persist_redaction_door(tmp_path):
