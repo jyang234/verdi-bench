@@ -35,10 +35,11 @@ the corpus identity a finding cites.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
-from .public import RawTask
+from .public import TERMINAL_BENCH, DirectorySource, RawTask, TaskSource
 
 SWEBENCH = "swe-bench"
 
@@ -259,3 +260,65 @@ class SweBenchSource:
                 )
             )
         return out
+
+
+# --- the importer registry [refactor 07 §3] --------------------------------
+@dataclass(frozen=True)
+class ImporterSpec:
+    """One recognized public-benchmark importer [refactor 07 §3].
+
+    A ``TaskSource`` factory over a locally-exported record file plus the default
+    dataset name/version recorded on the manifest/card. ``--benchmark`` validates
+    against :data:`IMPORTERS` and derives its help text (``description``) and its
+    refusal message from the registry, so the valid set is defined in exactly one
+    place: a new importer is a ``TaskSource`` class + a registry entry, and the
+    generic idempotent engine (:func:`harness.corpus.public.import_public_dataset`)
+    does the rest.
+
+    ``corpus_id_names_dataset``: a generic directory has no canonical dataset
+    name, so ``--corpus-id`` names it; a benchmark with a canonical identity
+    (swebench) keeps ``dataset_name`` fixed regardless of the corpus id.
+    """
+
+    name: str
+    source_factory: Callable[..., TaskSource]
+    dataset_name: str
+    default_dataset_version: str
+    description: str
+    corpus_id_names_dataset: bool = False
+
+
+IMPORTERS: dict[str, ImporterSpec] = {
+    "dir": ImporterSpec(
+        name="dir",
+        source_factory=lambda source, image_template=None: DirectorySource(source),
+        dataset_name=TERMINAL_BENCH,
+        default_dataset_version="2.0",
+        description="harbor json dir",
+        corpus_id_names_dataset=True,
+    ),
+    "swebench": ImporterSpec(
+        name="swebench",
+        source_factory=lambda source, image_template=None: SweBenchSource(
+            source, image_template=image_template
+        ),
+        dataset_name=SWEBENCH,
+        # do NOT inherit terminal-bench's "2.0"; the user labels the export.
+        default_dataset_version="SWE-bench_Verified",
+        description="SWE-bench export",
+    ),
+}
+
+
+def importer_names() -> str:
+    """The registered importer names, ``' | '``-joined — the refusal-message and
+    error-list rendering of :data:`IMPORTERS`."""
+    return " | ".join(IMPORTERS)
+
+
+def importer_help() -> str:
+    """The ``--benchmark`` flag help, derived from :data:`IMPORTERS` so a new
+    importer's name + description appear without editing a second string."""
+    return "Source format: " + " | ".join(
+        f"'{name}' ({spec.description})" for name, spec in IMPORTERS.items()
+    )

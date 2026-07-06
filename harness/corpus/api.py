@@ -35,7 +35,7 @@ def _suggest_task_key(unknown: str) -> str | None:
 
 
 class UnknownBenchmarkError(RuntimeError):
-    """``--benchmark`` was neither ``dir`` nor ``swebench``."""
+    """``--benchmark`` was not one of the registered importer names [refactor 07 §3]."""
 
 
 class ValidateTasksFileError(RuntimeError):
@@ -121,24 +121,26 @@ def corpus_import(
 ) -> ImportOutcome:
     """Import a standardized public dataset into the local cache (idempotent).
 
-    Raises ``UnknownBenchmarkError`` for an unknown ``--benchmark``; a malformed
-    export propagates (the CLI names it as ``<Type>: <msg>``)."""
-    from .public import DirectorySource, import_public_dataset
+    Validates ``--benchmark`` against the importer registry (``UnknownBenchmarkError``
+    with the derived valid set); a malformed export propagates (the CLI names it
+    as ``<Type>: <msg>``) [refactor 07 §3]."""
+    from .benchmarks import IMPORTERS, importer_names
+    from .public import import_public_dataset
 
-    if benchmark == "dir":
-        task_source = DirectorySource(source)
-        dataset_name = corpus_id or "terminal-bench"
-        resolved_version = dataset_version or "2.0"
-    elif benchmark == "swebench":
-        from .benchmarks import SWEBENCH, SweBenchSource
-
-        task_source = SweBenchSource(source, image_template=image_template)
-        dataset_name = SWEBENCH
-        # do NOT inherit terminal-bench's "2.0"; the user labels the export
-        resolved_version = dataset_version or "SWE-bench_Verified"
-    else:
-        raise UnknownBenchmarkError(f"unknown --benchmark {benchmark!r} (dir | swebench)")
-
+    if benchmark not in IMPORTERS:
+        raise UnknownBenchmarkError(
+            f"unknown --benchmark {benchmark!r} ({importer_names()})"
+        )
+    spec = IMPORTERS[benchmark]
+    task_source = spec.source_factory(source, image_template=image_template)
+    resolved_version = dataset_version or spec.default_dataset_version
+    # A generic directory has no canonical dataset name, so --corpus-id names it;
+    # a benchmark with a canonical identity keeps its dataset name fixed [07 §3].
+    dataset_name = (
+        (corpus_id or spec.dataset_name)
+        if spec.corpus_id_names_dataset
+        else spec.dataset_name
+    )
     manifest = import_public_dataset(
         task_source,
         cache,
