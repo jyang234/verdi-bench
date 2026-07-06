@@ -7,6 +7,14 @@ aggregates, and the ``MetricDef`` registry [refactor 07 §2] that keys them. All
 on :class:`~harness.ledger.view.LedgerView`. ``compute_findings`` is the pure
 core — a reproducible function of ``(ledger, spec, seed, corpus_manifest)`` that
 assembles these series into a :class:`~harness.analyze.findings.model.FindingsDocument`.
+
+Size note (the master plan's Phase-5 exit gate asks any >500-line module to
+state its reason): this module deliberately holds the ENTIRE deterministic
+extraction+computation core in one place — every series extractor and the one
+function composing them — because splitting it would scatter the reproducibility
+boundary (one seed, one ledger snapshot, one document) across files without
+removing a single responsibility; rendering, fencing, and models already live
+elsewhere in this package.
 """
 
 from __future__ import annotations

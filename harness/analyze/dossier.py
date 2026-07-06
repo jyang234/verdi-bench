@@ -2,9 +2,10 @@
 [EVAL-12 AC-3..AC-7, D002, D003].
 
 A sibling renderer to the markdown/HTML renders behind the same fence:
-``render_dossier`` delegates validation to :func:`report.render_markdown`, so
-every current and future fence check applies identically and a refusing ledger
-raises the same ``AnalyzeError`` → the same ``cant_analyze`` reason [AC-4].
+``render_dossier`` delegates validation to :func:`findings.fence.validate_for_render`
+— the one shared check list every renderer consumes — so every current and
+future fence check applies identically and a refusing ledger raises the same
+``AnalyzeError`` → the same ``cant_analyze`` reason [AC-4].
 
 Three layers, one artifact:
 
