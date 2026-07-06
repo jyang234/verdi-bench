@@ -26,6 +26,7 @@ from harness.status.trial import trial_detail
 from tests.fixtures.builders import fixed_ctx, locked_experiment
 from tests.fixtures.scenarios import rich_experiment
 from tests.fixtures.servers import serve_experiment, serve_root
+from tests.fixtures.tamper import reencode_line
 
 
 def _passing_fence(fx: dict) -> CorpusManifest:
@@ -67,11 +68,7 @@ def test_ac1_workspace_scan_summaries(tmp_path):
         ledger, fixed_ctx(experiment_id="exp-tampered"),
         trial_id="tampered-cover", reason="grader_unavailable",
     )
-    lines = ledger.read_text(encoding="utf-8").splitlines()
-    doctored = json.loads(lines[0])
-    doctored["seed"] = 999999
-    lines[0] = json.dumps(doctored, sort_keys=True, separators=(",", ":"))
-    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    reencode_line(ledger, 0, lambda ev: ev.update(seed=999999))
     (tmp_path / "not-an-experiment").mkdir()  # silently not one
     (tmp_path / "stray.txt").write_text("x", encoding="utf-8")
 

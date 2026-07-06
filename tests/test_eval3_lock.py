@@ -350,10 +350,9 @@ def test_assert_lock_refuses_tampered_chain(tmp_path):
     """
     import json
 
-    from harness.ledger.chain import canonical_line
     from harness.ledger.query import ChainIntegrityError
-    from harness.plan.lock import spec_sha256
     from tests.fixtures.builders import seed_trial_and_grade
+    from tests.fixtures.tamper import forge_lock_sha
 
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
@@ -363,14 +362,7 @@ def test_assert_lock_refuses_tampered_chain(tmp_path):
     seed_trial_and_grade(ledger, ctx, trial_id="t1", task_id="task-1", arm="arm_a")
 
     # attacker mutates the spec, then forges the recorded sha to match it
-    spec.write_text(spec.read_text() + "\n# tampered\n")
-    forged = spec_sha256(spec)
-    lines = ledger.read_text(encoding="utf-8").splitlines()
-    lock_obj = json.loads(lines[0])
-    assert lock_obj["event"] == "experiment_locked"
-    lock_obj["spec_sha256"] = forged
-    lines[0] = canonical_line(lock_obj)
-    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    forged = forge_lock_sha(spec, ledger)
 
     # the naive sha-equality check would now pass ...
     assert json.loads(ledger.read_text().splitlines()[0])["spec_sha256"] == forged

@@ -31,6 +31,7 @@ from tests.fixtures.browser import drive
 from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
 from tests.fixtures.scenarios import linked_experiment, reasoning_experiment, rich_experiment
 from tests.fixtures.servers import serve_root
+from tests.fixtures.tamper import flip_bytes
 
 
 def _record_trial(ledger, ctx, *, trial_id, task_id, arm, repetition=0, telemetry=None):
@@ -71,11 +72,9 @@ def _tampered_fixture(dirpath):
     """A locked experiment with one trial whose ledger then loses chain
     integrity (a rewritten byte) — the withheld-everywhere state."""
     _paired_fixture(dirpath)
-    ledger = dirpath / "ledger.ndjson"
-    lines = ledger.read_text(encoding="utf-8").splitlines()
-    assert '"tester"' in lines[1], "fixture expects the actor on the trial line"
-    lines[1] = lines[1].replace('"tester"', '"intruder"', 1)
-    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # flip_bytes refuses when the actor is not on the trial line, so a drifted
+    # fixture fails loudly instead of tampering nothing
+    flip_bytes(dirpath / "ledger.ndjson", 1, '"tester"', '"intruder"')
 
 
 # --- server-side: additive home-row / status fields --------------------------------

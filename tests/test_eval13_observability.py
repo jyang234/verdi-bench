@@ -31,6 +31,7 @@ from harness.schema.experiment import Arm
 from harness.status.aggregate import compute_status
 from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
 from tests.fixtures.servers import serve_experiment
+from tests.fixtures.tamper import reencode_line
 
 _REPO = Path(__file__).resolve().parents[1]
 
@@ -287,11 +288,7 @@ def test_ac3_status_broken_chain_fails_closed(tmp_path):
         json.dumps({"schema_version": 1, "state": "running"}), encoding="utf-8"
     )
     # tamper a mid-chain line: its successor's prev_hash no longer matches
-    lines = ledger.read_text(encoding="utf-8").splitlines()
-    tampered = json.loads(lines[1])
-    tampered["seed_of_doubt"] = True
-    lines[1] = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
-    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    reencode_line(ledger, 1, lambda ev: ev.update(seed_of_doubt=True))
 
     snap = compute_status(tmp_path)
     assert snap["chain"]["ok"] is False
@@ -386,11 +383,7 @@ def test_m10_data_routes_fail_closed_on_broken_chain(tmp_path):
     content (409), not just /api/status — the trials list, timeline, drill-down,
     and compare no longer render tampered events."""
     ledger = _fixture_experiment(tmp_path)
-    lines = ledger.read_text(encoding="utf-8").splitlines()
-    tampered = json.loads(lines[1])
-    tampered["seed_of_doubt"] = True
-    lines[1] = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
-    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    reencode_line(ledger, 1, lambda ev: ev.update(seed_of_doubt=True))
 
     with serve_experiment(tmp_path) as base:
         for route in ("/api/events", "/api/timeline", "/api/compare"):
