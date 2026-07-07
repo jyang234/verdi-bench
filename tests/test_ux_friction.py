@@ -15,7 +15,8 @@ from harness.ledger import events
 from harness.ledger.query import find_events
 from harness.plan.api import plan_experiment
 from harness.plan.lock import AlreadyLockedError, lock_experiment
-from tests.fixtures.builders import fixed_ctx, write_experiment_yaml
+from harness.status.aggregate import compute_status
+from tests.fixtures.builders import fixed_ctx, locked_experiment, write_experiment_yaml
 
 # small sim params keep the plan/lock power check fast in tests
 _TWO_TASKS = {"tasks": [{"id": "t1", "prompt": "p"}, {"id": "t2", "prompt": "p"}]}
@@ -100,3 +101,29 @@ def test_refused_second_lock_after_cleanup_does_not_resurrect_planlock(tmp_path)
 
     assert not planlock.exists()  # the refused attempt left no stray guard file
     assert len(find_events(ledger, events.EXPERIMENT_LOCKED)) == 1  # still exactly one
+
+
+# --- AC-5: bench status titles the experiment from the locked ledger ----------
+def test_status_header_prefers_ledger_experiment_id(tmp_path, monkeypatch):
+    """[ux-friction AC-5] bench status titles the experiment from the locked
+    ledger's experiment_id, falling back to the directory name only when no lock
+    exists. Today the header is path-derived (F8): `bench status .` renders a
+    blank name and the absolute-path form renders the dir name — never the id the
+    ledger actually carries, and the two invocations disagree."""
+    expdir = tmp_path / "my-experiment"
+    expdir.mkdir()
+
+    # pre-lock: no lock event ⇒ the directory-name fallback holds
+    assert compute_status(expdir)["experiment_id"] == "my-experiment"
+
+    # lock with an experiment_id deliberately DISTINCT from the dir name, so a
+    # header echoing the typed path is unmistakably wrong
+    locked_experiment(expdir, ctx=fixed_ctx(experiment_id="ledger-name"))
+
+    abs_snap = compute_status(expdir)
+    monkeypatch.chdir(expdir)
+    dot_snap = compute_status(Path("."))  # `bench status .`: dir name is "" (blank today)
+
+    assert abs_snap["experiment_id"] == "ledger-name"  # the ledger id, not "my-experiment"
+    assert dot_snap["experiment_id"] == "ledger-name"  # blank ('') today
+    assert dot_snap["experiment_id"] == abs_snap["experiment_id"]  # same header both ways

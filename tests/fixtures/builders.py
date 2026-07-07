@@ -24,6 +24,13 @@ def locked_experiment(dirpath, *, ctx=None, **overrides):
     Uses a tiny MDE simulation (fast, deterministic) so tests that need a real
     ``experiment_locked`` event — with its MDE block — don't pay the full power
     sweep. Shared across EVAL-6/7/9 fixtures.
+
+    The default lock ctx stamps ``experiment_id`` = the experiment directory's
+    name, mirroring the real-world invariant plan enforces (a lock's id is the
+    resolved experiment directory [ux-friction AC-1]) so a locked fixture models
+    a real ledger — status/scan headers title from that id [ux-friction AC-5].
+    ``rich_experiment`` already runs/grades under this same dir-name ctx; the
+    default now keeps the lock event consistent with it.
     """
     from harness.plan.lock import lock_experiment
 
@@ -31,7 +38,7 @@ def locked_experiment(dirpath, *, ctx=None, **overrides):
     dirpath.mkdir(parents=True, exist_ok=True)
     spec_path = write_experiment_yaml(dirpath / "experiment.yaml", **overrides)
     ledger = dirpath / "ledger.ndjson"
-    ctx = ctx or fixed_ctx()
+    ctx = ctx or fixed_ctx(experiment_id=dirpath.name)
     outcome = lock_experiment(
         spec_path, ledger, ctx=ctx, n_sim=8, n_boot=40, deltas=[0.2, 0.4]
     )
