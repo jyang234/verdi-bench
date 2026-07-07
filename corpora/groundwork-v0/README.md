@@ -86,11 +86,21 @@ binary score. With one holdout, they are composed into a single `command`
 holdout:
 
 ```
-sh -c 'set -e;
-       cp /holdouts/<id>/functional/feature_test.go ./<pkg>/feature_test.go;
+sh -c 'set -e; H="${VERDI_HOLDOUTS_DIR:-/holdouts}";
+       cp "$H"/functional/feature_test.go ./<pkg>/feature_test.go;
        go test ./...;
-       /usr/local/bin/verdi-groundwork-check <id>'
+       verdi-groundwork-check <id>'
 ```
+
+The holdouts root is resolved as `${VERDI_HOLDOUTS_DIR:-/holdouts}` — the same
+expression `verdi-groundwork-check` uses (one source of truth). In the grade
+container `VERDI_HOLDOUTS_DIR` is unset, so it is the read-only `/holdouts` mount
+(the per-task holdouts dir, mounted **at** `/holdouts` — so the side files are at
+`$H/functional/…` and `$H/groundwork/…`, NOT `/holdouts/<id>/…`); off-container the
+ADVISORY `local-exec` grade points it at the per-task dir. The wrapper is invoked by
+**bare name** so it resolves on PATH (the grader image installs it on PATH; a local
+run puts `images/grader/` on PATH) — no container-absolute path is baked in, so the
+one emitted holdout runs both in-container and off-container.
 
 so `holdout_pass_rate` = **"shipped a working feature that respects the
 invariant"** — a broken submission fails (go test) and a working-but-violating one
@@ -203,12 +213,17 @@ machine-readable facts in `tasks/<id>/task.meta.json`.
 ## build_tasks.py
 
 Stdlib-only (imports no harness code); shells out to the pinned binaries via
-`$FLOWMAP` / `$GROUNDWORK` / `$GO`.
+`$VERDI_FLOWMAP_BIN` / `$VERDI_GROUNDWORK_BIN` — the SAME override the grader plugin
+(`groundwork_shell._resolve_binary`) and the `verdi-groundwork-check` wrapper honor,
+so one `export` pins all three to one build — else PATH; a set-but-missing override
+fails loud (never a silent wrong-build fallback). `$GO` overrides the go toolchain.
 
 ```bash
-FLOWMAP=/path/flowmap GROUNDWORK=/path/groundwork python3 build_tasks.py --check
-python3 build_tasks.py --out <expt-dir>          # tasks.yaml + holdouts/<id>/
-python3 build_tasks.py --solutions <sol-dir>     # reference trees for the k=5 baseline
+export VERDI_FLOWMAP_BIN=/path/flowmap VERDI_GROUNDWORK_BIN=/path/groundwork
+python3 build_tasks.py --check                    # (a)/(b)/(c) validation matrix
+python3 build_tasks.py --freeze-graphs            # re-freeze committed workspace/graph.json
+python3 build_tasks.py --out <expt-dir>           # tasks.yaml + holdouts/<id>/
+python3 build_tasks.py --solutions <sol-dir>      # reference trees for the k=5 baseline
 ```
 
 `--out` emits `tasks.yaml` (the workspace inlined via the schema's `files:` map;

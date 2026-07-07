@@ -22,8 +22,10 @@ loadable without the verdi-bench package) and shells out to the pinned
 Determinism: every directory walk is sorted, JSON is key-sorted, and no wall
 clock / absolute host path is written into an emitted artifact.
 
-Binaries are resolved from ``$FLOWMAP`` / ``$GROUNDWORK`` (default: ``flowmap`` /
-``groundwork`` on PATH). ``$GO`` overrides the go toolchain (default ``go``).
+Binaries are resolved from ``$VERDI_FLOWMAP_BIN`` / ``$VERDI_GROUNDWORK_BIN`` — the
+SAME override the grader plugin and the ``verdi-groundwork-check`` wrapper honor —
+else PATH; a set-but-missing override fails loud (never a silent wrong-build
+fallback). ``$GO`` overrides the go toolchain (default ``go``).
 
 The single-holdout reality (harness/grade/holdouts.py exposes exactly one
 ``holdout.json`` per task, a discriminated union — verified against the source)
@@ -47,15 +49,57 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TASKS_DIR = HERE / "tasks"
 
-FLOWMAP = os.environ.get("FLOWMAP", "flowmap")
-GROUNDWORK = os.environ.get("GROUNDWORK", "groundwork")
+# Binary discovery mirrors the rest of the toolchain — the grader plugin's
+# ``harness/grade/plugins/groundwork_shell._resolve_binary`` AND the
+# ``images/grader/verdi-groundwork-check`` wrapper: the ``VERDI_FLOWMAP_BIN`` /
+# ``VERDI_GROUNDWORK_BIN`` override wins, else PATH. One env-var convention across
+# the builder, the plugin, and the wrapper means a single ``export
+# VERDI_FLOWMAP_BIN=…`` pins ALL of them to one build — the determinism the
+# corpus's committed graphs depend on (a mixed toolchain is a mismatch groundwork
+# will flag). ``$GO`` still overrides the go toolchain (default ``go`` on PATH).
+FLOWMAP_BIN_ENV = "VERDI_FLOWMAP_BIN"
+GROUNDWORK_BIN_ENV = "VERDI_GROUNDWORK_BIN"
+FLOWMAP_DEFAULT = "flowmap"
+GROUNDWORK_DEFAULT = "groundwork"
 GO = os.environ.get("GO", "go")
 
-# The grader-image wrapper the groundwork command holdout invokes; it reads
-# /holdouts/<id>/groundwork/{policy.json,base.graph.json}, regenerates the branch
-# graph from the workspace (with the policy's substrate), runs groundwork verify,
-# and exits with groundwork's code. Shipped by the harness grader image (plan §3).
-GROUNDWORK_WRAPPER = "/usr/local/bin/verdi-groundwork-check"
+
+def _resolve_binary(env_var: str, default_name: str) -> str:
+    """The flowmap/groundwork binary: ``env_var`` override if set, else PATH.
+
+    PARITY (named so it cannot drift): mirrors
+    ``harness/grade/plugins/groundwork_shell._resolve_binary`` exactly —
+    a set-but-missing override is a MISCONFIGURED PIN and fails LOUD rather than
+    silently falling back to PATH and building with the wrong tool; an absent
+    override falls back to PATH and fails loud if the tool is not found. Mirrored
+    (not imported) because this builder stays stdlib-only (decision D3), and
+    resolved at call time (like the harness copy) so importing this module needs
+    no binaries — the hermetic corpus test can load it without a toolchain."""
+    override = os.environ.get(env_var)
+    if override:
+        if not Path(override).is_file():
+            raise SystemExit(
+                f"{env_var}={override!r} does not point at a file; the groundwork "
+                f"toolchain pin is misconfigured"
+            )
+        return override
+    found = shutil.which(default_name)
+    if not found:
+        raise SystemExit(
+            f"{default_name!r} not found on PATH and {env_var} is unset; set "
+            f"{env_var} or install the pinned groundwork toolchain on PATH"
+        )
+    return found
+
+# The grader-image wrapper the groundwork command holdout invokes, by BARE NAME so
+# it resolves on PATH (portable): the grader image installs it at /usr/local/bin
+# (on PATH), and a local/ADVISORY run puts images/grader/ on PATH — the old
+# container-absolute path only existed in the grade container. It reads
+# ${VERDI_HOLDOUTS_DIR:-/holdouts}/groundwork/{policy.json,base.graph.json}
+# (the per-task holdouts dir, mounted AT /holdouts), regenerates the branch graph
+# from the workspace with the policy's substrate, runs groundwork verify, and exits
+# with groundwork's code. Shipped by the harness grader image (plan §3).
+GROUNDWORK_WRAPPER = "verdi-groundwork-check"
 
 # Files inside a workspace tree that are NOT staged to the agent or analyzed as
 # task source. (Nothing today — kept explicit so a future stray file fails loud.)
@@ -150,14 +194,15 @@ def _run(argv: list[str], cwd: Path | None = None) -> subprocess.CompletedProces
 
 def gen_graph(tree: Path, substrate: str, out_path: Path) -> None:
     """flowmap graph --algo <substrate> <tree> > out_path (fail loud)."""
-    proc = _run([FLOWMAP, "graph", "--algo", substrate, str(tree)])
+    proc = _run([_resolve_binary(FLOWMAP_BIN_ENV, FLOWMAP_DEFAULT),
+                 "graph", "--algo", substrate, str(tree)])
     if proc.returncode != 0:
         raise SystemExit(f"flowmap graph failed for {tree}:\n{proc.stderr}")
     out_path.write_text(proc.stdout, encoding="utf-8")
 
 
 def groundwork_rc(argv: list[str]) -> tuple[int, str]:
-    proc = _run([GROUNDWORK, *argv])
+    proc = _run([_resolve_binary(GROUNDWORK_BIN_ENV, GROUNDWORK_DEFAULT), *argv])
     return proc.returncode, (proc.stdout + proc.stderr)
 
 
@@ -175,11 +220,24 @@ def go_ok(tree: Path) -> tuple[bool, str]:
 # --------------------------------------------------------------------------- #
 def holdout_argv(task_id: str, tests: list[tuple[str, str]]) -> list[str]:
     """The composite ``command`` holdout: inject the hidden feature test(s),
-    run the functional suite, then the groundwork gate. Exit 0 iff both pass."""
+    run the functional suite, then the groundwork gate. Exit 0 iff both pass.
+
+    The holdouts root is resolved as ``${VERDI_HOLDOUTS_DIR:-/holdouts}`` — the
+    SAME expression images/grader/verdi-groundwork-check uses (one source of truth
+    for the per-task holdouts root). In the grade container VERDI_HOLDOUTS_DIR is
+    unset, so it is the read-only ``/holdouts`` mount; off-container (the ADVISORY
+    local-exec baseline) the harness points it at the per-task holdouts dir. The
+    functional side files therefore live at ``$H/functional/…`` — NOT
+    ``/holdouts/<id>/functional/…``: the per-task dir is mounted AT /holdouts, so
+    the ``<id>`` segment was a path bug that made the cp — and thus the whole gate —
+    fail in-container. ``go test`` runs, then the groundwork gate."""
     cps = "; ".join(
-        f"cp /holdouts/{task_id}/functional/{Path(rel).name} ./{rel}" for rel, _ in tests
+        f'cp "$H"/functional/{Path(rel).name} ./{rel}' for rel, _ in tests
     )
-    script = f"set -e; {cps}; {GO} test ./...; {GROUNDWORK_WRAPPER} {task_id}"
+    script = (
+        'set -e; H="${VERDI_HOLDOUTS_DIR:-/holdouts}"; '
+        f"{cps}; {GO} test ./...; {GROUNDWORK_WRAPPER} {task_id}"
+    )
     return ["sh", "-c", script]
 
 
