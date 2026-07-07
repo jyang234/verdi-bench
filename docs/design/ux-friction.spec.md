@@ -43,6 +43,8 @@ decisions:          # ruled by the human 2026-07-07; move to decisions.ndjson at
     ruling: "judge.panel stays in the schema as a v2 breadcrumb but REFUSES when set, with a typed error naming it not-implemented — provided this costs no capability today (nothing sets it; see the test-change register)."
   - id: "D4"
     ruling: "Plan-time WARNING (never a gate) when the task suite cannot support a decision (<2 tasks) — protects users who edit the scaffold back down to one task. Single-task exploratory designs remain legitimate and lockable."
+  - id: "D5"
+    ruling: "Ruled at Batch A review: fix the fixture-id judgment call properly — eliminate tests/fixtures/builders.py's hardcoded 'exp-fixture' default entirely and shift the suite to the dir-derived pattern (fixtures with a real experiment dir derive their id through the harness.ledger identity seam AC-1 introduces; dir-less unit tests pass an explicit literal at the call site, never an invisible default). Test-infrastructure only; recorded here rather than as a new AC — the enforceable production behavior is AC-1's."
 
 constraints:
   - text: "Additive-only ledger vocabulary: new cant_grade reason strings and new lock-event flag strings extend existing string fields; no event schema, serialization recipe, or hash-chain change of any kind."
@@ -60,6 +62,8 @@ test_change_register:   # tests-are-contracts: pre-approved by the human with th
   - test: "tests/test_schema_serialize.py:69,136"
     change: "the round-trip fixture drops panel:{size:3} (which AC-8 makes invalid) and keeps its non-default coverage via token_ceiling/escalation/orders/temperature. Intent preserved: 'non-default judge fields round-trip byte-stably' — panel was a convenient non-default, not the subject."
   - note: "The 15 other test files matching gemini-1.5-pro-002 hardcode their own inline specs and are expected to be unaffected; the author-page embed tests consume the template as data and follow it mechanically. Implementation must sweep and confirm, and list any additional edit in the PR under this register."
+  - test: "tests/fixtures/builders.py::fixed_ctx and its call sites (D5 ruling)"
+    change: "the hardcoded 'exp-fixture' default is removed suite-wide: fixtures with a real experiment dir derive the id from the directory (via the AC-1 identity seam); dir-less unit tests pass an explicit literal at the call site. Asserted id LITERALS update mechanically ('exp-fixture' → the dir name or the explicit literal); no assertion is deleted or weakened, and every changed assertion line is listed in the landing PR."
 
 acceptance:
   - id: "AC-1"
