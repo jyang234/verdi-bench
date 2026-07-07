@@ -1,0 +1,240 @@
+{
+  "tool": "v0.0.0-20260707120445-827ad9a0d237",
+  "algo": "vta",
+  "caveats": [
+    "vta refined over rta from 3 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/inboxsvc/internal/api.Server).Deliver",
+      "sig": "func (*api.Server).Deliver(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/inboxsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 29,
+      "end_line": 35
+    },
+    {
+      "fqn": "(*example.com/inboxsvc/internal/api.Server).GetMessage",
+      "sig": "func (*api.Server).GetMessage(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/inboxsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 19,
+      "end_line": 26
+    },
+    {
+      "fqn": "(*example.com/inboxsvc/internal/core.Service).Deliver",
+      "sig": "func (*core.Service).Deliver(ctx context.Context, id string) error",
+      "tier": 2,
+      "package": "example.com/inboxsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 32,
+      "end_line": 34
+    },
+    {
+      "fqn": "(*example.com/inboxsvc/internal/core.Service).GetMessage",
+      "sig": "func (*core.Service).GetMessage(ctx context.Context, id string) (repo.Message, error)",
+      "tier": 2,
+      "package": "example.com/inboxsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 23,
+      "end_line": 29
+    },
+    {
+      "fqn": "(*example.com/inboxsvc/internal/delivery.DbDeliverer).Record",
+      "sig": "func (*delivery.DbDeliverer).Record(ctx context.Context, id string) error",
+      "tier": 2,
+      "package": "example.com/inboxsvc/internal/delivery",
+      "fallible": true,
+      "file": "internal/delivery/delivery.go",
+      "line": 37,
+      "end_line": 39
+    },
+    {
+      "fqn": "(*example.com/inboxsvc/internal/repo.SQLStore).InsertReceipt",
+      "sig": "func (*repo.SQLStore).InsertReceipt(ctx context.Context, id string) error",
+      "tier": 1,
+      "package": "example.com/inboxsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 35,
+      "end_line": 39
+    },
+    {
+      "fqn": "(*example.com/inboxsvc/internal/repo.SQLStore).SelectMessage",
+      "sig": "func (*repo.SQLStore).SelectMessage(ctx context.Context, id string, out *repo.Message) error",
+      "tier": 2,
+      "package": "example.com/inboxsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 29,
+      "end_line": 32
+    },
+    {
+      "fqn": "example.com/inboxsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/inboxsvc",
+      "file": "main.go",
+      "line": 15,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/inboxsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/inboxsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 19,
+      "end_line": 26
+    },
+    {
+      "fqn": "example.com/inboxsvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/inboxsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 16,
+      "end_line": 16
+    },
+    {
+      "fqn": "example.com/inboxsvc/internal/api.writeJSON",
+      "sig": "func api.writeJSON(_ context.Context, w http.ResponseWriter, v any)",
+      "tier": 3,
+      "package": "example.com/inboxsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 37,
+      "end_line": 40
+    },
+    {
+      "fqn": "example.com/inboxsvc/internal/core.New",
+      "sig": "func core.New(store repo.Store, deliverer delivery.Deliverer) *core.Service",
+      "tier": 3,
+      "package": "example.com/inboxsvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 18,
+      "end_line": 20
+    },
+    {
+      "fqn": "example.com/inboxsvc/internal/delivery.NewDb",
+      "sig": "func delivery.NewDb(store repo.Store) *delivery.DbDeliverer",
+      "tier": 3,
+      "package": "example.com/inboxsvc/internal/delivery",
+      "file": "internal/delivery/delivery.go",
+      "line": 34,
+      "end_line": 34
+    },
+    {
+      "fqn": "example.com/inboxsvc/internal/repo.New",
+      "sig": "func repo.New(db *sql.DB) *repo.SQLStore",
+      "tier": 3,
+      "package": "example.com/inboxsvc/internal/repo",
+      "file": "internal/repo/repo.go",
+      "line": 26,
+      "end_line": 26
+    },
+    {
+      "fqn": "example.com/inboxsvc/internal/wire.Handler",
+      "sig": "func wire.Handler(store repo.Store, deliverer delivery.Deliverer) http.Handler",
+      "tier": 3,
+      "package": "example.com/inboxsvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 15,
+      "end_line": 23
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/inboxsvc/internal/api.Server).Deliver",
+      "to": "(*example.com/inboxsvc/internal/core.Service).Deliver",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/inboxsvc/internal/api.Server).GetMessage",
+      "to": "(*example.com/inboxsvc/internal/core.Service).GetMessage",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/inboxsvc/internal/api.Server).GetMessage",
+      "to": "example.com/inboxsvc/internal/api.writeJSON",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/inboxsvc/internal/core.Service).Deliver",
+      "to": "(*example.com/inboxsvc/internal/delivery.DbDeliverer).Record",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/inboxsvc/internal/core.Service).GetMessage",
+      "to": "(*example.com/inboxsvc/internal/repo.SQLStore).SelectMessage",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/inboxsvc/internal/delivery.DbDeliverer).Record",
+      "to": "(*example.com/inboxsvc/internal/repo.SQLStore).InsertReceipt",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/inboxsvc/internal/repo.SQLStore).InsertReceipt",
+      "to": "boundary:db INSERT receipts",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/inboxsvc/internal/repo.SQLStore).SelectMessage",
+      "to": "boundary:db SELECT messages",
+      "tier": 2,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "example.com/inboxsvc.main",
+      "to": "example.com/inboxsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/inboxsvc.run",
+      "to": "example.com/inboxsvc/internal/delivery.NewDb",
+      "tier": 3
+    },
+    {
+      "from": "example.com/inboxsvc.run",
+      "to": "example.com/inboxsvc/internal/repo.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/inboxsvc.run",
+      "to": "example.com/inboxsvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/inboxsvc/internal/wire.Handler",
+      "to": "example.com/inboxsvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/inboxsvc/internal/wire.Handler",
+      "to": "example.com/inboxsvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "GET /messages/{id}",
+      "fn": "(*example.com/inboxsvc/internal/api.Server).GetMessage"
+    },
+    {
+      "kind": "http",
+      "name": "POST /messages/{id}/receipt",
+      "fn": "(*example.com/inboxsvc/internal/api.Server).Deliver"
+    }
+  ],
+  "composition_roots": [
+    "example.com/inboxsvc"
+  ]
+}

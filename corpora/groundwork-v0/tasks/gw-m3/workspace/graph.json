@@ -1,0 +1,249 @@
+{
+  "tool": "v0.0.0-20260707120445-827ad9a0d237",
+  "algo": "vta",
+  "caveats": [
+    "vta refined over rta from 3 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/feedsvc/internal/api.Server).GetItem",
+      "sig": "func (*api.Server).GetItem(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/feedsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 19,
+      "end_line": 26
+    },
+    {
+      "fqn": "(*example.com/feedsvc/internal/api.Server).React",
+      "sig": "func (*api.Server).React(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/feedsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 29,
+      "end_line": 35
+    },
+    {
+      "fqn": "(*example.com/feedsvc/internal/bus.Bus).Publish",
+      "sig": "func (*bus.Bus).Publish(ctx context.Context, topic string, payload string) error",
+      "tier": 1,
+      "package": "example.com/feedsvc/internal/bus",
+      "fallible": true,
+      "file": "internal/bus/bus.go",
+      "line": 18,
+      "end_line": 20
+    },
+    {
+      "fqn": "(*example.com/feedsvc/internal/core.Service).GetItem",
+      "sig": "func (*core.Service).GetItem(ctx context.Context, id string) (repo.Item, error)",
+      "tier": 2,
+      "package": "example.com/feedsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 23,
+      "end_line": 29
+    },
+    {
+      "fqn": "(*example.com/feedsvc/internal/core.Service).React",
+      "sig": "func (*core.Service).React(ctx context.Context, id string) error",
+      "tier": 2,
+      "package": "example.com/feedsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 32,
+      "end_line": 34
+    },
+    {
+      "fqn": "(*example.com/feedsvc/internal/emit.BusEmitter).Emit",
+      "sig": "func (*emit.BusEmitter).Emit(ctx context.Context, id string) error",
+      "tier": 1,
+      "package": "example.com/feedsvc/internal/emit",
+      "fallible": true,
+      "file": "internal/emit/emit.go",
+      "line": 47,
+      "end_line": 49
+    },
+    {
+      "fqn": "(*example.com/feedsvc/internal/repo.SQLStore).SelectItem",
+      "sig": "func (*repo.SQLStore).SelectItem(ctx context.Context, id string, out *repo.Item) error",
+      "tier": 2,
+      "package": "example.com/feedsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 28,
+      "end_line": 31
+    },
+    {
+      "fqn": "example.com/feedsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/feedsvc",
+      "file": "main.go",
+      "line": 16,
+      "end_line": 18
+    },
+    {
+      "fqn": "example.com/feedsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/feedsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 20,
+      "end_line": 28
+    },
+    {
+      "fqn": "example.com/feedsvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/feedsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 16,
+      "end_line": 16
+    },
+    {
+      "fqn": "example.com/feedsvc/internal/api.writeJSON",
+      "sig": "func api.writeJSON(_ context.Context, w http.ResponseWriter, v any)",
+      "tier": 3,
+      "package": "example.com/feedsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 37,
+      "end_line": 40
+    },
+    {
+      "fqn": "example.com/feedsvc/internal/bus.New",
+      "sig": "func bus.New() *bus.Bus",
+      "tier": 3,
+      "package": "example.com/feedsvc/internal/bus",
+      "file": "internal/bus/bus.go",
+      "line": 14,
+      "end_line": 14
+    },
+    {
+      "fqn": "example.com/feedsvc/internal/core.New",
+      "sig": "func core.New(store repo.Store, emitter emit.Emitter) *core.Service",
+      "tier": 3,
+      "package": "example.com/feedsvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 18,
+      "end_line": 20
+    },
+    {
+      "fqn": "example.com/feedsvc/internal/emit.NewBus",
+      "sig": "func emit.NewBus(b *bus.Bus) *emit.BusEmitter",
+      "tier": 3,
+      "package": "example.com/feedsvc/internal/emit",
+      "file": "internal/emit/emit.go",
+      "line": 44,
+      "end_line": 44
+    },
+    {
+      "fqn": "example.com/feedsvc/internal/repo.New",
+      "sig": "func repo.New(db *sql.DB) *repo.SQLStore",
+      "tier": 3,
+      "package": "example.com/feedsvc/internal/repo",
+      "file": "internal/repo/repo.go",
+      "line": 25,
+      "end_line": 25
+    },
+    {
+      "fqn": "example.com/feedsvc/internal/wire.Handler",
+      "sig": "func wire.Handler(store repo.Store, emitter emit.Emitter) http.Handler",
+      "tier": 3,
+      "package": "example.com/feedsvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 15,
+      "end_line": 23
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/feedsvc/internal/api.Server).GetItem",
+      "to": "(*example.com/feedsvc/internal/core.Service).GetItem",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/feedsvc/internal/api.Server).GetItem",
+      "to": "example.com/feedsvc/internal/api.writeJSON",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/feedsvc/internal/api.Server).React",
+      "to": "(*example.com/feedsvc/internal/core.Service).React",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/feedsvc/internal/core.Service).GetItem",
+      "to": "(*example.com/feedsvc/internal/repo.SQLStore).SelectItem",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/feedsvc/internal/core.Service).React",
+      "to": "(*example.com/feedsvc/internal/emit.BusEmitter).Emit",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/feedsvc/internal/emit.BusEmitter).Emit",
+      "to": "boundary:bus PUBLISH feed.activity",
+      "tier": 1,
+      "boundary": "outbound-async"
+    },
+    {
+      "from": "(*example.com/feedsvc/internal/repo.SQLStore).SelectItem",
+      "to": "boundary:db SELECT feed_items",
+      "tier": 2,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "example.com/feedsvc.main",
+      "to": "example.com/feedsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/feedsvc.run",
+      "to": "example.com/feedsvc/internal/bus.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/feedsvc.run",
+      "to": "example.com/feedsvc/internal/emit.NewBus",
+      "tier": 3
+    },
+    {
+      "from": "example.com/feedsvc.run",
+      "to": "example.com/feedsvc/internal/repo.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/feedsvc.run",
+      "to": "example.com/feedsvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/feedsvc/internal/wire.Handler",
+      "to": "example.com/feedsvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/feedsvc/internal/wire.Handler",
+      "to": "example.com/feedsvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "GET /feed/{id}",
+      "fn": "(*example.com/feedsvc/internal/api.Server).GetItem"
+    },
+    {
+      "kind": "http",
+      "name": "POST /feed/{id}/react",
+      "fn": "(*example.com/feedsvc/internal/api.Server).React"
+    }
+  ],
+  "composition_roots": [
+    "example.com/feedsvc"
+  ]
+}
