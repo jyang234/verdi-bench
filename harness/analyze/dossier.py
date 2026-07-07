@@ -21,6 +21,12 @@ Self-containment is a determinism *and* leakage property [AC-3]: no network
 references, no external assets, no scripts — collapse uses native
 ``<details>`` (zero JS, within D002's envelope) — and the render is a pure
 function of ``(findings, ledger)``: sorted iteration, no clock, no RNG.
+
+Size note (the master plan's Phase-5 exit gate asks any >500-line module to
+state its reason): one self-contained three-layer artifact renderer plus its
+closed :data:`VERDICT_TEMPLATES` sentence registry — the AC-5/D003 invariant
+that no verdict sentence exists outside that registry is per-file, so the
+templates and the renderer that consumes them stay in one module.
 """
 
 from __future__ import annotations

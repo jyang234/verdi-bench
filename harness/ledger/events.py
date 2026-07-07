@@ -22,6 +22,12 @@ Adding an event kind is three edits: (1) an event-name constant + one
 that calls :func:`build_event`; (3) the usual stage-entrypoint registration in
 the owning module (the one-event-per-operation property). Unknown event types
 are refused.
+
+Size note (the master plan's Phase-5 exit gate asks any >500-line module to
+state its reason): the :data:`_EVENT_SPECS` registry (31 event kinds) and the
+31 thin constructors forwarding to :func:`build_event` ARE the module — one file
+is the sole ledger write path; splitting the table from its wrappers would
+fragment that one-write-path property without removing a responsibility.
 """
 
 from __future__ import annotations

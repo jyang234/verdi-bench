@@ -15,6 +15,12 @@ This module computes **no new statistic**: the paired delta/CI/decision come fro
 :func:`harness.analyze.report.compute_findings`, and the per-arm absolute score is
 the mean :func:`harness.analyze.report.per_arm_absolute_scores` already exposes.
 The card only *projects and formats*.
+
+Size note (the master plan's Phase-5 exit gate asks any >500-line module to
+state its reason): one versioned comparability artifact — model, canonical
+serialization, renders, and comparison refusals — that computes no new
+statistic; the pieces share the ``battery_sha`` comparability contract, so
+keeping them together keeps that contract single-sourced.
 """
 
 from __future__ import annotations

@@ -15,6 +15,12 @@ documents — a single total order cannot reproduce both byte-for-byte (they ord
 control-reuse vs process, and provenance vs CI-method, oppositely), so each mode
 keeps its own sequence builder; what is unified is the section MODEL and every
 body builder they share.
+
+Size note (the master plan's Phase-5 exit gate asks any >500-line module to
+state its reason): the canonical :class:`Section` model and every ``_*_lines``
+body builder stay together so both mode sequences frame the SAME builders — the
+Ordering note above already covers why the two documents keep separate sequences
+rather than being forced into a third module.
 """
 
 from __future__ import annotations
