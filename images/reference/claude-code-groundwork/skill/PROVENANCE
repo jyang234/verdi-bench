@@ -1,0 +1,25 @@
+# Vendored-skill provenance — groundwork-workflow
+
+The `groundwork-workflow/` skill under this directory is VENDORED verbatim from
+the verdi-go (golang-code-graph) source repository so the trial-image docker
+build context stays verdi-bench-only (it never reaches into a sibling checkout).
+
+| field | value |
+|---|---|
+| source repo (Go module) | `github.com/jyang234/golang-code-graph` |
+| source path | `.claude/skills/groundwork-workflow/SKILL.md` |
+| commit sha | `827ad9a0d237653a84b908546e53e29a7269e4cd` |
+| vendored file | `groundwork-workflow/SKILL.md` |
+| SKILL.md sha256 | `de0a8d492fbd3038de43e69c32fd83dd0ade5baf056464d4ad030d3b895d21ff` |
+
+## Fidelity
+
+`SKILL.md` is a BYTE-IDENTICAL copy (the sha256 above pins it). Do not edit the
+vendored copy in place: re-vendor from the pinned source repo/commit and update
+this file's commit sha + hash in the same change, so the skill an agent loads is
+always traceable to an exact upstream revision.
+
+The SKILL.md body carries one repo-relative link
+(`../../../docs/groundwork/agent-workflow.md`) that resolves only inside the
+source repo; it is deep background, not required for the ground -> edit -> verify
+loop the skill teaches, and is intentionally left verbatim rather than rewritten.
