@@ -227,6 +227,27 @@ python3 build_tasks.py --out <expt-dir>           # tasks.yaml + holdouts/<id>/
 python3 build_tasks.py --solutions <sol-dir>      # reference trees for the k=5 baseline
 ```
 
+Or emit both to a **gitignored** scratch dir and strict-lint in one step (generated
+output is never committed — only the task sources under `tasks/` are):
+
+```bash
+make corpus-groundwork-v0     # --out + --solutions to scratch/groundwork-v0 + validate-tasks
+```
+
+The k=5 flake baseline (ADVISORY, no Docker) drives each reference solution through
+the real grade seam. Per task, point the holdouts/workspace roots at the emitted dirs
+and put the wrapper on PATH:
+
+```bash
+export VERDI_FLOWMAP_BIN=/path/flowmap VERDI_GROUNDWORK_BIN=/path/groundwork
+export PATH="$PWD/images/grader:$PATH"                 # verdi-groundwork-check on PATH
+tid=gw-r2; O=scratch/groundwork-v0
+VERDI_HOLDOUTS_DIR=$O/expt/holdouts/$tid VERDI_WORKSPACE_DIR=$O/solutions/$tid \
+  uv run bench corpus baseline <expt-dir> --task-id $tid --task-sha <sha> \
+    --workspace $O/solutions/$tid --holdouts-dir $O/expt/holdouts/$tid \
+    --runner local-exec --actor <who>
+```
+
 `--out` emits `tasks.yaml` (the workspace inlined via the schema's `files:` map;
 `plugin_ids:[groundwork]`; `holdouts_dir`; `holdout_canaries`) as JSON — which is
 valid YAML, so the harness's lenient reader loads it and the write-side `TaskSpec`
@@ -262,18 +283,52 @@ JSON, no timestamps).
   grader image's analyzer toolchain must also be ≥ the highest `go` directive any
   workspace declares (all are `go 1.24.0`).
 
-## Admission (P2) — caveats and open items
+## Admission (P2) — status and open items
 
-- **Contamination:** fixture ancestry is public. Seeds are mutated, but run the
-  EVAL-10 contamination probe before any official render (plan §5, §9).
-- **k=5 flake baseline** on each reference solution (`--solutions` output) is an
-  admission prerequisite (plan §10 P2) and will also catch any groundwork
-  nondeterminism — run it before admission.
-- **Grader-image substrate:** the `verdi-groundwork-check` wrapper MUST build the
-  branch graph with each task's declared substrate (`task.meta.json.graph_substrate`).
-  Multi-impl tasks are unsound under RTA (they false-BLOCK clean solutions) — the
-  wrapper reading the policy's `substrate` field closes this. Flagged as a P2
-  gate item.
+**Status** — every step below ran through the host `local-exec` runner
+(`grader_name="local-exec"`); only the Docker grader tier is trusted, so these are
+**ADVISORY** until re-run on Docker:
+
+- **k=5 flake baseline — GREEN (ADVISORY).** All 16 reference solutions pass k=5/5
+  through the real grade seam (`bench corpus baseline --runner local-exec` against
+  the `--solutions` trees). The `gw-r2` exemplar-violation QUARANTINES and a null
+  task's alternative implementation stays CLEAN through that same seam — so the gate
+  bites in the harness path, not only in the builder's `--check`. (The
+  `flake_baseline` ledger event records `workspace_basis` but NOT the grader tier, so
+  the ADVISORY provenance is operational, not self-recorded on the event.)
+- **`bench corpus validate-tasks` — CLEAN** on the emitted `tasks.yaml` (16/16 OK;
+  the write-side `TaskSpec` round-trips under `extra=forbid`).
+- **Holdout-leak checks — GREEN.** Feature tests live ONLY under `holdouts/<id>/`;
+  no per-task canary reaches the agent-visible `tasks.yaml`; `policy.json` +
+  `graph.json` ARE agent-visible (9c parity — intended, not a leak). Pinned by
+  `tests/test_corpus_groundwork_v0.py` (a hermetic subset in `make verify`, plus a
+  binary-gated `--check` / `--out` tail).
+- **Grader-image substrate — CLOSED.** `verdi-groundwork-check` reads the substrate
+  from the holdouts policy (`vta` for `gw-m*`), so a clean multi-impl solution is not
+  RTA-false-BLOCKed; confirmed green on the `gw-m1..m3` baselines.
+
+**Remaining before experiment-ready:**
+
+- **Docker-tier baselines.** Re-run each k=5 baseline on the TRUSTED Docker grader
+  tier (`bench corpus baseline --runner docker`, the pinned grader image) for the
+  admission-grade `flake_baseline` event — the ADVISORY host baselines establish
+  determinism but are not the trusted tier.
+- **EVAL-10 contamination probe — NOT RUN HERE** (needs model access; the probe
+  queries each arm model for training-set membership). Run before any official render
+  (plan §5, §9). Exact command:
+  ```bash
+  uv run bench contamination probe <expt-dir> --manifest <corpus-manifest.json> \
+      [--oracle-dir <oracles>] --actor <who>
+  ```
+  where `<expt-dir>` holds the locked `experiment.yaml` (which defines the arm
+  models) + `ledger.ndjson`.
+- **Signed curation approval + `bench corpus admit`** per task against the authorized
+  keyring — the admission chain the (Docker-tier) baseline feeds.
+
+**Standing caveats:**
+
+- **Contamination:** fixture ancestry is public. Seeds are mutated, but the probe
+  above is mandatory before an official render.
 - **Functional-holdout API pinning:** the injected `feature_test.go` drives the
   service through its `wire.Handler` / `core.Service` construction seam, so it
   pins that seam's signature. Prompts establish the seam; a correct implementation
