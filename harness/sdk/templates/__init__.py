@@ -9,10 +9,10 @@ canonical copy; every other surface derives from them:
   (``harness/author/page.py``), the ``bench init`` scaffold, the usage-guide
   example (pinned by a docs-consistency test), and the test fixture builders.
 - ``judge-rubric.md`` — the library rubric the ``Experiment.judge(rubric=None)``
-  default writes; it carries the verdict-JSON contract block (winner / reason /
-  evidence-locator / confidence) that was hand-embedded in the shakedown rubrics
-  (decision A8: the verdict-JSON format stays in rubrics, and this template is
-  its single source).
+  default writes; it carries only judgment criteria (correctness-first). The
+  verdict-JSON response contract it used to hand-embed is now harness-owned packet
+  framing (``harness/judge/packet.py``), un-omittable and rubric-independent
+  [refactor 13 OI-C, superseding decision A8].
 
 The loaders below read the raw bytes so callers get *exactly* the committed file
 (no re-serialization). Surfaces forbidden from importing ``harness.sdk`` by the
@@ -43,8 +43,9 @@ def starter_tasks_text() -> str:
 
 
 def judge_rubric_text() -> str:
-    """The library judge rubric — the ``judge(rubric=None)`` default and the
-    single source of the verdict-JSON output contract [decision A8]."""
+    """The library judge rubric — the ``judge(rubric=None)`` default. Judgment
+    criteria only; the verdict-JSON response contract is harness-owned packet
+    framing, not rubric text [refactor 13 OI-C]."""
     return JUDGE_RUBRIC.read_text(encoding="utf-8")
 
 

@@ -290,6 +290,48 @@ def test_jd13_packet_sha_covers_framing(monkeypatch):
     assert build().packet_sha256 != sha_before
 
 
+# --- OI-C: the verdict-JSON response contract is harness-owned framing --------
+def test_oic_verdict_contract_present_in_framing_unconditionally():
+    """[refactor 13 OI-C §1/§5] The verdict-JSON response contract is harness-owned
+    packet framing: it appears in the assembled system message for ANY packet —
+    including a rubric that says nothing about output format — so the response
+    shape is un-omittable and rubric-independent. Both render orders carry it."""
+    pkt = build_packet(
+        ResponseArtifacts(diff="a", holdout_results=[]),
+        ResponseArtifacts(diff="b", holdout_results=[]),
+        task_prompt="do the task",
+        rubric="Judge on correctness.",  # a rubric with NO format block
+    )
+    for order in ("AB", "BA"):
+        system = pkt.render(order)[0]["content"]
+        # the winner enum, both evidence locators, the confidence field, and the
+        # output-JSON-only instruction are all present from the framing alone.
+        assert '"winner": "1" | "2" | "TIE" | "CANT_JUDGE"' in system
+        assert '"ref"' in system and '"hunk"' in system
+        assert '"confidence"' in system
+        assert "Output the JSON object only" in system
+
+
+def test_oic_verdict_contract_single_source_is_packet_py():
+    """[refactor 13 OI-C §2] A8 single-source inverts: the verdict-JSON contract
+    literal lives in exactly ONE file — harness/judge/packet.py — and the slim SDK
+    rubric template (user data) now carries only judgment criteria, never the
+    format block. This is the forcing function behind the grep-proof."""
+    import harness.judge.packet as pk
+    from harness.sdk.templates import judge_rubric_text
+
+    # the harness owns the contract literal...
+    assert '{"winner": "1" | "2" | "TIE" | "CANT_JUDGE"' in pk._VERDICT_CONTRACT
+    assert "Output the JSON object only" in pk._VERDICT_CONTRACT
+
+    # ...and the library rubric template no longer carries it.
+    rubric = judge_rubric_text()
+    assert '{"winner"' not in rubric
+    assert "Output the JSON object only" not in rubric
+    # the slim rubric IS still substantive judgment criteria (not emptied out).
+    assert "correctness" in rubric.lower()
+
+
 def test_m_j1_diff_budget_caps_oversize_workspaces_deterministically(tmp_path):
     """F-M-J1: unbounded diff assembly let an arm force a terminal
     CANT_JUDGE(context_overflow) with a huge junk file on trials it would lose.
