@@ -1,7 +1,7 @@
-"""First-run UX friction fixes [docs/design/ux-friction.spec.md].
+"""First-run UX friction fixes [docs/design/specs/eval25.spec.md].
 
-Test functions are named descriptively here and are consolidated/renamed to
-test_ac<N>_* in tests/test_eval25_*.py at spec promotion.
+The AC-mapped tests for the ux-friction story (EVAL-25), consolidated and
+renamed test_ac<N>_* at spec promotion.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def _scaffold_experiment(directory: Path) -> Path:
     return directory / "experiment.yaml"
 
 
-def test_plan_experiment_id_is_path_independent(tmp_path, monkeypatch):
+def test_ac1_experiment_id_path_independent(tmp_path, monkeypatch):
     """[ux-friction AC-1] The three invocation forms bench init itself prints
     (bare relative from inside the dir, ./-relative, absolute) yield a
     byte-identical, non-empty provenance.experiment_id on the lock event — the
@@ -62,7 +62,7 @@ def test_plan_experiment_id_is_path_independent(tmp_path, monkeypatch):
     assert bare  # never the empty id F1 bakes into the chain
 
 
-def test_plan_refuses_empty_resolved_experiment_name(tmp_path):
+def test_ac1_empty_resolved_name_refused(tmp_path):
     """[ux-friction AC-1] A resolved parent with an empty name (a spec at the
     filesystem root) refuses with a typed error naming the offending path, rather
     than ever ledgering experiment_id=''. The refusal fires before any file read,
@@ -81,7 +81,7 @@ def test_plan_refuses_empty_resolved_experiment_name(tmp_path):
 
 
 # --- AC-6: a successful lock removes its <ledger>.planlock flock file ----------
-def test_successful_lock_removes_planlock_file(tmp_path):
+def test_ac6_planlock_removed_on_success(tmp_path):
     """[ux-friction AC-6] After a green plan the experiment dir carries only the
     user files and the ledger — the stray <ledger>.planlock flock file a
     successful lock leaves today (F5) is removed on success."""
@@ -94,7 +94,7 @@ def test_successful_lock_removes_planlock_file(tmp_path):
     assert len(find_events(ledger, events.EXPERIMENT_LOCKED)) == 1  # lock still happened
 
 
-def test_refused_second_lock_after_cleanup_does_not_resurrect_planlock(tmp_path):
+def test_ac6_refused_lock_no_planlock_resurrect(tmp_path):
     """[ux-friction AC-6] Cleanup is safe: a second lock attempt is still refused
     (AlreadyLockedError) by the outer single-lock check — which fires before the
     flock guard is ever created — so it neither succeeds nor resurrects a stray
@@ -113,7 +113,7 @@ def test_refused_second_lock_after_cleanup_does_not_resurrect_planlock(tmp_path)
 
 
 # --- AC-5: bench status titles the experiment from the locked ledger ----------
-def test_status_header_prefers_ledger_experiment_id(tmp_path, monkeypatch):
+def test_ac5_status_header_from_ledger(tmp_path, monkeypatch):
     """[ux-friction AC-5] bench status titles the experiment from the locked
     ledger's experiment_id, falling back to the directory name only when no lock
     exists. Today the header is path-derived (F8): `bench status .` renders a
@@ -139,7 +139,7 @@ def test_status_header_prefers_ledger_experiment_id(tmp_path, monkeypatch):
 
 
 # --- AC-1 broadening: one shared resolved-path seam for experiment_id ----------
-def test_derive_experiment_id_resolves_relative_paths_to_directory_name(
+def test_ac1_derive_seam_path_independent(
     tmp_path, monkeypatch
 ):
     """[ux-friction AC-1] The shared seam resolves before naming, so `.`, a bare
@@ -156,7 +156,7 @@ def test_derive_experiment_id_resolves_relative_paths_to_directory_name(
     assert derive_experiment_id(expdir) == "my-experiment"      # absolute
 
 
-def test_derive_experiment_id_refuses_empty_resolved_name():
+def test_ac1_derive_seam_empty_name_refused():
     """[ux-friction AC-1] A path that resolves to a nameless directory (the
     filesystem root) refuses with a typed error naming the offending path, rather
     than ever returning '' for a ledger to stamp."""
@@ -168,7 +168,7 @@ def test_derive_experiment_id_refuses_empty_resolved_name():
     assert str(root.resolve()) in str(exc.value)  # names the offending path
 
 
-def test_event_context_experiment_id_is_resolved(tmp_path, monkeypatch):
+def test_ac1_event_context_id_resolved(tmp_path, monkeypatch):
     """[ux-friction AC-1] cli_common.event_context — the shared ctx builder the
     forensics/contamination verbs use — stamps the RESOLVED directory name, so
     `bench <verb> .` no longer ledgers experiment_id='' (today Path('.').name)."""
@@ -201,7 +201,7 @@ def _built_planned_experiment(dirpath: Path, name: str):
     return ws
 
 
-def test_run_trial_events_carry_resolved_experiment_id(tmp_path, monkeypatch):
+def test_ac1_run_trial_events_resolved_id(tmp_path, monkeypatch):
     """[ux-friction AC-1, broadening] From inside a locked experiment dir, a
     fake-engine run invoked the way the CLI invokes it — with the bare-relative
     Path('.') — stamps every trial event with the directory's real name. Today
@@ -220,7 +220,7 @@ def test_run_trial_events_carry_resolved_experiment_id(tmp_path, monkeypatch):
     assert all(ev["provenance"]["experiment_id"] == "run-exp" for ev in trials)
 
 
-def test_grade_events_carry_resolved_experiment_id(tmp_path, monkeypatch):
+def test_ac1_grade_events_resolved_id(tmp_path, monkeypatch):
     """[ux-friction AC-1, broadening] A grade pass invoked the way the CLI
     invokes it (Path('.')) stamps its events with the directory's real name. No
     holdout injection is needed: with --runner local and no holdout_results.json
@@ -242,7 +242,7 @@ def test_grade_events_carry_resolved_experiment_id(tmp_path, monkeypatch):
 
 
 # --- AC-4: the local runner's missing-results outcome gets an honest reason ----
-def test_local_runner_missing_results_ledgers_holdout_results_missing(tmp_path):
+def test_ac4_local_missing_results_reason(tmp_path):
     """[ux-friction AC-4] `--runner local` with no holdout_results.json is a
     missing INPUT on a path with no container — not a grader that ran and failed.
     It must ledger the terminal reason `holdout_results_missing`, its own honest
@@ -277,7 +277,7 @@ def test_local_runner_missing_results_ledgers_holdout_results_missing(tmp_path):
     assert REASON_RESULTS_MISSING not in TRANSIENT_CANT_GRADE
 
 
-def test_docker_absent_fence_still_ledgers_container_failure(tmp_path):
+def test_ac4_docker_fence_still_container_failure(tmp_path):
     """[ux-friction AC-4] The docker-path fence semantics are untouched: a grader
     that ran and emitted zero fenced blocks is a real container failure and stays
     `container_failure`. AC-4 renames only the LocalGradeRunner missing-INPUT case,
@@ -288,7 +288,7 @@ def test_docker_absent_fence_still_ledgers_container_failure(tmp_path):
         parse_fenced_stdout("no fence here", 0)  # zero fenced blocks: real failure
 
 
-def test_unknown_cant_grade_reason_renders_forward_compat(tmp_path):
+def test_ac4_unknown_reason_renders_forward_compat(tmp_path):
     """[ux-friction AC-4] The cant_grade `reason` is additive vocabulary in an
     existing string field: an unrecognized reason flows through every reader
     verbatim and breaks nothing, so the vocabulary stays forward-extensible
@@ -339,7 +339,7 @@ def test_unknown_cant_grade_reason_renders_forward_compat(tmp_path):
 
 
 # --- AC-2: bench grade's summary discloses the scored/cant_grade split ---------
-def test_grade_outcome_reports_split_and_summary_discloses_it(tmp_path, monkeypatch):
+def test_ac2_grade_outcome_reports_split(tmp_path, monkeypatch):
     """[ux-friction AC-2] The F6 reproduction: a locked two-task experiment, a fake
     run, then `grade --runner local` with no injection lands every trial in
     cant_grade(holdout_results_missing) — 0 scored. GradeOutcome must report the
@@ -371,7 +371,7 @@ def test_grade_outcome_reports_split_and_summary_discloses_it(tmp_path, monkeypa
     )
 
 
-def test_grade_cli_discloses_split_and_exits_zero(tmp_path):
+def test_ac2_grade_cli_discloses_split_exits_zero(tmp_path):
     """[ux-friction AC-2 + D2] The `bench grade` verb emits the disclosing line and
     still EXITS 0 when every trial landed cant_grade — a fail-closed outcome is a
     completed, ledgered operation, not a command failure (D2). RED today: stdout is
@@ -392,7 +392,7 @@ def test_grade_cli_discloses_split_and_exits_zero(tmp_path):
     assert "holdout_results_missing" in out and "see bench status" in out
 
 
-def test_grade_summary_line_terse_when_all_scored():
+def test_ac2_grade_summary_terse_all_scored():
     """[ux-friction AC-2] When every trial scored, the summary stays terse and
     quiet — no cant_grade clause — so the honest split appears only when there is
     friction to disclose."""
@@ -403,7 +403,7 @@ def test_grade_summary_line_terse_when_all_scored():
     assert _grade_summary_line(outcome) == "graded 12 trial(s)"
 
 
-def test_grade_summary_line_lists_each_reason_sorted():
+def test_ac2_grade_summary_lists_reasons_sorted():
     """[ux-friction AC-2] A mixed-reason pass lists every reason with its count in
     a deterministic (sorted) order — no dict-ordering assumption leaks into the
     rendered line."""
@@ -459,7 +459,7 @@ def _graded_pairs_real_provider_judge(expdir: Path, n_tasks: int) -> Path:
     return ledger
 
 
-def test_judge_cli_discloses_cant_judge_and_exits_zero(tmp_path, monkeypatch):
+def test_ac3_judge_cli_discloses_cant_judge_exits_zero(tmp_path, monkeypatch):
     """[ux-friction AC-3 + D2] The keyless real-provider reproduction: with the
     provider key ABSENT every comparison lands CANT_JUDGE(provider_error), and
     the `bench judge` summary must disclose the split rather than the
@@ -496,7 +496,7 @@ def test_judge_cli_discloses_cant_judge_and_exits_zero(tmp_path, monkeypatch):
     assert "judged 3 comparison(s): 0 verdicts, 3 cant_judge (provider_error ×3)" in out
 
 
-def test_judge_summary_line_discloses_cant_judge_split():
+def test_ac3_judge_summary_discloses_split():
     """[ux-friction AC-3] The disclosing line names the substantive/cant_judge
     split with per-reason counts, visibly consistent with grade's line."""
     from harness.judge.api import JudgeOutcome
@@ -512,7 +512,7 @@ def test_judge_summary_line_discloses_cant_judge_split():
     )
 
 
-def test_judge_summary_line_terse_when_all_substantive():
+def test_ac3_judge_summary_terse_all_substantive():
     """[ux-friction AC-3] When every comparison produced a substantive verdict the
     line stays terse and quiet — the split appears only when cant_judge > 0."""
     from harness.judge.api import JudgeOutcome
@@ -527,7 +527,7 @@ def test_judge_summary_line_terse_when_all_substantive():
 
 
 # --- AC-8: judge.panel is refused when set (v2 breadcrumb, D3) -----------------
-def test_judge_panel_set_is_refused_with_named_typed_error():
+def test_ac8_panel_set_refused_named_error():
     """[ux-friction AC-8] judge.panel is a v2 placeholder read by nothing (F9):
     setting it silently changes the spec hash and does nothing else — the exact
     silent no-op extra='forbid' exists to prevent. It must be refused at spec
@@ -550,7 +550,7 @@ def test_judge_panel_set_is_refused_with_named_typed_error():
     assert "remove judge.panel from the spec" in msg  # names the fix
 
 
-def test_judge_panel_absent_or_none_leaves_every_fixture_spec_valid():
+def test_ac8_panel_absent_unchanged():
     """[ux-friction AC-8] The refusal is scoped to a SET panel: the field stays in
     the schema as the v2 breadcrumb (D3) and default None is untouched. A fixture
     spec that omits panel validates unchanged, and an explicit panel=None (the
@@ -595,7 +595,7 @@ def _plan_via_cli(expdir: Path, n_tasks: int):
     return r, ledger
 
 
-def test_single_task_plan_warns_and_flags_but_still_locks(tmp_path):
+def test_ac9_single_task_warns_and_flags(tmp_path):
     """[ux-friction AC-9 + D4] A one-task suite can never yield a paired decision
     (the bootstrap clusters on tasks — F3/F-H7), and today the user learns this
     only at analyze time. plan now WARNS at lock: an
@@ -613,7 +613,7 @@ def test_single_task_plan_warns_and_flags_but_still_locks(tmp_path):
     assert _WARNING_LINE in out  # disclosed at the moment the design is created
 
 
-def test_two_task_plan_carries_no_insufficient_tasks_flag_or_warning(tmp_path):
+def test_ac9_two_tasks_no_warning_no_flag(tmp_path):
     """[ux-friction AC-9] Two or more task clusters CAN support a decision, so the
     warning and its flag are both absent — the disclosure appears only when there
     is friction to disclose. (A single-task exploratory design stays legitimate
@@ -629,7 +629,7 @@ def test_two_task_plan_carries_no_insufficient_tasks_flag_or_warning(tmp_path):
 
 
 # --- AC-10: bench init's closing message teaches the two hard-won lessons -------
-def test_init_closing_message_teaches_injection_and_status(tmp_path):
+def test_ac10_init_next_steps_message(tmp_path):
     """[ux-friction AC-10] bench init's closing message teaches the two things a
     first-timer otherwise learns the hard way: the keyless fake-path next steps
     (run → inject each trial's holdout_results.json → grade --runner local) and
@@ -664,7 +664,7 @@ def test_init_closing_message_teaches_injection_and_status(tmp_path):
 
 
 # --- AC-7: a contender-first, keyless, two-task scaffold that reaches a decision -
-def test_starter_template_declares_contender_first_two_tasks_fake_judge():
+def test_ac7_template_contender_first_fake_judge():
     """[ux-friction AC-7 + D1-A] The single-source starter template now (a) declares
     the CONTENDER arm FIRST, so the scaffolded `delta_holdout_pass_rate > 0` rule
     pre-registers 'treatment beats control' (the paired delta is arms[0] − arms[1])
@@ -685,7 +685,7 @@ def test_starter_template_declares_contender_first_two_tasks_fake_judge():
     assert len({t["id"] for t in tasks}) == 2  # unique ids
 
 
-def test_scaffold_zero_edit_pipeline_reaches_met_decision(tmp_path):
+def test_ac7_scaffold_zero_edit_pipeline_met(tmp_path):
     """[ux-friction AC-7] The north star: `bench init` scaffolds the starter files,
     and WITHOUT editing a single file — no judge swap, no second task, no API key,
     no Docker — the keyless fake pipeline (plan → run → inject treatment-passes →

@@ -1,24 +1,24 @@
 # ============================================================================
-# STORY SPEC (DRAFT) — first-run UX friction: honest surfaces, decisive scaffold
+# STORY SPEC — first-run UX friction: honest surfaces, decisive scaffold
 #
-# Status: human-validated design (jyang, 2026-07-07); not yet scheduled.
-# This file deliberately lives OUTSIDE docs/design/specs/ and carries no
-# eval<N> name: the AC-coverage hook (tests/ac_coverage.py) enforces
-# test_ac<N>_* existence at collection for every docs/design/specs/
-# eval*.spec.md, so promotion = assign the next free EVAL number, move the
-# file to docs/design/specs/eval<N>.spec.md, and land it in the same branch
-# as its AC tests. Every touchpoint line was verified against this checkout.
+# Implemented spec-first on branch improve-exp-ux (2026-07-07): the design was
+# human-validated and written down before any code, then landed AC by AC. The
+# AC-coverage hook (tests/ac_coverage.py) requires a story's spec and its
+# test_ac<N>_* tests to enter the registry together, so this file and
+# tests/test_eval25_ux_friction.py land in a single commit. Decisions D1–D8
+# (D1–D4 design-session rulings, D5–D8 batch-review rulings) are resolved in
+# eval25.decisions.ndjson.
 #
 # Provenance: live first-run walkthrough on the shipped scaffold
 # (bench init → §4 pipeline, keyless, no Docker) on 2026-07-07; friction
 # inventory F1–F9 validated by the human; decisions D1–D4 ruled by the human
-# (recorded below; move to eval<N>.decisions.ndjson at promotion).
+# that day (D5–D8 followed at batch review; all resolved in the ndjson).
 #
 # YAML STYLE: string values double-quoted and single-line; block-style
 # lists; no hanging-indent plain scalars; no >- / | folded blocks.
 # ============================================================================
 kind: "story"
-ticket: "TBD"       # assign next free EVAL number at promotion
+ticket: "EVAL-25"   # promoted spec-first on branch improve-exp-ux (2026-07-07)
 title: "First-run UX: honest stage summaries, correct provenance, a scaffold that reaches a decision keyless"
 
 problem:
@@ -34,17 +34,16 @@ problem:
 
 goal: "A keyless first-timer who runs the scaffold's own suggested commands ends with correct provenance, truthful stage summaries, and a decisive MET finding — with zero file edits and zero API keys — and every remaining sharp edge announces itself at the moment it is created, not at the end of the pipeline."
 
-decisions:          # ruled by the human 2026-07-07; move to decisions.ndjson at promotion
-  - id: "D1"
-    ruling: "Option A — the starter template ships the keyless deterministic judge (fake/deterministic-2026-01-01) with an adjacent comment showing the real-provider swap line. The usage-guide §2.1 example KEEPS the real Gemini judge (the single-source test compares field sets, not values)."
-  - id: "D2"
-    ruling: "Exit codes stay 0 when every grade/judgment landed cant_*: a fail-closed outcome is a completed, ledgered operation, not a command failure. Disclosure moves into the summary line."
-  - id: "D3"
-    ruling: "judge.panel stays in the schema as a v2 breadcrumb but REFUSES when set, with a typed error naming it not-implemented — provided this costs no capability today (nothing sets it; see the test-change register)."
-  - id: "D4"
-    ruling: "Plan-time WARNING (never a gate) when the task suite cannot support a decision (<2 tasks) — protects users who edit the scaffold back down to one task. Single-task exploratory designs remain legitimate and lockable."
-  - id: "D5"
-    ruling: "Ruled at Batch A review: fix the fixture-id judgment call properly — eliminate tests/fixtures/builders.py's hardcoded 'exp-fixture' default entirely and shift the suite to the dir-derived pattern (fixtures with a real experiment dir derive their id through the harness.ledger identity seam AC-1 introduces; dir-less unit tests pass an explicit literal at the call site, never an invisible default). Test-infrastructure only; recorded here rather than as a new AC — the enforceable production behavior is AC-1's."
+decisions:          # full raised/resolved content in eval25.decisions.ndjson
+  - "EVAL-25-D001"  # starter template ships the keyless deterministic judge (RESOLVED: option-a-fake-judge)
+  - "EVAL-25-D002"  # exit code stays 0 on all-cant_* outcomes (RESOLVED: fail-closed-not-command-failure)
+  - "EVAL-25-D003"  # judge.panel refuses when set, stays a v2 breadcrumb (RESOLVED: refuse-when-set)
+  - "EVAL-25-D004"  # plan-time warning, never a gate, on <2 tasks (RESOLVED: warn-never-gate)
+  - "EVAL-25-D005"  # suite-wide dir-derived fixture ids (RESOLVED: eliminate-hardcoded-default; Batch A review)
+  - "EVAL-25-D006"  # AC-1 broadened to every experiment_id derivation site (RESOLVED: every-derivation-site; Batch A review)
+  - "EVAL-25-D007"  # AC-3 per-reason ×N counts replace 'dominant reason' (RESOLVED: per-reason-counts; Batch B review)
+  - "EVAL-25-D008"  # template-ripple: pin historical inputs, goldens byte-untouched (RESOLVED: pin-inputs; Batch D review)
+open_decisions: []
 
 constraints:
   - text: "Additive-only ledger vocabulary: new cant_grade reason strings and new lock-event flag strings extend existing string fields; no event schema, serialization recipe, or hash-chain change of any kind."
@@ -82,7 +81,11 @@ acceptance:
     tests:
       - "test_ac1_experiment_id_path_independent"
       - "test_ac1_empty_resolved_name_refused"
-      - "test_ac1_stage_events_experiment_id_resolved"
+      - "test_ac1_derive_seam_path_independent"
+      - "test_ac1_derive_seam_empty_name_refused"
+      - "test_ac1_event_context_id_resolved"
+      - "test_ac1_run_trial_events_resolved_id"
+      - "test_ac1_grade_events_resolved_id"
   - id: "AC-2"
     text: "GradeOutcome reports the split — scored count, cant_grade count, and per-reason counts — and the bench grade summary line discloses it whenever cant_grade > 0 (e.g. 'graded 6 trial(s): 0 scored, 6 cant_grade (holdout_results_missing ×6) — see bench status'). Exit code stays 0 (D2). The all-scored line stays terse."
     vc: "The live-run reproduction (scaffold, no injection, --runner local) fails on today's 'graded 6 trial(s)' and passes with the split; an all-scored run prints no cant_grade clause."
@@ -90,8 +93,10 @@ acceptance:
       - "harness/grade/api.py:125"
       - "harness/grade/cli.py:61"
     tests:
-      - "test_ac2_grade_summary_discloses_cant_grade"
-      - "test_ac2_all_scored_summary_terse"
+      - "test_ac2_grade_outcome_reports_split"
+      - "test_ac2_grade_cli_discloses_split_exits_zero"
+      - "test_ac2_grade_summary_terse_all_scored"
+      - "test_ac2_grade_summary_lists_reasons_sorted"
   - id: "AC-3"
     text: "JudgeOutcome reports verdicts vs cant_judge with per-reason counts, and the bench judge summary discloses the split whenever cant_judge > 0 (e.g. 'judged 3 comparison(s): 0 verdicts, 3 cant_judge (provider_error ×3)'), shape-consistent with grade's line. Exit code stays 0 (D2). [Amended at Batch B review: per-reason ×N counts replace the draft's 'dominant reason' — strictly more informative, and the full reason map rides the outcome.]"
     vc: "The keyless real-provider reproduction fails on today's 'judged 3 comparison(s)' and passes with the split."
@@ -99,7 +104,9 @@ acceptance:
       - "harness/judge/api.py:27"
       - "harness/judge/cli.py:37"
     tests:
-      - "test_ac3_judge_summary_discloses_cant_judge"
+      - "test_ac3_judge_cli_discloses_cant_judge_exits_zero"
+      - "test_ac3_judge_summary_discloses_split"
+      - "test_ac3_judge_summary_terse_all_substantive"
   - id: "AC-4"
     text: "The local runner's missing-results outcome ledgers terminal reason 'holdout_results_missing' (new constant beside REASON_CONTAINER in grade/deterministic.py); container_failure is no longer emitted for file absence on --runner local. Docker-runner semantics are untouched. Readers (status, serve, analyze, control-reuse preflight) render an unrecognized reason string verbatim rather than crashing — pinned by test so the vocabulary stays forward-extensible."
     vc: "The no-injection local grade ledgers cant_grade(holdout_results_missing); a synthetic future reason string flows through status/serve/analyze renders unmodified."
@@ -108,6 +115,7 @@ acceptance:
       - "harness/grade/deterministic.py:31"
     tests:
       - "test_ac4_local_missing_results_reason"
+      - "test_ac4_docker_fence_still_container_failure"
       - "test_ac4_unknown_reason_renders_forward_compat"
   - id: "AC-5"
     text: "bench status titles the experiment from the locked ledger's experiment_id, falling back to the directory name only when no lock exists; bench status . and the absolute-path invocation render the same header."
@@ -123,6 +131,7 @@ acceptance:
       - "harness/plan/lock.py:302"
     tests:
       - "test_ac6_planlock_removed_on_success"
+      - "test_ac6_refused_lock_no_planlock_resurrect"
   - id: "AC-7"
     text: "The starter template (single source: harness/sdk/templates/) declares the contender arm FIRST (aligning the scaffolded 'delta > 0' rule with 'treatment beats control' and with the golden scenario), ships the fake/deterministic-2026-01-01 judge with an adjacent comment showing the real-provider swap (D1-A), and starter-tasks.yaml ships TWO placeholder tasks. The template still passes the real validators. North-star outcome: bench init → plan → run → inject → grade --runner local → judge → analyze --exploratory reaches 'decision … ⇒ MET' with zero file edits, zero keys, zero Docker."
     vc: "The zero-edit scaffold pipeline e2e recovers a MET decision and a verifying chain; the single-source suite passes with the new pins; usage-guide §1.5 drops its judge-edit step and §2.1's 'scaffold pins a real Gemini judge' prose updates (the §2.1 example itself keeps the Gemini judge per D1-A)."
