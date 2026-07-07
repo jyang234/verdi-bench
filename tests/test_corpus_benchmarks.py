@@ -129,26 +129,40 @@ def test_duplicate_instance_id_is_refused(tmp_path):
 # --- the importer registry [refactor 07 §3] ---------------------------------
 def test_importer_registry_lists_the_valid_benchmarks():
     """The valid --benchmark set lives in exactly one place: the IMPORTERS
-    registry. The flag help and the refusal message DERIVE from it (they were
-    three hand-synced strings), so a new importer's name + description appear
-    without editing a second copy."""
+    registry. importer_names() / importer_help() DERIVE from it (they were
+    hand-synced strings), so a new importer's name + description appear in both
+    without editing a second copy. Pin the DERIVATION, not a byte snapshot."""
     from harness.corpus.benchmarks import IMPORTERS, importer_help, importer_names
 
     assert set(IMPORTERS) == {"dir", "swebench"}
     assert all(name == spec.name for name, spec in IMPORTERS.items())
-    assert importer_names() == "dir | swebench"
-    assert importer_help() == (
-        "Source format: 'dir' (harbor json dir) | 'swebench' (SWE-bench export)"
-    )
+    # names() is every registry key, ' | '-joined in registry order — no key
+    # missing, none invented
+    assert [seg.strip() for seg in importer_names().split("|")] == list(IMPORTERS)
+    # help() prefixes "Source format: " then names every key AND its registry
+    # description, ' | '-joined — derived wholesale from IMPORTERS, none beyond it
+    help_text = importer_help()
+    assert help_text.startswith("Source format: ")
+    body = help_text.removeprefix("Source format: ")
+    assert [seg.strip() for seg in body.split(" | ")] == [
+        f"'{name}' ({spec.description})" for name, spec in IMPORTERS.items()
+    ]
 
 
 def test_corpus_import_refuses_unknown_benchmark_with_derived_message(tmp_path):
+    """An unknown --benchmark is refused with a message that names the offending
+    value AND lists the valid importers DERIVED from the registry (importer_names),
+    so a new importer appears in the refusal without editing a second string."""
     from harness.corpus.api import UnknownBenchmarkError, corpus_import
+    from harness.corpus.benchmarks import IMPORTERS, importer_names
 
-    with pytest.raises(
-        UnknownBenchmarkError, match=r"unknown --benchmark 'nope' \(dir \| swebench\)"
-    ):
+    with pytest.raises(UnknownBenchmarkError) as exc:
         corpus_import(tmp_path, cache=tmp_path / "c", benchmark="nope")
+    msg = str(exc.value)
+    assert "nope" in msg                    # names the offending value
+    assert importer_names() in msg          # the registry-derived valid set, verbatim
+    for name in IMPORTERS:                   # and every valid importer is offered
+        assert name in msg
 
 
 def test_corpus_import_swebench_through_the_registry(tmp_path):
