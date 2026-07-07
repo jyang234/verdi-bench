@@ -1,0 +1,215 @@
+{
+  "tool": "v0.0.0-20260707120445-827ad9a0d237",
+  "algo": "rta",
+  "caveats": [
+    "rta from 3 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/eventsvc/internal/bus.Bus).Publish",
+      "sig": "func (*bus.Bus).Publish(ctx context.Context, event string, payload []byte) error",
+      "tier": 1,
+      "package": "example.com/eventsvc/internal/bus",
+      "fallible": true,
+      "file": "internal/bus/bus.go",
+      "line": 22,
+      "end_line": 26
+    },
+    {
+      "fqn": "(*example.com/eventsvc/internal/handler.Server).Create",
+      "sig": "func (*handler.Server).Create(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/eventsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 34,
+      "end_line": 40
+    },
+    {
+      "fqn": "(*example.com/eventsvc/internal/handler.Server).Get",
+      "sig": "func (*handler.Server).Get(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/eventsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 22,
+      "end_line": 30
+    },
+    {
+      "fqn": "(*example.com/eventsvc/internal/notify.Notifier).Created",
+      "sig": "func (*notify.Notifier).Created(ctx context.Context, sub any) error",
+      "tier": 1,
+      "package": "example.com/eventsvc/internal/notify",
+      "fallible": true,
+      "file": "internal/notify/notify.go",
+      "line": 24,
+      "end_line": 26
+    },
+    {
+      "fqn": "(*example.com/eventsvc/internal/store.Store).Get",
+      "sig": "func (*store.Store).Get(id string) (store.Subscriber, bool)",
+      "tier": 3,
+      "package": "example.com/eventsvc/internal/store",
+      "file": "internal/store/store.go",
+      "line": 23,
+      "end_line": 26
+    },
+    {
+      "fqn": "example.com/eventsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/eventsvc",
+      "file": "main.go",
+      "line": 16,
+      "end_line": 18
+    },
+    {
+      "fqn": "example.com/eventsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/eventsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 20,
+      "end_line": 25
+    },
+    {
+      "fqn": "example.com/eventsvc/internal/bus.New",
+      "sig": "func bus.New() *bus.Bus",
+      "tier": 3,
+      "package": "example.com/eventsvc/internal/bus",
+      "file": "internal/bus/bus.go",
+      "line": 19,
+      "end_line": 19
+    },
+    {
+      "fqn": "example.com/eventsvc/internal/encode.Marshal",
+      "sig": "func encode.Marshal(v any) []byte",
+      "tier": 3,
+      "package": "example.com/eventsvc/internal/encode",
+      "file": "internal/encode/encode.go",
+      "line": 10,
+      "end_line": 16
+    },
+    {
+      "fqn": "example.com/eventsvc/internal/handler.New",
+      "sig": "func handler.New(n *notify.Notifier, st *store.Store) *handler.Server",
+      "tier": 3,
+      "package": "example.com/eventsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 19,
+      "end_line": 19
+    },
+    {
+      "fqn": "example.com/eventsvc/internal/notify.New",
+      "sig": "func notify.New(b *bus.Bus) *notify.Notifier",
+      "tier": 3,
+      "package": "example.com/eventsvc/internal/notify",
+      "file": "internal/notify/notify.go",
+      "line": 19,
+      "end_line": 19
+    },
+    {
+      "fqn": "example.com/eventsvc/internal/store.New",
+      "sig": "func store.New() *store.Store",
+      "tier": 3,
+      "package": "example.com/eventsvc/internal/store",
+      "file": "internal/store/store.go",
+      "line": 15,
+      "end_line": 20
+    },
+    {
+      "fqn": "example.com/eventsvc/internal/wire.Handler",
+      "sig": "func wire.Handler(b *bus.Bus, st *store.Store) http.Handler",
+      "tier": 3,
+      "package": "example.com/eventsvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 14,
+      "end_line": 22
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/eventsvc/internal/handler.Server).Create",
+      "to": "(*example.com/eventsvc/internal/notify.Notifier).Created",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/eventsvc/internal/handler.Server).Get",
+      "to": "(*example.com/eventsvc/internal/store.Store).Get",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/eventsvc/internal/notify.Notifier).Created",
+      "to": "boundary:bus PUBLISH subscriber.created",
+      "tier": 1,
+      "boundary": "outbound-async"
+    },
+    {
+      "from": "(*example.com/eventsvc/internal/notify.Notifier).Created",
+      "to": "example.com/eventsvc/internal/encode.Marshal",
+      "tier": 3
+    },
+    {
+      "from": "example.com/eventsvc.main",
+      "to": "example.com/eventsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/eventsvc.run",
+      "to": "example.com/eventsvc/internal/bus.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/eventsvc.run",
+      "to": "example.com/eventsvc/internal/store.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/eventsvc.run",
+      "to": "example.com/eventsvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/eventsvc/internal/wire.Handler",
+      "to": "example.com/eventsvc/internal/handler.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/eventsvc/internal/wire.Handler",
+      "to": "example.com/eventsvc/internal/notify.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [
+    {
+      "kind": "reflect",
+      "site": "example.com/eventsvc/internal/encode.Marshal",
+      "detail": "reflective call; downstream edges are invisible to the static call graph"
+    }
+  ],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "GET /subscribers/{id}",
+      "fn": "(*example.com/eventsvc/internal/handler.Server).Get"
+    },
+    {
+      "kind": "http",
+      "name": "POST /subscribers/{id}",
+      "fn": "(*example.com/eventsvc/internal/handler.Server).Create"
+    }
+  ],
+  "composition_roots": [
+    "example.com/eventsvc"
+  ],
+  "frontier": {
+    "markers": [
+      {
+        "kind": "reflect",
+        "bin": "A",
+        "site": "example.com/eventsvc/internal/encode.Marshal"
+      }
+    ],
+    "unconfirmed_routes": 1,
+    "coverage": "starvation confirmed for the oapi strict-server shape only; unconfirmed routes reach no effect for an unverified reason (a no-op, or an unrecognized dispatch seam) — attribution_loss is a LOWER BOUND, not a proof of no severance"
+  }
+}

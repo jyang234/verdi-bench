@@ -1,0 +1,12 @@
+version: 1
+service: banksvc
+
+# banksvc's transactions must be closed (committed or rolled back) on every
+# control-flow path. The obligation rides .flowmap.yaml (CODEOWNERS-gated);
+# flowmap emits per-site verdicts into the graph and groundwork gates on them.
+obligations:
+  - name: tx-must-close
+    acquire: "example.com/banksvc/internal/store#BeginTx"
+    release:
+      - "example.com/banksvc/internal/store#Commit"
+      - "example.com/banksvc/internal/store#Rollback"

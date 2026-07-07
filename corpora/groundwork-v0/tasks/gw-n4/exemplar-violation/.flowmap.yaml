@@ -1,0 +1,9 @@
+version: 1
+service: eventsvc
+
+# eventsvc's notify layer publishes two ways: a statically-named event the graph
+# can resolve, and (once the /publish route lands) an event whose name comes from
+# the request — a `boundary:bus PUBLISH <dynamic>` edge plus a
+# NonConstantBoundaryArg blind spot the static graph cannot name.
+classify:
+  busPublish: ["example.com/eventsvc/internal/bus#Publish"]

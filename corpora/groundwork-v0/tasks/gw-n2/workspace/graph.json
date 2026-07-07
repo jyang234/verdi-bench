@@ -1,0 +1,259 @@
+{
+  "tool": "v0.0.0-20260707120445-827ad9a0d237",
+  "algo": "rta",
+  "caveats": [
+    "rta from 3 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/userdirsvc/internal/api.Server).GetUser",
+      "sig": "func (*api.Server).GetUser(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/userdirsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 19,
+      "end_line": 26
+    },
+    {
+      "fqn": "(*example.com/userdirsvc/internal/api.Server).UpdateUser",
+      "sig": "func (*api.Server).UpdateUser(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/userdirsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 29,
+      "end_line": 40
+    },
+    {
+      "fqn": "(*example.com/userdirsvc/internal/core.Service).GetUser",
+      "sig": "func (*core.Service).GetUser(ctx context.Context, id string) (repo.User, error)",
+      "tier": 2,
+      "package": "example.com/userdirsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 19,
+      "end_line": 25
+    },
+    {
+      "fqn": "(*example.com/userdirsvc/internal/core.Service).Rename",
+      "sig": "func (*core.Service).Rename(ctx context.Context, id string, name string) error",
+      "tier": 2,
+      "package": "example.com/userdirsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 28,
+      "end_line": 33
+    },
+    {
+      "fqn": "(*example.com/userdirsvc/internal/repo.SQLStore).CountGroups",
+      "sig": "func (*repo.SQLStore).CountGroups(ctx context.Context, userID string) (int, error)",
+      "tier": 2,
+      "package": "example.com/userdirsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 37,
+      "end_line": 44
+    },
+    {
+      "fqn": "(*example.com/userdirsvc/internal/repo.SQLStore).InsertAudit",
+      "sig": "func (*repo.SQLStore).InsertAudit(ctx context.Context, id string, action string) error",
+      "tier": 1,
+      "package": "example.com/userdirsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 54,
+      "end_line": 58
+    },
+    {
+      "fqn": "(*example.com/userdirsvc/internal/repo.SQLStore).SelectUser",
+      "sig": "func (*repo.SQLStore).SelectUser(ctx context.Context, id string, out *repo.User) error",
+      "tier": 2,
+      "package": "example.com/userdirsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 31,
+      "end_line": 34
+    },
+    {
+      "fqn": "(*example.com/userdirsvc/internal/repo.SQLStore).UpdateUser",
+      "sig": "func (*repo.SQLStore).UpdateUser(ctx context.Context, id string, name string) error",
+      "tier": 1,
+      "package": "example.com/userdirsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 47,
+      "end_line": 51
+    },
+    {
+      "fqn": "example.com/userdirsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/userdirsvc",
+      "file": "main.go",
+      "line": 14,
+      "end_line": 16
+    },
+    {
+      "fqn": "example.com/userdirsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/userdirsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 18,
+      "end_line": 22
+    },
+    {
+      "fqn": "example.com/userdirsvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/userdirsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 16,
+      "end_line": 16
+    },
+    {
+      "fqn": "example.com/userdirsvc/internal/api.writeJSON",
+      "sig": "func api.writeJSON(_ context.Context, w http.ResponseWriter, v any)",
+      "tier": 3,
+      "package": "example.com/userdirsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 42,
+      "end_line": 45
+    },
+    {
+      "fqn": "example.com/userdirsvc/internal/core.New",
+      "sig": "func core.New(store repo.Store) *core.Service",
+      "tier": 3,
+      "package": "example.com/userdirsvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 16,
+      "end_line": 16
+    },
+    {
+      "fqn": "example.com/userdirsvc/internal/repo.New",
+      "sig": "func repo.New(db *sql.DB) *repo.SQLStore",
+      "tier": 3,
+      "package": "example.com/userdirsvc/internal/repo",
+      "file": "internal/repo/repo.go",
+      "line": 28,
+      "end_line": 28
+    },
+    {
+      "fqn": "example.com/userdirsvc/internal/wire.Handler",
+      "sig": "func wire.Handler(store repo.Store) http.Handler",
+      "tier": 3,
+      "package": "example.com/userdirsvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 13,
+      "end_line": 21
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/userdirsvc/internal/api.Server).GetUser",
+      "to": "(*example.com/userdirsvc/internal/core.Service).GetUser",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/userdirsvc/internal/api.Server).GetUser",
+      "to": "example.com/userdirsvc/internal/api.writeJSON",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/userdirsvc/internal/api.Server).UpdateUser",
+      "to": "(*example.com/userdirsvc/internal/core.Service).Rename",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/userdirsvc/internal/core.Service).GetUser",
+      "to": "(*example.com/userdirsvc/internal/repo.SQLStore).SelectUser",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/userdirsvc/internal/core.Service).Rename",
+      "to": "(*example.com/userdirsvc/internal/repo.SQLStore).InsertAudit",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/userdirsvc/internal/core.Service).Rename",
+      "to": "(*example.com/userdirsvc/internal/repo.SQLStore).UpdateUser",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/userdirsvc/internal/repo.SQLStore).CountGroups",
+      "to": "boundary:db SELECT memberships",
+      "tier": 2,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/userdirsvc/internal/repo.SQLStore).InsertAudit",
+      "to": "boundary:db INSERT audit_log",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/userdirsvc/internal/repo.SQLStore).SelectUser",
+      "to": "boundary:db SELECT users",
+      "tier": 2,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/userdirsvc/internal/repo.SQLStore).UpdateUser",
+      "to": "boundary:db UPDATE users",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "example.com/userdirsvc.main",
+      "to": "example.com/userdirsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/userdirsvc.run",
+      "to": "example.com/userdirsvc/internal/repo.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/userdirsvc.run",
+      "to": "example.com/userdirsvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/userdirsvc/internal/wire.Handler",
+      "to": "example.com/userdirsvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/userdirsvc/internal/wire.Handler",
+      "to": "example.com/userdirsvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "GET /users/{id}",
+      "fn": "(*example.com/userdirsvc/internal/api.Server).GetUser"
+    },
+    {
+      "kind": "http",
+      "name": "PUT /users/{id}",
+      "fn": "(*example.com/userdirsvc/internal/api.Server).UpdateUser"
+    }
+  ],
+  "composition_roots": [
+    "example.com/userdirsvc"
+  ],
+  "effect_order": [
+    {
+      "fn": "(*example.com/userdirsvc/internal/core.Service).Rename",
+      "effect": "boundary:db UPDATE users",
+      "effect_site": "internal/core/core.go:29",
+      "callee": "(example.com/userdirsvc/internal/repo.Store).InsertAudit",
+      "callee_site": "internal/core/core.go:32",
+      "always": true,
+      "via": "(*example.com/userdirsvc/internal/repo.SQLStore).UpdateUser"
+    }
+  ]
+}

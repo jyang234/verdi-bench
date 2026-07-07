@@ -1,0 +1,12 @@
+{
+  "id": "gw-n3",
+  "class": "null",
+  "binding_rule": "none (obligation-null: tx-must-close dormant — the new read opens no transaction)",
+  "seed": "obligsvc",
+  "seed_mutation": "module example.com/obligsvc -> example.com/banksvc; domain -> accounts; concrete in-memory ledger with BeginTx/Commit/Rollback; obligation tx-must-close carried into .flowmap.yaml; feature is a read (GET /accounts/{id}/balance)",
+  "trap_one_liner": "a read (GET /accounts/{id}/balance) that opens no transaction; both the solution and a variant returning an extra derived field stay clean",
+  "graph_substrate": "rta",
+  "functional_holdout": "internal/wire.TestBalanceRoute via go test ./...",
+  "exemplar_expected_verify_rc": 0,
+  "timeout_s": 900
+}
