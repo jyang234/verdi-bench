@@ -1,0 +1,5 @@
+{
+  "service": "invsvc",
+  "shape": "body-only",
+  "verdict": "NO-STRUCTURAL-SIGNAL"
+}

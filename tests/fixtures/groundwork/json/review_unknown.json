@@ -1,0 +1,12 @@
+{
+  "service": "invsvc",
+  "shape": "localized",
+  "verdict": "SOME-FUTURE-VERDICT",
+  "new_violations": [
+    {
+      "from": "(*example.com/invsvc/internal/handler.Server).ShowItem",
+      "rule": "must_not_reach",
+      "summary": "show-item-stays-read-only: reaches a write"
+    }
+  ]
+}

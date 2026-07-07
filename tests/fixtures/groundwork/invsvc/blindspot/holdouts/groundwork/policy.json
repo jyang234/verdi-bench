@@ -1,0 +1,11 @@
+{
+  "service": "alertsvc",
+  "version": 1,
+  "must_not_reach": [
+    {
+      "name": "notify-route-no-dynamic-publish",
+      "from": ["(*example.com/alertsvc/internal/handler.Server).Notify"],
+      "to": ["boundary:bus PUBLISH <dynamic>"]
+    }
+  ]
+}

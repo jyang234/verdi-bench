@@ -1,0 +1,12 @@
+{
+  "service": "alertsvc",
+  "shape": "body-only",
+  "standing_cautions": [
+    {
+      "from": "(*example.com/alertsvc/internal/handler.Server).Notify",
+      "rule": "must_not_reach",
+      "summary": "notify-route-no-dynamic-publish: no path found, but the frontier is blind (reflect at shape.Marshal) — cannot prove absence"
+    }
+  ],
+  "verdict": "NO-STRUCTURAL-SIGNAL"
+}

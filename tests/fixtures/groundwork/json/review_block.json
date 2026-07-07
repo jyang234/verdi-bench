@@ -1,0 +1,32 @@
+{
+  "new_violations": [
+    {
+      "from": "(*example.com/invsvc/internal/handler.Server).ShowItem",
+      "rule": "must_not_reach",
+      "summary": "show-item-stays-read-only: handler.Server.ShowItem reaches boundary:db INSERT audit_log",
+      "to": "boundary:db INSERT audit_log"
+    }
+  ],
+  "reachable_from": [
+    "(*example.com/invsvc/internal/handler.Server).ShowItem"
+  ],
+  "route_io_deltas": [
+    {
+      "added": [
+        "db INSERT audit_log"
+      ],
+      "base": {
+        "frontier": "resolved",
+        "writes": 0
+      },
+      "branch": {
+        "frontier": "resolved",
+        "writes": 1
+      },
+      "route": "(*example.com/invsvc/internal/handler.Server).ShowItem"
+    }
+  ],
+  "service": "invsvc",
+  "shape": "cross-package",
+  "verdict": "BLOCK"
+}

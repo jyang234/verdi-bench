@@ -1,0 +1,205 @@
+{
+  "stamp": "alertsvc-base",
+  "algo": "rta",
+  "caveats": [
+    "rta from 3 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/alertsvc/internal/channel.Channel).Publish",
+      "sig": "func (*channel.Channel).Publish(ctx context.Context, event string, payload []byte) error",
+      "tier": 1,
+      "package": "example.com/alertsvc/internal/channel",
+      "fallible": true,
+      "file": "internal/channel/channel.go",
+      "line": 16,
+      "end_line": 21
+    },
+    {
+      "fqn": "(*example.com/alertsvc/internal/handler.Server).Emit",
+      "sig": "func (*handler.Server).Emit(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/alertsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 24,
+      "end_line": 31
+    },
+    {
+      "fqn": "(*example.com/alertsvc/internal/handler.Server).Notify",
+      "sig": "func (*handler.Server).Notify(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/alertsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 36,
+      "end_line": 42
+    },
+    {
+      "fqn": "(*example.com/alertsvc/internal/relay.Relay).Created",
+      "sig": "func (*relay.Relay).Created(ctx context.Context, item any) error",
+      "tier": 1,
+      "package": "example.com/alertsvc/internal/relay",
+      "fallible": true,
+      "file": "internal/relay/relay.go",
+      "line": 24,
+      "end_line": 26
+    },
+    {
+      "fqn": "(*example.com/alertsvc/internal/relay.Relay).Dynamic",
+      "sig": "func (*relay.Relay).Dynamic(ctx context.Context, event string, item any) error",
+      "tier": 1,
+      "package": "example.com/alertsvc/internal/relay",
+      "fallible": true,
+      "file": "internal/relay/relay.go",
+      "line": 30,
+      "end_line": 32
+    },
+    {
+      "fqn": "example.com/alertsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/alertsvc",
+      "file": "main.go",
+      "line": 16,
+      "end_line": 18
+    },
+    {
+      "fqn": "example.com/alertsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/alertsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 20,
+      "end_line": 31
+    },
+    {
+      "fqn": "example.com/alertsvc/internal/channel.New",
+      "sig": "func channel.New() *channel.Channel",
+      "tier": 3,
+      "package": "example.com/alertsvc/internal/channel",
+      "file": "internal/channel/channel.go",
+      "line": 13,
+      "end_line": 13
+    },
+    {
+      "fqn": "example.com/alertsvc/internal/handler.New",
+      "sig": "func handler.New(r *relay.Relay) *handler.Server",
+      "tier": 3,
+      "package": "example.com/alertsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 20,
+      "end_line": 20
+    },
+    {
+      "fqn": "example.com/alertsvc/internal/relay.New",
+      "sig": "func relay.New(c *channel.Channel) *relay.Relay",
+      "tier": 3,
+      "package": "example.com/alertsvc/internal/relay",
+      "file": "internal/relay/relay.go",
+      "line": 20,
+      "end_line": 20
+    },
+    {
+      "fqn": "example.com/alertsvc/internal/shape.Marshal",
+      "sig": "func shape.Marshal(v any) []byte",
+      "tier": 3,
+      "package": "example.com/alertsvc/internal/shape",
+      "file": "internal/shape/shape.go",
+      "line": 10,
+      "end_line": 16
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/alertsvc/internal/handler.Server).Emit",
+      "to": "(*example.com/alertsvc/internal/relay.Relay).Dynamic",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/alertsvc/internal/handler.Server).Notify",
+      "to": "(*example.com/alertsvc/internal/relay.Relay).Created",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/alertsvc/internal/relay.Relay).Created",
+      "to": "boundary:bus PUBLISH item.created",
+      "tier": 1,
+      "boundary": "outbound-async"
+    },
+    {
+      "from": "(*example.com/alertsvc/internal/relay.Relay).Created",
+      "to": "example.com/alertsvc/internal/shape.Marshal",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/alertsvc/internal/relay.Relay).Dynamic",
+      "to": "boundary:bus PUBLISH <dynamic>",
+      "tier": 1,
+      "boundary": "outbound-async"
+    },
+    {
+      "from": "(*example.com/alertsvc/internal/relay.Relay).Dynamic",
+      "to": "example.com/alertsvc/internal/shape.Marshal",
+      "tier": 3
+    },
+    {
+      "from": "example.com/alertsvc.main",
+      "to": "example.com/alertsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/alertsvc.run",
+      "to": "example.com/alertsvc/internal/channel.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/alertsvc.run",
+      "to": "example.com/alertsvc/internal/handler.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/alertsvc.run",
+      "to": "example.com/alertsvc/internal/relay.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [
+    {
+      "kind": "reflect",
+      "site": "example.com/alertsvc/internal/shape.Marshal",
+      "detail": "reflective call; downstream edges are invisible to the static call graph"
+    }
+  ],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "POST /emit/{id}",
+      "fn": "(*example.com/alertsvc/internal/handler.Server).Emit"
+    },
+    {
+      "kind": "http",
+      "name": "POST /notify/{id}",
+      "fn": "(*example.com/alertsvc/internal/handler.Server).Notify"
+    }
+  ],
+  "composition_roots": [
+    "example.com/alertsvc"
+  ],
+  "frontier": {
+    "markers": [
+      {
+        "kind": "dynamic-bus",
+        "bin": "A",
+        "site": "bus PUBLISH <dynamic>",
+        "owner": "(*example.com/alertsvc/internal/relay.Relay).Dynamic",
+        "reclaimer_hint": "runtime-resolved target — disclose; resolvable only by observation, never statically"
+      },
+      {
+        "kind": "reflect",
+        "bin": "A",
+        "site": "example.com/alertsvc/internal/shape.Marshal"
+      }
+    ],
+    "coverage": "starvation confirmed for the oapi strict-server shape only; unconfirmed routes reach no effect for an unverified reason (a no-op, or an unrecognized dispatch seam) — attribution_loss is a LOWER BOUND, not a proof of no severance"
+  }
+}

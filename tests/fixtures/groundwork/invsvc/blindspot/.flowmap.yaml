@@ -1,0 +1,16 @@
+version: 1
+service: alertsvc
+
+# alertsvc is a stdlib-only blind-spot fixture (a mutated, renamed sibling of
+# verdi-go's blindsvc): its Notify route reaches a reflect.* call, an opaque
+# frontier the static call graph cannot follow. A must_not_reach rule rooted at
+# Notify therefore cannot be PROVEN — groundwork abstains with a caution rather
+# than asserting a negative it cannot support. The grader plugin maps that
+# caution to result=abstain (never a pass), which is the blind-spot task case.
+#
+# busPublish hints channel.Publish as the event-publish seam, so the runtime
+# (non-constant) event name in relay.Dynamic yields a `boundary:bus PUBLISH
+# <dynamic>` edge — the must_not_reach target the reflect frontier makes
+# unprovable.
+classify:
+  busPublish: ["example.com/alertsvc/internal/channel#Publish"]
