@@ -233,3 +233,100 @@ def test_grade_events_carry_resolved_experiment_id(tmp_path, monkeypatch):
     cant = find_events(ledger, events.CANT_GRADE)
     assert cant  # every trial → terminal cant_grade (no holdout_results.json)
     assert all(ev["provenance"]["experiment_id"] == "grade-exp" for ev in cant)
+
+
+# --- AC-4: the local runner's missing-results outcome gets an honest reason ----
+def test_local_runner_missing_results_ledgers_holdout_results_missing(tmp_path):
+    """[ux-friction AC-4] `--runner local` with no holdout_results.json is a
+    missing INPUT on a path with no container — not a grader that ran and failed.
+    It must ledger the terminal reason `holdout_results_missing`, its own honest
+    vocabulary, rather than `container_failure` (F7: a container failure on a path
+    with no container). RED today: the LocalGradeRunner raises the generic
+    GradingContainerError, which grade_trial classifies as container_failure."""
+    from harness.grade.deterministic import grade_trial
+    from harness.grade.runners import GradingContainer, LocalGradeRunner
+    from harness.grade.types import GradeTask
+
+    ws = tmp_path / "ws"  # a real workspace, but with NO pre-placed results file
+    ws.mkdir()
+    (ws / "solution.txt").write_text("agent output", encoding="utf-8")
+    ledger = tmp_path / "ledger.ndjson"
+    outcome = grade_trial(
+        "trial-1", GradeTask(id="t", task_sha="sha"), ws, ledger, ctx_for(tmp_path),
+        container=GradingContainer(runner=LocalGradeRunner()),
+    )
+
+    assert outcome.graded is False
+    cant = find_events(ledger, events.CANT_GRADE)
+    assert len(cant) == 1
+    # RED today: emits "container_failure" — a container failure on a path with no
+    # container (F7). AC-4: the honest terminal reason for a missing grade INPUT.
+    assert cant[0]["reason"] == "holdout_results_missing"
+
+    # the new constant IS that literal, and is TERMINAL (re-running without the
+    # file won't change it; --retry-terminal is the recovery once it is placed).
+    from harness.grade.deterministic import REASON_RESULTS_MISSING, TRANSIENT_CANT_GRADE
+
+    assert REASON_RESULTS_MISSING == "holdout_results_missing"
+    assert REASON_RESULTS_MISSING not in TRANSIENT_CANT_GRADE
+
+
+def test_docker_absent_fence_still_ledgers_container_failure(tmp_path):
+    """[ux-friction AC-4] The docker-path fence semantics are untouched: a grader
+    that ran and emitted zero fenced blocks is a real container failure and stays
+    `container_failure`. AC-4 renames only the LocalGradeRunner missing-INPUT case,
+    never the fence's zero-fences → container_failure path."""
+    from harness.grade.fence import GradingContainerError, parse_fenced_stdout
+
+    with pytest.raises(GradingContainerError):
+        parse_fenced_stdout("no fence here", 0)  # zero fenced blocks: real failure
+
+
+def test_unknown_cant_grade_reason_renders_forward_compat(tmp_path):
+    """[ux-friction AC-4] The cant_grade `reason` is additive vocabulary in an
+    existing string field: an unrecognized reason flows through every reader
+    verbatim and breaks nothing, so the vocabulary stays forward-extensible
+    without a reader change. Pinned with a synthetic FUTURE reason this version
+    has never seen, through the status aggregate + drill-down (serve renders the
+    same dict), an analyze render, and the retry-terminal classifier."""
+    from harness.adapters.base import Outcome, Provenance, Telemetry, TrialRecord
+    from harness.analyze.selfcheck import selfcheck_status
+    from harness.grade.api import _completed_trials, _resolve_terminal_overrides
+    from harness.ledger.events import record_trial
+    from harness.status.trial import trial_detail
+
+    expdir = tmp_path / "exp"
+    _spec, _spec_path, ledger = locked_experiment(expdir)
+    ctx = ctx_for(expdir)
+    future = "reason_from_the_future"  # a reason string no reader enumerates
+
+    tid = "trial-fc"
+    rec = TrialRecord.assemble(
+        trial_id=tid, task_id="t1", arm="control", repetition=0,
+        outcome=Outcome.completed, telemetry=Telemetry(), provenance=Provenance(),
+        artifacts_path=f"/tmp/{tid}/artifacts",
+    )
+    record_trial(ledger, ctx, trial_record=rec.model_dump(mode="json"))
+    events.record_cant_grade(ledger, ctx, trial_id=tid, reason=future)
+
+    # status aggregate: an unknown reason is bucketed terminal (the safe default —
+    # a new reason blocks regrade unless explicitly made transient) and rendered
+    # as a count, never a crash.
+    status = compute_status(expdir)
+    assert status["chain"]["ok"]  # the appended events keep the chain verifying
+    assert status["stages"]["grade"]["cant_grade_terminal"] == 1
+
+    # serve/status drill-down: the reason string is echoed VERBATIM (LedgerView →
+    # trial_detail, the same dict the serve layer renders).
+    detail = trial_detail(expdir, tid)
+    assert [c["reason"] for c in detail["grade"]["cant_grades"]] == [future]
+
+    # analyze render: a ledger carrying the unknown reason still classifies without
+    # crashing (selfcheck reads cant_grade by KIND, never by reason string).
+    assert selfcheck_status(ledger) == "missing"
+
+    # grade + retry-terminal classifiers: an unknown reason is terminal, so the
+    # trial is "done" (not re-graded every pass) yet remains --retry-terminal
+    # overridable once the operator fixes the input.
+    assert tid in _completed_trials(ledger)
+    assert _resolve_terminal_overrides(ledger, [tid])  # resolves to a line hash

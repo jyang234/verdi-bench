@@ -18,7 +18,11 @@ from typing import Optional
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..run.workspace import WORKSPACE_WALK_VERSION, workspace_sha256
-from .fence import GraderUnavailableError, GradingContainerError
+from .fence import (
+    GraderUnavailableError,
+    GradingContainerError,
+    HoldoutResultsMissingError,
+)
 from .runners import GradingContainer
 from .types import Assertion, AssertionResult, GradeTask
 
@@ -35,6 +39,11 @@ REASON_WORKSPACE_MISSING = "workspace_missing"
 REASON_PLUGIN = "plugin_error"
 REASON_UNKNOWN_TASK = "unknown_task"
 REASON_ARTIFACTS_MISSING = "artifacts_missing"
+# --runner local with no pre-placed holdout_results.json (terminal): a missing
+# grade INPUT on a path with no container, distinct from a grader that ran and
+# failed [ux-friction AC-4, F7]. Additive vocabulary in the existing reason
+# string field — no event-schema, serialization, or hash-chain change.
+REASON_RESULTS_MISSING = "holdout_results_missing"
 
 # Reasons a later grade attempt may resolve (only "the grader could not be run",
 # e.g. a docker daemon outage) — these do NOT permanently block regrading
@@ -136,12 +145,16 @@ def grade_trial(
     # 1. Run holdouts in a fresh, network-less container. Distinguish a grader
     # that could not be RUN (transient) from one that ran and FAILED (terminal),
     # so a transient outage is retryable but a broken grader is not re-attempted
-    # forever [GR-11]. GraderUnavailableError is a GradingContainerError subclass,
-    # so it must be caught first.
+    # forever [GR-11]. Both GraderUnavailableError (daemon down) and
+    # HoldoutResultsMissingError (--runner local, no pre-placed results INPUT
+    # [ux-friction AC-4/F7]) are GradingContainerError subclasses, so they must be
+    # caught before the bare container_failure fallback.
     try:
         run = container.run(workspace, task.holdouts_dir)
     except GraderUnavailableError:
         return _cant(REASON_DAEMON)
+    except HoldoutResultsMissingError:
+        return _cant(REASON_RESULTS_MISSING)
     except GradingContainerError:
         return _cant(REASON_CONTAINER)
 
