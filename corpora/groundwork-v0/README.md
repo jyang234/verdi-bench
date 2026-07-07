@@ -139,12 +139,13 @@ Per task, with the pinned binaries (`build_tasks.py --check`):
   tasks this tree is a *plausible alternative* and the expectation is exit **0**).
 
 <!-- VALIDATION_MATRIX -->
-Committed run (flowmap/groundwork built from verdi-go HEAD, self-reported build
-`v0.0.0-20260707120445-827ad9a0d237`, Go 1.24.x). `go(w/s/e)` = build+vet+test on
+Committed run (flowmap/groundwork built from the pinned verdi-go build —
+`groundwork version` → `v0.0.0-20260707142329-7e8df2bb315a`, built with Go 1.25.x;
+see "Provenance & determinism"). `go(w/s/e)` = build+vet+test on
 workspace/solution/exemplar; `a.fit` = base fitness rc 0; `b.sol` = solution
 verify rc 0; `c.exm` = exemplar verify rc as expected (1 for traps, 0 for
 nulls); `rule` = the family named in cell (c). Regenerate with
-`FLOWMAP=… GROUNDWORK=… python3 build_tasks.py --check`.
+`VERDI_FLOWMAP_BIN=… VERDI_GROUNDWORK_BIN=… python3 build_tasks.py --check`.
 
 ```
 id       class            sub  go(w/s/e)  a.fit  b.sol  c.exm  rule
@@ -241,10 +242,25 @@ JSON, no timestamps).
   regenerates and diffs the committed `workspace/graph.json` as a determinism
   guard, and the grader regenerates at grade time regardless (D2). Pin one
   `flowmap`/`groundwork` binary across trial images, grader image, and these
-  committed graphs, or groundwork will (correctly) flag mismatch.
-- Toolchain: authored/validated against `flowmap`/`groundwork` built from verdi-go
-  at the reviewed HEAD, Go 1.24.x. The grader image's analyzer toolchain must be
-  ≥ the highest `go` directive any workspace declares (all are `go 1.24.0`).
+  committed graphs, or groundwork will flag the skew. **Measured behavior of a
+  base↔branch tool-version mismatch** (tested once with a stale-stamped base
+  graph): `groundwork verify` does NOT hard-fail and is NOT silent — it still
+  computes the verdict and DISCLOSES the skew as a **caveat**, on the provenance
+  line and in the `--json` `caveats` array ("producer mismatch: base graph built by
+  flowmap ⟨A⟩, branch by ⟨B⟩ … rebuild both sides with one flowmap build"). It is
+  fail-open-with-disclosure by design (verdi-go R11): a cross-version diff may be a
+  pure tool artifact — a relabeled effect, an SSA-order shift — not a code change,
+  and the gate still BLOCKs a real new violation. So a mixed toolchain erodes trust
+  only if a reader ignores the caveat — pin one build.
+- **Toolchain pin (binding):** the committed `graph.json` files were re-frozen at,
+  and the validation matrix + the k=5 flake baselines were run against, the verdi-go
+  build whose `groundwork version` is **`v0.0.0-20260707142329-7e8df2bb315a`**
+  (`flowmap version` prints the same; built with Go 1.25.x). This is the corpus's
+  binding toolchain pin — the grader image, trial images, and these graphs MUST use
+  it (or re-freeze all three together). Re-freeze the graphs after any flowmap change
+  with `python3 build_tasks.py --freeze-graphs`; `--check` guards staleness. The
+  grader image's analyzer toolchain must also be ≥ the highest `go` directive any
+  workspace declares (all are `go 1.24.0`).
 
 ## Admission (P2) — caveats and open items
 
