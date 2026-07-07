@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# verdi-groundwork-check — the groundwork binary-gate command holdout
+# [verdi-go integration plan §3, decision D1].
+#
+# Installed in the grader image at /usr/local/bin/verdi-groundwork-check and
+# declared by a task as:
+#   {"kind": "command", "argv": ["/usr/local/bin/verdi-groundwork-check", "<task-id>"]}
+# It runs INSIDE the network-less grade container, where /workspace is the
+# agent's solution copy and /holdouts is this task's read-only holdouts mount.
+#
+# It regenerates the branch graph FROM /workspace and runs
+#   groundwork verify <policy> <base-graph> <branch-graph> --json
+# so the graded party can never forge a verdict with a planted graph.json
+# [integration plan §2, D2].
+#
+# SECURITY INVARIANT: the policy and base graph are read from the HOLDOUTS side
+# ONLY — NEVER from the workspace. The workspace is agent-authored; a policy or
+# base graph read from it would let the graded party choose its own grader inputs.
+#
+# The workspace and holdouts roots default to the container mounts /workspace and
+# /holdouts. They can be redirected with VERDI_WORKSPACE_DIR / VERDI_HOLDOUTS_DIR
+# so the wrapper is exercisable OFF-container (the local integration test). This
+# does NOT weaken the invariant: in the grade container the harness sets neither
+# variable (the trusted read-only mounts apply), and the graded party controls
+# only workspace FILES, never the grade container's ENVIRONMENT — so it can never
+# repoint the holdouts root at its own tree.
+#
+# Exit codes (the CommandHoldout maps 0 -> pass, non-zero -> fail; the DISTINCT
+# operational code keeps a broken gate loudly separate from a genuine violation):
+#   0  clean  — no new violation (groundwork verify exit 0)
+#   1  fail   — the change failed the gate (groundwork verify exit 1: BLOCK)
+#   3  ERROR  — operational failure: missing binary/asset, workspace won't
+#              type-check, or groundwork's operational exit 2. Loud, with detail
+#              on stderr; distinct from 1 so "the gate broke" is never read as
+#              "the agent violated the invariant".
+set -uo pipefail
+
+TASK_ID="${1:-}"  # used as the flowmap --stamp identity and in error messages
+
+fail_operational() {
+	echo "verdi-groundwork-check: OPERATIONAL FAILURE (${TASK_ID:-<no-task-id>}): $*" >&2
+	exit 3
+}
+
+WORKSPACE="${VERDI_WORKSPACE_DIR:-/workspace}"
+
+FLOWMAP="${VERDI_FLOWMAP_BIN:-$(command -v flowmap || true)}"
+GROUNDWORK="${VERDI_GROUNDWORK_BIN:-$(command -v groundwork || true)}"
+[ -x "$FLOWMAP" ] || fail_operational "flowmap binary not found (set VERDI_FLOWMAP_BIN or install on PATH)"
+[ -x "$GROUNDWORK" ] || fail_operational "groundwork binary not found (set VERDI_GROUNDWORK_BIN or install on PATH)"
+
+ASSETS="${VERDI_HOLDOUTS_DIR:-/holdouts}/groundwork"
+POLICY="$ASSETS/policy.json"
+BASE_GRAPH="$ASSETS/base.graph.json"
+[ -f "$POLICY" ] || fail_operational "policy asset missing at $POLICY (holdouts side only, never the workspace)"
+[ -f "$BASE_GRAPH" ] || fail_operational "base graph asset missing at $BASE_GRAPH (holdouts side only, never the workspace)"
+
+# Throwaway scratch OUTSIDE /workspace: the branch graph and a writable GOCACHE
+# (flowmap type-checks the module and needs a build cache even when HOME is unset).
+WORK="$(mktemp -d)" || fail_operational "could not create a scratch dir"
+trap 'rm -rf "$WORK"' EXIT
+export GOCACHE="${GOCACHE:-$WORK/gocache}"
+mkdir -p "$GOCACHE"
+BRANCH_GRAPH="$WORK/branch.graph.json"
+
+# Regenerate the branch graph from the workspace. flowmap flags MUST precede the
+# directory argument. A non-zero exit is a load/type-check failure.
+STAMP_ARGS=()
+[ -n "$TASK_ID" ] && STAMP_ARGS=(--stamp "$TASK_ID")
+if ! "$FLOWMAP" graph "${STAMP_ARGS[@]}" "$WORKSPACE" > "$BRANCH_GRAPH" 2> "$WORK/flowmap.err"; then
+	fail_operational "flowmap graph failed (workspace did not type-check): $(tail -c 600 "$WORK/flowmap.err")"
+fi
+
+# The gate. verify exit 0 = clean, 1 = BLOCK (a real gate fail), 2 = operational.
+"$GROUNDWORK" verify "$POLICY" "$BASE_GRAPH" "$BRANCH_GRAPH" --json > "$WORK/verify.out" 2> "$WORK/verify.err"
+rc=$?
+case "$rc" in
+	0) exit 0 ;;
+	1) cat "$WORK/verify.out"; echo "verdi-groundwork-check: BLOCK — the change failed the groundwork gate" >&2; exit 1 ;;
+	2) fail_operational "groundwork verify operational error (exit 2): $(tail -c 600 "$WORK/verify.err")" ;;
+	*) fail_operational "groundwork verify unexpected exit $rc: $(tail -c 600 "$WORK/verify.err")" ;;
+esac
