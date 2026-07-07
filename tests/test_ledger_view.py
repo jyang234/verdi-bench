@@ -1,11 +1,14 @@
-"""LedgerView ≡ the hand-rolled joins it replaces [refactor 06 §1].
+"""LedgerView projections — query-parity + the typed-projection semantics [refactor 06 §1].
 
-Every projection is pinned to the exact ``find_events``-based idiom it stands in
-for, and the full per-trial ``trial_story`` is pinned to a verbatim port of the
-original ``status/trial.py`` scan (the six manual correlations). Both are
-checked on the committed Phase-0 golden ledger and on the rich in-memory
-scenario (forensics report + quarantine + verdict + verified trajectories), so
-the equivalence holds on a real, artifact-backed run, not only the golden.
+``LedgerView`` is a strictly-additive read facade: its ``events`` / ``by_kind`` /
+``latest`` projections stay in parity with the canonical ``harness.ledger.query``
+functions (the invariant that lets consumers migrate onto it opportunistically),
+and its typed projections — the sha-hoist reader rule, latest-grade-wins,
+quarantine-set membership, verdict keying, and the full per-trial ``trial_story``
+join — are pinned as direct semantic assertions. The base parity runs on the
+committed golden ledger; the typed projections run on the rich in-memory scenario
+(forensics report + quarantine + verdict + verified trajectories) so the semantics
+are checked on a real, artifact-backed run.
 """
 
 from __future__ import annotations
@@ -17,171 +20,10 @@ import pytest
 from harness.judge.assemble import comparison_id_for
 from harness.ledger import events
 from harness.ledger.query import find_events, latest_event, read_events
-from harness.ledger.view import LedgerView, TrialEventView
-from harness.run.flight_recorder import resolve_flight_recorder
-from harness.run.trajectory import resolve_trajectory
+from harness.ledger.view import LedgerView
 from tests.fixtures.scenarios import rich_experiment
 
 _GOLDEN = Path(__file__).parent / "fixtures" / "data" / "golden_ledger.ndjson"
-
-
-# --- hand-rolled oracles (the idioms LedgerView replaces) --------------------
-def _oracle_latest_grade_by_trial(ledger) -> dict:
-    return {e["trial_id"]: e for e in find_events(ledger, events.GRADE)}
-
-
-def _oracle_grades_by_trial(ledger) -> dict:
-    acc: dict[str, list[dict]] = {}
-    for e in find_events(ledger, events.GRADE):
-        acc.setdefault(e["trial_id"], []).append(e)
-    return acc
-
-
-def _oracle_verdicts_by_comparison(ledger) -> dict:
-    acc: dict[str, dict] = {}
-    for e in find_events(ledger, events.JUDGE_VERDICT):
-        v = e.get("verdict") or {}
-        cid = v.get("comparison_id")
-        if cid is not None:
-            acc[cid] = v
-    return acc
-
-
-def _oracle_quarantined_trial_ids(ledger) -> set:
-    return {
-        e["forensic_quarantine"]["trial_id"]
-        for e in find_events(ledger, events.FORENSIC_QUARANTINE)
-    }
-
-
-def _oracle_trial_detail(ledger, trial_id):
-    """A verbatim port of the original status/trial.py:28-132 hand-rolled join."""
-    record = None
-    trajectory_sha = None
-    flight_recorder_sha = None
-    grades: list[dict] = []
-    cant_grades: list[dict] = []
-    verdicts: list[dict] = []
-    flags: list[dict] = []
-    metrics = None
-    quarantine = None
-
-    evs = read_events(ledger)
-    for ev in evs:
-        kind = ev.get("event")
-        if kind == events.TRIAL:
-            rec = ev.get("trial_record") or {}
-            if rec.get("trial_id") == trial_id:
-                record = rec
-                trajectory_sha = ev.get("trajectory_sha")
-                flight_recorder_sha = ev.get("flight_recorder_sha")
-        elif kind == events.GRADE and ev.get("trial_id") == trial_id:
-            grades.append(
-                {
-                    "task_sha": ev.get("task_sha"),
-                    "assertions": ev.get("assertions"),
-                    "binary_score": ev.get("binary_score"),
-                    "fractional_score": ev.get("fractional_score"),
-                    "grader": ev.get("grader"),
-                    "override_of": ev.get("override_of"),
-                    "ts": (ev.get("provenance") or {}).get("ts"),
-                }
-            )
-        elif kind == events.CANT_GRADE and ev.get("trial_id") == trial_id:
-            cant_grades.append(
-                {
-                    "reason": ev.get("reason"),
-                    "override_of": ev.get("override_of"),
-                    "ts": (ev.get("provenance") or {}).get("ts"),
-                }
-            )
-        elif kind == events.FORENSIC_QUARANTINE:
-            fq = ev.get("forensic_quarantine") or {}
-            if fq.get("trial_id") == trial_id:
-                quarantine = {"reason": fq.get("reason")}
-
-    if record is None:
-        return None
-
-    cmp_id = comparison_id_for(record.get("task_id"), record.get("repetition", 0))
-    for ev in evs:
-        if ev.get("event") == events.JUDGE_VERDICT:
-            v = ev.get("verdict") or {}
-            if v.get("comparison_id") == cmp_id:
-                verdicts.append(v)
-
-    reports = [ev for ev in evs if ev.get("event") == events.FORENSICS_REPORT]
-    if reports:
-        fr = reports[-1].get("forensics_report") or {}
-        metrics = (fr.get("metrics") or {}).get(trial_id)
-        flags = [f for f in (fr.get("flags") or []) if f.get("trial_id") == trial_id]
-
-    status, trajectory = resolve_trajectory(record.get("artifacts_path"), trajectory_sha)
-    steps = (
-        [s.model_dump(mode="json") for s in trajectory.steps]
-        if trajectory is not None
-        else None
-    )
-    fr_status, fr_record = resolve_flight_recorder(
-        record.get("artifacts_path"), flight_recorder_sha
-    )
-    fr_entries = (
-        [e.model_dump(mode="json") for e in fr_record.entries]
-        if fr_record is not None
-        else None
-    )
-
-    rec_flags = record.get("flags") or {}
-    return {
-        "trial_id": trial_id,
-        "record": record,
-        "comparison_id": cmp_id,
-        "trajectory": {"status": status, "steps": steps},
-        "flight_recorder": {"status": fr_status, "entries": fr_entries},
-        "grade": {
-            "grades": grades,
-            "cant_grades": cant_grades,
-            "binary_score": grades[-1]["binary_score"] if grades else None,
-        },
-        "verdicts": verdicts,
-        "forensics": {"metrics": metrics, "flags": flags},
-        "quarantine": quarantine,
-        "egress": {
-            "violation": rec_flags.get("egress_violation"),
-            "attempts": rec_flags.get("egress_attempts"),
-        },
-    }
-
-
-def _story_to_detail(story, trial_id):
-    """Map a TrialStory to the trial_detail dict shape (what the migrated
-    status/trial.py does), so trial_story is pinned independently of the
-    consumer that adapts it."""
-    if story is None:
-        return None
-    rec_flags = story.record.get("flags") or {}
-    return {
-        "trial_id": trial_id,
-        "record": story.record,
-        "comparison_id": story.comparison_id,
-        "trajectory": {"status": story.trajectory_status, "steps": story.trajectory_steps},
-        "flight_recorder": {
-            "status": story.flight_recorder_status,
-            "entries": story.flight_recorder_entries,
-        },
-        "grade": {
-            "grades": story.grades,
-            "cant_grades": story.cant_grades,
-            "binary_score": story.grades[-1]["binary_score"] if story.grades else None,
-        },
-        "verdicts": story.verdicts,
-        "forensics": {"metrics": story.forensics_metrics, "flags": story.forensics_flags},
-        "quarantine": story.quarantine,
-        "egress": {
-            "violation": rec_flags.get("egress_violation"),
-            "attempts": rec_flags.get("egress_attempts"),
-        },
-    }
 
 
 # --- ledgers under test -------------------------------------------------------
@@ -190,14 +32,10 @@ def rich(tmp_path):
     return rich_experiment(tmp_path)
 
 
-def _ledger_ids(ledger) -> list[str]:
-    return [ev["trial_record"]["trial_id"] for ev in find_events(ledger, events.TRIAL)]
-
-
 _ALL_KINDS = sorted(events.REGISTERED_EVENTS)
 
 
-# --- by_kind / latest / events -----------------------------------------------
+# --- by_kind / latest / events: parity with the canonical query functions -----
 def test_by_kind_and_latest_match_query_on_golden():
     view = LedgerView(_GOLDEN)
     assert view.events == read_events(_GOLDEN)
@@ -227,37 +65,44 @@ def test_latest_absent_kind_is_none():
 
 
 # --- trials() + the sha-hoist reader rule ------------------------------------
-@pytest.mark.parametrize("which", ["golden", "rich"])
-def test_trials_view_matches_events(which, rich):
-    ledger = _GOLDEN if which == "golden" else rich["ledger"]
+def test_trials_hoist_shas_from_event_not_record(rich):
+    """The sha-hoist reader rule [refactor 06 §1]: trials() reads trajectory_sha /
+    flight_recorder_sha from the EVENT, never from the embedded trial_record
+    (whose sha copies are transport-only and None after a ledger round-trip)."""
+    ledger = rich["ledger"]
     view = LedgerView(ledger)
-    trials = view.trials()
     raw = find_events(ledger, events.TRIAL)
-    assert len(trials) == len(raw)
-    for tv, ev in zip(trials, raw):
-        assert isinstance(tv, TrialEventView)
-        assert tv.record == ev["trial_record"]
-        assert tv.trial_id == ev["trial_record"]["trial_id"]
-        # the reader rule: shas come from the EVENT, never the record
-        assert tv.trajectory_sha == ev.get("trajectory_sha")
-        assert tv.flight_recorder_sha == ev.get("flight_recorder_sha")
+    trials = view.trials()
+    assert [tv.trial_id for tv in trials] == [ev["trial_record"]["trial_id"] for ev in raw]
+    # non-vacuous discriminator: the fake-engine run verified >=1 trajectory, so
+    # >=1 trial EVENT carries a real trajectory_sha while every record's copy is None
+    hoisted = [(tv, ev) for tv, ev in zip(trials, raw) if ev.get("trajectory_sha")]
+    assert hoisted, "fixture must exercise at least one verified-trajectory trial"
+    for tv, ev in hoisted:
+        assert tv.trajectory_sha == ev["trajectory_sha"]  # hoisted from the event...
+        assert tv.record.get("trajectory_sha") is None    # ...not the record's copy
 
 
-# --- grade / verdict / quarantine projections --------------------------------
-@pytest.mark.parametrize("which", ["golden", "rich"])
-def test_grade_projections_match_oracles(which, rich):
-    ledger = _GOLDEN if which == "golden" else rich["ledger"]
+# --- grade projections: latest-grade-wins ordering ---------------------------
+def test_latest_grade_by_trial_is_latest_wins(rich):
+    """latest_grade_by_trial returns the LAST grade per trial in ledger order — a
+    later (override) grade supersedes the earlier one, while grades_by_trial keeps
+    every grade in ledger order [refactor 06 §1]."""
+    ledger, ctx = rich["ledger"], rich["ctx"]
+    tid = rich["trial_ids"][("t1", "control")]  # the fixture grades this trial False
+    assert LedgerView(ledger).latest_grade_by_trial()[tid]["binary_score"] is False
+    # a later grade flips the score; a fresh snapshot must prefer it (latest-wins)
+    events.record_grade(
+        ledger, ctx, trial_id=tid, task_sha="sha-x",
+        assertions=[{"id": "h1", "source": "holdout_test", "result": "pass"}],
+        binary_score=True,
+    )
     view = LedgerView(ledger)
-    assert view.grades_by_trial() == _oracle_grades_by_trial(ledger)
-    assert view.latest_grade_by_trial() == _oracle_latest_grade_by_trial(ledger)
-
-
-@pytest.mark.parametrize("which", ["golden", "rich"])
-def test_verdict_and_quarantine_projections_match_oracles(which, rich):
-    ledger = _GOLDEN if which == "golden" else rich["ledger"]
-    view = LedgerView(ledger)
-    assert view.verdicts_by_comparison() == _oracle_verdicts_by_comparison(ledger)
-    assert view.quarantined_trial_ids() == _oracle_quarantined_trial_ids(ledger)
+    grades = view.grades_by_trial()[tid]
+    assert [g["binary_score"] for g in grades] == [False, True]  # both, in ledger order
+    latest = view.latest_grade_by_trial()[tid]
+    assert latest is grades[-1]                # the projection returns the LAST...
+    assert latest["binary_score"] is True      # ...the override, not the original
 
 
 def test_rich_projections_are_non_trivial(rich):
@@ -268,6 +113,24 @@ def test_rich_projections_are_non_trivial(rich):
     assert view.latest(events.FORENSICS_REPORT) is not None
 
 
+# --- verdict keying + quarantine-set membership ------------------------------
+def test_verdict_and_quarantine_projections(rich):
+    """quarantined_trial_ids is exactly the set of trials with a ledgered
+    forensic_quarantine [D007]; verdicts_by_comparison keys each verdict by its
+    comparison_id (the rich fixture's single advisory verdict on cmp-t1-r0)."""
+    view = LedgerView(rich["ledger"])
+    # quarantine-set membership: exactly the fixture's quarantined trial, no others
+    quarantined = rich["trial_ids"][("t2", "treatment")]
+    assert view.quarantined_trial_ids() == {quarantined}
+    others = {tid for cell, tid in rich["trial_ids"].items() if tid != quarantined}
+    assert not (view.quarantined_trial_ids() & others)
+    # verdicts keyed by the deterministic comparison id, carrying the verdict body
+    cmp_id = comparison_id_for("t1", 0)
+    vbc = view.verdicts_by_comparison()
+    assert set(vbc) == {cmp_id}
+    assert vbc[cmp_id]["winner"] == "B"
+
+
 def test_provenance_ts_helper():
     view = LedgerView(_GOLDEN)
     ev = view.by_kind(events.TRIAL)[0]
@@ -276,14 +139,45 @@ def test_provenance_ts_helper():
     assert view.provenance_ts({"provenance": {}}) is None
 
 
-# --- trial_story ≡ the hand-rolled join --------------------------------------
-@pytest.mark.parametrize("which", ["golden", "rich"])
-def test_trial_story_matches_hand_rolled_join(which, rich):
-    ledger = _GOLDEN if which == "golden" else rich["ledger"]
-    view = LedgerView(ledger)
-    for trial_id in _ledger_ids(ledger):
-        story = view.trial_story(trial_id)
-        assert _story_to_detail(story, trial_id) == _oracle_trial_detail(ledger, trial_id), trial_id
+# --- trial_story: the full per-trial join ------------------------------------
+def test_trial_story_assembles_the_six_correlations(rich):
+    """trial_story joins the six per-trial correlations directly off the ledger —
+    the record, its deterministic (task, repetition) comparison id, grade/cant-grade
+    history, the judge verdicts of THAT comparison, the latest forensic report's
+    view, and any quarantine — per-trial, with nulls left null [EVAL-4-D004]."""
+    view = LedgerView(rich["ledger"])
+
+    # the flagged control trial: graded, judged, flagged, verified-trajectory,
+    # NOT quarantined
+    flagged_id = rich["trial_ids"][("t1", "control")]
+    flagged = view.trial_story(flagged_id)
+    assert flagged is not None
+    assert flagged.record["task_id"] == "t1" and flagged.record["arm"] == "control"
+    # the comparison id is DERIVED from (task, repetition), never guessed
+    assert flagged.comparison_id == comparison_id_for("t1", 0)
+    assert [g["binary_score"] for g in flagged.grades] == [False]
+    assert flagged.cant_grades == []
+    # the verdict of this trial's comparison joins in (winner B on cmp-t1-r0)
+    assert [v["winner"] for v in flagged.verdicts] == ["B"]
+    # the sha-verified trajectory resolved and its steps rode along
+    assert flagged.trajectory_status == "verified"
+    assert flagged.trajectory_steps is not None and len(flagged.trajectory_steps) == 3
+    assert flagged.flight_recorder_status == "absent"
+    assert flagged.flight_recorder_entries is None
+    assert flagged.forensics_metrics == {"steps": 3}
+    assert [f["trial_id"] for f in flagged.forensics_flags] == [flagged_id]
+    assert flagged.quarantine is None
+
+    # the quarantined treatment trial: its own grade, NO verdict on its comparison
+    # (the join is per-trial, not bled across trials), and the quarantine disposition
+    quar = view.trial_story(rich["trial_ids"][("t2", "treatment")])
+    assert quar is not None
+    assert quar.comparison_id == comparison_id_for("t2", 0)
+    assert [g["binary_score"] for g in quar.grades] == [True]
+    assert quar.verdicts == []                       # no verdict on cmp-t2-r0
+    assert quar.forensics_metrics is None            # not in the report's metrics
+    assert quar.forensics_flags == []
+    assert quar.quarantine == {"reason": "fixture quarantine"}
 
 
 def test_trial_story_unknown_id_is_none():
