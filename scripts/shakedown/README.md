@@ -25,6 +25,16 @@ make shakedown            # golden.py + tripwires.py
 ## Opt-in full-fidelity layers
 
 ```bash
+# P3 (local half) — keyless end-to-end pipeline smoke over corpus groundwork-v0
+# on the FAKE engine, grading through the REAL flowmap/groundwork gate (local-exec
+# ADVISORY tier). No keys, no Docker, but it builds the verdi-go binaries from
+# /home/user/verdi-go if VERDI_FLOWMAP_BIN/VERDI_GROUNDWORK_BIN are unset and runs
+# the real gate per trial — so it is opt-in (its own `make groundwork-shakedown`),
+# not part of the fast hermetic `make shakedown` gate. Proves the gate discriminates
+# a clean solution from an invariant-violating one THROUGH the whole pipeline.
+make groundwork-shakedown                        # or: ARGS=--plant-funnel-fixtures
+uv run python scripts/shakedown/groundwork_pipeline.py --plant-funnel-fixtures
+
 # L2 — passing official render with a REAL Anthropic judge
 uv run --env-file .env python scripts/shakedown/official.py
 
@@ -65,6 +75,7 @@ in [`docs/design/shakedown.md`](../../docs/design/shakedown.md).
 | `_harness.py` | script-local plumbing — `Tally`, `_run/` staging, the one `bench` console-script driver (pre-registration vectors), ANSI strip, key gating + banners; `dump_yaml` stays for tripwires' deliberately-invalid specs |
 | `_scenario.py` | shared known-answer scenario content — the canonical golden experiment shape (single-sourced so L1/L2/L3 cannot drift), manifest/pipeline helpers, and the harbor-shared config/checks (the egress check reads the raw proxy log as independent evidence) |
 | `golden.py` · `tripwires.py` | hermetic acceptance (L1, L3), authored + driven through `harness.sdk` |
+| `groundwork_pipeline.py` | P3 local-half pilot smoke (plan §6/§10): fake-engine pipeline over corpus groundwork-v0, graded through the REAL flowmap/groundwork gate (local-exec ADVISORY tier); builds the verdi-go binaries if unset; `--plant-funnel-fixtures` also exercises `scripts/funnel_metrics.py` on planted synthetic MCP fixtures |
 | `official.py` | opt-in real-judge layer (L2), on `harness.sdk` |
 | `harbor.py` · `harbor_multiagent.py` | opt-in real-container layers (L6), on `harness.sdk` + `harness.images` (the official `generic-llm` / reference multi-agent images) + the managed metering proxy |
 | `assets/golden/` | the committed golden vectors (still pinned by a schema test) |

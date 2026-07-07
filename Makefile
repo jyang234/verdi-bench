@@ -1,4 +1,4 @@
-.PHONY: verify test lint sync shakedown corpus-groundwork-v0
+.PHONY: verify test lint sync shakedown groundwork-shakedown corpus-groundwork-v0
 
 # Full verification gate: ALL unit and integration tests plus structural
 # import contracts. This is the mandatory post-feature check (see CLAUDE.md).
@@ -20,6 +20,19 @@ sync:
 shakedown:
 	uv run python scripts/shakedown/golden.py
 	uv run python scripts/shakedown/tripwires.py
+
+# P3 pilot, LOCAL half (verdi-go integration plan §6 / §10): the keyless,
+# no-Docker end-to-end pipeline smoke over corpus groundwork-v0 on the FAKE engine,
+# grading through the REAL flowmap/groundwork gate (local-exec ADVISORY tier). It
+# proves the groundwork gate discriminates a clean solution from an
+# invariant-violating one THROUGH the whole pipeline. Heavier than the hermetic
+# `shakedown` target — it builds the verdi-go binaries from /home/user/verdi-go if
+# VERDI_FLOWMAP_BIN / VERDI_GROUNDWORK_BIN are unset and runs the real gate per
+# trial — so it is its own opt-in target, like the harbor/official layers
+# (scripts/shakedown/README.md). ARGS=--plant-funnel-fixtures also exercises the
+# funnel tool on planted synthetic MCP fixtures.
+groundwork-shakedown:
+	uv run python scripts/shakedown/groundwork_pipeline.py $(ARGS)
 
 # Emit the groundwork-v0 experiment (tasks.yaml + holdouts/) and reference-solution
 # trees to a GITIGNORED scratch dir, then strict-lint the emitted tasks.yaml.
