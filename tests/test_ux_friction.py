@@ -330,3 +330,85 @@ def test_unknown_cant_grade_reason_renders_forward_compat(tmp_path):
     # overridable once the operator fixes the input.
     assert tid in _completed_trials(ledger)
     assert _resolve_terminal_overrides(ledger, [tid])  # resolves to a line hash
+
+
+# --- AC-2: bench grade's summary discloses the scored/cant_grade split ---------
+def test_grade_outcome_reports_split_and_summary_discloses_it(tmp_path, monkeypatch):
+    """[ux-friction AC-2] The F6 reproduction: a locked two-task experiment, a fake
+    run, then `grade --runner local` with no injection lands every trial in
+    cant_grade(holdout_results_missing) — 0 scored. GradeOutcome must report the
+    split (scored / cant_grade / per-reason counts) and the summary line must
+    disclose it, rather than the success-shaped bare `graded N trial(s)` that
+    reads as N successes when zero were scored (F6: the ledger is honest, stdout
+    is not)."""
+    from harness.grade.api import grade_experiment
+    from harness.grade.cli import _grade_summary_line
+    from harness.run.api import run_experiment
+
+    ws = _built_planned_experiment(tmp_path / "f6-exp", "f6-exp")
+    run_experiment(ws.dir, engine="fake", actor="tester")
+    outcome = grade_experiment(ws.dir, runner="local", actor="tester")  # no injection
+
+    n = len(find_events(ws.ledger, events.CANT_GRADE))
+    assert n >= 2  # the two-task suite yields multiple trials, all unscorable
+    # the outcome carries the split, not just a lump `graded`
+    assert outcome.scored == 0
+    assert outcome.cant_grade == n
+    assert outcome.graded == n  # graded = scored + cant_grade (total processed)
+    assert outcome.cant_grade_reasons == {"holdout_results_missing": n}
+
+    # the summary DISCLOSES it (per-reason counts + the pointer to bench status),
+    # built by a pure function so the string is pinned without spawning a CLI.
+    assert _grade_summary_line(outcome) == (
+        f"graded {n} trial(s): 0 scored, {n} cant_grade "
+        f"(holdout_results_missing ×{n}) — see bench status"
+    )
+
+
+def test_grade_cli_discloses_split_and_exits_zero(tmp_path):
+    """[ux-friction AC-2 + D2] The `bench grade` verb emits the disclosing line and
+    still EXITS 0 when every trial landed cant_grade — a fail-closed outcome is a
+    completed, ledgered operation, not a command failure (D2). RED today: stdout is
+    the bare `graded N trial(s)` with no split disclosed."""
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+    from harness.run.api import run_experiment
+
+    ws = _built_planned_experiment(tmp_path / "cli-exp", "cli-exp")
+    run_experiment(ws.dir, engine="fake", actor="tester")
+
+    r = CliRunner().invoke(app, ["grade", str(ws.dir), "--runner", "local"])
+    assert r.exit_code == 0, r.output  # D2: cant_grade is not a command failure
+    n = len(find_events(ws.ledger, events.CANT_GRADE))
+    out = r.output + (r.stderr or "")
+    assert f"0 scored, {n} cant_grade" in out  # the split is disclosed (absent today)
+    assert "holdout_results_missing" in out and "see bench status" in out
+
+
+def test_grade_summary_line_terse_when_all_scored():
+    """[ux-friction AC-2] When every trial scored, the summary stays terse and
+    quiet — no cant_grade clause — so the honest split appears only when there is
+    friction to disclose."""
+    from harness.grade.api import GradeOutcome
+    from harness.grade.cli import _grade_summary_line
+
+    outcome = GradeOutcome(graded=12, scored=12, cant_grade=0)
+    assert _grade_summary_line(outcome) == "graded 12 trial(s)"
+
+
+def test_grade_summary_line_lists_each_reason_sorted():
+    """[ux-friction AC-2] A mixed-reason pass lists every reason with its count in
+    a deterministic (sorted) order — no dict-ordering assumption leaks into the
+    rendered line."""
+    from harness.grade.api import GradeOutcome
+    from harness.grade.cli import _grade_summary_line
+
+    outcome = GradeOutcome(
+        graded=10, scored=7, cant_grade=3,
+        cant_grade_reasons={"unknown_task": 1, "holdout_results_missing": 2},
+    )
+    assert _grade_summary_line(outcome) == (
+        "graded 10 trial(s): 7 scored, 3 cant_grade "
+        "(holdout_results_missing ×2, unknown_task ×1) — see bench status"
+    )

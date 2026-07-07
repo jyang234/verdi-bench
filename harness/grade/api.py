@@ -12,7 +12,7 @@ config [AC-3].
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..errors import VerdiRefusal
@@ -123,9 +123,27 @@ class GraderUnavailableRefusal(VerdiRefusal, RuntimeError):
 
 @dataclass(frozen=True)
 class GradeOutcome:
-    """What ``bench grade`` computed: the number of trials graded this pass."""
+    """What ``bench grade`` computed this pass, as an honest split [ux-friction AC-2].
+
+    ``graded`` is the total number of trials this pass produced a grade-family
+    event for, and equals ``scored`` + ``cant_grade`` — kept as the summary
+    header (``graded N trial(s)``) so the terse all-scored line is unchanged. The
+    split fields make a fail-closed pass legible instead of success-shaped (F6:
+    ``graded 6 trial(s)`` when 0 were scored and all 6 were cant_grade):
+
+    - ``scored`` — trials that got a real deterministic ``grade`` event.
+    - ``cant_grade`` — trials that got a fail-closed ``cant_grade`` event, of any
+      reason (the grade_trial reasons AND the pre-check unknown_task /
+      artifacts_missing refusals).
+    - ``cant_grade_reasons`` — ``{reason: count}`` for this pass, so the summary
+      names WHY (e.g. ``holdout_results_missing ×6``); additive with a default so
+      the vocabulary extends without touching this contract [AC-4].
+    """
 
     graded: int
+    scored: int = 0
+    cant_grade: int = 0
+    cant_grade_reasons: dict = field(default_factory=dict)
 
 
 def grade_experiment(
@@ -225,7 +243,16 @@ def grade_experiment(
             "grader_unavailable (transient, regradeable)"
         ) from e
 
-    graded = 0
+    # AC-2: tally the honest split as we go — every processed trial produces
+    # exactly one grade-family event, either a real grade (scored) or a
+    # fail-closed cant_grade (by reason). The counts drive a summary that
+    # discloses a 0-scored pass instead of reading as N successes (F6).
+    scored = 0
+    cant_reasons: dict[str, int] = {}
+
+    def _count_cant(reason: str) -> None:
+        cant_reasons[reason] = cant_reasons.get(reason, 0) + 1
+
     for ev in find_events(ledger_path, "trial"):
         rec = ev["trial_record"]
         tid = rec["trial_id"]
@@ -240,18 +267,29 @@ def grade_experiment(
             events.record_cant_grade(ledger_path, ctx, trial_id=tid,
                                      reason=REASON_UNKNOWN_TASK,
                                      override_of=overrides.get(tid))
+            _count_cant(REASON_UNKNOWN_TASK)
             continue
         if not rec.get("artifacts_path"):
             events.record_cant_grade(
                 ledger_path, ctx, trial_id=tid, reason=REASON_ARTIFACTS_MISSING,
                 override_of=overrides.get(tid),
             )
+            _count_cant(REASON_ARTIFACTS_MISSING)
             continue
         workspace = Path(rec["artifacts_path"]).parent
-        grade_trial(
+        result = grade_trial(
             tid, task, workspace, ledger_path, ctx,
             container=container, fractional=spec.fractional_scoring,
             override_of=overrides.get(tid),
         )
-        graded += 1
-    return GradeOutcome(graded=graded)
+        # read the split from the event grade_trial actually appended, so the
+        # counts never drift from the ledger.
+        if result.graded:
+            scored += 1
+        else:
+            _count_cant(result.event["reason"])
+    cant_grade = sum(cant_reasons.values())
+    return GradeOutcome(
+        graded=scored + cant_grade, scored=scored,
+        cant_grade=cant_grade, cant_grade_reasons=cant_reasons,
+    )
