@@ -626,3 +626,38 @@ def test_two_task_plan_carries_no_insufficient_tasks_flag_or_warning(tmp_path):
     assert "insufficient_tasks_for_decision" not in locked[0]["mde"]["flags"]
     out = r.output + (r.stderr or "")
     assert "a decision needs" not in out  # no warning line, not even paraphrased
+
+
+# --- AC-10: bench init's closing message teaches the two hard-won lessons -------
+def test_init_closing_message_teaches_injection_and_status(tmp_path):
+    """[ux-friction AC-10] bench init's closing message teaches the two things a
+    first-timer otherwise learns the hard way: the keyless fake-path next steps
+    (run → inject each trial's holdout_results.json → grade --runner local) and
+    `bench status <dir>` as the always-safe read-only triage view. RED today: the
+    message names NEITHER — only the scaffold list and the plan hint."""
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+
+    r = CliRunner().invoke(app, ["init", str(tmp_path / "myexp")])
+    assert r.exit_code == 0, r.output
+    out = r.output
+
+    # the existing lines are kept: the scaffold list, and the plan hint whose
+    # cd-in form is safe since Batch A's identity seam (so its shape is unchanged).
+    assert "experiment.yaml, tasks.yaml" in out
+    assert "bench plan experiment.yaml --ledger ledger.ndjson" in out
+
+    # the fake-path next steps: run, the operator injection step, grade --runner local
+    assert "bench run" in out
+    assert "holdout_results.json" in out  # the file the arm-blind fake engine needs
+    assert "inject_holdout_results" in out  # the named public SDK one-liner
+    assert "§1.5" in out  # its documented home in the usage guide
+    assert "bench grade" in out and "--runner local" in out
+
+    # bench status as the standing read-only triage view
+    assert "bench status" in out
+
+    # the whole message stays compact — under the ~6-line budget (AC-10 vc)
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    assert len(lines) <= 6, out
