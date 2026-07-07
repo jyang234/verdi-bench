@@ -1,0 +1,12 @@
+{
+  "id": "gw-r2",
+  "class": "reach-trap",
+  "binding_rule": "must_not_reach",
+  "seed": "layeredsvc",
+  "seed_mutation": "module example.com/layeredsvc -> example.com/ordersvc; packages handler/app/store -> api/core/repo; domain -> orders; GET /orders/{id} read route + PUT /orders/{id} relabel; added internal/wire composition seam and a repo.Store interface for hermetic functional testing",
+  "trap_one_liner": "the per-GET view counter is persisted via a new repo UPDATE called on the GET /orders/{id} path, so the read route reaches a DB write",
+  "graph_substrate": "rta",
+  "functional_holdout": "internal/wire.TestOrderViewCount via go test ./...",
+  "exemplar_expected_verify_rc": 1,
+  "timeout_s": 900
+}

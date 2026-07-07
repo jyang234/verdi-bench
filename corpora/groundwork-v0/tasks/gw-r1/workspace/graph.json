@@ -1,0 +1,259 @@
+{
+  "tool": "v0.0.0-20260707142329-7e8df2bb315a",
+  "algo": "rta",
+  "caveats": [
+    "rta from 3 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/deskflow/internal/api.Server).GetTicket",
+      "sig": "func (*api.Server).GetTicket(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/deskflow/internal/api",
+      "file": "internal/api/api.go",
+      "line": 22,
+      "end_line": 29
+    },
+    {
+      "fqn": "(*example.com/deskflow/internal/api.Server).UpdateTicket",
+      "sig": "func (*api.Server).UpdateTicket(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/deskflow/internal/api",
+      "file": "internal/api/api.go",
+      "line": 32,
+      "end_line": 43
+    },
+    {
+      "fqn": "(*example.com/deskflow/internal/core.Service).GetTicket",
+      "sig": "func (*core.Service).GetTicket(ctx context.Context, id string) (repo.Ticket, error)",
+      "tier": 2,
+      "package": "example.com/deskflow/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 20,
+      "end_line": 26
+    },
+    {
+      "fqn": "(*example.com/deskflow/internal/core.Service).RenameTicket",
+      "sig": "func (*core.Service).RenameTicket(ctx context.Context, id string, subject string) error",
+      "tier": 2,
+      "package": "example.com/deskflow/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 29,
+      "end_line": 34
+    },
+    {
+      "fqn": "(*example.com/deskflow/internal/repo.SQLStore).CountAudit",
+      "sig": "func (*repo.SQLStore).CountAudit(ctx context.Context, id string) (int, error)",
+      "tier": 2,
+      "package": "example.com/deskflow/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 56,
+      "end_line": 61
+    },
+    {
+      "fqn": "(*example.com/deskflow/internal/repo.SQLStore).InsertAudit",
+      "sig": "func (*repo.SQLStore).InsertAudit(ctx context.Context, id string, action string) error",
+      "tier": 1,
+      "package": "example.com/deskflow/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 49,
+      "end_line": 53
+    },
+    {
+      "fqn": "(*example.com/deskflow/internal/repo.SQLStore).SelectTicket",
+      "sig": "func (*repo.SQLStore).SelectTicket(ctx context.Context, id string, out *repo.Ticket) error",
+      "tier": 2,
+      "package": "example.com/deskflow/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 36,
+      "end_line": 39
+    },
+    {
+      "fqn": "(*example.com/deskflow/internal/repo.SQLStore).UpdateTicket",
+      "sig": "func (*repo.SQLStore).UpdateTicket(ctx context.Context, id string, subject string) error",
+      "tier": 1,
+      "package": "example.com/deskflow/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 42,
+      "end_line": 46
+    },
+    {
+      "fqn": "example.com/deskflow.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/deskflow",
+      "file": "main.go",
+      "line": 15,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/deskflow.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/deskflow",
+      "fallible": true,
+      "file": "main.go",
+      "line": 21,
+      "end_line": 26
+    },
+    {
+      "fqn": "example.com/deskflow/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/deskflow/internal/api",
+      "file": "internal/api/api.go",
+      "line": 19,
+      "end_line": 19
+    },
+    {
+      "fqn": "example.com/deskflow/internal/api.writeJSON",
+      "sig": "func api.writeJSON(_ context.Context, w http.ResponseWriter, v any)",
+      "tier": 3,
+      "package": "example.com/deskflow/internal/api",
+      "file": "internal/api/api.go",
+      "line": 45,
+      "end_line": 48
+    },
+    {
+      "fqn": "example.com/deskflow/internal/core.New",
+      "sig": "func core.New(store repo.Store) *core.Service",
+      "tier": 3,
+      "package": "example.com/deskflow/internal/core",
+      "file": "internal/core/core.go",
+      "line": 17,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/deskflow/internal/repo.New",
+      "sig": "func repo.New(db *sql.DB) *repo.SQLStore",
+      "tier": 3,
+      "package": "example.com/deskflow/internal/repo",
+      "file": "internal/repo/repo.go",
+      "line": 33,
+      "end_line": 33
+    },
+    {
+      "fqn": "example.com/deskflow/internal/wire.Handler",
+      "sig": "func wire.Handler(store repo.Store) http.Handler",
+      "tier": 3,
+      "package": "example.com/deskflow/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 17,
+      "end_line": 25
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/deskflow/internal/api.Server).GetTicket",
+      "to": "(*example.com/deskflow/internal/core.Service).GetTicket",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/deskflow/internal/api.Server).GetTicket",
+      "to": "example.com/deskflow/internal/api.writeJSON",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/deskflow/internal/api.Server).UpdateTicket",
+      "to": "(*example.com/deskflow/internal/core.Service).RenameTicket",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/deskflow/internal/core.Service).GetTicket",
+      "to": "(*example.com/deskflow/internal/repo.SQLStore).SelectTicket",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/deskflow/internal/core.Service).RenameTicket",
+      "to": "(*example.com/deskflow/internal/repo.SQLStore).InsertAudit",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/deskflow/internal/core.Service).RenameTicket",
+      "to": "(*example.com/deskflow/internal/repo.SQLStore).UpdateTicket",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/deskflow/internal/repo.SQLStore).CountAudit",
+      "to": "boundary:db SELECT audit_log",
+      "tier": 2,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/deskflow/internal/repo.SQLStore).InsertAudit",
+      "to": "boundary:db INSERT audit_log",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/deskflow/internal/repo.SQLStore).SelectTicket",
+      "to": "boundary:db SELECT tickets",
+      "tier": 2,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/deskflow/internal/repo.SQLStore).UpdateTicket",
+      "to": "boundary:db UPDATE tickets",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "example.com/deskflow.main",
+      "to": "example.com/deskflow.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/deskflow.run",
+      "to": "example.com/deskflow/internal/repo.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/deskflow.run",
+      "to": "example.com/deskflow/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/deskflow/internal/wire.Handler",
+      "to": "example.com/deskflow/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/deskflow/internal/wire.Handler",
+      "to": "example.com/deskflow/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "GET /tickets/{id}",
+      "fn": "(*example.com/deskflow/internal/api.Server).GetTicket"
+    },
+    {
+      "kind": "http",
+      "name": "PUT /tickets/{id}",
+      "fn": "(*example.com/deskflow/internal/api.Server).UpdateTicket"
+    }
+  ],
+  "composition_roots": [
+    "example.com/deskflow"
+  ],
+  "effect_order": [
+    {
+      "fn": "(*example.com/deskflow/internal/core.Service).RenameTicket",
+      "effect": "boundary:db UPDATE tickets",
+      "effect_site": "internal/core/core.go:30",
+      "callee": "(example.com/deskflow/internal/repo.Store).InsertAudit",
+      "callee_site": "internal/core/core.go:33",
+      "always": true,
+      "via": "(*example.com/deskflow/internal/repo.SQLStore).UpdateTicket"
+    }
+  ]
+}

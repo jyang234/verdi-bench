@@ -1,0 +1,9 @@
+# ============================================================================
+# UNTESTED ON GPU -- workspace-pilot kit. TINY sample control set (4 nouns) for
+# --offline-selftest fixtures ONLY. The frozen production set is data/control_nouns.txt.
+# The loader skips '#' comments and blanks; order is load-bearing.
+# ============================================================================
+apple
+book
+chair
+cup

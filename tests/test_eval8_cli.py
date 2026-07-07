@@ -223,7 +223,59 @@ def test_h2_baseline_verb_rejects_unknown_runner(tmp_path):
         "--runner", "dcoker", "--actor", "alice",
     ])
     assert r.exit_code != 0
-    assert "docker or local" in (r.output + (r.stderr or ""))
+    # the refusal names the valid set — now including local-exec, matching the
+    # grade verb's runner set (bench grade also offers local-exec).
+    assert "docker, local, or local-exec" in (r.output + (r.stderr or ""))
+
+
+def test_h2_baseline_verb_echoes_grader_tier(tmp_path):
+    """The `bench corpus baseline` echo names the grader tier stamped on the event
+    [human-approved 2026-07-07]: the no-daemon `local` tier reads as ADVISORY, so
+    an operator sees the baseline did not run in the trusted docker container."""
+    from tests.fixtures.grading import write_holdout_results
+
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    ws = tmp_path / "ref-solution"
+    ws.mkdir()
+    write_holdout_results(ws, True)  # holdouts pass on the reference tree
+    holdouts = tmp_path / "holdouts"
+    holdouts.mkdir()
+    r = runner.invoke(app, [
+        "corpus", "baseline", str(expdir), "--task-id", "t", "--task-sha", "s" * 64,
+        "--workspace", str(ws), "--holdouts-dir", str(holdouts), "--runner", "local",
+        "--actor", "alice",
+    ])
+    assert r.exit_code == 0, r.output
+    assert "grader: local (ADVISORY)" in r.output  # ADVISORY, never silently trusted
+    (ev,) = find_events(expdir / "ledger.ndjson", "flake_baseline")
+    assert ev["grader"] == "local"
+
+
+def test_h2_baseline_verb_local_exec_executes_declared_holdout(tmp_path):
+    """The no-daemon local-exec tier EXECUTES the declared holdout (vs. `local`
+    which reads a pre-placed file), so `corpus baseline --runner local-exec` runs
+    the groundwork-v0-style command holdout without Docker. A passing gate → clean,
+    a failing gate → quarantined (exit 1) — the gate bites in the baseline path,
+    ADVISORY (grader_name='local-exec') by construction."""
+    from harness.grade.holdouts import CommandHoldout
+
+    for exit_shell, want_verdict, want_code in (("true", "clean", 0), ("false", "quarantined", 1)):
+        expdir = tmp_path / f"exp-{exit_shell}"
+        expdir.mkdir()
+        ws = tmp_path / f"ws-{exit_shell}"
+        ws.mkdir()
+        holdouts = tmp_path / f"holdouts-{exit_shell}"
+        # a declared command holdout — executed by local-exec, no pre-placed results
+        CommandHoldout(argv=["sh", "-c", exit_shell], id="gate").materialize(holdouts)
+        r = runner.invoke(app, [
+            "corpus", "baseline", str(expdir), "--task-id", "t", "--task-sha", "s" * 64,
+            "--workspace", str(ws), "--holdouts-dir", str(holdouts),
+            "--runner", "local-exec", "--k", "1", "--actor", "alice",
+        ])
+        assert r.exit_code == want_code, r.output
+        (ev,) = find_events(expdir / "ledger.ndjson", "flake_baseline")
+        assert ev["verdict"] == want_verdict
 
 
 def test_co4_calibrate_ledgers_run_from_grades(tmp_path):

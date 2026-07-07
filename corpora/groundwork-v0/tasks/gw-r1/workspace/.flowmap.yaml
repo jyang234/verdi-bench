@@ -1,0 +1,8 @@
+version: 1
+service: deskflow
+
+# deskflow is a strict api -> core -> repo service. Its base graph contains NO
+# api->repo edge, so a skip-level edge introduced on a branch is genuinely
+# novel. database/sql is a built-in DB hint; listed here only for clarity.
+classify:
+  db: ["database/sql"]

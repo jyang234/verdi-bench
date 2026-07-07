@@ -43,6 +43,7 @@ def build_plugin_command(
     plugin_ids: list,
     task_file: Optional[Path] = None,
     nonce: Optional[str] = None,
+    holdouts_dir: Optional[str] = None,
 ) -> list[str]:
     """Fresh, NETWORK-LESS container argv for grader plugins [PRA-M6].
 
@@ -54,6 +55,13 @@ def build_plugin_command(
 
     ``nonce`` (present on the production path) is injected as ``VERDI_FENCE_NONCE``
     so the entrypoint can stamp it into its fence marker [F-H1 follow-up].
+
+    ``holdouts_dir`` (when set) is bind-mounted **read-only at /holdouts**, the
+    same trusted mount the holdout grader gets [integration plan §2]. The
+    groundwork plugin resolves its policy + base graph from ``/holdouts/groundwork/``
+    ONLY — never from the agent-authored ``/workspace`` — so a graded party cannot
+    substitute its own grader inputs. The trailing ``python -m ...`` command tokens
+    stay LAST (the argv-identity tests pin ``cmd[-4:]``); the mount rides the flags.
     """
     hc = HardenedCommand().rm().network("none").harden()
     if nonce:
@@ -61,6 +69,8 @@ def build_plugin_command(
     hc.volume(workspace, "/workspace")
     if task_file is not None:
         hc.volume(task_file, "/verdi/task.json", ro=True)
+    if holdouts_dir:
+        hc.volume(holdouts_dir, "/holdouts", ro=True)
     hc.workdir("/workspace").image(image)
     hc.arg("python", "-m", "harness.grade.run_plugin", *[str(p) for p in plugin_ids])
     return hc.build()
@@ -85,15 +95,23 @@ def run_plugins_in_container(docker, image: str, workspace: Path, plugin_ids: li
         # the GradeTask travels into the container read-only at /verdi/task.json,
         # written beside the workspace copy under the same throwaway tree.
         task_file = copy.parent / "task.json"
+        holdouts_dir = getattr(task, "holdouts_dir", "") or ""
+        # In-container the trusted holdouts are bind-mounted at /holdouts, so the
+        # task the plugin reads names that CONTAINER path — never the host path —
+        # so a plugin resolving grader assets (groundwork's policy/base graph) hits
+        # the read-only mount, not a stale host string [integration plan §2].
         task_file.write_text(json.dumps({
             "id": getattr(task, "id", "t"),
             "task_sha": getattr(task, "task_sha", ""),
-            "holdouts_dir": getattr(task, "holdouts_dir", ""),
+            "holdouts_dir": "/holdouts" if holdouts_dir else "",
             "fake_plugin_output": getattr(task, "fake_plugin_output", {}) or {},
         }), encoding="utf-8")
         # Per-grade nonce authenticates the plugin fence too [F-H1 follow-up].
         nonce = secrets.token_hex(16)
-        cmd = build_plugin_command(image, copy, plugin_ids, task_file, nonce)
+        cmd = build_plugin_command(
+            image, copy, plugin_ids, task_file, nonce,
+            holdouts_dir=holdouts_dir or None,
+        )
         proc = run_grading_container(docker, cmd, noun="plugin")
         # F-H1 A.4: same trusted channel as holdouts — never a file from the
         # agent-writable copy, and nonce-authenticated so an agent-forged block

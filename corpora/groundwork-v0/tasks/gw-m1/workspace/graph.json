@@ -1,0 +1,240 @@
+{
+  "tool": "v0.0.0-20260707142329-7e8df2bb315a",
+  "algo": "vta",
+  "caveats": [
+    "vta refined over rta from 3 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/accountsvc/internal/api.Server).GetAccount",
+      "sig": "func (*api.Server).GetAccount(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/accountsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 19,
+      "end_line": 26
+    },
+    {
+      "fqn": "(*example.com/accountsvc/internal/api.Server).Signup",
+      "sig": "func (*api.Server).Signup(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/accountsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 29,
+      "end_line": 35
+    },
+    {
+      "fqn": "(*example.com/accountsvc/internal/core.Service).GetAccount",
+      "sig": "func (*core.Service).GetAccount(ctx context.Context, id string) (repo.Account, error)",
+      "tier": 2,
+      "package": "example.com/accountsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 23,
+      "end_line": 29
+    },
+    {
+      "fqn": "(*example.com/accountsvc/internal/core.Service).Signup",
+      "sig": "func (*core.Service).Signup(ctx context.Context, id string) error",
+      "tier": 2,
+      "package": "example.com/accountsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 32,
+      "end_line": 35
+    },
+    {
+      "fqn": "(*example.com/accountsvc/internal/repo.SQLStore).IncrCounter",
+      "sig": "func (*repo.SQLStore).IncrCounter(ctx context.Context, name string, id string) error",
+      "tier": 1,
+      "package": "example.com/accountsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 34,
+      "end_line": 38
+    },
+    {
+      "fqn": "(*example.com/accountsvc/internal/repo.SQLStore).SelectAccount",
+      "sig": "func (*repo.SQLStore).SelectAccount(ctx context.Context, id string, out *repo.Account) error",
+      "tier": 2,
+      "package": "example.com/accountsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 28,
+      "end_line": 31
+    },
+    {
+      "fqn": "(*example.com/accountsvc/internal/views.LedgerCounter).Bump",
+      "sig": "func (*views.LedgerCounter).Bump(ctx context.Context, id string) (int, error)",
+      "tier": 2,
+      "package": "example.com/accountsvc/internal/views",
+      "fallible": true,
+      "file": "internal/views/views.go",
+      "line": 42,
+      "end_line": 47
+    },
+    {
+      "fqn": "example.com/accountsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/accountsvc",
+      "file": "main.go",
+      "line": 15,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/accountsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/accountsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 19,
+      "end_line": 26
+    },
+    {
+      "fqn": "example.com/accountsvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/accountsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 16,
+      "end_line": 16
+    },
+    {
+      "fqn": "example.com/accountsvc/internal/api.writeJSON",
+      "sig": "func api.writeJSON(_ context.Context, w http.ResponseWriter, v any)",
+      "tier": 3,
+      "package": "example.com/accountsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 37,
+      "end_line": 40
+    },
+    {
+      "fqn": "example.com/accountsvc/internal/core.New",
+      "sig": "func core.New(store repo.Store, signups views.Counter) *core.Service",
+      "tier": 3,
+      "package": "example.com/accountsvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 18,
+      "end_line": 20
+    },
+    {
+      "fqn": "example.com/accountsvc/internal/repo.New",
+      "sig": "func repo.New(db *sql.DB) *repo.SQLStore",
+      "tier": 3,
+      "package": "example.com/accountsvc/internal/repo",
+      "file": "internal/repo/repo.go",
+      "line": 25,
+      "end_line": 25
+    },
+    {
+      "fqn": "example.com/accountsvc/internal/views.NewLedger",
+      "sig": "func views.NewLedger(store repo.Store) *views.LedgerCounter",
+      "tier": 3,
+      "package": "example.com/accountsvc/internal/views",
+      "file": "internal/views/views.go",
+      "line": 39,
+      "end_line": 39
+    },
+    {
+      "fqn": "example.com/accountsvc/internal/wire.Handler",
+      "sig": "func wire.Handler(store repo.Store, signups views.Counter) http.Handler",
+      "tier": 3,
+      "package": "example.com/accountsvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 15,
+      "end_line": 23
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/accountsvc/internal/api.Server).GetAccount",
+      "to": "(*example.com/accountsvc/internal/core.Service).GetAccount",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/accountsvc/internal/api.Server).GetAccount",
+      "to": "example.com/accountsvc/internal/api.writeJSON",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/accountsvc/internal/api.Server).Signup",
+      "to": "(*example.com/accountsvc/internal/core.Service).Signup",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/accountsvc/internal/core.Service).GetAccount",
+      "to": "(*example.com/accountsvc/internal/repo.SQLStore).SelectAccount",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/accountsvc/internal/core.Service).Signup",
+      "to": "(*example.com/accountsvc/internal/views.LedgerCounter).Bump",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/accountsvc/internal/repo.SQLStore).IncrCounter",
+      "to": "boundary:db UPDATE counters",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/accountsvc/internal/repo.SQLStore).SelectAccount",
+      "to": "boundary:db SELECT accounts",
+      "tier": 2,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/accountsvc/internal/views.LedgerCounter).Bump",
+      "to": "(*example.com/accountsvc/internal/repo.SQLStore).IncrCounter",
+      "tier": 2
+    },
+    {
+      "from": "example.com/accountsvc.main",
+      "to": "example.com/accountsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/accountsvc.run",
+      "to": "example.com/accountsvc/internal/repo.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/accountsvc.run",
+      "to": "example.com/accountsvc/internal/views.NewLedger",
+      "tier": 3
+    },
+    {
+      "from": "example.com/accountsvc.run",
+      "to": "example.com/accountsvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/accountsvc/internal/wire.Handler",
+      "to": "example.com/accountsvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/accountsvc/internal/wire.Handler",
+      "to": "example.com/accountsvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "GET /accounts/{id}",
+      "fn": "(*example.com/accountsvc/internal/api.Server).GetAccount"
+    },
+    {
+      "kind": "http",
+      "name": "POST /accounts/{id}/signup",
+      "fn": "(*example.com/accountsvc/internal/api.Server).Signup"
+    }
+  ],
+  "composition_roots": [
+    "example.com/accountsvc"
+  ]
+}

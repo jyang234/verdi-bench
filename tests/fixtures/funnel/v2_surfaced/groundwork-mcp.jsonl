@@ -1,0 +1,3 @@
+{"init":true,"log":2,"session":"1"}
+{"call":{"name":"ground","arguments":{"fqn":"(*example.com/layeredsvc/internal/handler.Server).GetUserFast"}},"service":"graph.json","session":"1"}
+{"call":{"name":"fitness","arguments":{}},"service":"graph.json","session":"1","result":{"violated":["layering|(*example.com/layeredsvc/internal/handler.Server).GetUserFast|(*example.com/layeredsvc/internal/store.Store).SelectUser"],"cautions":0}}

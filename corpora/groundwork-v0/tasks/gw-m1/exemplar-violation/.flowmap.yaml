@@ -1,0 +1,8 @@
+version: 1
+service: accountsvc
+
+# accountsvc dispatches its view/signup counters through the views.Counter
+# interface. Only one implementation is wired live in main; the read route's
+# effect surface depends on which. database/sql is a built-in DB hint.
+classify:
+  db: ["database/sql"]

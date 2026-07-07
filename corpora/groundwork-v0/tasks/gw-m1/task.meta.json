@@ -1,0 +1,13 @@
+{
+  "id": "gw-m1",
+  "class": "multi-impl",
+  "binding_rule": "must_not_reach",
+  "seed": "authored-fresh",
+  "seed_mutation": "fresh accountsvc; views.Counter interface with three implementations (MemCounter, NopCounter, LedgerCounter), exactly one wired live in main",
+  "trap_one_liner": "GET view-counting reuses the ledger-backed counter, so the read route reaches a db UPDATE through interface dispatch; only VTA resolves the live impl",
+  "graph_substrate": "vta",
+  "functional_holdout": "internal/wire.TestViewCount via go test ./...",
+  "exemplar_expected_verify_rc": 1,
+  "requires_vta": true,
+  "timeout_s": 900
+}

@@ -1,0 +1,198 @@
+{
+  "tool": "v0.0.0-20260707142329-7e8df2bb315a",
+  "algo": "rta",
+  "caveats": [
+    "rta from 2 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/walletsvc/internal/api.Server).Deposit",
+      "sig": "func (*api.Server).Deposit(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/walletsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 20,
+      "end_line": 34
+    },
+    {
+      "fqn": "(*example.com/walletsvc/internal/core.Service).Deposit",
+      "sig": "func (*core.Service).Deposit(acct string, amt int64) error",
+      "tier": 2,
+      "package": "example.com/walletsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 18,
+      "end_line": 28
+    },
+    {
+      "fqn": "(*example.com/walletsvc/internal/store.Store).BeginTx",
+      "sig": "func (*store.Store).BeginTx() (*store.Tx, error)",
+      "tier": 3,
+      "package": "example.com/walletsvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 27,
+      "end_line": 33
+    },
+    {
+      "fqn": "(*example.com/walletsvc/internal/store.Tx).Commit",
+      "sig": "func (*store.Tx).Commit() error",
+      "tier": 3,
+      "package": "example.com/walletsvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 51,
+      "end_line": 57
+    },
+    {
+      "fqn": "(*example.com/walletsvc/internal/store.Tx).Credit",
+      "sig": "func (*store.Tx).Credit(acct string, amt int64) error",
+      "tier": 3,
+      "package": "example.com/walletsvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 45,
+      "end_line": 48
+    },
+    {
+      "fqn": "(*example.com/walletsvc/internal/store.Tx).Rollback",
+      "sig": "func (*store.Tx).Rollback()",
+      "tier": 3,
+      "package": "example.com/walletsvc/internal/store",
+      "file": "internal/store/store.go",
+      "line": 60,
+      "end_line": 60
+    },
+    {
+      "fqn": "example.com/walletsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/walletsvc",
+      "file": "main.go",
+      "line": 13,
+      "end_line": 15
+    },
+    {
+      "fqn": "example.com/walletsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/walletsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 17,
+      "end_line": 21
+    },
+    {
+      "fqn": "example.com/walletsvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/walletsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 17,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/walletsvc/internal/core.New",
+      "sig": "func core.New(st *store.Store) *core.Service",
+      "tier": 3,
+      "package": "example.com/walletsvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 12,
+      "end_line": 12
+    },
+    {
+      "fqn": "example.com/walletsvc/internal/store.New",
+      "sig": "func store.New() *store.Store",
+      "tier": 3,
+      "package": "example.com/walletsvc/internal/store",
+      "file": "internal/store/store.go",
+      "line": 14,
+      "end_line": 14
+    },
+    {
+      "fqn": "example.com/walletsvc/internal/wire.Handler",
+      "sig": "func wire.Handler(st *store.Store) http.Handler",
+      "tier": 3,
+      "package": "example.com/walletsvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 13,
+      "end_line": 20
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/walletsvc/internal/api.Server).Deposit",
+      "to": "(*example.com/walletsvc/internal/core.Service).Deposit",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/walletsvc/internal/core.Service).Deposit",
+      "to": "(*example.com/walletsvc/internal/store.Store).BeginTx",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/walletsvc/internal/core.Service).Deposit",
+      "to": "(*example.com/walletsvc/internal/store.Tx).Commit",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/walletsvc/internal/core.Service).Deposit",
+      "to": "(*example.com/walletsvc/internal/store.Tx).Credit",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/walletsvc/internal/core.Service).Deposit",
+      "to": "(*example.com/walletsvc/internal/store.Tx).Rollback",
+      "tier": 3
+    },
+    {
+      "from": "example.com/walletsvc.main",
+      "to": "example.com/walletsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/walletsvc.run",
+      "to": "example.com/walletsvc/internal/store.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/walletsvc.run",
+      "to": "example.com/walletsvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/walletsvc/internal/wire.Handler",
+      "to": "example.com/walletsvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/walletsvc/internal/wire.Handler",
+      "to": "example.com/walletsvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "obligations": [
+    {
+      "rule": "tx-must-close",
+      "kind": "must-release",
+      "fn": "(*example.com/walletsvc/internal/core.Service).Deposit",
+      "site": "internal/core/core.go:19",
+      "status": "SATISFIED"
+    }
+  ],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "POST /deposit",
+      "fn": "(*example.com/walletsvc/internal/api.Server).Deposit"
+    }
+  ],
+  "composition_roots": [
+    "example.com/walletsvc"
+  ],
+  "frontier": {
+    "unconfirmed_routes": 1,
+    "coverage": "starvation confirmed for the oapi strict-server shape only; unconfirmed routes reach no effect for an unverified reason (a no-op, or an unrecognized dispatch seam) — attribution_loss is a LOWER BOUND, not a proof of no severance"
+  }
+}

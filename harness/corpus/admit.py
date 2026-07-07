@@ -62,17 +62,42 @@ def has_curation_approval(ledger_path, candidate_id: str, task_sha: str) -> bool
     return curation_approval_for(ledger_path, candidate_id, task_sha) is not None
 
 
-def has_clean_baseline(ledger_path, task_sha: str) -> bool:
-    """A clean flake baseline exists for this exact task sha (latest wins).
+def latest_clean_baseline(ledger_path, task_sha: str) -> Optional[dict]:
+    """The latest flake_baseline event for this exact task sha IF its verdict is
+    ``clean``, else ``None`` (latest-event-wins).
 
     Baselines are keyed by task sha here (not task id): admission binds to the
     *version* that was reviewed, so a later re-baseline of a different sha does
-    not satisfy this one.
+    not satisfy this one. Returns the whole event (not just a bool) so a reader
+    can surface the ``grader`` tier that produced the admission-gating baseline.
     """
-    latest_verdict: dict[str, str] = {}
+    latest: dict[str, dict] = {}
     for ev in find_events(ledger_path, events.FLAKE_BASELINE):
-        latest_verdict[ev["task_sha"]] = ev["verdict"]
-    return latest_verdict.get(task_sha) == "clean"
+        latest[ev["task_sha"]] = ev  # append-order ⇒ last wins
+    ev = latest.get(task_sha)
+    return ev if ev is not None and ev.get("verdict") == "clean" else None
+
+
+def has_clean_baseline(ledger_path, task_sha: str) -> bool:
+    """Whether a clean flake baseline exists for this exact task sha (latest
+    wins) — the admission gate predicate, in terms of :func:`latest_clean_baseline`."""
+    return latest_clean_baseline(ledger_path, task_sha) is not None
+
+
+def baseline_grader_label(grader: Optional[str]) -> str:
+    """Human label for the grader tier recorded on a clean baseline [human-approved
+    2026-07-07].
+
+    ``None`` renders as ``"unrecorded"`` — an event predating the ``grader``
+    field names no tier, and it is NEVER defaulted to the trusted ``docker``.
+    ``"docker"`` is the only trusted tier; every other (no-daemon) tier is
+    annotated ``ADVISORY`` so a baseline that did not run in the trusted
+    container reads as such at a glance."""
+    if grader is None:
+        return "unrecorded"
+    if grader == "docker":
+        return "docker"
+    return f"{grader} (ADVISORY)"
 
 
 def admit_task(
@@ -238,10 +263,16 @@ class AdmitOutcome:
     """The result of a two-phase admission [PRA-M11]: the persisted embedded-copy
     path (when a candidate was embedded), and a post-ledger ``persist_error`` when
     the admission is on the chain but the manifest/embedded copy could not be
-    written — surfaced with the recovery hint, never swallowed."""
+    written — surfaced with the recovery hint, never swallowed.
+
+    ``baseline_grader`` is the raw grader tier recorded on the clean baseline the
+    admission relied on (``None`` = unrecorded, a pre-2026-07-07 event); the CLI
+    renders it via :func:`baseline_grader_label` so the operator sees whether the
+    admission rests on the TRUSTED ``docker`` tier or an ADVISORY one."""
 
     embedded_path: Path | None = None
     persist_error: str | None = None
+    baseline_grader: str | None = None
 
 
 def admit_with_persistence(
@@ -285,6 +316,11 @@ def admit_with_persistence(
         manifest, ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
         baseline_ref=baseline_ref, keyring=keyring, candidate_content=candidate_content,
     )
+    # Surface the grader tier of the clean baseline the admission just relied on
+    # (append-only ⇒ still the same event admit_task gated on). ``None`` when the
+    # event predates the grader field — rendered as "unrecorded", never docker.
+    gating = latest_clean_baseline(ledger_path, task_sha)
+    baseline_grader = gating.get("grader") if gating is not None else None
     # EVAL-10 AC-2: persist the embedded copy ALONGSIDE the reviewed file — never
     # over it. embed_canary is pure, so this repeats the exact call admit_task
     # already validated. A failure here (post-ledger) is reported loudly with the
@@ -307,8 +343,9 @@ def admit_with_persistence(
                 f"copy failed: {e}. The admission is on the chain; re-save the "
                 f"manifest to {manifest_path} to reconcile [PRA-M11]"
             ),
+            baseline_grader=baseline_grader,
         )
-    return AdmitOutcome(embedded_path=embedded_path)
+    return AdmitOutcome(embedded_path=embedded_path, baseline_grader=baseline_grader)
 
 
 # --- one-event property registration [EVAL-3 §M7, XC-3] --------------------

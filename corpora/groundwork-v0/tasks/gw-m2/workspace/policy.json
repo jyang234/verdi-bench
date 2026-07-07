@@ -1,0 +1,12 @@
+{
+  "service": "inboxsvc",
+  "version": 1,
+  "substrate": "vta",
+  "must_not_reach": [
+    {
+      "name": "read-route-stays-read-only",
+      "from": ["(*example.com/inboxsvc/internal/api.Server).GetMessage"],
+      "to": ["boundary:db INSERT", "boundary:db UPDATE", "boundary:db DELETE"]
+    }
+  ]
+}

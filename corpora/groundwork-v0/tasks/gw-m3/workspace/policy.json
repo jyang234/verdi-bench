@@ -1,0 +1,12 @@
+{
+  "service": "feedsvc",
+  "version": 1,
+  "substrate": "vta",
+  "must_not_reach": [
+    {
+      "name": "read-route-stays-read-only",
+      "from": ["(*example.com/feedsvc/internal/api.Server).GetItem"],
+      "to": ["boundary:bus PUBLISH"]
+    }
+  ]
+}

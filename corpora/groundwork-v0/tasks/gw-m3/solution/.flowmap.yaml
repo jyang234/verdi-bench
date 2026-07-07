@@ -1,0 +1,10 @@
+version: 1
+service: feedsvc
+
+# feedsvc dispatches its activity emitters through the emit.Emitter interface.
+# Only one implementation is wired live per route in main; the read route's
+# effect surface depends on which. database/sql is a built-in DB hint;
+# bus.Publish is the outbound-async egress named as a bus PUBLISH effect.
+classify:
+  db: ["database/sql"]
+  busPublish: ["example.com/feedsvc/internal/bus#Publish"]

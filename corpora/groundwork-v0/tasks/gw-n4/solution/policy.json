@@ -1,0 +1,12 @@
+{
+  "service": "eventsvc",
+  "version": 1,
+  "substrate": "rta",
+  "must_not_reach": [
+    {
+      "name": "create-route-no-dynamic-publish",
+      "from": ["(*example.com/eventsvc/internal/handler.Server).Create"],
+      "to": ["boundary:bus PUBLISH <dynamic>"]
+    }
+  ]
+}

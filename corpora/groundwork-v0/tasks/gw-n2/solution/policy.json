@@ -1,0 +1,19 @@
+{
+  "service": "userdirsvc",
+  "version": 1,
+  "substrate": "rta",
+  "layers": [
+    {"name": "api", "packages": ["example.com/userdirsvc/internal/api"]},
+    {"name": "core", "packages": ["example.com/userdirsvc/internal/core"]},
+    {"name": "repo", "packages": ["example.com/userdirsvc/internal/repo"]}
+  ],
+  "layering": {"roots": ["example.com/userdirsvc", "example.com/userdirsvc/internal/wire"], "allow": []},
+  "must_not_reach": [
+    {
+      "name": "read-route-stays-read-only",
+      "from": ["(*example.com/userdirsvc/internal/api.Server).GetUser"],
+      "to": ["boundary:db INSERT", "boundary:db UPDATE", "boundary:db DELETE"]
+    }
+  ],
+  "io_budget": {"max_writes_per_route": 2}
+}

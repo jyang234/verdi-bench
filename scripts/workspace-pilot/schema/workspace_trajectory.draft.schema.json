@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdi-bench/schema/workspace_trajectory.draft.schema.json",
+  "title": "workspace_trajectory.draft",
+  "description": "DRAFT candidate schema for the per-trial workspace-trajectory artifact (workspace-observability-plan.md C2). UNTESTED ON GPU pilot kit -- this is a candidate to be frozen as v1 ONLY after the P0 data-shape memo. The artifact body is time-free and deterministically serialized; run wall-clock lives only in the sidecar. All downstream detectors are deterministic functions of this object.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "mapping_version",
+    "pin",
+    "layer_band",
+    "top_k",
+    "prompt_set",
+    "positions",
+    "truncation"
+  ],
+  "properties": {
+    "schema": {
+      "const": "workspace_trajectory.draft"
+    },
+    "mapping_version": {
+      "const": "wt/v1-draft",
+      "description": "Frozen mapping version; pins the layer-band rule, top-k discipline, readout tokens, and control-noun set."
+    },
+    "pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The pinned tuple (C2/D4): the auditable identity of the (model, lens, mapping) that produced this artifact.",
+      "required": ["model_revision", "lens_sha256", "mapping_version"],
+      "properties": {
+        "model_revision": {
+          "type": "string",
+          "minLength": 1,
+          "description": "HF repo id @ revision (or an explicit UNPINNED-<reason> marker if the operator bypassed pinning)."
+        },
+        "lens_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "description": "sha256 of the lens artifact bytes, or an explicit UNPINNED-<reason> marker."
+        },
+        "mapping_version": {
+          "const": "wt/v1-draft"
+        }
+      }
+    },
+    "layer_band": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The declared workspace-layer band (D5). No universal constant: the default is a depth fraction resolved to concrete indices per model and RECORDED here.",
+      "required": ["rule", "num_model_layers", "layers"],
+      "properties": {
+        "rule": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How the band was chosen, e.g. 'explicit' or 'depth_fraction:0.40-0.70'."
+        },
+        "num_model_layers": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "layers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "integer", "minimum": 0},
+          "description": "Resolved concrete layer indices, ascending, unique."
+        }
+      }
+    },
+    "top_k": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of top readouts retained per frame (D5 fixed top-k)."
+    },
+    "prompt_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Provenance of the prompt this trajectory was captured on.",
+      "required": ["manifest_sha256", "prompt_id", "prompt_class", "prompt_sha256"],
+      "properties": {
+        "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "prompt_id": {"type": "string", "minLength": 1},
+        "prompt_class": {"type": "string", "minLength": 1},
+        "prompt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "positions": {
+      "type": "array",
+      "description": "Per-position top-k frames over the declared layer band. Deterministic order (ascending index).",
+      "items": {"$ref": "#/$defs/position"}
+    },
+    "probe_readouts": {
+      "$ref": "#/$defs/probe_readouts",
+      "description": "Exact lens log-probs for the A.21 readout + control vocabulary, at scored (assistant-turn-start) positions. This is the deterministic substrate the A.21 detector consumes offline; top-k alone cannot carry 102 fixed-vocabulary log-probs. Optional: present only when capture emits probe readouts."
+    },
+    "truncation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Size-cap disclosure (D5). Never silently drop: if the cap bit, truncated is true and the counts show what was kept.",
+      "required": ["position_cap", "positions_total", "positions_captured", "truncated"],
+      "properties": {
+        "position_cap": {"type": "integer", "minimum": 1},
+        "positions_total": {"type": "integer", "minimum": 0},
+        "positions_captured": {"type": "integer", "minimum": 0},
+        "truncated": {"type": "boolean"}
+      }
+    }
+  },
+  "$defs": {
+    "position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "role", "frames"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "role": {
+          "type": "string",
+          "enum": ["prompt", "assistant_turn_start", "generation"]
+        },
+        "token": {
+          "type": ["string", "null"],
+          "description": "Decoded token string at this position, or null if not recorded."
+        },
+        "frames": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/frame"}
+        }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layer", "readouts"],
+      "properties": {
+        "layer": {"type": "integer", "minimum": 0},
+        "readouts": {
+          "type": "array",
+          "description": "Top-k readouts, sorted by strength descending then token ascending (deterministic tie-break).",
+          "items": {"$ref": "#/$defs/readout"}
+        }
+      }
+    },
+    "readout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token", "strength"],
+      "properties": {
+        "token": {"type": "string"},
+        "strength": {
+          "type": "number",
+          "description": "Lens log-prob of the token at this (position, layer)."
+        }
+      }
+    },
+    "probe_readouts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vocab_id",
+        "readout_tokens",
+        "control_set_sha256",
+        "control_set_size",
+        "positions",
+        "dropped_multitoken"
+      ],
+      "properties": {
+        "vocab_id": {"const": "a21/v0"},
+        "readout_tokens": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string"}
+        },
+        "control_set_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "control_set_size": {"type": "integer", "minimum": 1},
+        "positions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/probe_position"}
+        },
+        "dropped_multitoken": {
+          "type": "array",
+          "description": "Probe words that did not resolve to a single token under this tokenizer (per-model disclosure). Excluded from the mean.",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "probe_position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "role", "layers"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "role": {"type": "string", "enum": ["assistant_turn_start"]},
+        "layers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/probe_layer"}
+        }
+      }
+    },
+    "probe_layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layer", "readout_logprobs", "control_logprobs"],
+      "properties": {
+        "layer": {"type": "integer", "minimum": 0},
+        "readout_logprobs": {
+          "type": "object",
+          "description": "Map readout-token -> lens log-prob (resolved tokens only).",
+          "additionalProperties": {"type": "number"}
+        },
+        "control_logprobs": {
+          "type": "array",
+          "description": "Lens log-prob per control noun, aligned to the frozen control_nouns file order; null marks a noun that did not resolve to a single token (skipped in the mean).",
+          "items": {"type": ["number", "null"]}
+        }
+      }
+    }
+  }
+}

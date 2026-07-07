@@ -1,0 +1,229 @@
+{
+  "stamp": "invsvc-base",
+  "algo": "rta",
+  "caveats": [
+    "rta from 3 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/invsvc/internal/catalog.Catalog).Describe",
+      "sig": "func (*catalog.Catalog).Describe(ctx context.Context, id string) (store.Item, error)",
+      "tier": 2,
+      "package": "example.com/invsvc/internal/catalog",
+      "fallible": true,
+      "file": "internal/catalog/catalog.go",
+      "line": 23,
+      "end_line": 29
+    },
+    {
+      "fqn": "(*example.com/invsvc/internal/catalog.Catalog).Rename",
+      "sig": "func (*catalog.Catalog).Rename(ctx context.Context, id string, name string) error",
+      "tier": 2,
+      "package": "example.com/invsvc/internal/catalog",
+      "fallible": true,
+      "file": "internal/catalog/catalog.go",
+      "line": 32,
+      "end_line": 37
+    },
+    {
+      "fqn": "(*example.com/invsvc/internal/handler.Server).RenameItem",
+      "sig": "func (*handler.Server).RenameItem(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/invsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 35,
+      "end_line": 46
+    },
+    {
+      "fqn": "(*example.com/invsvc/internal/handler.Server).ShowItem",
+      "sig": "func (*handler.Server).ShowItem(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/invsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 25,
+      "end_line": 32
+    },
+    {
+      "fqn": "(*example.com/invsvc/internal/store.Store).AppendAudit",
+      "sig": "func (*store.Store).AppendAudit(ctx context.Context, id string) error",
+      "tier": 1,
+      "package": "example.com/invsvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 41,
+      "end_line": 45
+    },
+    {
+      "fqn": "(*example.com/invsvc/internal/store.Store).FetchItem",
+      "sig": "func (*store.Store).FetchItem(ctx context.Context, id string, out *store.Item) error",
+      "tier": 2,
+      "package": "example.com/invsvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 27,
+      "end_line": 31
+    },
+    {
+      "fqn": "(*example.com/invsvc/internal/store.Store).SaveName",
+      "sig": "func (*store.Store).SaveName(ctx context.Context, id string, name string) error",
+      "tier": 1,
+      "package": "example.com/invsvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 34,
+      "end_line": 38
+    },
+    {
+      "fqn": "example.com/invsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/invsvc",
+      "file": "main.go",
+      "line": 18,
+      "end_line": 20
+    },
+    {
+      "fqn": "example.com/invsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/invsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 24,
+      "end_line": 36
+    },
+    {
+      "fqn": "example.com/invsvc/internal/catalog.New",
+      "sig": "func catalog.New(st *store.Store) *catalog.Catalog",
+      "tier": 3,
+      "package": "example.com/invsvc/internal/catalog",
+      "file": "internal/catalog/catalog.go",
+      "line": 20,
+      "end_line": 20
+    },
+    {
+      "fqn": "example.com/invsvc/internal/handler.New",
+      "sig": "func handler.New(cat *catalog.Catalog) *handler.Server",
+      "tier": 3,
+      "package": "example.com/invsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 22,
+      "end_line": 22
+    },
+    {
+      "fqn": "example.com/invsvc/internal/handler.writeJSON",
+      "sig": "func handler.writeJSON(_ context.Context, w http.ResponseWriter, v any)",
+      "tier": 3,
+      "package": "example.com/invsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 48,
+      "end_line": 51
+    },
+    {
+      "fqn": "example.com/invsvc/internal/store.New",
+      "sig": "func store.New(db *sql.DB) *store.Store",
+      "tier": 3,
+      "package": "example.com/invsvc/internal/store",
+      "file": "internal/store/store.go",
+      "line": 24,
+      "end_line": 24
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/invsvc/internal/catalog.Catalog).Describe",
+      "to": "(*example.com/invsvc/internal/store.Store).FetchItem",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/invsvc/internal/catalog.Catalog).Rename",
+      "to": "(*example.com/invsvc/internal/store.Store).AppendAudit",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/invsvc/internal/catalog.Catalog).Rename",
+      "to": "(*example.com/invsvc/internal/store.Store).SaveName",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/invsvc/internal/handler.Server).RenameItem",
+      "to": "(*example.com/invsvc/internal/catalog.Catalog).Rename",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/invsvc/internal/handler.Server).ShowItem",
+      "to": "(*example.com/invsvc/internal/catalog.Catalog).Describe",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/invsvc/internal/handler.Server).ShowItem",
+      "to": "example.com/invsvc/internal/handler.writeJSON",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/invsvc/internal/store.Store).AppendAudit",
+      "to": "boundary:db INSERT audit_log",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/invsvc/internal/store.Store).FetchItem",
+      "to": "boundary:db SELECT items",
+      "tier": 2,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/invsvc/internal/store.Store).SaveName",
+      "to": "boundary:db UPDATE items",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "example.com/invsvc.main",
+      "to": "example.com/invsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/invsvc.run",
+      "to": "example.com/invsvc/internal/catalog.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/invsvc.run",
+      "to": "example.com/invsvc/internal/handler.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/invsvc.run",
+      "to": "example.com/invsvc/internal/store.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "GET /items/{id}",
+      "fn": "(*example.com/invsvc/internal/handler.Server).ShowItem"
+    },
+    {
+      "kind": "http",
+      "name": "PUT /items/{id}",
+      "fn": "(*example.com/invsvc/internal/handler.Server).RenameItem"
+    }
+  ],
+  "composition_roots": [
+    "example.com/invsvc"
+  ],
+  "effect_order": [
+    {
+      "fn": "(*example.com/invsvc/internal/catalog.Catalog).Rename",
+      "effect": "boundary:db UPDATE items",
+      "effect_site": "internal/catalog/catalog.go:33",
+      "callee": "(*example.com/invsvc/internal/store.Store).AppendAudit",
+      "callee_site": "internal/catalog/catalog.go:36",
+      "always": true,
+      "via": "(*example.com/invsvc/internal/store.Store).SaveName"
+    }
+  ]
+}

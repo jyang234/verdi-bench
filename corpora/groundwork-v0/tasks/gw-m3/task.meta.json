@@ -1,0 +1,13 @@
+{
+  "id": "gw-m3",
+  "class": "multi-impl",
+  "binding_rule": "must_not_reach",
+  "seed": "authored-fresh",
+  "seed_mutation": "fresh feedsvc; emit.Emitter interface with three implementations (LogEmitter, NopEmitter, BusEmitter), exactly one wired live per route in main",
+  "trap_one_liner": "GET read-activity reuses the bus-backed emitter, so the read route reaches a bus PUBLISH through interface dispatch; only VTA resolves the live impl",
+  "graph_substrate": "vta",
+  "functional_holdout": "internal/wire.TestReadActivity via go test ./...",
+  "exemplar_expected_verify_rc": 1,
+  "requires_vta": true,
+  "timeout_s": 900
+}

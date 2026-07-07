@@ -74,7 +74,7 @@ _OMIT_IF_NONE_KEYS = {
     ),
     "process_score": ("rubric_sha256",),
     "cant_grade": ("override_of",),
-    "flake_baseline": ("workspace_basis",),
+    "flake_baseline": ("workspace_basis", "grader"),
     "human_verdict": ("integrity",),
     "selfcheck": ("validation_coverage", "validation_n_sim"),
     "findings_rendered": ("multi_arm_correction",),

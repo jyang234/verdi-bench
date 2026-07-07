@@ -1,0 +1,4 @@
+# Airgapped prebuilt-binary drop zone (see ../Dockerfile GROUNDWORK_PREBUILT).
+# The binaries themselves are never committed — only this placeholder + ignore.
+/flowmap
+/groundwork

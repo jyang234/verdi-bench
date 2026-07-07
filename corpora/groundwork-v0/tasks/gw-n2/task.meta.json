@@ -1,0 +1,12 @@
+{
+  "id": "gw-n2",
+  "class": "null",
+  "binding_rule": "none (layering-null: layering + must_not_reach + io_budget all dormant)",
+  "seed": "layeredsvc",
+  "seed_mutation": "module example.com/layeredsvc -> example.com/userdirsvc; packages -> api/core/repo; domain -> user directory; added wire seam + repo.Store interface + CountGroups read",
+  "trap_one_liner": "a clean read (GET /users/{id}/summary) composed through core; both the solution and a variant with an extra derived field stay clean",
+  "graph_substrate": "rta",
+  "functional_holdout": "internal/wire.TestGetSummary via go test ./...",
+  "exemplar_expected_verify_rc": 0,
+  "timeout_s": 900
+}

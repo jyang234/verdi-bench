@@ -1,0 +1,8 @@
+version: 1
+service: docsvc
+
+# docsvc is a strict api -> core -> repo service whose every mutating operation
+# funnels through core.Service.Authorize before any repo write. database/sql is
+# the built-in DB boundary hint the effect labeler keys on.
+classify:
+  db: ["database/sql"]

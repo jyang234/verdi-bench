@@ -1,0 +1,237 @@
+{
+  "tool": "v0.0.0-20260707142329-7e8df2bb315a",
+  "algo": "rta",
+  "caveats": [
+    "rta from 3 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/ordersvc/internal/api.Server).GetOrder",
+      "sig": "func (*api.Server).GetOrder(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/ordersvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 22,
+      "end_line": 29
+    },
+    {
+      "fqn": "(*example.com/ordersvc/internal/api.Server).RenameOrder",
+      "sig": "func (*api.Server).RenameOrder(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/ordersvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 32,
+      "end_line": 43
+    },
+    {
+      "fqn": "(*example.com/ordersvc/internal/core.Service).GetOrder",
+      "sig": "func (*core.Service).GetOrder(ctx context.Context, id string) (repo.Order, error)",
+      "tier": 2,
+      "package": "example.com/ordersvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 20,
+      "end_line": 26
+    },
+    {
+      "fqn": "(*example.com/ordersvc/internal/core.Service).RenameOrder",
+      "sig": "func (*core.Service).RenameOrder(ctx context.Context, id string, label string) error",
+      "tier": 2,
+      "package": "example.com/ordersvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 29,
+      "end_line": 31
+    },
+    {
+      "fqn": "(*example.com/ordersvc/internal/repo.SQLStore).IncrViews",
+      "sig": "func (*repo.SQLStore).IncrViews(ctx context.Context, id string) (int, error)",
+      "tier": 1,
+      "package": "example.com/ordersvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 49,
+      "end_line": 54
+    },
+    {
+      "fqn": "(*example.com/ordersvc/internal/repo.SQLStore).SelectOrder",
+      "sig": "func (*repo.SQLStore).SelectOrder(ctx context.Context, id string, out *repo.Order) error",
+      "tier": 2,
+      "package": "example.com/ordersvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 35,
+      "end_line": 38
+    },
+    {
+      "fqn": "(*example.com/ordersvc/internal/repo.SQLStore).UpdateOrder",
+      "sig": "func (*repo.SQLStore).UpdateOrder(ctx context.Context, id string, label string) error",
+      "tier": 1,
+      "package": "example.com/ordersvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 41,
+      "end_line": 45
+    },
+    {
+      "fqn": "example.com/ordersvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/ordersvc",
+      "file": "main.go",
+      "line": 15,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/ordersvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/ordersvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 21,
+      "end_line": 26
+    },
+    {
+      "fqn": "example.com/ordersvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/ordersvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 19,
+      "end_line": 19
+    },
+    {
+      "fqn": "example.com/ordersvc/internal/api.writeJSON",
+      "sig": "func api.writeJSON(_ context.Context, w http.ResponseWriter, v any)",
+      "tier": 3,
+      "package": "example.com/ordersvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 45,
+      "end_line": 48
+    },
+    {
+      "fqn": "example.com/ordersvc/internal/core.New",
+      "sig": "func core.New(store repo.Store) *core.Service",
+      "tier": 3,
+      "package": "example.com/ordersvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 17,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/ordersvc/internal/repo.New",
+      "sig": "func repo.New(db *sql.DB) *repo.SQLStore",
+      "tier": 3,
+      "package": "example.com/ordersvc/internal/repo",
+      "file": "internal/repo/repo.go",
+      "line": 32,
+      "end_line": 32
+    },
+    {
+      "fqn": "example.com/ordersvc/internal/wire.Handler",
+      "sig": "func wire.Handler(store repo.Store) http.Handler",
+      "tier": 3,
+      "package": "example.com/ordersvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 15,
+      "end_line": 23
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/ordersvc/internal/api.Server).GetOrder",
+      "to": "(*example.com/ordersvc/internal/core.Service).GetOrder",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/ordersvc/internal/api.Server).GetOrder",
+      "to": "example.com/ordersvc/internal/api.writeJSON",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/ordersvc/internal/api.Server).RenameOrder",
+      "to": "(*example.com/ordersvc/internal/core.Service).RenameOrder",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/ordersvc/internal/core.Service).GetOrder",
+      "to": "(*example.com/ordersvc/internal/repo.SQLStore).SelectOrder",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/ordersvc/internal/core.Service).RenameOrder",
+      "to": "(*example.com/ordersvc/internal/repo.SQLStore).UpdateOrder",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/ordersvc/internal/repo.SQLStore).IncrViews",
+      "to": "boundary:db UPDATE orders",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/ordersvc/internal/repo.SQLStore).SelectOrder",
+      "to": "boundary:db SELECT orders",
+      "tier": 2,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/ordersvc/internal/repo.SQLStore).UpdateOrder",
+      "to": "boundary:db UPDATE orders",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "example.com/ordersvc.main",
+      "to": "example.com/ordersvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/ordersvc.run",
+      "to": "example.com/ordersvc/internal/repo.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/ordersvc.run",
+      "to": "example.com/ordersvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/ordersvc/internal/wire.Handler",
+      "to": "example.com/ordersvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/ordersvc/internal/wire.Handler",
+      "to": "example.com/ordersvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "GET /orders/{id}",
+      "fn": "(*example.com/ordersvc/internal/api.Server).GetOrder"
+    },
+    {
+      "kind": "http",
+      "name": "PUT /orders/{id}",
+      "fn": "(*example.com/ordersvc/internal/api.Server).RenameOrder"
+    }
+  ],
+  "composition_roots": [
+    "example.com/ordersvc"
+  ],
+  "effect_order": [
+    {
+      "fn": "(*example.com/ordersvc/internal/repo.SQLStore).IncrViews",
+      "effect": "boundary:db UPDATE orders",
+      "effect_site": "internal/repo/repo.go:52",
+      "callee": "(*database/sql.Row).Scan",
+      "callee_site": "internal/repo/repo.go:52",
+      "always": true
+    }
+  ]
+}

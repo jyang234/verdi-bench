@@ -1,0 +1,13 @@
+{
+  "id": "gw-m2",
+  "class": "multi-impl",
+  "binding_rule": "must_not_reach",
+  "seed": "authored-fresh",
+  "seed_mutation": "fresh inboxsvc; delivery.Deliverer interface with two implementations (MemDeliverer, DbDeliverer), exactly one wired live in main",
+  "trap_one_liner": "GET read-receipting reuses the database-backed recorder, so the read route reaches a db INSERT through interface dispatch; only VTA resolves the live impl",
+  "graph_substrate": "vta",
+  "functional_holdout": "internal/wire.TestReadReceipt via go test ./...",
+  "exemplar_expected_verify_rc": 1,
+  "requires_vta": true,
+  "timeout_s": 900
+}

@@ -1,0 +1,12 @@
+{
+  "service": "accountsvc",
+  "version": 1,
+  "substrate": "vta",
+  "must_not_reach": [
+    {
+      "name": "read-route-stays-read-only",
+      "from": ["(*example.com/accountsvc/internal/api.Server).GetAccount"],
+      "to": ["boundary:db INSERT", "boundary:db UPDATE", "boundary:db DELETE"]
+    }
+  ]
+}

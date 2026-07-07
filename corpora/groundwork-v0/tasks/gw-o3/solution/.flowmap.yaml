@@ -1,0 +1,11 @@
+version: 1
+service: pubsvc
+
+# pubsvc must audit an approval before it publishes the event: every
+# bus.Publish must be dominated by an audit.Write. The obligation rides
+# .flowmap.yaml (CODEOWNERS-gated); flowmap emits per-site verdicts into the
+# graph and groundwork gates on them.
+obligations:
+  - name: audit-before-publish
+    require: "example.com/pubsvc/internal/audit#Write"
+    before: "example.com/pubsvc/internal/bus#Publish"

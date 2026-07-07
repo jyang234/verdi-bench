@@ -1,0 +1,14 @@
+{
+  "reachable_from": [
+    "(*example.com/invsvc/internal/handler.Server).ShowItem"
+  ],
+  "service": "invsvc",
+  "shape": "cross-package",
+  "touches": [
+    {
+      "nodes_added": 1,
+      "package": "example.com/invsvc/internal/store"
+    }
+  ],
+  "verdict": "STRUCTURALLY-CLEAR"
+}

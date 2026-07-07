@@ -1,0 +1,11 @@
+version: 1
+service: invsvc
+
+# invsvc is a deliberately strict handler -> catalog -> store fixture for the
+# verdi-bench groundwork grader plugin (a mutated, renamed sibling of verdi-go's
+# layeredsvc fixture, kept distinct to blunt training-set memorization). Its base
+# graph contains NO read-route -> write edge, so a write reachable from ShowItem
+# introduced on a branch is a genuinely novel must_not_reach violation.
+# database/sql is a built-in DB classification hint; it is listed for clarity.
+classify:
+  db: ["database/sql"]

@@ -1,0 +1,23 @@
+{
+  "service": "invsvc",
+  "version": 1,
+  "layers": [
+    {"name": "handler", "packages": ["example.com/invsvc/internal/handler"]},
+    {"name": "catalog", "packages": ["example.com/invsvc/internal/catalog"]},
+    {"name": "store", "packages": ["example.com/invsvc/internal/store"]}
+  ],
+  "layering": {
+    "roots": ["example.com/invsvc"],
+    "allow": []
+  },
+  "must_not_reach": [
+    {
+      "name": "show-item-stays-read-only",
+      "from": ["(*example.com/invsvc/internal/handler.Server).ShowItem"],
+      "to": ["boundary:db INSERT", "boundary:db UPDATE", "boundary:db DELETE"]
+    }
+  ],
+  "io_budget": {
+    "max_writes_per_route": 2
+  }
+}

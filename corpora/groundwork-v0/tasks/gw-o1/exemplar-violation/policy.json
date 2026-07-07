@@ -1,0 +1,5 @@
+{
+  "service": "walletsvc",
+  "version": 1,
+  "substrate": "rta"
+}

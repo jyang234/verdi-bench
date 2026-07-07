@@ -1,0 +1,17 @@
+{
+  "service": "deskflow",
+  "version": 1,
+  "substrate": "rta",
+  "layers": [
+    {"name": "api", "packages": ["example.com/deskflow/internal/api"]},
+    {"name": "core", "packages": ["example.com/deskflow/internal/core"]},
+    {"name": "repo", "packages": ["example.com/deskflow/internal/repo"]}
+  ],
+  "layering": {
+    "roots": ["example.com/deskflow", "example.com/deskflow/internal/wire"],
+    "allow": []
+  },
+  "io_budget": {
+    "max_writes_per_route": 2
+  }
+}

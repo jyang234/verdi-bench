@@ -1,0 +1,198 @@
+{
+  "tool": "v0.0.0-20260707142329-7e8df2bb315a",
+  "algo": "rta",
+  "caveats": [
+    "rta from 2 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/ingestsvc/internal/api.Server).Seed",
+      "sig": "func (*api.Server).Seed(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/ingestsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 20,
+      "end_line": 33
+    },
+    {
+      "fqn": "(*example.com/ingestsvc/internal/core.Service).Seed",
+      "sig": "func (*core.Service).Seed(row string) error",
+      "tier": 2,
+      "package": "example.com/ingestsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 19,
+      "end_line": 29
+    },
+    {
+      "fqn": "(*example.com/ingestsvc/internal/store.Batch).Add",
+      "sig": "func (*store.Batch).Add(row string) error",
+      "tier": 3,
+      "package": "example.com/ingestsvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 31,
+      "end_line": 37
+    },
+    {
+      "fqn": "(*example.com/ingestsvc/internal/store.Batch).Discard",
+      "sig": "func (*store.Batch).Discard()",
+      "tier": 3,
+      "package": "example.com/ingestsvc/internal/store",
+      "file": "internal/store/store.go",
+      "line": 47,
+      "end_line": 47
+    },
+    {
+      "fqn": "(*example.com/ingestsvc/internal/store.Batch).Flush",
+      "sig": "func (*store.Batch).Flush() error",
+      "tier": 3,
+      "package": "example.com/ingestsvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 40,
+      "end_line": 44
+    },
+    {
+      "fqn": "(*example.com/ingestsvc/internal/store.Store).OpenBatch",
+      "sig": "func (*store.Store).OpenBatch() (*store.Batch, error)",
+      "tier": 3,
+      "package": "example.com/ingestsvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 26,
+      "end_line": 28
+    },
+    {
+      "fqn": "example.com/ingestsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/ingestsvc",
+      "file": "main.go",
+      "line": 13,
+      "end_line": 15
+    },
+    {
+      "fqn": "example.com/ingestsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/ingestsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 17,
+      "end_line": 21
+    },
+    {
+      "fqn": "example.com/ingestsvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/ingestsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 17,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/ingestsvc/internal/core.New",
+      "sig": "func core.New(st *store.Store) *core.Service",
+      "tier": 3,
+      "package": "example.com/ingestsvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 12,
+      "end_line": 12
+    },
+    {
+      "fqn": "example.com/ingestsvc/internal/store.New",
+      "sig": "func store.New() *store.Store",
+      "tier": 3,
+      "package": "example.com/ingestsvc/internal/store",
+      "file": "internal/store/store.go",
+      "line": 14,
+      "end_line": 14
+    },
+    {
+      "fqn": "example.com/ingestsvc/internal/wire.Handler",
+      "sig": "func wire.Handler(st *store.Store) http.Handler",
+      "tier": 3,
+      "package": "example.com/ingestsvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 13,
+      "end_line": 20
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/ingestsvc/internal/api.Server).Seed",
+      "to": "(*example.com/ingestsvc/internal/core.Service).Seed",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/ingestsvc/internal/core.Service).Seed",
+      "to": "(*example.com/ingestsvc/internal/store.Batch).Add",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/ingestsvc/internal/core.Service).Seed",
+      "to": "(*example.com/ingestsvc/internal/store.Batch).Discard",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/ingestsvc/internal/core.Service).Seed",
+      "to": "(*example.com/ingestsvc/internal/store.Batch).Flush",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/ingestsvc/internal/core.Service).Seed",
+      "to": "(*example.com/ingestsvc/internal/store.Store).OpenBatch",
+      "tier": 2
+    },
+    {
+      "from": "example.com/ingestsvc.main",
+      "to": "example.com/ingestsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/ingestsvc.run",
+      "to": "example.com/ingestsvc/internal/store.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/ingestsvc.run",
+      "to": "example.com/ingestsvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/ingestsvc/internal/wire.Handler",
+      "to": "example.com/ingestsvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/ingestsvc/internal/wire.Handler",
+      "to": "example.com/ingestsvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "obligations": [
+    {
+      "rule": "batch-must-close",
+      "kind": "must-release",
+      "fn": "(*example.com/ingestsvc/internal/core.Service).Seed",
+      "site": "internal/core/core.go:20",
+      "status": "SATISFIED"
+    }
+  ],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "POST /seed",
+      "fn": "(*example.com/ingestsvc/internal/api.Server).Seed"
+    }
+  ],
+  "composition_roots": [
+    "example.com/ingestsvc"
+  ],
+  "frontier": {
+    "unconfirmed_routes": 1,
+    "coverage": "starvation confirmed for the oapi strict-server shape only; unconfirmed routes reach no effect for an unverified reason (a no-op, or an unrecognized dispatch seam) — attribution_loss is a LOWER BOUND, not a proof of no severance"
+  }
+}

@@ -1,0 +1,30 @@
+# ============================================================================
+# UNTESTED ON GPU -- workspace-pilot kit. Exercise --offline-selftest first.
+#
+# GPU-BOX-ONLY dependencies for the workspace-observability P0 pilot.
+# This directory is standalone: these deps are deliberately NOT in the verdi-bench
+# pyproject.toml / uv.lock, nothing here is imported by harness/, and nothing under
+# tests/ imports this kit. Installing this file MUST NOT touch the uv project.
+#
+# The pilot's --offline-selftest paths need NONE of these (stdlib only). Only a
+# live/--smoke capture on a real model does. Pinned by MAJOR here; the runbook
+# (README.md) prescribes recording the EXACT resolved versions for reproducibility.
+# ============================================================================
+
+# --- model runtime -----------------------------------------------------------
+torch>=2.3,<3
+transformers>=4.44,<5
+accelerate>=0.33,<1          # device_map="auto" for the >=27B primary run
+safetensors>=0.4,<1
+sentencepiece>=0.2,<1        # some tokenizers (Qwen variants) need it
+numpy>=1.26,<3
+
+# --- optional but recommended ------------------------------------------------
+jsonschema>=4.20,<5          # full artifact validation; the kit warns-and-continues without it
+
+# --- Jacobian lens (git install; NOT pip-indexed) ----------------------------
+# The reference implementation is Apache-2.0 and explicitly unmaintained (plan §8),
+# so PIN AN EXACT REVISION rather than tracking HEAD. Install it separately (it is a
+# comment here because a bare requirements line cannot carry your chosen ref):
+#   pip install "git+https://github.com/anthropics/jacobian-lens@<COMMIT_SHA>"
+# Record the resolved commit sha alongside the run (README "pinning discipline").

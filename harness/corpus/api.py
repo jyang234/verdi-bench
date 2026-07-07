@@ -22,7 +22,12 @@ from ..errors import VerdiRefusal
 # The admission refusal types + two-phase outcome live beside admit_task
 # [refactor 07 §3]; re-exported here because this stage API is the seam the
 # CLI and SDK import them through.
-from .admit import AdmitDestinationError, AdmitInputError, AdmitOutcome
+from .admit import (
+    AdmitDestinationError,
+    AdmitInputError,
+    AdmitOutcome,
+    baseline_grader_label,
+)
 
 # Known tasks.yaml drift traps — singular/plural keys the lenient run/grade reader
 # would silently ignore (decision A9). validate-tasks names them explicitly.
@@ -101,6 +106,10 @@ class CalibrateOutcome:
 class BaselineOutcome:
     verdict: str
     k: int
+    # The grader tier stamped on the ledgered event, from the runner actually
+    # used (never None on a real run) — surfaced so the echo names the tier
+    # [human-approved 2026-07-07].
+    grader: str | None = None
 
 
 def corpus_import(
@@ -383,6 +392,7 @@ def corpus_baseline(
     from ..grade.container import (
         DockerGradeRunner,
         GradingContainer,
+        LocalExecutingGradeRunner,
         LocalGradeRunner,
     )
     from ..grade.types import GradeTask
@@ -390,12 +400,27 @@ def corpus_baseline(
     from ..ledger.events import EventContext
     from ..ledger.identity import derive_experiment_id
 
+    # Runner tiers. Only "docker" is TRUSTED (network-less container, the real
+    # grader image). "local" reads a pre-placed holdout_results.json (fake/e2e);
+    # "local-exec" EXECUTES the declared holdout in a host subprocess with no
+    # daemon [refactor 05 §1] — the no-Docker admission tier for a declared
+    # command/pytest/assertion holdout (e.g. the groundwork-v0 command holdout).
+    # Both no-daemon tiers stamp grader_name != "docker", so every baseline event
+    # they ledger is ADVISORY (analyze banners it). Neither weakens the docker path.
+    runners = {
+        "docker": DockerGradeRunner,
+        "local": LocalGradeRunner,
+        "local-exec": LocalExecutingGradeRunner,
+    }
+    runner_cls = runners.get(runner)
+    if runner_cls is None:
+        raise ValueError(f"unknown --runner {runner!r}; expected one of {sorted(runners)}")
     ledger_path = experiment_dir / "ledger.ndjson"
-    # [ux-friction AC-1] one shared seam: resolve experiment_dir before naming.
+    # [ux-friction AC-1] one shared seam: resolve experiment_dir before naming;
+    # the runner is the validated tier above (our local-exec admission path is
+    # kept — the container uses the tier the operator asked for).
     ctx = EventContext(experiment_id=derive_experiment_id(experiment_dir), actor=resolve_actor(actor))
-    container = GradingContainer(
-        runner=LocalGradeRunner() if runner == "local" else DockerGradeRunner()
-    )
+    container = GradingContainer(runner=runner_cls())
     task = GradeTask(id=task_id, task_sha=task_sha, holdouts_dir=str(holdouts_dir))
     outcome = flake_baseline(
         task, ledger_path, ctx,
@@ -403,4 +428,7 @@ def corpus_baseline(
         k=k if k is not None else DEFAULT_K,
         workspace_basis="reference_solution",
     )
-    return BaselineOutcome(verdict=outcome.verdict, k=outcome.event["k"])
+    return BaselineOutcome(
+        verdict=outcome.verdict, k=outcome.event["k"],
+        grader=outcome.event.get("grader"),
+    )

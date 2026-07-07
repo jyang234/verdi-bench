@@ -247,7 +247,7 @@ _EVENT_SPECS: tuple[EventSpec, ...] = (
     EventSpec(
         FLAKE_BASELINE,
         required=("task_id", "task_sha", "k", "results", "verdict"),
-        omit_if_none=("workspace_basis",),
+        omit_if_none=("workspace_basis", "grader"),
     ),
     # EVAL-2
     EventSpec(JUDGE_VERDICT, required=("verdict",)),
@@ -527,16 +527,29 @@ def record_flake_baseline(
     results: list,
     verdict: str,
     workspace_basis: Optional[str] = None,
+    grader: Optional[str] = None,
 ) -> dict:
     """``workspace_basis`` (additive [F-H2]) records WHAT was baselined —
     ``"reference_solution"`` when produced by ``bench corpus baseline`` against
     the task's reference-solution tree — so a baseline that actually ran is
-    distinguishable from a directly-fabricated event. Pre-existing chains
-    simply lack the field."""
+    distinguishable from a directly-fabricated event.
+
+    ``grader`` (additive, human-approved 2026-07-07) records WHICH grader tier
+    produced the k runs — ``"docker"`` is the only TRUSTED tier (network-less
+    container, the real grader image); a no-daemon tier is ADVISORY
+    (``"local-exec"`` executes the declared holdout on the host, ``"local"``
+    reads a pre-placed file). It is stamped from the runner actually used
+    (:attr:`GradingContainer.grader_name`), never a caller argument, so an
+    ADVISORY run cannot be laundered as ``docker`` on the event — the same
+    stamp ``record_grade`` carries. **Absent = unrecorded**: an event that
+    predates the field (pre-2026-07-07) does not name its tier, and a reader
+    MUST render that as ``unrecorded`` and never default it to the trusted
+    ``docker``. Old chains stay valid and chain-verify unchanged; new events
+    always carry it. Pre-existing chains simply lack either field."""
     return build_event(
         FLAKE_BASELINE, ledger_path, ctx,
         task_id=task_id, task_sha=task_sha, k=k, results=results,
-        verdict=verdict, workspace_basis=workspace_basis,
+        verdict=verdict, workspace_basis=workspace_basis, grader=grader,
     )
 
 

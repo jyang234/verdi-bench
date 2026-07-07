@@ -1,0 +1,275 @@
+{
+  "tool": "v0.0.0-20260707142329-7e8df2bb315a",
+  "algo": "rta",
+  "caveats": [
+    "rta from 3 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/billingsvc/internal/api.Server).CreateInvoice",
+      "sig": "func (*api.Server).CreateInvoice(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/billingsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 33,
+      "end_line": 44
+    },
+    {
+      "fqn": "(*example.com/billingsvc/internal/api.Server).GetInvoice",
+      "sig": "func (*api.Server).GetInvoice(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/billingsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 23,
+      "end_line": 30
+    },
+    {
+      "fqn": "(*example.com/billingsvc/internal/core.Service).CreateInvoice",
+      "sig": "func (*core.Service).CreateInvoice(ctx context.Context, inv repo.Invoice) error",
+      "tier": 2,
+      "package": "example.com/billingsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 30,
+      "end_line": 35
+    },
+    {
+      "fqn": "(*example.com/billingsvc/internal/core.Service).GetInvoice",
+      "sig": "func (*core.Service).GetInvoice(ctx context.Context, id string) (repo.Invoice, error)",
+      "tier": 2,
+      "package": "example.com/billingsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 20,
+      "end_line": 26
+    },
+    {
+      "fqn": "(*example.com/billingsvc/internal/repo.SQLStore).InsertAuditLog",
+      "sig": "func (*repo.SQLStore).InsertAuditLog(ctx context.Context, id string, action string) error",
+      "tier": 1,
+      "package": "example.com/billingsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 51,
+      "end_line": 55
+    },
+    {
+      "fqn": "(*example.com/billingsvc/internal/repo.SQLStore).InsertInvoice",
+      "sig": "func (*repo.SQLStore).InsertInvoice(ctx context.Context, id string, customer string, amount int) error",
+      "tier": 1,
+      "package": "example.com/billingsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 44,
+      "end_line": 48
+    },
+    {
+      "fqn": "(*example.com/billingsvc/internal/repo.SQLStore).InsertReceipt",
+      "sig": "func (*repo.SQLStore).InsertReceipt(ctx context.Context, id string) error",
+      "tier": 1,
+      "package": "example.com/billingsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 67,
+      "end_line": 71
+    },
+    {
+      "fqn": "(*example.com/billingsvc/internal/repo.SQLStore).SelectInvoice",
+      "sig": "func (*repo.SQLStore).SelectInvoice(ctx context.Context, id string, out *repo.Invoice) error",
+      "tier": 2,
+      "package": "example.com/billingsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 38,
+      "end_line": 41
+    },
+    {
+      "fqn": "(*example.com/billingsvc/internal/repo.SQLStore).UpdateInvoiceFinalized",
+      "sig": "func (*repo.SQLStore).UpdateInvoiceFinalized(ctx context.Context, id string, actor string) error",
+      "tier": 1,
+      "package": "example.com/billingsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 59,
+      "end_line": 63
+    },
+    {
+      "fqn": "example.com/billingsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/billingsvc",
+      "file": "main.go",
+      "line": 15,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/billingsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/billingsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 21,
+      "end_line": 26
+    },
+    {
+      "fqn": "example.com/billingsvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/billingsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 20,
+      "end_line": 20
+    },
+    {
+      "fqn": "example.com/billingsvc/internal/api.writeJSON",
+      "sig": "func api.writeJSON(_ context.Context, w http.ResponseWriter, v any)",
+      "tier": 3,
+      "package": "example.com/billingsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 46,
+      "end_line": 49
+    },
+    {
+      "fqn": "example.com/billingsvc/internal/core.New",
+      "sig": "func core.New(store repo.Store) *core.Service",
+      "tier": 3,
+      "package": "example.com/billingsvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 17,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/billingsvc/internal/repo.New",
+      "sig": "func repo.New(db *sql.DB) *repo.SQLStore",
+      "tier": 3,
+      "package": "example.com/billingsvc/internal/repo",
+      "file": "internal/repo/repo.go",
+      "line": 35,
+      "end_line": 35
+    },
+    {
+      "fqn": "example.com/billingsvc/internal/wire.Handler",
+      "sig": "func wire.Handler(store repo.Store) http.Handler",
+      "tier": 3,
+      "package": "example.com/billingsvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 15,
+      "end_line": 23
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/billingsvc/internal/api.Server).CreateInvoice",
+      "to": "(*example.com/billingsvc/internal/core.Service).CreateInvoice",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/billingsvc/internal/api.Server).GetInvoice",
+      "to": "(*example.com/billingsvc/internal/core.Service).GetInvoice",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/billingsvc/internal/api.Server).GetInvoice",
+      "to": "example.com/billingsvc/internal/api.writeJSON",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/billingsvc/internal/core.Service).CreateInvoice",
+      "to": "(*example.com/billingsvc/internal/repo.SQLStore).InsertAuditLog",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/billingsvc/internal/core.Service).CreateInvoice",
+      "to": "(*example.com/billingsvc/internal/repo.SQLStore).InsertInvoice",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/billingsvc/internal/core.Service).GetInvoice",
+      "to": "(*example.com/billingsvc/internal/repo.SQLStore).SelectInvoice",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/billingsvc/internal/repo.SQLStore).InsertAuditLog",
+      "to": "boundary:db INSERT audit_log",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/billingsvc/internal/repo.SQLStore).InsertInvoice",
+      "to": "boundary:db INSERT invoices",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/billingsvc/internal/repo.SQLStore).InsertReceipt",
+      "to": "boundary:db INSERT receipts",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/billingsvc/internal/repo.SQLStore).SelectInvoice",
+      "to": "boundary:db SELECT invoices",
+      "tier": 2,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/billingsvc/internal/repo.SQLStore).UpdateInvoiceFinalized",
+      "to": "boundary:db UPDATE invoices",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "example.com/billingsvc.main",
+      "to": "example.com/billingsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/billingsvc.run",
+      "to": "example.com/billingsvc/internal/repo.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/billingsvc.run",
+      "to": "example.com/billingsvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/billingsvc/internal/wire.Handler",
+      "to": "example.com/billingsvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/billingsvc/internal/wire.Handler",
+      "to": "example.com/billingsvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "GET /invoices/{id}",
+      "fn": "(*example.com/billingsvc/internal/api.Server).GetInvoice"
+    },
+    {
+      "kind": "http",
+      "name": "POST /invoices",
+      "fn": "(*example.com/billingsvc/internal/api.Server).CreateInvoice"
+    }
+  ],
+  "composition_roots": [
+    "example.com/billingsvc"
+  ],
+  "effect_order": [
+    {
+      "fn": "(*example.com/billingsvc/internal/core.Service).CreateInvoice",
+      "effect": "boundary:db INSERT invoices",
+      "effect_site": "internal/core/core.go:31",
+      "callee": "(example.com/billingsvc/internal/repo.Store).InsertAuditLog",
+      "callee_site": "internal/core/core.go:34",
+      "always": true,
+      "via": "(*example.com/billingsvc/internal/repo.SQLStore).InsertInvoice"
+    }
+  ]
+}

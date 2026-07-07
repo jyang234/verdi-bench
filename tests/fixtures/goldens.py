@@ -886,6 +886,16 @@ def build_constructor_replay(ledger: Path | str) -> set[str]:
             ledger, ctx,
             trial_record=trial_record(trial_id="t-6", spans_sha="5c" * 32),
         )
+        # flake_baseline WITH the additive grader tier [human-approved 2026-07-07],
+        # appended last so every prior `flake_baseline` line stays byte-identical —
+        # the two flake_baseline events above omit it (the "both ways" omit-if-None
+        # coverage). "docker" is the trusted tier the stamp names; an absent grader
+        # is rendered "unrecorded" by readers, never defaulted to docker.
+        E.record_flake_baseline(
+            ledger, ctx, task_id="task2", task_sha="7" * 64, k=5,
+            results=["pass", "pass", "pass", "pass", "pass"], verdict="stable",
+            grader="docker",
+        )
 
     import json
 

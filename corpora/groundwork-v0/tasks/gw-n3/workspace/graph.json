@@ -1,0 +1,198 @@
+{
+  "tool": "v0.0.0-20260707142329-7e8df2bb315a",
+  "algo": "rta",
+  "caveats": [
+    "rta from 2 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/banksvc/internal/api.Server).Deposit",
+      "sig": "func (*api.Server).Deposit(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/banksvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 20,
+      "end_line": 34
+    },
+    {
+      "fqn": "(*example.com/banksvc/internal/core.Service).Deposit",
+      "sig": "func (*core.Service).Deposit(acct string, amt int64) error",
+      "tier": 2,
+      "package": "example.com/banksvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 15,
+      "end_line": 25
+    },
+    {
+      "fqn": "(*example.com/banksvc/internal/store.Store).BeginTx",
+      "sig": "func (*store.Store).BeginTx() (*store.Tx, error)",
+      "tier": 3,
+      "package": "example.com/banksvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 21,
+      "end_line": 27
+    },
+    {
+      "fqn": "(*example.com/banksvc/internal/store.Tx).Commit",
+      "sig": "func (*store.Tx).Commit() error",
+      "tier": 3,
+      "package": "example.com/banksvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 36,
+      "end_line": 41
+    },
+    {
+      "fqn": "(*example.com/banksvc/internal/store.Tx).Credit",
+      "sig": "func (*store.Tx).Credit(acct string, amt int64) error",
+      "tier": 3,
+      "package": "example.com/banksvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 30,
+      "end_line": 33
+    },
+    {
+      "fqn": "(*example.com/banksvc/internal/store.Tx).Rollback",
+      "sig": "func (*store.Tx).Rollback()",
+      "tier": 3,
+      "package": "example.com/banksvc/internal/store",
+      "file": "internal/store/store.go",
+      "line": 44,
+      "end_line": 44
+    },
+    {
+      "fqn": "example.com/banksvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/banksvc",
+      "file": "main.go",
+      "line": 13,
+      "end_line": 15
+    },
+    {
+      "fqn": "example.com/banksvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/banksvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 17,
+      "end_line": 21
+    },
+    {
+      "fqn": "example.com/banksvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/banksvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 17,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/banksvc/internal/core.New",
+      "sig": "func core.New(st *store.Store) *core.Service",
+      "tier": 3,
+      "package": "example.com/banksvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 12,
+      "end_line": 12
+    },
+    {
+      "fqn": "example.com/banksvc/internal/store.New",
+      "sig": "func store.New() *store.Store",
+      "tier": 3,
+      "package": "example.com/banksvc/internal/store",
+      "file": "internal/store/store.go",
+      "line": 9,
+      "end_line": 9
+    },
+    {
+      "fqn": "example.com/banksvc/internal/wire.Handler",
+      "sig": "func wire.Handler(st *store.Store) http.Handler",
+      "tier": 3,
+      "package": "example.com/banksvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 13,
+      "end_line": 20
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/banksvc/internal/api.Server).Deposit",
+      "to": "(*example.com/banksvc/internal/core.Service).Deposit",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/banksvc/internal/core.Service).Deposit",
+      "to": "(*example.com/banksvc/internal/store.Store).BeginTx",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/banksvc/internal/core.Service).Deposit",
+      "to": "(*example.com/banksvc/internal/store.Tx).Commit",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/banksvc/internal/core.Service).Deposit",
+      "to": "(*example.com/banksvc/internal/store.Tx).Credit",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/banksvc/internal/core.Service).Deposit",
+      "to": "(*example.com/banksvc/internal/store.Tx).Rollback",
+      "tier": 3
+    },
+    {
+      "from": "example.com/banksvc.main",
+      "to": "example.com/banksvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/banksvc.run",
+      "to": "example.com/banksvc/internal/store.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/banksvc.run",
+      "to": "example.com/banksvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/banksvc/internal/wire.Handler",
+      "to": "example.com/banksvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/banksvc/internal/wire.Handler",
+      "to": "example.com/banksvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "obligations": [
+    {
+      "rule": "tx-must-close",
+      "kind": "must-release",
+      "fn": "(*example.com/banksvc/internal/core.Service).Deposit",
+      "site": "internal/core/core.go:16",
+      "status": "SATISFIED"
+    }
+  ],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "POST /deposit",
+      "fn": "(*example.com/banksvc/internal/api.Server).Deposit"
+    }
+  ],
+  "composition_roots": [
+    "example.com/banksvc"
+  ],
+  "frontier": {
+    "unconfirmed_routes": 1,
+    "coverage": "starvation confirmed for the oapi strict-server shape only; unconfirmed routes reach no effect for an unverified reason (a no-op, or an unrecognized dispatch seam) — attribution_loss is a LOWER BOUND, not a proof of no severance"
+  }
+}

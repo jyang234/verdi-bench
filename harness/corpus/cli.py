@@ -23,6 +23,7 @@ from .api import (
     CandidateStagingError,
     UnknownBenchmarkError,
     ValidateTasksFileError,
+    baseline_grader_label,
     corpus_admit,
     corpus_approve,
     corpus_baseline,
@@ -283,7 +284,13 @@ def register(app: typer.Typer) -> None:
         if outcome.persist_error is not None:
             typer.echo(outcome.persist_error, err=True)
             raise typer.Exit(code=1)
-        typer.echo(f"admitted {candidate_id} (sha={task_sha[:12]}…)")
+        # Surface the grader tier of the clean baseline this admission relied on:
+        # "docker" is trusted, a no-daemon tier is ADVISORY, and a pre-2026-07-07
+        # event that never recorded a tier renders "unrecorded" — never docker.
+        typer.echo(
+            f"admitted {candidate_id} (sha={task_sha[:12]}…); "
+            f"baseline grader: {baseline_grader_label(outcome.baseline_grader)}"
+        )
 
     @corpus_app.command("baseline")
     def baseline_cmd(
@@ -300,7 +307,10 @@ def register(app: typer.Typer) -> None:
         k: int = typer.Option(None, "--k", help="Zero-tolerance runs (default 5); "
                               "raise for stronger flake detection — miss rate is (1-p)^k"),
         runner: str = typer.Option(
-            "docker", "--runner", help="docker (real container) | local (no-daemon fake/test)"
+            "docker", "--runner",
+            help="docker (trusted container) | local (no-daemon, reads a pre-placed "
+            "holdout_results.json — fake/test) | local-exec (no-daemon, EXECUTES the "
+            "declared holdout on the host — ADVISORY)",
         ),
         actor: str = typer.Option(None, "--actor", help="Actor recorded on the baseline [GR-12]"),
     ) -> None:
@@ -313,8 +323,8 @@ def register(app: typer.Typer) -> None:
         from ..grade.container import GraderUnavailableError
         from ..ledger.actor import ActorResolutionError
 
-        if runner not in ("docker", "local"):
-            raise typer.BadParameter("--runner must be docker or local")
+        if runner not in ("docker", "local", "local-exec"):
+            raise typer.BadParameter("--runner must be docker, local, or local-exec")
         try:
             outcome = corpus_baseline(
                 experiment_dir, task_id=task_id, task_sha=task_sha,
@@ -332,7 +342,7 @@ def register(app: typer.Typer) -> None:
             raise typer.Exit(code=2)
         typer.echo(
             f"baseline {outcome.verdict}: {task_id} (sha={task_sha[:12]}…) "
-            f"over k={outcome.k} run(s)"
+            f"over k={outcome.k} run(s); grader: {baseline_grader_label(outcome.grader)}"
         )
         if outcome.verdict != "clean":
             raise typer.Exit(code=1)

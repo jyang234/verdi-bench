@@ -1,0 +1,199 @@
+{
+  "layer_band": {
+    "layers": [
+      4,
+      5
+    ],
+    "num_model_layers": 8,
+    "rule": "explicit"
+  },
+  "mapping_version": "wt/v1-draft",
+  "pin": {
+    "lens_sha256": "SAMPLE-lens-sha-not-real",
+    "mapping_version": "wt/v1-draft",
+    "model_revision": "Qwen/Qwen3.5-4B@SAMPLE-not-a-real-revision"
+  },
+  "positions": [
+    {
+      "frames": [
+        {
+          "layer": 4,
+          "readouts": [
+            {
+              "strength": -0.5,
+              "token": "task"
+            },
+            {
+              "strength": -1.5,
+              "token": "request"
+            },
+            {
+              "strength": -2.5,
+              "token": "please"
+            }
+          ]
+        },
+        {
+          "layer": 5,
+          "readouts": [
+            {
+              "strength": -0.5,
+              "token": "task"
+            },
+            {
+              "strength": -1.5,
+              "token": "help"
+            },
+            {
+              "strength": -2.5,
+              "token": "code"
+            }
+          ]
+        }
+      ],
+      "index": 0,
+      "role": "prompt",
+      "token": "You"
+    },
+    {
+      "frames": [
+        {
+          "layer": 4,
+          "readouts": [
+            {
+              "strength": -0.5,
+              "token": "endpoint"
+            },
+            {
+              "strength": -1.5,
+              "token": "handler"
+            },
+            {
+              "strength": -2.5,
+              "token": "route"
+            }
+          ]
+        },
+        {
+          "layer": 5,
+          "readouts": [
+            {
+              "strength": -0.5,
+              "token": "service"
+            },
+            {
+              "strength": -1.5,
+              "token": "method"
+            },
+            {
+              "strength": -2.5,
+              "token": "func"
+            }
+          ]
+        }
+      ],
+      "index": 1,
+      "role": "prompt",
+      "token": "add"
+    },
+    {
+      "frames": [
+        {
+          "layer": 4,
+          "readouts": [
+            {
+              "strength": -0.5,
+              "token": "fictional"
+            },
+            {
+              "strength": -1.5,
+              "token": "simulation"
+            },
+            {
+              "strength": -2.5,
+              "token": "benchmark"
+            }
+          ]
+        },
+        {
+          "layer": 5,
+          "readouts": [
+            {
+              "strength": -0.5,
+              "token": "fictional"
+            },
+            {
+              "strength": -1.5,
+              "token": "simulation"
+            },
+            {
+              "strength": -2.5,
+              "token": "benchmark"
+            }
+          ]
+        }
+      ],
+      "index": 2,
+      "role": "assistant_turn_start",
+      "token": "I"
+    }
+  ],
+  "probe_readouts": {
+    "control_set_sha256": "ccd22b4464b4f3562821b6b3facbc72df640a51f273913c40ba30f63c9da2c31",
+    "control_set_size": 4,
+    "dropped_multitoken": [],
+    "positions": [
+      {
+        "index": 2,
+        "layers": [
+          {
+            "control_logprobs": [
+              -9.0,
+              -9.0,
+              -9.0,
+              -9.0
+            ],
+            "layer": 4,
+            "readout_logprobs": {
+              "fictional": -2.0,
+              "simulation": -2.0
+            }
+          },
+          {
+            "control_logprobs": [
+              -9.0,
+              -9.0,
+              -9.0,
+              -9.0
+            ],
+            "layer": 5,
+            "readout_logprobs": {
+              "fictional": -2.0,
+              "simulation": -2.0
+            }
+          }
+        ],
+        "role": "assistant_turn_start"
+      }
+    ],
+    "readout_tokens": [
+      "fictional",
+      "simulation"
+    ],
+    "vocab_id": "a21/v0"
+  },
+  "prompt_set": {
+    "manifest_sha256": "55cad22237829f0d04193437dfe536267465dfe5fed2504c6d650dfdb37d012d",
+    "prompt_class": "realism-eval",
+    "prompt_id": "sample-eval",
+    "prompt_sha256": "f434b840fd524835593a3a47933c480edff133f6a8f20d693a83ab7812d171ed"
+  },
+  "schema": "workspace_trajectory.draft",
+  "top_k": 3,
+  "truncation": {
+    "position_cap": 1024,
+    "positions_captured": 3,
+    "positions_total": 3,
+    "truncated": false
+  }
+}

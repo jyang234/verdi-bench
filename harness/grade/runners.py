@@ -281,16 +281,21 @@ class GradingContainer:
         plugin_ids: list,
         task_file: Optional[Path] = None,
         nonce: Optional[str] = None,
+        holdouts_dir: Optional[str] = None,
     ) -> list[str]:
         """The fresh, network-less plugin container argv [PRA-M6].
 
         A thin binding of this container's ``image`` to the plugin-launch recipe
         (:func:`harness.grade.plugins.launch.build_plugin_command`), kept as a
         method so the argv-identity tests can build it off a ``GradingContainer``.
+        ``holdouts_dir`` (when set) rides through as the read-only ``/holdouts``
+        mount the groundwork plugin resolves its trusted assets from [plan §2].
         """
         from .plugins.launch import build_plugin_command
 
-        return build_plugin_command(self._image, workspace, plugin_ids, task_file, nonce)
+        return build_plugin_command(
+            self._image, workspace, plugin_ids, task_file, nonce, holdouts_dir,
+        )
 
     @property
     def grader_name(self) -> str:

@@ -1,0 +1,1 @@
+{"schema_version":3,"trial_id":"trial-error-check","platform":"claude_code","steps":[{"kind":"file_edit","command":"","files_touched":["internal/api/api.go"],"detail":"--- old_string\n// GetOrder\n+++ new_string\n// GetOrder (edited)"},{"kind":"tool_call","command":"","detail":"the server was started without --policy; fitness needs one"}]}

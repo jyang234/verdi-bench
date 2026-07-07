@@ -1,0 +1,8 @@
+version: 1
+service: billingsvc
+
+# billingsvc is a strict api -> core -> repo service. Each route's distinct
+# write targets (table x op) are counted against the io_budget. database/sql is
+# the built-in DB boundary hint the effect labeler keys on.
+classify:
+  db: ["database/sql"]

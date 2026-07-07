@@ -7,6 +7,7 @@ version must not launder an old flaky version's quarantine.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -221,3 +222,61 @@ def test_h2_operating_characteristic_stays_documented():
     if the default changes, the docs in baseline.py / deep-dive.md change with it."""
     assert DEFAULT_K == 5
     assert abs((1 - 0.02) ** DEFAULT_K - 0.9039) < 5e-4
+
+
+# --- grader tier on the ledgered event [human-approved 2026-07-07] -----------
+def test_baseline_event_records_docker_grader_tier(tmp_path):
+    """The TRUSTED docker tier stamps ``grader="docker"`` on the flake_baseline
+    event, taken from the runner actually used. Only the docker boundary (the
+    ``DockerClient``) is faked — the real ``DockerGradeRunner`` code path runs and
+    scores its own fenced stdout, so the recorded tier is not caller-supplied."""
+    from harness.grade.container import DockerGradeRunner
+    from harness.grade.fence import NONCE_ENV, holdout_fence
+
+    class _FakeDocker:
+        """Fakes ONLY the docker boundary: ``docker version`` answers, and a grade
+        run echoes a correctly-nonced PASSING holdout fence (via the real fence
+        helper) so the real runner parses + scores it as a genuine clean run."""
+
+        def run(self, argv, *, timeout_s=None, env=None, text=True):
+            import subprocess
+
+            if argv[:2] == ["docker", "version"]:
+                return subprocess.CompletedProcess(argv, 0, "ok", "")
+            nonce = next(
+                (t.split("=", 1)[1] for t in argv if t.startswith(f"{NONCE_ENV}=")),
+                None,
+            )
+            begin, end = holdout_fence(nonce)
+            body = json.dumps({"assertions": [{"id": "h1", "result": "pass"}]})
+            return subprocess.CompletedProcess(argv, 0, f"{begin}{body}{end}", "")
+
+    ws = write_workspace(tmp_path)
+    ledger = tmp_path / "l.ndjson"
+    container = GradingContainer(runner=DockerGradeRunner(docker=_FakeDocker()))
+    out = flake_baseline(GradeTask(id="t1", task_sha="sha1"), ledger, ctx_for(tmp_path),
+                         workspace=ws, container=container)
+    assert out.verdict == "clean"
+    (ev,) = find_events(ledger, "flake_baseline")
+    assert ev["grader"] == "docker"  # the trusted tier, from the runner used
+
+
+def test_baseline_event_records_local_exec_grader_tier(tmp_path):
+    """The no-daemon local-exec tier stamps its ADVISORY grader name on the event,
+    so an ADVISORY baseline is self-recorded — never laundered as docker. No
+    docker boundary is involved; the runner executes the declared holdout."""
+    from harness.grade.container import GradingContainer as GC
+    from harness.grade.holdouts import CommandHoldout
+    from harness.grade.runners import LocalExecutingGradeRunner
+
+    ws = write_workspace(tmp_path)
+    holdouts = tmp_path / "holdouts"
+    holdouts.mkdir()
+    CommandHoldout(argv=["true"], id="gate").materialize(holdouts)  # exit 0 ⇒ pass
+    ledger = tmp_path / "l.ndjson"
+    container = GC(runner=LocalExecutingGradeRunner())
+    out = flake_baseline(GradeTask(id="t1", task_sha="sha1", holdouts_dir=str(holdouts)),
+                         ledger, ctx_for(tmp_path), workspace=ws, container=container, k=1)
+    assert out.verdict == "clean"
+    (ev,) = find_events(ledger, "flake_baseline")
+    assert ev["grader"] == "local-exec" != "docker"  # ADVISORY, self-recorded

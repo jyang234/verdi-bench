@@ -1,0 +1,311 @@
+{
+  "tool": "v0.0.0-20260707142329-7e8df2bb315a",
+  "algo": "rta",
+  "caveats": [
+    "rta from 4 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/docsvc/internal/api.Server).CreateDoc",
+      "sig": "func (*api.Server).CreateDoc(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/docsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 32,
+      "end_line": 47
+    },
+    {
+      "fqn": "(*example.com/docsvc/internal/api.Server).GetDoc",
+      "sig": "func (*api.Server).GetDoc(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/docsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 22,
+      "end_line": 29
+    },
+    {
+      "fqn": "(*example.com/docsvc/internal/api.Server).UpdateDoc",
+      "sig": "func (*api.Server).UpdateDoc(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/docsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 50,
+      "end_line": 61
+    },
+    {
+      "fqn": "(*example.com/docsvc/internal/core.Service).Authorize",
+      "sig": "func (*core.Service).Authorize(ctx context.Context, id string, action func() error) error",
+      "tier": 3,
+      "package": "example.com/docsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 36,
+      "end_line": 41
+    },
+    {
+      "fqn": "(*example.com/docsvc/internal/core.Service).Create",
+      "sig": "func (*core.Service).Create(ctx context.Context, id string, title string, body string) error",
+      "tier": 3,
+      "package": "example.com/docsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 44,
+      "end_line": 48
+    },
+    {
+      "fqn": "(*example.com/docsvc/internal/core.Service).Create$1",
+      "sig": "func() error",
+      "tier": 2,
+      "package": "example.com/docsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 45,
+      "end_line": 47
+    },
+    {
+      "fqn": "(*example.com/docsvc/internal/core.Service).Get",
+      "sig": "func (*core.Service).Get(ctx context.Context, id string) (repo.Doc, error)",
+      "tier": 2,
+      "package": "example.com/docsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 24,
+      "end_line": 30
+    },
+    {
+      "fqn": "(*example.com/docsvc/internal/core.Service).Rename",
+      "sig": "func (*core.Service).Rename(ctx context.Context, id string, title string) error",
+      "tier": 3,
+      "package": "example.com/docsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 51,
+      "end_line": 55
+    },
+    {
+      "fqn": "(*example.com/docsvc/internal/core.Service).Rename$1",
+      "sig": "func() error",
+      "tier": 2,
+      "package": "example.com/docsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 52,
+      "end_line": 54
+    },
+    {
+      "fqn": "(*example.com/docsvc/internal/repo.SQLStore).InsertDoc",
+      "sig": "func (*repo.SQLStore).InsertDoc(ctx context.Context, id string, title string, body string) error",
+      "tier": 1,
+      "package": "example.com/docsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 41,
+      "end_line": 45
+    },
+    {
+      "fqn": "(*example.com/docsvc/internal/repo.SQLStore).SelectDoc",
+      "sig": "func (*repo.SQLStore).SelectDoc(ctx context.Context, id string, out *repo.Doc) error",
+      "tier": 2,
+      "package": "example.com/docsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 35,
+      "end_line": 38
+    },
+    {
+      "fqn": "(*example.com/docsvc/internal/repo.SQLStore).UpdateDoc",
+      "sig": "func (*repo.SQLStore).UpdateDoc(ctx context.Context, id string, title string) error",
+      "tier": 1,
+      "package": "example.com/docsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 48,
+      "end_line": 52
+    },
+    {
+      "fqn": "example.com/docsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/docsvc",
+      "file": "main.go",
+      "line": 15,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/docsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/docsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 21,
+      "end_line": 26
+    },
+    {
+      "fqn": "example.com/docsvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/docsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 19,
+      "end_line": 19
+    },
+    {
+      "fqn": "example.com/docsvc/internal/api.writeJSON",
+      "sig": "func api.writeJSON(_ context.Context, w http.ResponseWriter, v any)",
+      "tier": 3,
+      "package": "example.com/docsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 63,
+      "end_line": 66
+    },
+    {
+      "fqn": "example.com/docsvc/internal/core.New",
+      "sig": "func core.New(store repo.Store) *core.Service",
+      "tier": 3,
+      "package": "example.com/docsvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 21,
+      "end_line": 21
+    },
+    {
+      "fqn": "example.com/docsvc/internal/repo.New",
+      "sig": "func repo.New(db *sql.DB) *repo.SQLStore",
+      "tier": 3,
+      "package": "example.com/docsvc/internal/repo",
+      "file": "internal/repo/repo.go",
+      "line": 32,
+      "end_line": 32
+    },
+    {
+      "fqn": "example.com/docsvc/internal/wire.Handler",
+      "sig": "func wire.Handler(store repo.Store) http.Handler",
+      "tier": 3,
+      "package": "example.com/docsvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 15,
+      "end_line": 24
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/docsvc/internal/api.Server).CreateDoc",
+      "to": "(*example.com/docsvc/internal/core.Service).Create",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/docsvc/internal/api.Server).GetDoc",
+      "to": "(*example.com/docsvc/internal/core.Service).Get",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/docsvc/internal/api.Server).GetDoc",
+      "to": "example.com/docsvc/internal/api.writeJSON",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/docsvc/internal/api.Server).UpdateDoc",
+      "to": "(*example.com/docsvc/internal/core.Service).Rename",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/docsvc/internal/core.Service).Authorize",
+      "to": "(*example.com/docsvc/internal/core.Service).Create$1",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/docsvc/internal/core.Service).Authorize",
+      "to": "(*example.com/docsvc/internal/core.Service).Rename$1",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/docsvc/internal/core.Service).Create",
+      "to": "(*example.com/docsvc/internal/core.Service).Authorize",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/docsvc/internal/core.Service).Create$1",
+      "to": "(*example.com/docsvc/internal/repo.SQLStore).InsertDoc",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/docsvc/internal/core.Service).Get",
+      "to": "(*example.com/docsvc/internal/repo.SQLStore).SelectDoc",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/docsvc/internal/core.Service).Rename",
+      "to": "(*example.com/docsvc/internal/core.Service).Authorize",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/docsvc/internal/core.Service).Rename$1",
+      "to": "(*example.com/docsvc/internal/repo.SQLStore).UpdateDoc",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/docsvc/internal/repo.SQLStore).InsertDoc",
+      "to": "boundary:db INSERT documents",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/docsvc/internal/repo.SQLStore).SelectDoc",
+      "to": "boundary:db SELECT documents",
+      "tier": 2,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/docsvc/internal/repo.SQLStore).UpdateDoc",
+      "to": "boundary:db UPDATE documents",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "example.com/docsvc.main",
+      "to": "example.com/docsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/docsvc.run",
+      "to": "example.com/docsvc/internal/repo.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/docsvc.run",
+      "to": "example.com/docsvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/docsvc/internal/wire.Handler",
+      "to": "example.com/docsvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/docsvc/internal/wire.Handler",
+      "to": "example.com/docsvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "GET /docs/{id}",
+      "fn": "(*example.com/docsvc/internal/api.Server).GetDoc"
+    },
+    {
+      "kind": "http",
+      "name": "POST /docs",
+      "fn": "(*example.com/docsvc/internal/api.Server).CreateDoc"
+    },
+    {
+      "kind": "http",
+      "name": "PUT /docs/{id}",
+      "fn": "(*example.com/docsvc/internal/api.Server).UpdateDoc"
+    }
+  ],
+  "composition_roots": [
+    "example.com/docsvc"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "gw-r1",
+  "class": "reach-trap",
+  "binding_rule": "layering",
+  "seed": "layeredsvc",
+  "seed_mutation": "module example.com/layeredsvc -> example.com/deskflow; packages handler/app/store -> api/core/repo; domain user profiles -> support tickets; added internal/wire composition seam and a repo.Store interface for hermetic functional testing",
+  "trap_one_liner": "the GET /tickets/{id}/history reads are done directly in the api handler, skipping the core layer (new api -> repo edge)",
+  "graph_substrate": "rta",
+  "functional_holdout": "internal/wire.TestHistoryEndpoint via go test ./...",
+  "exemplar_expected_verify_rc": 1,
+  "timeout_s": 900
+}
