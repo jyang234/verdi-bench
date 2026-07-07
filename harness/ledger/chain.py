@@ -28,10 +28,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+from ..errors import VerdiRefusal
+
 GENESIS_PREV_HASH = "0" * 64
 
 
-class TruncatedLedgerError(RuntimeError):
+class TruncatedLedgerError(VerdiRefusal, RuntimeError):
     """The ledger's final line is unterminated — appending would concatenate.
 
     A well-formed ledger ends every line, including the last, in ``\\n``. A

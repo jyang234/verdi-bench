@@ -21,9 +21,11 @@ from typing import Any, Iterator, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, model_serializer
 
+from ...errors import VerdiRefusal
+
 
 # --- refusal taxonomy [AN-3] -----------------------------------------------
-class AnalyzeError(RuntimeError):
+class AnalyzeError(VerdiRefusal, RuntimeError):
     """Base for analyze-stage failures."""
 
 

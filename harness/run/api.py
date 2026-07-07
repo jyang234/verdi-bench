@@ -17,20 +17,21 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator, Optional
 
+from ..errors import VerdiRefusal
 from ..plan.interleave import derive_schedule, enumerate_trials
 from .types import OtlpConfig, ProxyConfig, RunConfig, Task
 
 
-class NoTasksError(RuntimeError):
+class NoTasksError(VerdiRefusal, RuntimeError):
     """The experiment dir has no ``tasks.yaml`` to run [EVAL-8 stand-in]."""
 
 
-class CorpusManifestMismatchError(RuntimeError):
+class CorpusManifestMismatchError(VerdiRefusal, RuntimeError):
     """A scheduled task is absent from the supplied corpus manifest — tasks.yaml
     and the manifest disagree, so scheduling fails closed [CO-2/D-P4-2]."""
 
 
-class OtlpCoherenceError(RuntimeError):
+class OtlpCoherenceError(VerdiRefusal, RuntimeError):
     """An arm declares ``platform: otlp`` but the run configures no OTLP collector
     [refactor 10 §1, D-10-1].
 

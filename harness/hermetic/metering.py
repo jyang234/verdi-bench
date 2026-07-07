@@ -25,6 +25,7 @@ from typing import Optional
 
 # Absolute imports (not ``from .docker import ...``): the AST seam sweep
 # (tests/test_eval4_seam.py) flags a bare module name ``docker`` in an import.
+from harness.errors import VerdiRefusal
 from harness.hermetic.docker import DockerClient, HardenedCommand
 from harness.hermetic.network import (
     EGRESS_NETWORK,
@@ -52,7 +53,7 @@ PROXY_PORT = 3128
 _CONTAINER_LOG = "/var/log/verdi/verdi.jsonl"
 
 
-class MeteringProxyError(RuntimeError):
+class MeteringProxyError(VerdiRefusal, RuntimeError):
     """The managed metering proxy could not be stood up (no daemon, image, or
     the proxy never became ready). Fail loudly — a run that proceeded without a
     working proxy would spend and egress unattributed [PRA-H4]."""

@@ -22,10 +22,11 @@ import json
 from pathlib import Path
 from typing import Callable, Optional
 
+from ..errors import VerdiRefusal
 from ..ledger.view import LedgerView
 
 
-class WorkspaceError(RuntimeError):
+class WorkspaceError(VerdiRefusal, RuntimeError):
     """Base for facade-raised refusals that the stage APIs return as flags."""
 
 

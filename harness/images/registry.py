@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from ..errors import VerdiRefusal
 from .spec import ImageSpec
 
 # ``images/`` lives at the repo root: harness/images/registry.py → parents[2].
@@ -89,7 +90,7 @@ def get_official(name: str) -> Optional[OfficialImage]:
     return _OFFICIAL.get(name)
 
 
-class UnknownImageError(ValueError):
+class UnknownImageError(VerdiRefusal, ValueError):
     """A ``bench images build`` target is neither an official name nor a context dir."""
 
 

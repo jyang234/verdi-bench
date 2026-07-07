@@ -30,6 +30,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
+from ..errors import VerdiRefusal
+
 
 def canonical_payload(candidate_id: str, task_sha: str, approver: str) -> bytes:
     """The exact bytes an approval signs — deterministic, key-sorted JSON. The
@@ -70,7 +72,7 @@ def verify_approval(
         return False
 
 
-class KeyringFormatError(ValueError):
+class KeyringFormatError(VerdiRefusal, ValueError):
     """The keyring is in the pre-Phase-7 list format [D-P7-3]."""
 
 

@@ -6,8 +6,10 @@ fired rather than string-matching a generic ValidationError.
 
 from __future__ import annotations
 
+from ..errors import VerdiRefusal
 
-class SpecError(ValueError):
+
+class SpecError(VerdiRefusal, ValueError):
     """Base for all experiment-spec rejections."""
 
 

@@ -25,6 +25,7 @@ from typing import Optional, Union
 from pydantic import BaseModel, ConfigDict
 
 from ..corpus.commit import content_sha
+from ..errors import VerdiRefusal
 from ..ledger import events
 from ..ledger.query import find_events, read_events, verify
 from .findings.extract import compute_findings, per_arm_absolute_scores
@@ -33,7 +34,7 @@ from .findings.sections import asymmetry_line
 CARD_SCHEMA_VERSION = 2
 
 
-class CardError(RuntimeError):
+class CardError(VerdiRefusal, RuntimeError):
     """A card cannot be built or two cards cannot be compared — stated with the
     reason. Fail loud [master plan §7.7]: a card that silently omits provenance
     or silently compares mismatched batteries would defeat its own purpose."""

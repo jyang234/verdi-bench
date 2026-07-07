@@ -31,6 +31,7 @@ from typing import Optional
 
 from ..adapters.base import Quotas
 from ..corpus.commit import holdout_content_sha, task_content_sha
+from ..errors import VerdiRefusal
 from ..corpus.public import content_sha
 from ..schema.experiment import Arm
 
@@ -44,7 +45,7 @@ from ..schema.experiment import Arm
 FINGERPRINT_VERSION = 2
 
 
-class ControlReuseError(RuntimeError):
+class ControlReuseError(VerdiRefusal, RuntimeError):
     """Base for control-reuse failures."""
 
 

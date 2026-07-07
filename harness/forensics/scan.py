@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+from ..errors import VerdiRefusal
 from ..ledger.events import (
     EventContext,
     record_forensic_quarantine,
@@ -26,7 +27,7 @@ from ..ledger.events import (
 from .detectors import run_detectors
 
 
-class UnknownTrialError(ValueError):
+class UnknownTrialError(VerdiRefusal, ValueError):
     """A disposition named a trial the ledger has no record of [D007]."""
 
 

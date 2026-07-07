@@ -14,12 +14,13 @@ from __future__ import annotations
 
 from typing import Literal
 
+from ..errors import VerdiRefusal
 from ..ledger import events
 from ..ledger.events import EventContext
 from .registry import CalibrationSubset, CorpusManifest
 
 
-class NoGradedTrialsError(RuntimeError):
+class NoGradedTrialsError(VerdiRefusal, RuntimeError):
     """Calibration was asked to derive variance from a ledger with no grades."""
 
 

@@ -17,6 +17,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..errors import VerdiRefusal
+
 # The admission refusal types + two-phase outcome live beside admit_task
 # [refactor 07 §3]; re-exported here because this stage API is the seam the
 # CLI and SDK import them through.
@@ -40,19 +42,19 @@ def _suggest_task_key(unknown: str) -> str | None:
     return matches[0] if matches else None
 
 
-class UnknownBenchmarkError(RuntimeError):
+class UnknownBenchmarkError(VerdiRefusal, RuntimeError):
     """``--benchmark`` was not one of the registered importer names [refactor 07 §3]."""
 
 
-class ValidateTasksFileError(RuntimeError):
+class ValidateTasksFileError(VerdiRefusal, RuntimeError):
     """``bench corpus validate-tasks`` was pointed at a dir with no tasks.yaml."""
 
 
-class CalibrateKindError(RuntimeError):
+class CalibrateKindError(VerdiRefusal, RuntimeError):
     """``bench corpus calibrate --kind`` was neither ``subset`` nor ``full``."""
 
 
-class CandidateStagingError(RuntimeError):
+class CandidateStagingError(VerdiRefusal, RuntimeError):
     """Staging a mined candidate into a manifest was refused (bad entry)."""
 
 

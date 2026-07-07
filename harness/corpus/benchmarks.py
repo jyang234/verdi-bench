@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
+from ..errors import VerdiRefusal
 from .public import TERMINAL_BENCH, DirectorySource, RawTask, TaskSource
 
 SWEBENCH = "swe-bench"
@@ -62,7 +63,7 @@ _SWEBENCH_HOLDOUT_FIELDS = (
 )
 
 
-class BenchmarkRecordError(ValueError):
+class BenchmarkRecordError(VerdiRefusal, ValueError):
     """A public-benchmark record is missing a field the mapping requires.
 
     Fail loud [master plan §7.7]: a record we cannot map into a well-formed,
