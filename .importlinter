@@ -20,6 +20,7 @@ source_modules =
     harness._entrypoint_fixtures
     harness.version
     harness.http_guard
+    harness.errors
     harness.schema
     harness.ledger
     harness.plan
@@ -112,6 +113,7 @@ source_modules =
     harness._entrypoint_fixtures
     harness.version
     harness.http_guard
+    harness.errors
     harness.schema
     harness.plan
     harness.run
@@ -208,6 +210,7 @@ source_modules =
     harness._entrypoint_fixtures
     harness.version
     harness.http_guard
+    harness.errors
     harness.schema
     harness.ledger
     harness.plan
