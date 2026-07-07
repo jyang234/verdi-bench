@@ -22,7 +22,7 @@ from harness.run.workspace import (
     resolve_workspace,
     workspace_sha256,
 )
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 from tests.fixtures.grade_fakes import ScriptedGradeRunner
 
 _PASS = {"assertions": [{"id": "h1", "result": "pass"}]}
@@ -80,7 +80,7 @@ def test_h3_grade_event_carries_the_workspace_commitment(tmp_path):
     ledger = tmp_path / "l.ndjson"
     task = GradeTask(id="t1", task_sha="sha-abc")
     container = GradingContainer(runner=ScriptedGradeRunner(_PASS))
-    outcome = grade_trial("trial-1", task, ws, ledger, fixed_ctx(), container=container)
+    outcome = grade_trial("trial-1", task, ws, ledger, ctx_for(tmp_path), container=container)
     assert outcome.graded
     assert outcome.event["workspace_sha256"] == workspace_sha256(ws)
     assert outcome.event["workspace_walk_version"] == WORKSPACE_WALK_VERSION

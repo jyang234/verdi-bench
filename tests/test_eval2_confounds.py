@@ -34,11 +34,11 @@ def test_jd7_arm_model_requires_vendor_prefix():
 
 
 def test_ac6_cross_vendor_clean():
-    # judge google; arms anthropic + openai ⇒ no overlap
+    # judge fake (the template default); arms anthropic + openai ⇒ no overlap
     ov = judge_vendor_overlap(_spec())
     assert ov.overlap is False
     assert ov.overlapping_arms == []
-    assert ov.judge_vendor == "google"
+    assert ov.judge_vendor == "fake"
 
 
 def test_ac6_vendor_overlap_flagged():

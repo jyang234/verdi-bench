@@ -26,7 +26,7 @@ from harness.ledger.events import (
 )
 from harness.ledger.query import ledger_head_hash, verify
 from tests.fixtures.builders import (
-    fixed_ctx,
+    ctx_for,
     locked_experiment,
     seed_trial_and_grade,
 )
@@ -53,7 +53,7 @@ def test_ac1_reproducible_seeded(tmp_path):
     assert a.as_dict() == b.as_dict()
 
     # whole findings document is byte-identical for a fixed (ledger, seed)
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: i % 2 == 0, treatment_pass=lambda i: True)
     f1 = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
@@ -76,7 +76,7 @@ def test_ac2_effect_sizes():
 
 # --- AC-3: MDE in report + null phrasing ------------------------------------
 def test_ac3_mde_in_report(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
@@ -86,7 +86,7 @@ def test_ac3_mde_in_report(tmp_path):
 
 
 def test_ac3_null_phrasing(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     # identical arms ⇒ per-task deltas all 0 ⇒ CI contains 0 ⇒ null
     populate_paired_trials(ledger, ctx, control_pass=lambda i: i % 2 == 0,
@@ -98,7 +98,7 @@ def test_ac3_null_phrasing(tmp_path):
 
 # --- AC-4: confound flags (one per constructed fixture; clean ⇒ none) --------
 def _clean(tmp_path, name="clean"):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / name)
     spec, _, ledger = locked_experiment(tmp_path / name, ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True,
               control_tel={"cost": 1.0, "wall_time_s": 10.0, "tokens_in": 5, "tokens_out": 5,
@@ -136,7 +136,7 @@ def test_ac4_flags_emitted_provider_error(tmp_path):
 
 
 def test_ac4_flags_emitted_telemetry_null(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "tn")
     spec, _, ledger = locked_experiment(tmp_path / "tn", ctx=ctx)
     # control omits tokens_in; treatment has it ⇒ asymmetric null on tokens_in only
     populate_paired_trials(
@@ -156,7 +156,7 @@ def test_an4_continuous_metric_uses_continuous_null(tmp_path):
     """AN-4: a continuous primary (cost) selects its CI method under a *continuous*
     null at the realized paired-task count — not the old paired-binary null at the
     assumed n_tasks=50. The null model used is recorded for disclosure."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(
         tmp_path / "e", ctx=ctx, primary_metric="cost_per_task",
         decision_rule="delta_cost_per_task < 0",
@@ -176,7 +176,7 @@ def test_an4_continuous_metric_uses_continuous_null(tmp_path):
 def test_an4_binary_metric_uses_binary_null_at_realized_n(tmp_path):
     """AN-4: a binary primary (holdout) uses a paired-binary null, again at the
     realized paired-task count."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # holdout_pass_rate
     populate_paired_trials(ledger, ctx, control_pass=lambda i: i % 2 == 0, treatment_pass=lambda i: True)
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
@@ -266,7 +266,7 @@ def test_an1_judge_preference_filtered_by_arm_pair(tmp_path):
     arm_map and attributed to the physical arm — the same pooled verdicts no
     longer feed every comparison. control beats treatment but loses to challenger,
     so the two comparisons must report OPPOSITE signs, not one pooled 0.0."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS)
     ct = {"A": "control", "B": "treatment"}
     cc = {"A": "control", "B": "challenger"}
@@ -285,7 +285,7 @@ def test_an1_attribution_follows_inverted_arm_map(tmp_path):
     attributed to the physical arm the map names (treatment), NOT to arms[0].
     Every existing AN-1 test is frame-aligned, so a regression to arms[0] passes
     the rest of the suite — this one catches it."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])  # control, treatment
     inverted = {"A": "treatment", "B": "control"}  # response A is NOT arms[0]
     for i in range(4):
@@ -301,7 +301,7 @@ def test_m4_multi_arm_default_only_primary_pair_official(tmp_path):
     """PRA-M4: in a 3-arm design, only the primary pair carries an official
     decision by default; the extra pair is exploratory, and the >2-arm
     disclosure is present in both the findings and the render."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS)
     ct = {"A": "control", "B": "treatment"}
     cc = {"A": "control", "B": "challenger"}
@@ -322,7 +322,7 @@ def test_m4_multi_arm_holm_makes_every_pair_official(tmp_path):
     """PRA-M4: a spec-locked multi_arm_correction: holm makes every pair official
     under a Holm-adjusted family, stamping each decision with its Holm p-value
     [F-H7: the policy is pre-registered, not an analyze-time flag]."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
     ct = {"A": "control", "B": "treatment"}
     cc = {"A": "control", "B": "challenger"}
@@ -344,7 +344,7 @@ def test_m4_multi_arm_holm_makes_every_pair_official(tmp_path):
 def test_h7_correction_is_read_from_the_locked_spec(tmp_path):
     """F-H7: the multi-arm decision policy rides the sha-locked spec bytes —
     pre-registered, never an analyze-time knob. Absent field ⇒ 'none'."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
     ct = {"A": "control", "B": "treatment"}
     cc = {"A": "control", "B": "challenger"}
@@ -361,7 +361,7 @@ def test_h7_single_task_pair_is_never_detected(tmp_path):
     """F-H7 floor: one task cluster yields a zero-width CI that excludes zero —
     that is not evidence. detected must be False with the floor named, and the
     render must phrase it as structurally insufficient, not as a null result."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
     _seed_pref_verdict(ledger, ctx, cid="c-0", task_id="t0", winner="A",
                        arm_map={"A": "control", "B": "treatment"})
@@ -380,7 +380,7 @@ def test_h7_holm_single_task_secondary_pair_floored(tmp_path):
     """F-H7: under Holm, a single-task secondary pair reached p≈1/(n_boot+1) and
     was declared an official detected effect — the selfcheck's <2-cluster gate
     only ever inspects the primary pair. The floor binds in the Holm path too."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
     ct = {"A": "control", "B": "treatment"}
     cc = {"A": "control", "B": "challenger"}
@@ -406,7 +406,7 @@ def test_h7_render_event_records_the_applied_correction(tmp_path):
     from harness.analyze.cli import run_analyze
     from harness.ledger.query import find_events
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
     ct = {"A": "control", "B": "treatment"}
     cc = {"A": "control", "B": "challenger"}
@@ -435,7 +435,7 @@ def test_h7_official_fence_refuses_correction_mismatch(tmp_path):
     from harness.ledger.events import record_findings_rendered
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     record_findings_rendered(  # legacy official render: no recorded correction
         ledger, ctx, mode="official", primary_metric="judge_preference",
         ledger_head_hash="h" * 64, findings_sha256="f" * 64,
@@ -472,7 +472,7 @@ def _holm_divergent_findings(tmp_path):
     is seed-pinned; if the bootstrap stream ever changes legitimately, the
     premise asserts below fail loudly and the fixture needs re-tuning — the
     parity assertion itself must hold for ANY configuration."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS, multi_arm_correction="holm")
     ct = {"A": "control", "B": "treatment"}
     cc = {"A": "control", "B": "challenger"}
@@ -544,7 +544,7 @@ def test_an10_ci_selection_reports_deployed_n_boot(tmp_path):
     """AN-10 owning test: the coverage selection recorded in the findings uses —
     and reports — the SAME n_boot the deployed interval uses, so the disclosed
     ci_selection cannot silently diverge from the bootstrap that produced the CI."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: i % 2 == 0)
     n_boot = 321  # a non-default value
@@ -555,7 +555,7 @@ def test_an10_ci_selection_reports_deployed_n_boot(tmp_path):
 def test_an1_cant_judge_and_tie_excluded_not_imputed(tmp_path):
     """AN-1: CANT_JUDGE and TIE are non-answers — excluded from the preference
     series, never imputed as 0.0. n reflects real A/B verdicts only."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
     ct = {"A": "control", "B": "treatment"}
     for i in range(3):
@@ -571,7 +571,7 @@ def test_an1_cant_judge_and_tie_excluded_not_imputed(tmp_path):
 def test_an1_per_task_winrate_clusters_reps(tmp_path):
     """AN-1: multiple verdicts for one task reduce to that task's win-rate (the
     cluster), so the bootstrap resamples tasks, not individual verdicts."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
     ct = {"A": "control", "B": "treatment"}
     _seed_pref_verdict(ledger, ctx, cid="a0", task_id="t0", winner="A", arm_map=ct)
@@ -589,11 +589,12 @@ def test_an8_decides_positive_gated_on_detection(tmp_path):
     """AN-8: findings.json's decides_positive is False for a null result (CI
     includes 0), matching the render — not the raw rule fired on an undetected,
     noisy positive delta."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # rule delta_holdout_pass_rate > 0
-    # control slightly ahead on one noisy task ⇒ observed delta > 0 but CI includes 0
-    populate_paired_trials(ledger, ctx, control_pass=lambda i: i in {0, 1, 2, 4},
-              treatment_pass=lambda i: i in {0, 2, 4})
+    # treatment (the first-declared arm, so delta = treatment − control) slightly
+    # ahead on one noisy task ⇒ observed delta > 0 but CI includes 0
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: i in {0, 2, 4},
+              treatment_pass=lambda i: i in {0, 1, 2, 4})
     f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     cf = f.comparisons[0]
     detected = cf.stats["ci_low"] > 0 or cf.stats["ci_high"] < 0
@@ -604,10 +605,11 @@ def test_an8_decides_positive_gated_on_detection(tmp_path):
 
 
 def test_an8_decides_positive_true_when_detected(tmp_path):
-    """AN-8: a clean detected effect that meets the rule still decides positive."""
-    ctx = fixed_ctx()
+    """AN-8: a clean detected effect that meets the rule still decides positive.
+    The winner is the FIRST-declared arm (treatment), so delta = +1 meets `> 0`."""
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: False, treatment_pass=lambda i: True)
     f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     cf = f.comparisons[0]
     assert cf.decision["detected"] is True
@@ -617,7 +619,7 @@ def test_an8_decides_positive_true_when_detected(tmp_path):
 def test_an9_orphan_grades_flagged(tmp_path):
     """AN-9: a grade with no matching trial record is a ledger inconsistency —
     flagged loudly, not silently dropped (which would shrink n in silence)."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     record_grade(ledger, ctx, trial_id="ghost", task_sha="s", assertions=[], binary_score=True)
@@ -632,7 +634,7 @@ def test_an9_orphan_grades_flagged(tmp_path):
 def test_an6_computed_metric_tagged_computed(tmp_path):
     """AN-6: every comparison carries a machine-checkable claim_tag and the render
     shows the marker; a deterministic outcome metric is [computed]."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # holdout_pass_rate
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
     f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
@@ -642,7 +644,7 @@ def test_an6_computed_metric_tagged_computed(tmp_path):
 
 def test_an6_judge_preference_tagged_judgment(tmp_path):
     """AN-6: a judge-preference primary rests on the advisory judge — [judgment]."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
     ct = {"A": "control", "B": "treatment"}
     for i in range(3):
@@ -655,7 +657,7 @@ def test_an6_judge_preference_tagged_judgment(tmp_path):
 def test_an5_render_html_escapes_arm_name(tmp_path):
     """AN-5: a <script> in an arm name is escaped in the HTML render, not emitted
     verbatim (the review packet already escapes; render_html did not)."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     evil = "ctl<script>alert(1)</script>"
     arms = [
         {"name": evil, "platform": "claude_code",
@@ -701,7 +703,7 @@ def test_coverage_of_method_type_hints_resolve():
 def test_an11_advisory_tier_surfaced(tmp_path):
     """AN-11: local/fake results are ADVISORY-tier; the render surfaces the tier so
     'Local = ADVISORY' is honestly reflected, not silently stamped."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
@@ -718,7 +720,7 @@ def test_7b3_grader_stamp_local_banners_over_trusted_trials(tmp_path):
     from harness.ledger.events import record_grade, record_trial
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     rec = TrialRecord.assemble(
         trial_id="tr", task_id="t0", arm="control", repetition=0,
         outcome=Outcome.completed, telemetry=Telemetry(),
@@ -744,7 +746,7 @@ def test_7b3_grader_stamp_local_banners_over_trusted_trials(tmp_path):
 
 
 def test_ac4_flags_emitted_egress(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "eg")
     spec, _, ledger = locked_experiment(tmp_path / "eg", ctx=ctx)
     tel = {"cost": 1.0, "wall_time_s": 10.0, "tokens_in": 5, "tokens_out": 5,
            "tokens_cache": 1, "tool_calls": 2}
@@ -757,7 +759,7 @@ def test_ac4_flags_emitted_egress(tmp_path):
 
 
 def test_ac4_flags_emitted_version_drift(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "vd")
     spec, _, ledger = locked_experiment(tmp_path / "vd", ctx=ctx)
     tel = {"cost": 1.0, "wall_time_s": 10.0, "tokens_in": 5, "tokens_out": 5,
            "tokens_cache": 1, "tool_calls": 2}
@@ -772,7 +774,7 @@ def test_ac4_flags_emitted_version_drift(tmp_path):
 
 
 def test_ac4_flags_emitted_judge_vendor_overlap(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "jv")
     # judge vendor (anthropic) overlaps control arm's vendor (anthropic)
     spec, _, ledger = locked_experiment(
         tmp_path / "jv", ctx=ctx,
@@ -784,7 +786,7 @@ def test_ac4_flags_emitted_judge_vendor_overlap(tmp_path):
 
 # --- AC-5: fence — unregistered refused + exploratory watermark -------------
 def test_ac5_unregistered_refused(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
@@ -808,7 +810,7 @@ def test_an3_refused_official_render_ledgers_cant_analyze(tmp_path):
     from harness.cli import app
     from harness.ledger.query import find_events
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     _, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     exp_dir = tmp_path / "e"
@@ -833,7 +835,7 @@ def test_pl14_legacy_ack_event_still_surfaced(tmp_path):
     from harness.analyze.report import _mde_block
     from harness.ledger.chain import append_event
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     _, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # powered ⇒ no inline ack
     assert _mde_block(ledger).acknowledged_underpowered is False
     append_event(ledger, {
@@ -853,7 +855,7 @@ def test_an3_bad_corpus_manifest_fails_closed(tmp_path):
     from harness.cli import app
     from harness.ledger.query import find_events
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     _, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     exp_dir = tmp_path / "e"
@@ -873,7 +875,7 @@ def test_an3_successful_render_event_before_files(tmp_path):
     from harness.cli import app
     from harness.ledger.query import find_events
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     _, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     exp_dir = tmp_path / "e"
@@ -885,7 +887,7 @@ def test_an3_successful_render_event_before_files(tmp_path):
 
 
 def test_ac5_official_happy_path(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
@@ -906,7 +908,7 @@ def test_dp7_2_override_disclosure_in_official_render(tmp_path):
     from harness.ledger.events import record_cant_grade, record_grade, record_trial
     from harness.ledger.query import event_line_hash, find_events
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
 
@@ -942,7 +944,7 @@ def test_d002_identity_blind_disclosure_in_both_renders(tmp_path):
     """D-1/D002: both renders carry the [computed] disclosure that the judge is
     identity-blind (not outcome-blind) — judge_preference is not independent of
     holdout_pass_rate because the packet includes holdout results by design."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     seed_full_calibration(ledger, ctx)
@@ -981,7 +983,7 @@ def test_dp7_6_official_fence_refuses_rubric_mismatch(tmp_path):
 
     from harness.ledger.query import find_events
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     lock = find_events(ledger, "experiment_locked")[0]
     assert lock.get("rubric_sha256")  # lock committed a rubric hash
@@ -1011,7 +1013,7 @@ def test_dp7_6_legacy_lock_official_caveat(tmp_path):
     from harness.schema.experiment import ExperimentSpec
     from tests.fixtures.builders import write_experiment_yaml
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     exp_dir = tmp_path / "e"
     exp_dir.mkdir()
     spec_path = write_experiment_yaml(exp_dir / "experiment.yaml")
@@ -1037,7 +1039,7 @@ def test_an2_official_fence_refuses_mismatched_corpus(tmp_path):
     """AN-2: a corpus that is not the pre-registered one is refused for official —
     even when it claims full-run-validated in its JSON. Reproduces the accepted
     TOTALLY-DIFFERENT-CORPUS bypass."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # spec corpus public-mini@1.0.0
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     seed_full_calibration(ledger, ctx)
@@ -1054,7 +1056,7 @@ def test_an2_official_fence_refuses_mismatched_corpus(tmp_path):
 def test_an2_official_fence_refuses_unledgered_status(tmp_path):
     """AN-2/CO-4: the right corpus but only a hand-edited manifest status (no
     ledgered calibration_run) is refused — the JSON status is not trusted."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
@@ -1065,7 +1067,7 @@ def test_an2_official_fence_refuses_unledgered_status(tmp_path):
 def test_an2_official_fence_refuses_uncovered_task(tmp_path):
     """AN-2: a manifest that omits a task the experiment ran does not cover the
     data and is refused, even with the right id/semver and a ledgered status."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)  # task0..4
     seed_full_calibration(ledger, ctx)
@@ -1079,7 +1081,7 @@ def test_an2_official_fence_refuses_uncovered_task(tmp_path):
 
 
 def test_ac5_exploratory_watermark(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
@@ -1098,7 +1100,7 @@ def test_ac5_exploratory_watermark(tmp_path):
 
 # --- AC-6: finding provenance (incl head-hash == verify_chain) ---------------
 def test_ac6_finding_provenance(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
@@ -1118,7 +1120,7 @@ def test_ac6_finding_provenance(tmp_path):
 
 
 def test_ac6_stale_findings_refused(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
@@ -1131,7 +1133,7 @@ def test_ac6_stale_findings_refused(tmp_path):
 
 # --- AC-7: asymmetric telemetry nulls excluded from official ----------------
 def test_ac7_asymmetric_nulls_excluded(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     # primary metric = cost_per_task; control never reports cost ⇒ asymmetric null
     spec, _, ledger = locked_experiment(
         tmp_path / "e", ctx=ctx, primary_metric="cost_per_task",
@@ -1157,7 +1159,7 @@ def test_ac7_asymmetric_nulls_excluded(tmp_path):
 
 
 def test_ac7_raw_tokens_never_cross_vendors(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     # control anthropic, treatment openai (default fixture) ⇒ cross-vendor
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True,
@@ -1176,7 +1178,7 @@ def test_analyze_one_render_event(tmp_path):
     import typer
     from typer.testing import CliRunner
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
 
@@ -1199,7 +1201,7 @@ def test_m_j1_terminal_cant_judge_exclusions_are_disclosed(tmp_path):
     context overflow). The counts now ride the findings and both renders."""
     from harness.analyze.dossier import _disclosure_sections
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
     ct = {"A": "control", "B": "treatment"}
     for i in range(4):
@@ -1228,7 +1230,7 @@ def test_m_j1_terminal_cant_judge_exclusions_are_disclosed(tmp_path):
 
 def test_m_j1_full_judge_coverage_discloses_nothing(tmp_path):
     """No CANT_JUDGE ⇒ no coverage section — disclosure is for exclusions."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
     ct = {"A": "control", "B": "treatment"}
     for i in range(3):
@@ -1246,7 +1248,7 @@ def test_m_s3_achieved_mde_reconciled_to_realized_n(tmp_path):
     from harness.analyze.report import display_mde
     from harness.ledger.query import find_events
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
     plan_n = find_events(ledger, "experiment_locked")[0]["mde"]["n_tasks"]
     ct = {"A": "control", "B": "treatment"}
@@ -1275,7 +1277,7 @@ def test_m_j2_identity_leak_rate_disclosed_per_task_class(tmp_path):
     """F-M-J2: identity_leak counts are surfaced per task class, so a scrub
     pattern over-broad for one class (a corpus-wide FP pattern) is visible as a
     concentrated rate rather than silently biasing judge_preference."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
     ct = {"A": "control", "B": "treatment"}
     for i in range(3):
@@ -1307,7 +1309,7 @@ def test_l7_findings_json_carries_mode_and_watermark(tmp_path):
 
     from harness.analyze.cli import run_analyze
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
     ct = {"A": "control", "B": "treatment"}
     for i in range(3):

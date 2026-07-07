@@ -33,7 +33,7 @@ from harness.plan.interleave import Trial
 from harness.run.engines.fake import FakeEngine
 from harness.run.interleave import schedule
 from harness.run.types import RunConfig, Task
-from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
+from tests.fixtures.builders import ctx_for, locked_experiment, seed_trial_and_grade
 
 _FAST = dict(coverage_n_sim=40, n_boot=500)
 
@@ -61,7 +61,7 @@ _NATIVE_BOTH = {
 
 def _seeded_findings(tmp_path, *, control_pass=lambda i: i < 3, treatment_pass=lambda i: i < 1):
     """A locked, populated experiment via the seed-builders (no run stage)."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     for i in range(5):
         for rep in range(2):
@@ -79,7 +79,7 @@ def _seeded_findings(tmp_path, *, control_pass=lambda i: i < 3, treatment_pass=l
 
 def _run_experiment(tmp_path):
     """A locked experiment whose trials actually ran (real trajectories)."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     arms = {a.name: a for a in spec.arms}
     tasks = {
@@ -132,7 +132,7 @@ def test_ac3_self_contained_deterministic(tmp_path):
 
 def test_arm_markup_lands_inert(tmp_path):
     """AN-5 discipline: an arm name carrying markup renders escaped, everywhere."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     evil = "<script>alert(1)</script>"
     spec, _, ledger = locked_experiment(
         tmp_path, ctx=ctx,
@@ -286,7 +286,7 @@ def test_unreadable_artifact_is_coverage_data_not_a_crash(tmp_path):
 
 def test_ac6_null_never_zero(tmp_path):
     """A trial whose telemetry is unmeasured renders 'not measured' — never 0."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     # null telemetry across the board (empty Telemetry ⇒ every field None)
     seed_trial_and_grade(ledger, ctx, trial_id="c-0", task_id="task0", arm="control",
@@ -308,7 +308,7 @@ def test_ac7_rides_analyze_one_event(tmp_path):
 
     from harness.cli import app
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     _, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     for i in range(5):
         seed_trial_and_grade(ledger, ctx, trial_id=f"c-{i}", task_id=f"task{i}",

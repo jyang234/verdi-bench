@@ -32,6 +32,7 @@ def review_build(exp_dir, *, out=None, actor=None) -> ReviewBuildOutcome:
     from ..corpus.commit import assert_task_commitment, load_task_dicts
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
+    from ..ledger.identity import derive_experiment_id
     from ..plan.lock import assert_lock
     from .build import build_review
 
@@ -46,7 +47,8 @@ def review_build(exp_dir, *, out=None, actor=None) -> ReviewBuildOutcome:
         corpus_id=spec.corpus.id, semver=spec.corpus.version,
     )
 
-    ctx = EventContext(experiment_id=exp_dir.name, actor=resolve_actor(actor))
+    # [ux-friction AC-1] one shared seam: resolve exp_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(exp_dir), actor=resolve_actor(actor))
     html, n = build_review(ledger_path, spec, task_dicts, ctx, seed=spec.seed)
     out_path = out or (exp_dir / "review_packet.html")
     out_path.write_text(html, encoding="utf-8")
@@ -67,12 +69,14 @@ def review_record(
     from ..judge.schema import Evidence, Verdict, VerdictProvenance, Winner
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
+    from ..ledger.identity import derive_experiment_id
     from ..schema.experiment import ExperimentSpec
     from .record import ReviewError, record_human_verdict, review_packet_built_for
 
     exp_dir = Path(exp_dir)
     ledger_path = exp_dir / "ledger.ndjson"
-    ctx = EventContext(experiment_id=exp_dir.name, actor=resolve_actor(actor))
+    # [ux-friction AC-1] one shared seam: resolve exp_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(exp_dir), actor=resolve_actor(actor))
 
     if winner not in ("1", "2", "TIE", "CANT_JUDGE"):
         raise ReviewError("--winner must be one of: 1 | 2 | TIE | CANT_JUDGE")
@@ -120,10 +124,12 @@ def review_reveal(exp_dir, *, comparison_id: str, actor=None) -> dict:
     exists. Returns the revealed ``arm_identities`` map for the CLI to echo."""
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
+    from ..ledger.identity import derive_experiment_id
     from .record import reveal_comparison
 
     exp_dir = Path(exp_dir)
     ledger_path = exp_dir / "ledger.ndjson"
-    ctx = EventContext(experiment_id=exp_dir.name, actor=resolve_actor(actor))
+    # [ux-friction AC-1] one shared seam: resolve exp_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(exp_dir), actor=resolve_actor(actor))
     rec = reveal_comparison(ledger_path, ctx, comparison_id=comparison_id)
     return rec["revealed"]["arm_identities"]

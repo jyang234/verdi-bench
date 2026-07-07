@@ -38,7 +38,7 @@ from harness.run.workspace import WORKSPACE_WALK_VERSION, workspace_sha256
 from harness.schema.errors import SpecError
 from harness.schema.experiment import ExperimentSpec
 from tests.fixtures.builders import (
-    fixed_ctx,
+    ctx_for,
     locked_experiment,
     seed_trial_and_grade,
     valid_experiment_dict,
@@ -107,7 +107,7 @@ def _seed_forensics_report(ledger, ctx, *, flags=(), gaps=(), covered=10, trials
 
 
 def _official_findings(tmp_path, *, flags=(), gaps=(), covered=10):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     _populate(ledger, ctx)
     _seed_forensics_report(ledger, ctx, flags=flags, gaps=gaps, covered=covered)
@@ -131,7 +131,7 @@ def test_ac5_flags_render_beside_comparison(tmp_path):
     official = render_markdown(findings, ledger, "official", corpus_manifest=_full_corpus())
     exploratory = render_markdown(findings, ledger, "exploratory")
     for render in (official, exploratory):
-        comparison_at = render.index("Comparison: control vs treatment")
+        comparison_at = render.index("Comparison: treatment vs control")  # lock order
         flag_at = render.index("forensic flag [holdout_tamper]: trial c-0-0")
         next_heading = render.index("Confounds", comparison_at)
         # the flag sits inside the comparison block, before the next section
@@ -159,7 +159,7 @@ def test_flags_suppress_nothing(tmp_path):
     """Non-suppressing [D003/D004]: identical data with and without a planted
     flag yields identical comparison statistics, and the flagged official
     render is not refused."""
-    ctx_a, ctx_b = fixed_ctx(), fixed_ctx()
+    ctx_a, ctx_b = ctx_for(tmp_path / "a"), ctx_for(tmp_path / "b")
     spec_a, _, ledger_a = locked_experiment(tmp_path / "a", ctx=ctx_a)
     spec_b, _, ledger_b = locked_experiment(tmp_path / "b", ctx=ctx_b)
     _populate(ledger_a, ctx_a)
@@ -206,7 +206,7 @@ def _run_scan_experiment(tmp_path, *, tamper=False, absent_trajectory=False,
                          commit_workspace=True):
     """A locked experiment whose control-arm trials really ran (fake engine),
     with a tasks.yaml + holdout files so scan assembles real evidence."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     holdouts = tmp_path / "holdouts"
     holdouts.mkdir()
@@ -229,9 +229,13 @@ def _run_scan_experiment(tmp_path, *, tamper=False, absent_trajectory=False,
         }
     behavior = {} if absent_trajectory else {"native_log": native}
     tasks = {"task0": Task(id="task0", prompt="p", fake_behavior=behavior)}
+    # the planted native log is claude-code format (`messages`), so select the
+    # claude_code-platform arm by PLATFORM — intent-exact and arm-order-proof,
+    # never by position (arms[0] flipped when the template went contender-first).
+    control_arm = next(a for a in spec.arms if a.platform == "claude_code")
     res = schedule(
-        [Trial(task_id="task0", arm="control", repetition=0)],
-        tasks=tasks, arms={"control": spec.arms[0]}, workspace_root=tmp_path / "ws",
+        [Trial(task_id="task0", arm=control_arm.name, repetition=0)],
+        tasks=tasks, arms={control_arm.name: control_arm}, workspace_root=tmp_path / "ws",
         ledger_path=ledger, ctx=ctx, config=RunConfig(engine=FakeEngine()),
         cost_ceiling=100.0,
     )
@@ -332,7 +336,7 @@ def test_scan_reviews_ride_the_report_and_fail_closed(tmp_path):
 
 # --- spot-check kappa reaches the render ------------------------------------------
 def test_spotcheck_kappa_table_in_exploratory_render(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     _populate(ledger, ctx)
     suspicions_yes = {d: True for d in DETECTOR_IDS}
@@ -364,7 +368,7 @@ def test_spotcheck_kappa_table_in_exploratory_render(tmp_path):
 
 # --- D007: quarantine excludes + discloses ----------------------------------------
 def test_quarantine_excludes_and_discloses(tmp_path):
-    ctx_a, ctx_b = fixed_ctx(), fixed_ctx()
+    ctx_a, ctx_b = ctx_for(tmp_path / "a"), ctx_for(tmp_path / "b")
     spec_a, _, ledger_a = locked_experiment(tmp_path / "a", ctx=ctx_a)
     spec_b, _, ledger_b = locked_experiment(tmp_path / "b", ctx=ctx_b)
     _populate(ledger_a, ctx_a)
@@ -393,7 +397,7 @@ def test_quarantine_never_automatic(tmp_path):
     """A flag alone changes nothing — only the ledgered operator event does.
     (The flags-suppress-nothing test proves the flag half; here the quarantine
     event alone, with no flag, is honored — dispositions are human acts.)"""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     _populate(ledger, ctx)
     record_forensic_quarantine(ledger, ctx, trial_id="c-4-0", reason="operator call")
@@ -407,7 +411,7 @@ def test_quarantine_never_automatic(tmp_path):
 def test_quarantine_refuses_unknown_trial(tmp_path):
     """A quarantine naming a trial the ledger does not know is refused loudly —
     a ledgered exclusion that excluded nothing would be a false disclosure."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     _populate(ledger, ctx)
     with pytest.raises(UnknownTrialError):
@@ -422,7 +426,7 @@ def test_orphan_quarantine_disclosed_never_claims_exclusion(tmp_path):
     """A quarantine event written around the CLI validation (direct constructor)
     renders as an ORPHAN — the report must not claim an exclusion that never
     happened."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     _populate(ledger, ctx)
     record_forensic_quarantine(ledger, ctx, trial_id="no-such-trial", reason="typo")
@@ -438,7 +442,7 @@ def test_selfcheck_goes_stale_on_quarantine(tmp_path):
     must read stale — the official fence cannot certify excluded data."""
     from harness.analyze.selfcheck import selfcheck_status
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     _populate(ledger, ctx)
     _seed_official_gates(ledger, ctx, spec)
@@ -463,7 +467,7 @@ def test_forensics_report_constructor_validates_shape(tmp_path):
     """The typed constructor refuses the shapes the findings reader would
     KeyError on — validation says what was wrong and where."""
     ledger = tmp_path / "ledger.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     with pytest.raises(ValueError, match="vocabulary_version"):
         record_forensics_report(ledger, ctx, forensics_report={"flags": []})
     with pytest.raises(ValueError, match="flags"):

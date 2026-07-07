@@ -80,10 +80,12 @@ def test_card_carries_absolute_score_and_paired_delta_co_equal(tmp_path):
     assert by_arm["treatment"]["absolute_score"] == 0.0
     assert by_arm["control"]["n"] == 1
 
-    # verdi's rigor, co-equal: the paired delta + CI are present
+    # verdi's rigor, co-equal: the paired delta + CI are present. The template
+    # declares treatment first, so delta = arms[0] − arms[1] = treatment − control
+    # = 0 − 1 = −1.0 for this control-wins fixture.
     comp = card["comparison"]
-    assert comp["arm_a"] == "control" and comp["arm_b"] == "treatment"
-    assert comp["delta"] == 1.0 and "ci_low" in comp and "ci_method" in comp
+    assert comp["arm_a"] == "treatment" and comp["arm_b"] == "control"
+    assert comp["delta"] == -1.0 and "ci_low" in comp and "ci_method" in comp
 
     # honesty stamps + tamper-evident provenance
     assert card["instrument"]["tier"] == "ADVISORY"
@@ -266,8 +268,9 @@ def test_markdown_render_is_deterministic_and_shows_score_and_delta(tmp_path):
     md = render_card_markdown(card)
     assert md == render_card_markdown(card)              # byte-deterministic
     # co-equal: both the per-arm absolute score AND the paired delta are present
+    # (delta is treatment − control = −1.0 under the treatment-first template)
     assert "absolute score" in md and "1.0000" in md
-    assert "delta = 1.0000" in md
+    assert "delta = -1.0000" in md
     # honesty stamps survive the render
     assert "Tier:** ADVISORY" in md and "battery_sha" in md
     assert "ADVISORY: " in md or "ADVISORY tier" in md

@@ -34,6 +34,13 @@ class AliasJudgeIdError(SpecError):
     """judge.model was an un-versioned alias id [EVAL-2 AC-5]."""
 
 
+class JudgePanelUnsupportedError(SpecError):
+    """judge.panel was set — a v2 placeholder not implemented in v1 [ux-friction
+    AC-8, D3]. The field stays in the schema as the v2 breadcrumb, but setting it
+    is refused rather than silently changing the spec hash while nothing reads it
+    (F9: the exact silent no-op ``extra='forbid'`` exists to prevent)."""
+
+
 class ArmModelError(SpecError):
     """arm.model was not a '<provider>/<id>' vendor-prefixed id, so judge/arm
     vendor overlap could not be defined [JD-7]."""

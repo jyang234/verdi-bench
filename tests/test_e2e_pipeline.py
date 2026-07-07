@@ -92,11 +92,14 @@ def test_retry_terminal_override_regrades_and_discloses(tmp_path):
     trials = find_events(ledger, "trial")
     assert trials
 
-    # First grade with NO holdout_results.json present ⇒ terminal container_failure.
+    # First grade with NO holdout_results.json present ⇒ a terminal cant_grade;
+    # its honest reason on --runner local is holdout_results_missing (a missing
+    # INPUT, not a container failure) [ux-friction AC-4/F7]. The override flow
+    # below exercises that it is terminal (hence --retry-terminal-eligible).
     r1 = runner.invoke(app, ["grade", str(expdir), "--runner", "local"])
     assert r1.exit_code == 0, r1.output
     cant = find_events(ledger, "cant_grade")
-    assert cant and all(c["reason"] == "container_failure" for c in cant)
+    assert cant and all(c["reason"] == "holdout_results_missing" for c in cant)
     target = cant[0]["trial_id"]
 
     # Now place the results the local runner reads, and override the target only.

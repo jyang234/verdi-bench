@@ -68,6 +68,12 @@ def compute_status(experiment_dir) -> dict:
         return doc
 
     evs = read_events(ledger_path)
+    # [ux-friction AC-5]: once the chain verifies, title the experiment from the
+    # locked ledger's own experiment_id rather than the path the observer typed —
+    # so `bench status .` no longer renders blank (F8) and agrees with the
+    # absolute-path invocation. A broken/empty ledger (handled above) keeps the
+    # directory-name fallback set at the top of the doc.
+    doc["experiment_id"] = _titled_experiment_id(experiment_dir, evs)
     doc["chain"] = {
         "ok": True,
         "detail": None,
@@ -76,6 +82,25 @@ def compute_status(experiment_dir) -> dict:
     }
     doc["stages"] = _stages(experiment_dir, evs, ledger_path=ledger_path)
     return doc
+
+
+def _titled_experiment_id(experiment_dir: Path, evs: list[dict]) -> str:
+    """Prefer the locked ledger's experiment_id; fall back to the directory name
+    only when no lock exists [ux-friction AC-5].
+
+    The lock event's provenance carries the experiment's path-independent
+    identity — the header the operator should see regardless of how they spelled
+    the path. Only consulted once the chain has verified, so unverified content is
+    never surfaced. A present-but-empty locked id (a pre-AC-1 ledger) also falls
+    back to the directory name, so the header is never blank when a real
+    directory name is available."""
+    for ev in evs:
+        if ev.get("event") == events.EXPERIMENT_LOCKED:
+            recorded = (ev.get("provenance") or {}).get("experiment_id")
+            if recorded:
+                return recorded
+            break  # one lock per ledger (genesis); an empty id ⇒ dir-name fallback
+    return experiment_dir.name
 
 
 def _stages(

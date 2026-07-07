@@ -14,7 +14,7 @@ from harness.plan.lock import (
     lock_experiment,
 )
 from harness.plan.power import AssumedVariance
-from tests.fixtures.builders import fixed_ctx, write_experiment_yaml
+from tests.fixtures.builders import ctx_for, write_experiment_yaml
 
 # small sim params keep the power check fast in tests
 FAST = dict(n_sim=30, n_boot=80, deltas=[0.1, 0.2, 0.3, 0.4, 0.5])
@@ -23,7 +23,7 @@ FAST = dict(n_sim=30, n_boot=80, deltas=[0.1, 0.2, 0.3, 0.4, 0.5])
 def test_ac2_lock_genesis(tmp_path):
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
-    outcome = lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    outcome = lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     locks = find_events(ledger, events.EXPERIMENT_LOCKED)
     assert len(locks) == 1
     assert locks[0]["spec_sha256"] == outcome.spec_sha256
@@ -34,7 +34,7 @@ def test_ac2_lock_genesis(tmp_path):
 def test_ac2_assert_lock_passes_when_unchanged(tmp_path):
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
-    lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     # PRA-M1: assert_lock now returns a LockView (event + spec parsed from the
     # verified bytes) so consumers never re-read the file.
     lv = assert_lock(spec, ledger)
@@ -47,7 +47,7 @@ def test_lock_attestation_defaults_to_resolved_actor_never_unknown(tmp_path):
     refuses 'unknown'), and the method no longer claims crypto it lacks."""
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
-    lock_experiment(spec, ledger, ctx=fixed_ctx(actor="alice"), **FAST)
+    lock_experiment(spec, ledger, ctx=ctx_for(tmp_path, actor="alice"), **FAST)
     att = find_events(ledger, events.EXPERIMENT_LOCKED)[0]["attestation"]
     assert att["attested_by"] == "alice"
     assert att["attested_by"] != "unknown"
@@ -60,12 +60,12 @@ def test_assert_lock_refuses_more_than_one_lock(tmp_path):
     keying the first."""
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
-    lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     # Force a second lock past lock_experiment's guard by appending the genesis
     # constructor directly (the low level a racing process would reach).
     recorded = find_events(ledger, events.EXPERIMENT_LOCKED)[0]
     events.record_experiment_locked(
-        ledger, fixed_ctx(), spec_sha256=recorded["spec_sha256"],
+        ledger, ctx_for(tmp_path), spec_sha256=recorded["spec_sha256"],
         spec_path=str(spec), seed=1, mde={"mde": None, "flags": []},
         attested_by="tester", method="anchor-plus-actor-v1",
     )
@@ -78,9 +78,9 @@ def test_lock_experiment_refuses_second_lock(tmp_path):
     the same ledger refuses (AlreadyLockedError) rather than appending."""
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
-    lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     with pytest.raises(AlreadyLockedError):
-        lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+        lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     assert len(find_events(ledger, events.EXPERIMENT_LOCKED)) == 1
 
 
@@ -104,7 +104,7 @@ def test_plan_refuses_tampered_pre_existing_ledger(tmp_path):
     before = ledger.read_bytes()
 
     with pytest.raises(ChainIntegrityError):
-        lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+        lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     assert ledger.read_bytes() == before  # zero events appended
 
 
@@ -120,7 +120,7 @@ def test_pl1_power_at_real_n(tmp_path):
     spec = write_experiment_yaml(tmp_path / "experiment.yaml", repetitions=3)
     ledger = tmp_path / "ledger.ndjson"
     task_dicts = [{"id": f"t{i}", "prompt": "p"} for i in range(4)]
-    outcome = lock_experiment(spec, ledger, ctx=fixed_ctx(), task_dicts=task_dicts, **FAST)
+    outcome = lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), task_dicts=task_dicts, **FAST)
     assert outcome.mde["n_tasks"] == 4  # 4 task clusters, not 50 and not a flat 12
     assert outcome.mde["repetitions"] == 3  # reps ride alongside the cluster count
 
@@ -130,7 +130,7 @@ def test_pl1_gate_skip_flagged(tmp_path):
     ledgered as a flag, not a silent no-check."""
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")  # no hypothesized_effect
     ledger = tmp_path / "ledger.ndjson"
-    outcome = lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    outcome = lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     assert "power_gate_skipped" in outcome.mde["flags"]
     locked = find_events(ledger, events.EXPERIMENT_LOCKED)[0]
     assert "power_gate_skipped" in locked["mde"]["flags"]
@@ -139,7 +139,7 @@ def test_pl1_gate_skip_flagged(tmp_path):
 def test_pl1_gate_not_skipped_when_effect_present(tmp_path):
     spec = write_experiment_yaml(tmp_path / "experiment.yaml", hypothesized_effect=0.3)
     ledger = tmp_path / "ledger.ndjson"
-    outcome = lock_experiment(spec, ledger, ctx=fixed_ctx(),
+    outcome = lock_experiment(spec, ledger, ctx=ctx_for(tmp_path),
                               acknowledge_underpowered=True, **FAST)
     assert "power_gate_skipped" not in outcome.mde["flags"]
 
@@ -182,7 +182,7 @@ def test_pl5_bench_plan_uses_calibration_manifest(tmp_path):
 def test_ac2_mutation_refused(tmp_path):
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
-    lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     # mutate the yaml after lock
     spec.write_text(spec.read_text() + "\n# tampered\n")
     with pytest.raises(LockMismatchError):
@@ -208,7 +208,7 @@ def test_lock_refuses_unregistered_arm_platform(tmp_path):
     spec = write_experiment_yaml(tmp_path / "experiment.yaml", arms=arms)
     ledger = tmp_path / "ledger.ndjson"
     with pytest.raises(UnknownArmPlatformError) as exc:
-        lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+        lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     msg = str(exc.value)
     assert "treatment" in msg and "my_custom_stack" in msg
     assert "claude_code" in msg and "codex" in msg  # names the runnable set
@@ -218,7 +218,7 @@ def test_lock_refuses_unregistered_arm_platform(tmp_path):
 def test_ac4_mde_in_lock_event(tmp_path):
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
-    outcome = lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    outcome = lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     assert outcome.mde["method"] == "paired_binary_bootstrap_sim"
     # assumed variance ⇒ flag rides into the lock event (this fixture also omits
     # hypothesized_effect, so the power gate is skipped-and-flagged too [PL-1])
@@ -236,7 +236,7 @@ def test_ac4_underpowered_requires_ack(tmp_path):
         lock_experiment(
             spec,
             ledger,
-            ctx=fixed_ctx(),
+            ctx=ctx_for(tmp_path),
             variance_source=AssumedVariance(p=0.5, rho=0.3, n_tasks=20),
             **FAST,
         )
@@ -252,7 +252,7 @@ def test_ac4_incomputable_mde_is_underpowered(tmp_path):
     # tiny N + tiny deltas ⇒ power never reaches target ⇒ mde None
     with pytest.raises(UnderpoweredError):
         lock_experiment(
-            spec, ledger, ctx=fixed_ctx(),
+            spec, ledger, ctx=ctx_for(tmp_path),
             variance_source=AssumedVariance(p=0.5, rho=0.3, n_tasks=4),
             n_sim=20, n_boot=60, deltas=[0.001, 0.002],
         )
@@ -265,7 +265,7 @@ def test_ac4_ack_ledgered(tmp_path):
     lock_experiment(
         spec,
         ledger,
-        ctx=fixed_ctx(),
+        ctx=ctx_for(tmp_path),
         variance_source=AssumedVariance(p=0.5, rho=0.3, n_tasks=20),
         acknowledge_underpowered=True,
         **FAST,
@@ -305,7 +305,7 @@ def test_lock_reads_spec_once_no_toctou(tmp_path, monkeypatch):
     monkeypatch.setattr(pathlib.Path, "read_bytes", counting_read_bytes)
     monkeypatch.setattr(pathlib.Path, "read_text", counting_read_text)
 
-    lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     assert reads["n"] == 1
 
 
@@ -314,9 +314,9 @@ def test_relock_refused(tmp_path):
     as a second experiment_locked event."""
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
-    lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+    lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     with pytest.raises(AlreadyLockedError):
-        lock_experiment(spec, ledger, ctx=fixed_ctx(), **FAST)
+        lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
     assert len(find_events(ledger, events.EXPERIMENT_LOCKED)) == 1
 
 
@@ -329,7 +329,7 @@ def test_lock_is_genesis_on_ack_path(tmp_path):
     lock_experiment(
         spec,
         ledger,
-        ctx=fixed_ctx(),
+        ctx=ctx_for(tmp_path),
         variance_source=AssumedVariance(p=0.5, rho=0.3, n_tasks=20),
         acknowledge_underpowered=True,
         **FAST,
@@ -356,7 +356,7 @@ def test_assert_lock_refuses_tampered_chain(tmp_path):
 
     spec = write_experiment_yaml(tmp_path / "experiment.yaml")
     ledger = tmp_path / "ledger.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     lock_experiment(spec, ledger, ctx=ctx, **FAST)
     # the lock is genesis; give it a successor so a rewrite of it breaks the chain
     seed_trial_and_grade(ledger, ctx, trial_id="t1", task_id="task-1", arm="arm_a")

@@ -28,7 +28,7 @@ from harness.review.sample import (
     select_for_review,
 )
 from harness.review.scrub import ScrubError, assert_identity_free, blind_scrub
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 
 _CANARIES = ["control", "treatment", "anthropic/claude-3-5-sonnet-20241022",
              "openai/gpt-4o-2024-08-06"]
@@ -122,7 +122,7 @@ def test_ac2_random_floor_seeded():
 
 def test_ac2_kappa_reviewed_only(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     # two comparisons judged; only one reviewed (has a human verdict + selected)
     for cid, jw, hw in [("c1", "A", "A"), ("c2", "A", "B")]:
         jv = Verdict(winner=Winner(jw), reason="x",
@@ -171,7 +171,7 @@ def test_rv9_reveal_and_kappa_agree_on_duplicate_verdict(tmp_path):
     """RV-9: on a duplicated ledger, the reveal join is now last-wins, matching
     the (already last-wins) kappa join — both resolve to the LAST judge verdict."""
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     cid = "c1"
 
     def _jv(winner, call_ids):
@@ -202,7 +202,7 @@ def test_rv8f_integrity_less_human_excluded_from_kappa(tmp_path):
     """RV-8(f): a human verdict with no integrity block is excluded from kappa
     items — the same gate the reveal and the integrity-rate already apply."""
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     _seed_judge(ledger, ctx, "c1", winner="A")
     # a human verdict recorded WITHOUT the integrity block (bare constructor path)
     append_human_verdict(ledger, ctx, verdict=_human("A", "c1").model_dump(mode="json"))
@@ -240,7 +240,7 @@ def test_ac3_no_judge_or_arm_content():
 # --- AC-4: capture-then-reveal ----------------------------------------------
 def test_ac4_verdict_event_schema(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     _seed_judge(ledger, ctx, "cmp-1")
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"),
                          arm_recognized=True, arm_guess="A", actual_arm="A")
@@ -254,7 +254,7 @@ def test_ac4_verdict_event_schema(tmp_path):
 
 def test_ac4_integrity_pre_unblind(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     # reveal BEFORE any verdict is refused — the ordering is tool-enforced
     with pytest.raises(RevealError):
         reveal_comparison(ledger, ctx, comparison_id="cmp-1")
@@ -262,7 +262,7 @@ def test_ac4_integrity_pre_unblind(tmp_path):
 
 def test_ac4_reveal_after_verdict(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     _seed_judge(ledger, ctx, "cmp-1")
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"),
                          arm_recognized=False, arm_guess=None)
@@ -277,7 +277,7 @@ def test_ac4_reveal_after_verdict(tmp_path):
 # --- AC-5: kappa feed + IPW estimator ---------------------------------------
 def test_ac5_kappa_feed(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     jv = Verdict(winner=Winner.A, reason="x",
                  evidence=[Evidence(kind="diff", response="A", hunk="h")],
                  provenance=_prov(), comparison_id="c1", task_class="cls")
@@ -333,7 +333,7 @@ def test_ac6_integrity_rate_reported(tmp_path):
     from harness.analyze.report import compute_findings, render_markdown
     from tests.fixtures.builders import locked_experiment, seed_trial_and_grade
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     for i in range(4):
         seed_trial_and_grade(ledger, ctx, trial_id=f"c-{i}", task_id=f"t{i}", arm="control",
@@ -358,7 +358,7 @@ def test_ac6_integrity_rate_reported(tmp_path):
 
 def test_rv1_refuses_duplicate_verdict(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     _seed_judge(ledger, ctx, "cmp-1")
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
                          arm_guess=None)
@@ -372,7 +372,7 @@ def test_rv1_refuses_duplicate_verdict(tmp_path):
 
 def test_rv1_refuses_post_reveal_verdict(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     _seed_judge(ledger, ctx, "cmp-1")
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
                          arm_guess=None)
@@ -386,7 +386,7 @@ def test_rv1_refuses_post_reveal_verdict(tmp_path):
 
 def test_rv8_refuses_duplicate_reveal(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     _seed_judge(ledger, ctx, "cmp-1")
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
                          arm_guess=None)
@@ -400,7 +400,7 @@ def test_rv8_refuses_duplicate_reveal(tmp_path):
 
 def test_rv9_refuses_unjudged_comparison(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     _seed_judge(ledger, ctx, "cmp-1")
     # a verdict for a comparison the judge produced is fine
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"), arm_recognized=False,
@@ -421,7 +421,7 @@ def test_reveal_refuses_tampered_chain(tmp_path):
     from harness.ledger.query import ChainIntegrityError
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     _seed_judge(ledger, ctx, "cmp-1")
     _seed_judge(ledger, ctx, "cmp-2")
     record_human_verdict(ledger, ctx, verdict=_human("A", "cmp-1"),
@@ -449,7 +449,7 @@ def test_m_o2_reveal_refused_until_the_whole_batch_is_verdicted(tmp_path):
     from harness.ledger.events import record_review_batch
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     for cid in ("cmp-1", "cmp-2"):
         _seed_judge(ledger, ctx, cid)
         _seed_packet_built(ledger, ctx, cid)
@@ -484,7 +484,7 @@ def test_m_o2_build_ledgers_the_batch_idempotently(tmp_path):
     write_experiment_yaml(expdir / "experiment.yaml")
     spec = ExperimentSpec.from_yaml(expdir / "experiment.yaml")
     ledger = expdir / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(expdir)
     _seed_judge(ledger, ctx, "cmp-t0-r0")
     from tests.fixtures.builders import seed_trial_and_grade
 

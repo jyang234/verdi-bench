@@ -13,7 +13,7 @@ summary from the returned :class:`JudgeOutcome`.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..errors import VerdiRefusal
@@ -30,6 +30,15 @@ class JudgeOutcome:
     ``rubric_warning`` flags a legacy lock (pre-rubric-commitment) so the CLI
     emits the same non-fatal warning the body did [D-P7-6]; ``calibration`` is
     the per-class kappa map the summary lines render [JD-9, D006].
+
+    ``judged`` (the native pass) splits into ``verdicts`` (substantive) +
+    ``cant_judge`` (fail-closed), with ``cant_judge_reasons`` a ``{reason: count}``
+    map [ux-friction AC-3], so the summary discloses a keyless/failing pass
+    instead of the success-shaped bare count (F6). The exploratory reused-control
+    pass carries the SAME split in ``reused_verdicts`` / ``reused_cant_judge`` /
+    ``reused_cant_judge_reasons`` (``n_reused`` = their sum), so its line discloses
+    too [ux-friction AC-3 residual]. All additive with defaults — no existing
+    constructor or serializer changes.
     """
 
     judged: int
@@ -39,6 +48,12 @@ class JudgeOutcome:
     n_reused: int
     rubric_warning: bool
     calibration: dict
+    verdicts: int = 0
+    cant_judge: int = 0
+    cant_judge_reasons: dict = field(default_factory=dict)
+    reused_verdicts: int = 0
+    reused_cant_judge: int = 0
+    reused_cant_judge_reasons: dict = field(default_factory=dict)
 
 
 def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome:
@@ -54,6 +69,7 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
     from ..ledger import events
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
+    from ..ledger.identity import derive_experiment_id
     from ..plan.lock import assert_lock
     from ..review.calibrate import calibration_from_spec
     from .assemble import native_comparisons_from_ledger
@@ -100,7 +116,8 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
     # F-L1/GR-12: the ledgered actor is resolved (flag, else OS user) and REFUSED
     # when unresolvable — never silently defaulted to "local".
     resolved_actor = resolve_actor(actor)
-    ctx = EventContext(experiment_id=exp_dir.name, actor=resolved_actor)
+    # [ux-friction AC-1] one shared seam: resolve exp_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(exp_dir), actor=resolved_actor)
 
     comparisons = native_comparisons_from_ledger(ledger_path, spec, task_classes=task_classes)
 
@@ -124,6 +141,9 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
     judged, accumulated, stopped_ceiling = (
         native.judged, native.accumulated, native.stopped_ceiling
     )
+    # AC-3: the verdict/cant_judge split of the native pass, for the summary line.
+    cant_judge_reasons = native.cant_judge_reasons
+    cant_judge = sum(cant_judge_reasons.values())
 
     # Control reuse [control-reuse plan]: also judge each fresh-contender vs
     # reused-control pair (a distinct kind the official judge_preference never
@@ -131,14 +151,23 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
     # budget — skip it entirely once the ceiling has stopped native judging, and
     # thread the running total through so reuse cannot spend past the cap [F-M-J3].
     n_reused = 0
+    reused_verdicts = 0
+    reused_cant_judge_reasons: dict = {}
     if not stopped_ceiling:
         from .reuse import judge_reused
 
-        n_reused = judge_reused(
+        reused = judge_reused(
             ledger_path, exp_dir, spec, ctx,
             rubric=rubric, prompts=prompts, canaries=canaries,
             task_classes=task_classes, ceiling=ceiling, accumulated=accumulated,
         )
+        # AC-3 residual: carry the reused pass's verdict/cant_judge split up for its
+        # summary line, exactly as the native pass's split is carried above. It is
+        # THIS pass's split — reuse retries a transient cant_judge on a later pass.
+        n_reused = reused.judged
+        reused_verdicts = reused.verdicts
+        reused_cant_judge_reasons = reused.cant_judge_reasons
+    reused_cant_judge = sum(reused_cant_judge_reasons.values())
 
     # Thread the locked EscalationConfig through calibration [JD-9, D006]: per-class
     # kappa against any human verdicts, through the D003 IPW seam [RV-4]. The same
@@ -147,5 +176,8 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
     return JudgeOutcome(
         judged=judged, stopped_ceiling=stopped_ceiling, accumulated=accumulated,
         ceiling=ceiling, n_reused=n_reused, rubric_warning=rubric_warning,
-        calibration=cal,
+        calibration=cal, verdicts=native.verdicts, cant_judge=cant_judge,
+        cant_judge_reasons=cant_judge_reasons,
+        reused_verdicts=reused_verdicts, reused_cant_judge=reused_cant_judge,
+        reused_cant_judge_reasons=reused_cant_judge_reasons,
     )

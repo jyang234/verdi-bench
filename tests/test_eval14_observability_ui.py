@@ -152,22 +152,22 @@ def test_ac6_compare_pairs_diff_and_watermark(tmp_path):
     fx = rich_experiment(tmp_path)
 
     c = paired_comparisons(tmp_path)
-    assert (c["arm_a"], c["arm_b"]) == ("control", "treatment")  # lock order
+    assert (c["arm_a"], c["arm_b"]) == ("treatment", "control")  # lock order
     assert c["summary"]["pairs"] == 2
     by_task = {p["task_id"]: p for p in c["pairs"]}
     t1, t2 = by_task["t1"], by_task["t2"]
     # deterministic and advisory tiers stay separate lines, never blended
-    assert (t1["a"]["holdout_pass"], t1["b"]["holdout_pass"]) == (False, True)
+    assert (t1["a"]["holdout_pass"], t1["b"]["holdout_pass"]) == (True, False)
     assert t1["judge"]["winner"] == "B"
     assert t1["disagreement"] is True
     assert t2["disagreement"] is False and t2["judge"] is None
-    assert c["summary"]["holdout"] == {"a_only": 0, "b_only": 1, "both": 1, "neither": 0}
+    assert c["summary"]["holdout"] == {"a_only": 1, "b_only": 0, "both": 1, "neither": 0}
     assert c["summary"]["judge"] == {"a": 0, "b": 1, "tie": 0, "cant": 0, "unjudged": 1}
     assert c["summary"]["disagreements"] == 1
     # the workspace content differs per arm → real diff segments
     assert any(seg["op"] != "equal" and (seg["a"] or seg["b"]) for seg in t1["segments"])
-    # holdout evidence rides each response
-    assert t1["b"]["holdout_results"] == [{"id": "h1", "result": "pass"}]
+    # holdout evidence rides each response (a is the passing treatment arm now)
+    assert t1["a"]["holdout_results"] == [{"id": "h1", "result": "pass"}]
 
     # watermark: EXPLORATORY until the official fence passes — same fence as analyze
     assert c["official_ready"] is False

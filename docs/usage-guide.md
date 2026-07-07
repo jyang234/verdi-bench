@@ -45,7 +45,7 @@ seam that adds no second source of truth — it composes the tested subsystems a
 serializes the files the lock hashes.
 
 Here is a complete fake-engine A/B — the `tests/test_sdk_northstar.py` flow
-verbatim, the executable proof the SDK is a real write path:
+(output path adapted), the executable proof the SDK is a real write path:
 
 ```python
 from pathlib import Path
@@ -54,8 +54,8 @@ from harness.sdk import Experiment, Task, write_holdout_results
 
 exp = (
     Experiment("mini-ab", seed=1234, cost_ceiling_usd=10.0)
-    .arm("control",   model="anthropic/claude-haiku-4-5-20251001", platform="claude_code")
     .arm("treatment", model="openai/gpt-4o-2024-08-06",            platform="codex")
+    .arm("control",   model="anthropic/claude-haiku-4-5-20251001", platform="claude_code")
     .judge("fake/deterministic-2026-01-01")   # rubric defaults to the library template
     .task(Task("t_add", prompt="Write solution.py defining add(a, b)...",
                fake_behavior={"native_log": {"total_cost_usd": 0.01}}))
@@ -63,7 +63,7 @@ exp = (
                fake_behavior={"native_log": {"total_cost_usd": 0.01}}))
 )
 
-ws = exp.write("_run/mini-ab")     # writes experiment.yaml, tasks.yaml, rubric.md
+ws = exp.write("scratch/mini-ab")  # writes the three files; scratch/ is gitignored
 ws.plan(actor="me")
 ws.run(engine="fake")
 
@@ -80,6 +80,9 @@ findings = ws.analyze(exploratory=True)      # → findings.exploratory.md (+ do
 assert ws.verify_chain().chain_ok
 ```
 
+That explicit loop shows the mechanism; `ws.inject_holdout_results(lambda arm,
+task: arm == "treatment")` is the same loop as one named SDK call.
+
 `exp.write(...)` returns an `ExperimentWorkspace` whose
 `.plan/.run/.grade/.judge/.analyze/.verify_chain` are one-line delegations to the
 same stage APIs the `bench` verbs call; reads go through `ws.view()` (a
@@ -88,6 +91,15 @@ silent defaults for the determinism / cost-fence contracts. The judge rubric
 defaults to the library template (judgment criteria only — the verdict-JSON
 response format is harness-owned packet framing, not rubric text);
 pass `rubric=` a string of literal text or a `Path` to override it.
+
+The builder methods you don't call fall back to documented defaults —
+`repetitions(1)`, `primary_metric holdout_pass_rate` with
+`decision_rule "delta_holdout_pass_rate > 0"`, and corpus
+`{id: <experiment name>, version: "1.0.0"}`. The delta in that default rule is
+`arms[0] − arms[1]`, the FIRST `.arm(…)` you declare minus the second — so this
+example, which declares `treatment` first and injects treatment-passes, produces
+a **positive** delta (the contender wins the tasks and is the first-declared arm),
+and the `> 0` rule reads MET. Declare your contender first.
 
 **Want the CLI, but a scaffold rather than a blank page?** `bench init <dir>`
 writes the same starter `experiment.yaml` / `tasks.yaml` / `rubric` from the one
@@ -113,6 +125,81 @@ the fake-engine walkthrough needs neither.
 
 ---
 
+## 1.5 Quick start — a decisive A/B in five minutes (no Docker, no API keys)
+
+Everything below runs on the deterministic **fake engine** and the deterministic
+**`fake/` judge provider** — zero keys, zero Docker, under a minute of wall clock.
+It exists so you can watch the whole instrument work end to end *before* you read
+the file contracts (§2). Work from the repo checkout root: `uv run` resolves the
+project from the current directory, so keep the experiment directory inside the
+checkout — `scratch/` is gitignored for exactly this.
+
+**1. Scaffold the starter files.**
+
+```bash
+uv run bench init scratch/quickstart
+# scaffolded scratch/quickstart: experiment.yaml, tasks.yaml, rubrics/code-task-v1.md
+```
+
+Nothing to edit before locking. The scaffold's judge is already
+`fake/deterministic-2026-01-01` — the deterministic no-network judge provider,
+the judge-side analog of the fake engine (a comment beside it in
+`experiment.yaml` shows the real-provider swap; any real-provider judge needs
+that provider's API key in the CLI environment at `bench judge` time, §4). And
+`tasks.yaml` already ships two placeholder tasks: the paired bootstrap clusters
+on tasks, so a decision needs at least two (`n_tasks=1` renders "no decision
+possible").
+
+**2. Run the pipeline** — each command with its printed result line
+(2 arms × 2 tasks × 3 repetitions = 12 trials, 6 paired comparisons):
+
+```bash
+uv run bench plan scratch/quickstart/experiment.yaml --ledger scratch/quickstart/ledger.ndjson
+# locked scratch/quickstart/experiment.yaml (sha256=…)
+#   MDE=None  flags=assumption_based_mde, power_gate_skipped
+uv run bench run scratch/quickstart
+# ran 12 trials (infra_failures=0, stopped_cost_ceiling=False)
+uv run python -c 'from harness.sdk import ExperimentWorkspace as W; W("scratch/quickstart").inject_holdout_results(lambda arm, task: arm == "treatment")'
+uv run bench grade scratch/quickstart --runner local
+# graded 12 trial(s)
+uv run bench judge scratch/quickstart
+# judged 6 comparison(s)
+uv run bench analyze scratch/quickstart --exploratory
+# rendered exploratory findings → scratch/quickstart/findings.exploratory.md
+uv run bench verify-chain scratch/quickstart/ledger.ndjson
+# chain OK
+uv run bench status scratch/quickstart
+```
+
+The injection is the one non-obvious step. The fake engine is **arm-blind by
+design** — it cannot know which arm you want to win — so on the learning path the
+operator scripts the effect between `run` and `grade` by writing each trial's
+`holdout_results.json`. `ExperimentWorkspace.inject_holdout_results(passes)` is
+the named public SDK step for it (§2.4 explains the file, §0.5 the SDK).
+
+**Read the result.** `findings.exploratory.md` carries the two lines that matter:
+
+```
+mean paired delta: 1.0000
+Effect detected. Decision rule `delta_holdout_pass_rate > 0` ⇒ MET.
+```
+
+> **The sign convention is the one thing people get backwards.** The paired delta
+> is **first-declared arm minus second-declared arm** (`arms[0] − arms[1]`; §2.1).
+> The starter spec declares your contender — `treatment` — first, so injecting
+> `arm == "treatment"` passes drives the delta to +1.0 and the scaffold's `> 0`
+> rule reads MET. In your own designs do the same: declare your contender first,
+> or aim the operator (and the rule's direction) the other way.
+
+**Where next.** §2 for what the four files mean (the locked contract); §4 for the
+full pipeline with forensics, selfcheck, and review; §6 to run real containers;
+§0.5 to drive the same thing from Python; and `uv run bench author <workspace>`
+(§3) for the browser authoring surface. And `bench status` (just used) is the
+always-safe, read-only snapshot to reach for whenever any stage's output
+surprises you.
+
+---
+
 ## 2. The experiment directory
 
 Create a directory and populate four files. Here is the complete layout you will
@@ -135,17 +222,20 @@ mkdir myexp && cd myexp
 ### 2.1 `experiment.yaml` — the pre-registration
 
 This is the cryptographic commitment. The schema is strict (`extra="forbid"`):
-an unknown key is a rejection, not a silent no-op. A minimal, valid spec:
+an unknown key is a rejection, not a silent no-op. A minimal, valid spec — the
+contender declared first, matching the delta sign convention below (this example
+pins a real-provider judge; the `bench init` scaffold ships the keyless `fake/`
+judge instead, §1.5):
 
 ```yaml
 arms:
-  - name: control
-    platform: claude_code
-    model: anthropic/claude-haiku-4-5-20251001
-    payload: {}
   - name: treatment
     platform: codex
     model: openai/gpt-4o-2024-08-06
+    payload: {}
+  - name: control
+    platform: claude_code
+    model: anthropic/claude-haiku-4-5-20251001
     payload: {}
 corpus: {id: public-mini, version: "1.0.0"}
 repetitions: 3
@@ -169,19 +259,21 @@ Field-by-field, including the rules the schema will hold you to:
 | `corpus` | `{id, version}` — the corpus identity the official fence re-checks. |
 | `repetitions` | `> 0`. Each task runs this many times **per arm**, paired. |
 | `primary_metric` | One of `holdout_pass_rate`, `judge_preference`, `cost_per_task`, `wall_time`. Composites are unrepresentable. |
-| `decision_rule` | `delta_<primary_metric> <op> <threshold>`, e.g. `delta_holdout_pass_rate > 0`. `<op>` ∈ `>`, `<`, `>=`, `<=`. **`==` is rejected** (equality on a bootstrap point estimate is never decidable). The metric must be the primary metric. |
+| `decision_rule` | `delta_<primary_metric> <op> <threshold>`, e.g. `delta_holdout_pass_rate > 0`. `<op>` ∈ `>`, `<`, `>=`, `<=`. **`==` is rejected** (equality on a bootstrap point estimate is never decidable). The metric must be the primary metric. Sign convention: `delta_<metric>` is the **first-declared arm minus the second** (`arms[0] − arms[1]`), and in a >2-arm design the official decision defaults to that primary pair (§4) — declare your contender first, or aim the operator the other way. |
 | `judge.model` | Must be **fully versioned** — a date or build stamp (`gemini-1.5-pro-002`, `gpt-4.1-2025-04-14`). A bare family (`gemini-1.5-pro`, `gpt-5`) is an alias and refused at plan time. Any provider is legal. |
 | `judge.rubric` | Path to a rubric file **relative to the experiment dir**; its content is hashed into the lock, so it cannot be swapped post-registration. |
 | `judge.orders` | `both` (order-debiased, recommended) or `single`. |
 | `judge.escalation` | Optional `{kappa_threshold: 0.6, min_human_verdicts: 20}` — the calibration gate. |
+| `judge.token_ceiling` | Optional int `> 0`. Pre-registered cap on **total judge tokens** for the run; when reached, judging stops with a typed `judge_stopped_token_ceiling` event (control-reuse judging draws on the same cap, §12). Absent → unlimited. |
+| `judge.panel` | A **v2 placeholder, not implemented in v1** — kept in the schema as a breadcrumb but **refused when set**: a spec that sets it fails validation with a typed error naming the field and the fix. Leave it unset. |
 | `seed` | Integer. Seeds the paired interleave and every bootstrap. |
-| `cost_ceiling` | **Required.** `{amount > 0, currency}`. Hitting it stops the run and refuses new trials. |
+| `cost_ceiling` | **Required.** `{amount > 0, currency}` (`currency` defaults to `USD`). Hitting it stops the run and refuses new trials. |
 
 Optional, powerful fields:
 
 | Field | Meaning |
 |---|---|
-| `hypothesized_effect` | `(0, 1]`. The effect size the power/MDE gate checks against at plan time. |
+| `hypothesized_effect` | `(0, 1]`. The effect size the power/MDE gate checks against at plan time. Omit it and the gate is skipped — the lock records honest `power_gate_skipped` / `assumption_based_mde` flags (the §1.5 lock does exactly this); set it, and an underpowered design refuses to lock unless you pass `--acknowledge-underpowered` to `bench plan`. `bench plan --corpus-manifest <manifest>` feeds the gate calibrated variance from `bench corpus calibrate` runs instead of assumptions, and `--attested-by` names the lock attester (defaulting to the resolved `--actor`). |
 | `fractional_scoring` | `true` grades the fraction of passing assertions instead of all-or-nothing. |
 | `contamination.overlap_threshold` | `(0, 1]`. Pre-registers the fingerprint-overlap threshold for the contamination sentinel. |
 | `arm.training_cutoff` | RFC 3339. Feeds the contamination tri-state (`predates`/`postdates`/`unknown`); absent → honest `unknown`, never `clean`. |
@@ -220,6 +312,29 @@ Rules: **task ids unique**; every field is hashed into the lock, so a post-lock
 edit to a prompt / holdouts path / plugin list is refused by `run`/`grade`. Note
 the commitment covers the `holdouts_dir` **path**, not the bytes of the holdout
 scripts under it (an honest boundary documented in `harness/corpus/commit.py`).
+
+Every authorable task field (the write-side `TaskSpec` in
+`harness/schema/tasks.py`, strict `extra="forbid"` at authoring time):
+
+| Field | Meaning / constraint |
+|---|---|
+| `id` | **Required, unique** across the file — the key every stage joins on. |
+| `prompt` | The agent-visible task text. |
+| `image` | Optional pinned trial-container ref (`<ref>@sha256:…`) for the harbor engine (§6); absent → the fake-agent default. Per-task and **shared by both arms** by design (§9). |
+| `timeout_s` | Optional per-task wall-clock override; absent → the engine default (1800 s). On timeout the container is killed and the trial fails closed (§6). |
+| `holdouts_dir` | The per-task holdout tree (§2.4); optional — omit for judge/telemetry-only tasks. |
+| `plugin_ids` | Optional custom graders (deep-dive §7). |
+| `task_class` | Optional calibration/stratification label; absent → `default`. |
+| `holdout_canaries` | Grading-insulation tripwires: strings that must never reach the agent. If one appears in any request-bound channel (`prompt`, arm `payload`, `fake_behavior`, `files`, `env`) the run **refuses the trial loudly** — insulation is enforced before spend, not flagged after. |
+| `fake_behavior` | Fake-engine-only scripting block (e.g. `{native_log: {total_cost_usd: 0.01}}`, the §0.5 example); ignored by real engines — it is how the e2e tests script deterministic telemetry. |
+| `files` | `{path: contents}` staged read-write into `/workspace` before the trial starts — the way a task ships starting code. |
+| `env` | `{NAME: VALUE}` injected into the trial container. **Never secrets**: these bytes are sha-locked plaintext in the pre-registration; provider credentials belong in `run.config.yaml` (§6). |
+| `extra_hosts` | Per-task egress hosts merged into the derived proxy allowlist — they open for **every** arm, like `infra_hosts`. |
+
+Before locking, `uv run bench corpus validate-tasks <experiment-dir>` strict-lints
+`tasks.yaml` — an unknown key is refused there (authoring is strict; the run-time
+reader is deliberately lenient, so an older instrument never misreads a newer
+file).
 
 ### 2.4 Holdouts — the deterministic grade
 
@@ -266,6 +381,23 @@ There are two no-daemon paths for the fake/learning flow:
   opaque/bespoke `holdouts_dir` with no `kind` is refused loudly; use
   `--runner docker` for those. It lets you exercise a real holdout end to end
   without a daemon, instead of hand-writing the results file.
+
+A declared holdout for `--runner local-exec` lives at `holdouts/<task>/holdout.json`:
+
+```json
+{"schema_version": 1, "kind": "assertion", "id": "h1",
+ "expression": "__import__('solution').add(1, 2) == 3"}
+```
+
+`kind` is a closed discriminator — `assertion` (a Python expression evaluated
+against the workspace), `pytest` (a `path` to a test file), or `command` (an
+`argv`); a `holdout.json` with **no** `kind` stays an opaque bespoke-image
+holdout, and only `--runner docker` can grade it.
+
+A trial whose grade landed a terminal `cant_grade` can be re-attempted, once the
+cause is fixed, with `bench grade . --retry-terminal <trial-id>` — the re-grade is
+ledgered with an `override_of` link back to the original, never a silent
+replacement.
 
 ---
 
@@ -329,10 +461,19 @@ uv run bench plan experiment.yaml --ledger $LEDGER --actor alice
 uv run bench run . --actor alice
 ```
 
-For the fake path, stand in for the grader by writing each trial's
-`holdout_results.json` into its workspace (the real path skips this — the
-container produces it). Each `trial` event carries the `artifacts_path`; the
-workspace is its parent directory. Then:
+The fake engine is arm-blind, so on the fake path you stand in for the grader:
+write each trial's `holdout_results.json` into its workspace. One named SDK call
+does it for every trial (run from inside `myexp/`; the predicate decides pass/fail
+per `(arm, task_id)`, and the §1.5 sign-convention callout explains why
+`treatment` — the first-declared arm, so its win drives the delta positive):
+
+```bash
+uv run python -c 'from harness.sdk import ExperimentWorkspace as W; W(".").inject_holdout_results(lambda arm, task: arm == "treatment")'
+```
+
+The real grade path skips this — the container produces the results file. Each
+`trial` event carries the `artifacts_path`; the workspace is its parent directory.
+Then:
 
 ```bash
 # 3. Deterministic grades. --runner local reads pre-placed holdout_results.json.
@@ -356,22 +497,62 @@ uv run bench analyze . --exploratory
 uv run bench verify-chain $LEDGER
 ```
 
+> **Judge credentials.** A real-provider judge model calls that provider's API
+> from the `bench judge` process: `anthropic/…` needs `ANTHROPIC_API_KEY`,
+> `openai/…` needs `OPENAI_API_KEY`, `google/…` needs `GOOGLE_API_KEY` in the
+> environment. The harness never auto-loads `.env` — the convention is
+> `uv run --env-file .env bench judge .`. A missing key does not crash the run:
+> every comparison lands as a ledgered `CANT_JUDGE(provider_error)` verdict and
+> the findings disclose it — check `bench status .` (judge line:
+> `verdicts=N cant_judge=M`) before wondering where your preferences went. The
+> `fake/deterministic-…` provider (§1.5) is the keyless deterministic tier.
+
 Each `analyze` writes both `findings.<mode>.md` and a single self-contained
 `findings.<mode>.dossier.html` (no network, no external assets, byte-identical
 for a fixed ledger + seed) with three layers: a template-generated **verdict**, an
 **analyst** layer (paired deltas, calibration, flags), and an **auditor** layer
-(provenance, ledger head, chain status).
+(provenance, ledger head, chain status). Passing `--html` renders
+`findings.<mode>.html` in place of the markdown body; the self-contained dossier
+is written either way.
+
+### Watching a run: status and serve
+
+`uv run bench status . [--json]` is the read-only lifecycle snapshot — chain and
+lock state, per-arm trial counts, spend vs the ceiling, graded vs
+`cant_grade_terminal`, judge verdicts vs `cant_judge`, and which renders exist —
+the first thing to reach for when a stage's summary line looks off.
+`uv run bench serve . [--port 8383]` is the live operator page; `--root <dir>`
+serves every experiment under a workspace root, and `--bundle out.html` writes the
+same view as one static, self-contained file. Both are strictly read-only and
+ledger nothing — but the live view is openly **unblinded**, so watching it
+disqualifies you as that experiment's blinded reviewer (the §3 caveat again).
 
 ### Human review and process scoring (optional, between steps 4 and 7)
 
 ```bash
 uv run bench review build .                                   # blinded review packet
+uv run bench review serve . --reviewer alice  # the blinded capture-then-reveal queue in a browser
 uv run bench review record . --comparison-id c1 --winner 1    # capture a verdict
 uv run bench review reveal . --comparison-id c1               # refuses pre-verdict
 uv run bench process score .                                  # isolated process rubric
+uv run bench process record . --trial-id t1 --comparison-id c1 --scores s.json
 ```
 
 Judge↔human agreement (IPW-corrected kappa) then appears in the findings.
+
+**Also on the ledger** are the human-in-the-loop and audit verbs:
+
+- `bench forensics record . --trial-id t1 --labels labels.json` — a human
+  spot-check of the detector flags.
+- `bench forensics quarantine . --trial-id t1 --reason "…"` — a ledgered,
+  disclosed exclusion; flags are evidence, exclusion is a human decision.
+- `bench contamination probe . --manifest m.json` — membership probes + an
+  overlap scan against the pre-registered `contamination.overlap_threshold`
+  (§2.1).
+- `bench anchor ledger.ndjson --out anchors.ndjson`, then
+  `bench verify-chain ledger.ndjson --against-anchor anchors.ndjson` — externally
+  held anchors, so tampering that rewrites the whole chain still can't rewrite
+  your copy.
 
 ### Multi-arm experiments (> 2 arms)
 
@@ -417,6 +598,13 @@ existed, and the render re-checks that at render time.
 - containers **killed on timeout**, confirmed via `docker inspect` — a container
   that survives the kill fails the trial closed rather than being graded;
 - capability-dropped, no-new-privileges, pids/memory-capped.
+
+**Where trial images come from.** Bring any compliant image, or use the
+maintained ones: `bench images list` prints the official images,
+`bench images build generic-llm --pin` builds the `verdi-base` base first and
+prints the `sha256`-pinned ref your `task.image` wants, and
+`bench images verify <ref>` is the offline compliance check (hardened,
+network-none — the harbor contract). None of these ledger anything.
 
 Operational wiring lives in an **optional `run.config.yaml`** in the experiment
 directory — never in the sha-locked `experiment.yaml`, never on the ledger:
@@ -478,6 +666,13 @@ Notes that will save you a failed run:
   captured spans into the trajectory (`docs/adapters.md` §"The `otlp` platform");
   because such an arm needs a collector, a `platform: otlp` run with no `otlp`
   block is refused at start, naming both settings.
+- Key values come from the `bench run` process environment **by name**; the
+  harness never auto-loads `.env` — use `uv run --env-file .env bench run …
+  --engine harbor`.
+- Image overrides for the instrument's own containers are env vars:
+  `VERDI_GRADER_IMAGE` (the grading container, default `verdi-bench/grader:latest`),
+  and `VERDI_PROXY_IMAGE` / `VERDI_COLLECTOR_IMAGE` (the managed proxy / OTLP
+  collector base images).
 
 Grading has the same split: `bench grade` defaults to `--runner docker` (the real
 network-less grading container); `--runner local` is the no-daemon fake/test path.
@@ -997,6 +1192,56 @@ only in the watermarked exploratory section with a disclosure block.
 
 ---
 
+## 12.5 The lever index — every user-facing knob in one place
+
+If you can set it, it is in this table — with where it lives and where it is
+explained.
+
+| Lever | Lives in | What it sets | § |
+|---|---|---|---|
+| **The sha-locked pre-registration** | | | |
+| `arms[]` | `experiment.yaml` | the 2+ configs under test (`name`, `platform`, `model`, `payload`) | §2.1 |
+| `arm.training_cutoff` | `experiment.yaml` | per-model training cutoff feeding the contamination tri-state | §2.1 |
+| `arm.aux_models` | `experiment.yaml` | extra models the stack invokes, pre-declared | §2.1 |
+| `arm.model_hosts`, `infra_hosts` | `experiment.yaml` | declared egress hosts (per-model / shared) | §2.1 |
+| `corpus` | `experiment.yaml` | the corpus identity the official fence re-checks | §2.1 |
+| `repetitions` | `experiment.yaml` | paired trials per task, per arm | §2.1 |
+| `primary_metric`, `decision_rule` | `experiment.yaml` | the one metric and rule that decide | §2.1 |
+| `judge.{model,rubric,orders,temperature,escalation,token_ceiling}` | `experiment.yaml` | the advisory judge and its token cap | §2.1 |
+| `seed` | `experiment.yaml` | seeds the paired interleave and every bootstrap | §2.1 |
+| `cost_ceiling` | `experiment.yaml` | the spend fence that halts the run | §2.1 |
+| `hypothesized_effect` | `experiment.yaml` | the power/MDE gate's effect size | §2.1 |
+| `fractional_scoring` | `experiment.yaml` | fractional vs all-or-nothing holdout scoring | §2.1 |
+| `contamination.overlap_threshold` | `experiment.yaml` | the pre-registered contamination-overlap threshold | §2.1 |
+| `multi_arm_correction` | `experiment.yaml` | family-wise correction across >2 arms | §4 |
+| **The task suite** | | | |
+| `id`, `prompt` | `tasks.yaml` | task identity and agent-visible text | §2.3 |
+| `image`, `timeout_s` | `tasks.yaml` | pinned trial-container ref and per-task timeout | §2.3 |
+| `holdouts_dir`, `plugin_ids`, `task_class` | `tasks.yaml` | grade tree, custom graders, calibration label | §2.3 |
+| `holdout_canaries` | `tasks.yaml` | insulation tripwires — a leaked canary refuses the trial | §2.3 |
+| `fake_behavior` | `tasks.yaml` | fake-engine-only deterministic scripting | §2.3 |
+| `files`, `env`, `extra_hosts` | `tasks.yaml` | staged files, container env (never secrets), per-task egress | §2.3 |
+| **Operational wiring** | | | |
+| `proxy.{managed,url,allowlist,log_path}` | `run.config.yaml` | the metering proxy: managed vs external, hosts, log | §6 |
+| `otlp.{managed,endpoint,log_path}` | `run.config.yaml` | opt-in in-trial OTLP span capture | §6 |
+| `quotas.{cpus,mem}` | `run.config.yaml` | per-trial CPU / memory caps | §6 |
+| `provider_key_names`, `provider_key_names_by_arm` | `run.config.yaml` | which env keys to inject, optionally per arm | §6 |
+| `reuse_control.bundle` | `run.config.yaml` | an exported control to reuse (exploratory) | §12 |
+| **Environment and CLI flags** | | | |
+| provider API keys (`ANTHROPIC_API_KEY`, …) | environment | auth for a real judge/run; `uv run --env-file .env …` | §6 |
+| `VERDI_GRADER_IMAGE` | environment | override the grading-container image | §6 |
+| `VERDI_PROXY_IMAGE`, `VERDI_COLLECTOR_IMAGE` | environment | override proxy / OTLP-collector base images | §6 |
+| `plan --acknowledge-underpowered / --attested-by / --corpus-manifest` | CLI flag | lock underpowered / name attester / feed calibrated variance | §2.1 |
+| `run --engine / --reuse-control / --corpus-manifest` | CLI flag | fake vs harbor, reuse a control, gate schedulability | §6, §12 |
+| `grade --runner / --retry-terminal` | CLI flag | grading path; re-attempt a terminal `cant_grade` | §2.4 |
+| `analyze --official / --exploratory / --corpus / --html` | CLI flag | fenced vs watermarked render, corpus, HTML | §5 |
+| `forensics scan --model / --no-review` | CLI flag | the review model; skip the LLM review | §4 |
+| `serve --root / --bundle / --port` | CLI flag | workspace root, static bundle, port | §4 |
+| `author --port`, `review serve --port` | CLI flag | the authoring / review-queue port | §3, §4 |
+| `--actor` (every ledgering verb) | CLI flag | the actor stamped on each ledger event | §4 |
+
+---
+
 ## 13. Where to go next
 
 - **[deep-dive.md](deep-dive.md)** — what each stage writes to the ledger, the
@@ -1005,3 +1250,11 @@ only in the watermarked exploratory section with a disclosure block.
   v2), field tables, and failure semantics.
 - **`deploy/metering-proxy/`** — the reference proxy for the harbor egress path.
 - **`README.md`** — the command reference and the provisional-decisions register.
+- **`README.md`'s Usage block** — the complete, test-enforced verb list: a
+  registered verb missing from it fails the suite.
+- **Corpus curation** (`bench corpus subset/mine/review/approve/baseline/admit/calibrate`)
+  — building and calibrating a task set from a raw pool is its own deep-dive
+  territory.
+- **`make shakedown`** — runs the hermetic golden-path and tripwire acceptance
+  layers (no keys, no Docker) if you want the instrument to prove itself on your
+  machine.

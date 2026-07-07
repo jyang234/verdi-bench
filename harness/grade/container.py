@@ -22,6 +22,7 @@ from .fence import (
     RESULTS_FENCE_END,
     GraderUnavailableError,
     GradingContainerError,
+    HoldoutResultsMissingError,
     HoldoutRun,
     holdout_fence,
     parse_fenced_stdout,
@@ -50,6 +51,7 @@ __all__ = [
     "HoldoutRun",
     "GradingContainerError",
     "GraderUnavailableError",
+    "HoldoutResultsMissingError",
     # runners + orchestrator [runners]
     "DEFAULT_GRADER_IMAGE",
     "HOLDOUT_RESULTS",

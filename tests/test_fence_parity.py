@@ -21,7 +21,7 @@ from harness.analyze.report import (
     effective_multi_arm_correction,
 )
 from harness.ledger import events
-from tests.fixtures.builders import fixed_ctx, locked_experiment
+from tests.fixtures.builders import ctx_for, locked_experiment
 
 
 def _correction_item(report: dict) -> dict:
@@ -38,7 +38,7 @@ def test_fence_report_fails_correction_item_when_render_fence_refuses(tmp_path):
     """A chain carrying a prior official render under a DIFFERENT multi-arm
     correction policy: the render fence refuses — the checklist must show a
     failing item too, not ok/absent."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     # a prior official render recorded under a different correction policy
     events.record_findings_rendered(
@@ -61,7 +61,7 @@ def test_fence_report_fails_correction_item_when_render_fence_refuses(tmp_path):
 def test_fence_report_correction_item_ok_when_consistent(tmp_path):
     """No prior official render, and a matching prior one, both pass the item —
     exactly the cases the render fence lets through."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     spec, _, ledger = locked_experiment(tmp_path, ctx=ctx)
     assert _correction_item(official_fence_report(tmp_path))["state"] == "ok"
 

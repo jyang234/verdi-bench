@@ -11,7 +11,7 @@ from harness.grade.deterministic import (
 )
 from harness.grade.types import GradeTask
 from harness.ledger.query import find_events
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 from tests.fixtures.grade_fakes import ScriptedGradeRunner, write_workspace
 from tests.fixtures.grading import write_holdout_results
 
@@ -27,7 +27,7 @@ def _grade(tmp_path, output, *, fractional=False, task=None, container_error=Fal
     )
     ledger = tmp_path / "l.ndjson"
     outcome = grade_trial(
-        "trial-1", task or _task(), ws, ledger, fixed_ctx(),
+        "trial-1", task or _task(), ws, ledger, ctx_for(tmp_path),
         container=container, fractional=fractional,
     )
     return outcome, ledger
@@ -100,7 +100,7 @@ def test_ac5_fail_closed_malformed(tmp_path):
 def test_ac5_fail_closed_workspace_missing(tmp_path):
     container = GradingContainer(runner=ScriptedGradeRunner({"assertions": []}))
     ledger = tmp_path / "l.ndjson"
-    out = grade_trial("trial-1", _task(), tmp_path / "nonexistent", ledger, fixed_ctx(),
+    out = grade_trial("trial-1", _task(), tmp_path / "nonexistent", ledger, ctx_for(tmp_path),
                       container=container)
     assert out.graded is False
     assert find_events(ledger, "cant_grade")[0]["reason"] == REASON_WORKSPACE_MISSING
@@ -163,7 +163,7 @@ def test_grade_hostile_workspace_dir_results_fails_closed(tmp_path):
     runner = _FreshCopyRunner({"assertions": [{"id": "h1", "result": "pass"}]})
     container = GradingContainer(runner=runner)
     ledger = tmp_path / "l.ndjson"
-    outcome = grade_trial("trial-1", _task(), ws, ledger, fixed_ctx(), container=container)
+    outcome = grade_trial("trial-1", _task(), ws, ledger, ctx_for(tmp_path), container=container)
     # no crash, exactly one event, and the bad entry was removed in the copy
     assert outcome.graded is True
     assert runner.saw_stale is False
@@ -181,7 +181,7 @@ def test_completed_trials_allows_transient_regrade(tmp_path):
     from harness.ledger import events
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     events.record_grade(ledger, ctx, trial_id="graded", task_sha="s", assertions=[],
                         binary_score=True)
     events.record_cant_grade(ledger, ctx, trial_id="transient", reason="grader_unavailable")
@@ -259,7 +259,7 @@ def test_grade_trial_stamps_override_of_on_grade(tmp_path):
         runner=ScriptedGradeRunner({"assertions": [{"id": "h1", "result": "pass"}]})
     )
     ledger2 = tmp_path / "l2.ndjson"
-    grade_trial("t1", _task(), ws, ledger2, fixed_ctx(),
+    grade_trial("t1", _task(), ws, ledger2, ctx_for(tmp_path),
                 container=container, override_of="cafe" * 16)
     g = find_events(ledger2, "grade")[0]
     assert g["override_of"] == "cafe" * 16
@@ -271,7 +271,7 @@ def test_grade_trial_stamps_override_of_on_cant_grade(tmp_path):
     ws = write_workspace(tmp_path)
     container = GradingContainer(runner=ScriptedGradeRunner(container_error=True))
     ledger = tmp_path / "l.ndjson"
-    grade_trial("t1", _task(), ws, ledger, fixed_ctx(),
+    grade_trial("t1", _task(), ws, ledger, ctx_for(tmp_path),
                 container=container, override_of="beef" * 16)
     c = find_events(ledger, "cant_grade")[0]
     assert c["reason"] == REASON_CONTAINER
@@ -289,7 +289,7 @@ def test_resolve_terminal_overrides_refusals_and_hash(tmp_path):
     from harness.ledger.query import ledger_head_hash
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     events.record_grade(ledger, ctx, trial_id="graded", task_sha="s", assertions=[],
                         binary_score=True)
     events.record_cant_grade(ledger, ctx, trial_id="transient", reason="grader_unavailable")
@@ -396,7 +396,7 @@ def test_grade_ignores_forged_results_and_protects_evidence(tmp_path):
     runner = _FreshCopyRunner({"assertions": [{"id": "h1", "result": "fail"}]})
     container = GradingContainer(runner=runner)
     ledger = tmp_path / "l.ndjson"
-    grade_trial("trial-1", _task(), ws, ledger, fixed_ctx(), container=container)
+    grade_trial("trial-1", _task(), ws, ledger, ctx_for(tmp_path), container=container)
 
     # graded a *copy*, not the original workspace
     assert runner.copy_path != ws

@@ -58,12 +58,29 @@ _NATIVE_LOG = {
 }
 
 
+# The frozen EXPECTED_REPORT was authored under control-first arms: the paired
+# schedule derives from arm order, and the report's flag/gap LIST order follows
+# it. A frozen hash-chained seam pin must never float on the template's ambient
+# defaults (the starter went contender-first, ux-friction AC-7), so this
+# fixture's inputs are pinned EXPLICITLY to their historical configuration —
+# explicit inputs over invisible defaults (the D5 principle). The report embeds
+# no judge-derived content, so only the arms need pinning.
+_ARMS_CONTROL_FIRST = [
+    {"name": "control", "platform": "claude_code",
+     "model": "anthropic/claude-haiku-4-5-20251001", "payload": {}},
+    {"name": "treatment", "platform": "codex",
+     "model": "openai/gpt-4o-2024-08-06", "payload": {}},
+]
+
+
 def _rich_forensics_experiment(tmp_path: Path):
     """A locked two-arm experiment that really runs (fake engine), with a holdout
     dir and a planted hardcoded literal on the detail-bearing arm, graded WITHOUT
     a workspace commitment (a legacy chain → disclosed workspace gaps). Rich
     enough to exercise every branch of the report builder in one scan."""
-    spec, _, ledger = locked_experiment(tmp_path, repetitions=1)
+    spec, _, ledger = locked_experiment(
+        tmp_path, repetitions=1, arms=list(_ARMS_CONTROL_FIRST)
+    )
     (tmp_path / "tasks.yaml").write_text(
         yaml.safe_dump(
             {"tasks": [{"id": "task-1", "prompt": "p", "holdouts_dir": "holdouts/t1"}]}

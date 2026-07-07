@@ -44,9 +44,11 @@ def test_template_is_a_valid_spec():
     scaffold would ship a spec that `bench plan` refuses."""
     spec = ExperimentSpec.from_dict(_template_dict())
     assert len(spec.arms) >= 2
-    # date-versioned judge id (aliases are refused at plan time) — the exact
-    # retired-id class D10 called out.
-    assert spec.judge.model == "google/gemini-1.5-pro-002"
+    # date-versioned, non-alias judge id (aliases are refused at plan time). The
+    # scaffold ships the keyless fake/ deterministic judge (ux-friction D1-A) so
+    # the default path runs end to end with no key; the id is still date-versioned,
+    # the exact non-alias property D10's retired-id audit called out.
+    assert spec.judge.model == "fake/deterministic-2026-01-01"
 
 
 def test_builders_fixture_is_derived_from_the_template():

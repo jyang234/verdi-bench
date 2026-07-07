@@ -243,12 +243,12 @@ def test_materialized_experiment_locks(tmp_path):
     write_experiment_yaml(expdir / "experiment.yaml", repetitions=1)
     from harness.corpus.commit import load_task_dicts as _load
     from harness.plan.lock import lock_experiment
-    from tests.fixtures.builders import fixed_ctx
+    from tests.fixtures.builders import ctx_for
 
     outcome = lock_experiment(
         expdir / "experiment.yaml",
         expdir / "ledger.ndjson",
-        ctx=fixed_ctx(),
+        ctx=ctx_for(expdir),
         task_dicts=_load(expdir),
     )
     assert outcome.spec_sha256  # locked cleanly over the materialized tasks

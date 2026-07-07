@@ -31,7 +31,7 @@ from harness.plan.power import AssumedVariance, mde_check, simulate_clustered_pa
 from harness.schema.experiment import ExperimentSpec
 from harness.schema.judge_config import is_alias_model_id
 from tests.fixtures.builders import (
-    fixed_ctx,
+    ctx_for,
     locked_experiment,
     seed_trial_and_grade,
     valid_experiment_dict,
@@ -64,7 +64,7 @@ def test_exit_judge_preference_pooling_fixed(tmp_path):
     """AN-1: a 3-arm judge-preference design no longer feeds the same pooled
     verdicts to every comparison; each pair reports its own arm-mapped sign, and
     CANT_JUDGE/TIE are excluded (not imputed to 0)."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(
         tmp_path / "e", ctx=ctx, arms=_PREF_ARMS,
         primary_metric="judge_preference", decision_rule="delta_judge_preference > 0",
@@ -84,7 +84,7 @@ def test_exit_judge_preference_pooling_fixed(tmp_path):
 
 def test_exit_wrong_corpus_fence_fixed(tmp_path):
     """AN-2: the official fence refuses a corpus that is not the pre-registered one."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # public-mini@1.0.0
     for i in range(4):
         seed_trial_and_grade(ledger, ctx, trial_id=f"c{i}", task_id=f"task{i}", arm="control",
@@ -106,7 +106,7 @@ def test_exit_wrong_corpus_fence_fixed(tmp_path):
 def test_exit_fabricated_n_coverage_fixed(tmp_path):
     """AN-4: a continuous primary selects its CI method under a continuous null at
     the realized N — the null_model is recorded and is not a binary null at 50."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(
         tmp_path / "e", ctx=ctx, primary_metric="cost_per_task",
         decision_rule="delta_cost_per_task < 0",
@@ -147,7 +147,7 @@ def test_exit_alias_false_passes_fixed():
 
 def test_exit_script_injection_escaped(tmp_path):
     """AN-5: a <script> in an arm name is escaped in the HTML render."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     evil = "ctl<script>alert(1)</script>"
     arms = [
         {"name": evil, "platform": "claude_code",

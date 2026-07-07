@@ -33,7 +33,7 @@ from harness.grade.holdouts import (
 )
 from harness.grade.types import GradeTask
 from harness.ledger.query import find_events
-from tests.fixtures.builders import fixed_ctx, write_experiment_yaml
+from tests.fixtures.builders import ctx_for, write_experiment_yaml
 
 runner = CliRunner()
 
@@ -192,7 +192,7 @@ def test_local_executing_runner_grades_declared_holdout(tmp_path):
     ledger = tmp_path / "l.ndjson"
     grade_trial(
         "trial-le", GradeTask(id="t", task_sha="s", holdouts_dir=str(hd)),
-        ws, ledger, fixed_ctx(),
+        ws, ledger, ctx_for(tmp_path),
         container=GradingContainer(runner=LocalExecutingGradeRunner()),
     )
     g = find_events(ledger, "grade")[0]
@@ -210,7 +210,7 @@ def test_local_executing_grade_is_advisory_tier(tmp_path):
     ledger = tmp_path / "l.ndjson"
     grade_trial(
         "trial-le", GradeTask(id="t", task_sha="s", holdouts_dir=str(hd)),
-        _solution(tmp_path / "ws"), ledger, fixed_ctx(),
+        _solution(tmp_path / "ws"), ledger, ctx_for(tmp_path),
         container=GradingContainer(runner=LocalExecutingGradeRunner()),
     )
     assert _tier_summary(ledger)["advisory"] is True
@@ -225,7 +225,7 @@ def test_local_executing_runner_fails_closed_without_declared_holdout(tmp_path):
     ledger = tmp_path / "l.ndjson"
     out = grade_trial(
         "trial-le", GradeTask(id="t", task_sha="s", holdouts_dir=str(hd)),
-        _solution(tmp_path / "ws"), ledger, fixed_ctx(),
+        _solution(tmp_path / "ws"), ledger, ctx_for(tmp_path),
         container=GradingContainer(runner=LocalExecutingGradeRunner()),
     )
     assert out.graded is False
@@ -388,7 +388,7 @@ def test_sdk_inline_holdout_grades_via_local_exec(tmp_path):
     ledger = tmp_path / "l.ndjson"
     grade_trial(
         "trial-1", GradeTask(id="t1", task_sha="s", holdouts_dir=str(hd)),
-        _solution(tmp_path / "ws"), ledger, fixed_ctx(),
+        _solution(tmp_path / "ws"), ledger, ctx_for(tmp_path),
         container=GradingContainer(runner=LocalExecutingGradeRunner()),
     )
     g = find_events(ledger, "grade")[0]

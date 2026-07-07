@@ -32,7 +32,7 @@ from harness.run.trajectory import (
 )
 from harness.run.types import RunConfig, Task
 from harness.schema.experiment import Arm
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 
 CLAUDE_ARM = Arm(name="A", platform="claude_code", model="anthropic/claude-3-5-sonnet-20241022")
 CODEX_ARM = Arm(name="B", platform="codex", model="openai/gpt-4o-2024-08-06")
@@ -106,7 +106,7 @@ def test_ac1_sha_ledgered_additive(tmp_path):
     ledger = tmp_path / "ledger.ndjson"
     schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-        ledger_path=ledger, ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()),
+        ledger_path=ledger, ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()),
         cost_ceiling=100.0,
     )
     by_task = {ev["trial_record"]["task_id"]: ev for ev in find_events(ledger, "trial")}
@@ -129,7 +129,7 @@ def test_record_trial_hoists_embedded_sha(tmp_path):
     rec = _run(tmp_path, CODEX_ARM, CODEX_NATIVE)
     assert rec.trajectory_sha is not None
     ledger = tmp_path / "ledger.ndjson"
-    ev = record_trial(ledger, fixed_ctx(), trial_record=rec.model_dump(mode="json"))
+    ev = record_trial(ledger, ctx_for(tmp_path), trial_record=rec.model_dump(mode="json"))
     assert ev["trajectory_sha"] == rec.trajectory_sha
     assert "trajectory_sha" not in ev["trial_record"]
 
@@ -194,7 +194,7 @@ def test_ac2_corrupt_fails_closed(tmp_path):
     res = schedule(
         [Trial(task_id="t", arm="A", repetition=0)],
         tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-        ledger_path=ledger, ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()),
+        ledger_path=ledger, ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()),
         cost_ceiling=100.0,
     )
     assert res.records == []

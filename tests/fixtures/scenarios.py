@@ -27,7 +27,7 @@ from harness.run.engines.fake import FakeEngine
 from harness.run.heartbeat import HEARTBEAT_FILENAME
 from harness.run.interleave import schedule
 from harness.run.types import RunConfig, Task
-from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
+from tests.fixtures.builders import ctx_for, locked_experiment, seed_trial_and_grade
 
 # a claude-code native log whose message stream yields a real trajectory
 _NATIVE_LOG = {
@@ -54,7 +54,7 @@ def rich_experiment(tmp_path: Path) -> dict:
         yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "p"}, {"id": "t2", "prompt": "p"}]}),
         encoding="utf-8",
     )
-    ctx = fixed_ctx(experiment_id=tmp_path.name)
+    ctx = ctx_for(tmp_path)
     arms = {a.name: a for a in spec.arms}
     tasks = {
         tid: Task(id=tid, prompt="p", fake_behavior={"native_log": _NATIVE_LOG})
@@ -140,7 +140,7 @@ def reasoning_experiment(exp_dir: Path) -> Path:
     spec, _sp, ledger = locked_experiment(exp_dir, arms=arms_cfg, repetitions=1)
     (exp_dir / "tasks.yaml").write_text(
         yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "p"}]}), encoding="utf-8")
-    ctx = fixed_ctx(experiment_id=exp_dir.name)
+    ctx = ctx_for(exp_dir)
     arms = {a.name: a for a in spec.arms}
     native = {"verdi_log_version": 1, "telemetry": {"tokens_out": 40},
               "trajectory": [{"kind": "file_edit", "files_touched": ["solution.py"], "agent": "worker-1"}],
@@ -204,7 +204,7 @@ def linked_experiment(dirpath: Path) -> list[str]:
     arms_by_name = {a.name: a for a in spec.arms}
     order = derive_schedule(spec.seed, enumerate_trials(["t1"], list(arms_by_name), 1))
     schedule(order, tasks=tasks, arms=arms_by_name, workspace_root=dirpath / "workspaces",
-             ledger_path=ledger, ctx=fixed_ctx(experiment_id=dirpath.name),
+             ledger_path=ledger, ctx=ctx_for(dirpath),
              config=RunConfig(engine=FakeEngine()), cost_ceiling=spec.cost_ceiling.amount)
     return [ev["trial_record"]["trial_id"] for ev in find_events(ledger, "trial")]
 

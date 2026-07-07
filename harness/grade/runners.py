@@ -33,6 +33,7 @@ from .fence import (
     NONCE_ENV,
     GraderUnavailableError,
     GradingContainerError,
+    HoldoutResultsMissingError,
     HoldoutRun,
     parse_fenced_stdout,
 )
@@ -166,7 +167,11 @@ class LocalGradeRunner(GradeRunner):
         # stdout channel, and is ADVISORY (grader_name="local") by construction.
         results = Path(workspace) / HOLDOUT_RESULTS
         if not results.exists():
-            raise GradingContainerError("no holdout_results.json in workspace")
+            # A missing pre-placed INPUT on a path with no container — its own
+            # terminal reason (holdout_results_missing), never container_failure
+            # [ux-friction AC-4/F7]. grade_trial catches this before the bare
+            # GradingContainerError fallback.
+            raise HoldoutResultsMissingError("no holdout_results.json in workspace")
         try:
             return HoldoutRun(json.loads(results.read_text(encoding="utf-8")))
         except json.JSONDecodeError:

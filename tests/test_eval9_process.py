@@ -31,7 +31,7 @@ from harness.review.kappa import ReviewedItem
 from harness.schema.errors import CompositePrimaryMetricError
 from harness.schema.experiment import ExperimentSpec
 from harness.schema.metrics import PrimaryMetric
-from tests.fixtures.builders import fixed_ctx, valid_experiment_dict
+from tests.fixtures.builders import ctx_for, valid_experiment_dict
 
 
 def _rubric():
@@ -73,7 +73,7 @@ def test_ac1_ordinal_schema():
 def test_ac1_rubric_version_stamped(tmp_path):
     # every process_score event carries the rubric version
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     fp = FakeProvider([json.dumps({"scores": {d: 3 for d in r.dimension_ids}})])
     score_trial_process("t1", "clean transcript", r, ledger_path=ledger, ctx=ctx, ts="t",
@@ -90,7 +90,7 @@ def test_p4_rubric_sha_recorded_on_process_score(tmp_path):
     from harness.process.rubric import process_rubric_sha256
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     sha = process_rubric_sha256()  # the committed default v1 rubric file
     score_trial_process("t1", "clean transcript", r, ledger_path=ledger, ctx=ctx, ts="t",
@@ -124,7 +124,7 @@ def test_ac2_disclosure_required(tmp_path):
     from tests.fixtures.builders import locked_experiment, seed_trial_and_grade
     from harness.analyze.report import compute_findings
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     for i in range(3):
         seed_trial_and_grade(ledger, ctx, trial_id=f"c{i}", task_id=f"t{i}", arm="control",
@@ -162,7 +162,7 @@ def test_ac3_human_post_reveal_only(tmp_path):
     from harness.ledger.events import record_reveal
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     scores = [DimensionScore(dim_id=d.id, score=4) for d in r.dimensions]
     # before the reveal exists, human process scoring is refused
@@ -180,7 +180,7 @@ def test_ac3_human_post_reveal_only(tmp_path):
 # --- AC-4: full-or-CANT_SCORE + redaction upstream --------------------------
 def test_ac4_full_or_cant_score(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     fp = FakeProvider([json.dumps({"scores": {d: 3 for d in r.dimension_ids}})])
     # an over-context transcript fails closed to CANT_SCORE(context_overflow) with tokens
@@ -206,7 +206,7 @@ def test_ac4_provider_error_cant_score(tmp_path):
     from harness.judge.providers.base import ProviderError
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     fp = FakeProvider([ProviderError("boom")])
     ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
@@ -221,7 +221,7 @@ def test_pr9_spec_is_required(tmp_path):
     r = _rubric()
     with pytest.raises(TypeError):
         score_trial_process(
-            "t1", "clean", r, ledger_path=tmp_path / "l.ndjson", ctx=fixed_ctx(),
+            "t1", "clean", r, ledger_path=tmp_path / "l.ndjson", ctx=ctx_for(tmp_path),
             ts="t", scorer_id="judge", provider=FakeProvider(["unused"]),
             provider_model=_SPEC.judge.model,
         )
@@ -238,7 +238,7 @@ def test_provider_model_is_required_no_retired_default(tmp_path):
     with pytest.raises(TypeError, match="provider_model"):
         score_trial_process(
             "t1", "clean transcript", r, ledger_path=tmp_path / "l.ndjson",
-            ctx=fixed_ctx(), ts="t", scorer_id="judge", provider=fp, spec=_SPEC,
+            ctx=ctx_for(tmp_path), ts="t", scorer_id="judge", provider=fp, spec=_SPEC,
         )
 
 
@@ -248,7 +248,7 @@ def test_pr9_provider_context_overflow_scored_distinctly(tmp_path):
     from harness.judge.providers.base import ProviderContextOverflow
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     fp = FakeProvider([ProviderContextOverflow("too big", prompt_tokens=999999)])
     ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
@@ -263,7 +263,7 @@ def test_pr1_list_shaped_scores_fail_closed(tmp_path):
     # {"scores": [3,4,5]} (a list, not a dict) raised AttributeError past the
     # parse handler -> escape with no event. It must fail closed to one event.
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     fp = FakeProvider([json.dumps({"scores": [3, 4, 5]})])
     ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
@@ -277,7 +277,7 @@ def test_pr2_redaction_leak_fails_closed(tmp_path):
     # a surviving secret canary raised RedactionLeakError before any try -> escape.
     # It must record one process_score, all dims CANT_SCORE(redaction_leak).
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     leaky = "token AKIA" + "1234567890123456"
     ps = score_trial_process("t1", leaky, r, ledger_path=ledger, ctx=ctx, ts="t",
@@ -290,7 +290,7 @@ def test_pr2_redaction_leak_fails_closed(tmp_path):
 def test_pr3_unknown_provider_fails_closed(tmp_path):
     # get_provider ran before the try; an unknown prefix escaped with no event.
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
                              scorer_id="judge", provider_model="mystery/model-x", spec=_SPEC)
@@ -302,7 +302,7 @@ def test_pr4_judge_declared_cant_score_reason(tmp_path):
     # a judge-declared per-dimension "CANT_SCORE" (what the packet instructs) must
     # ledger reason "judge_declared", not the ad-hoc "unparsed".
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     scores = {d: 3 for d in r.dimension_ids}
     first = r.dimension_ids[0]
@@ -319,7 +319,7 @@ def test_pr4_judge_declared_cant_score_reason(tmp_path):
 def test_pr4_timeout_and_refusal_distinct_reasons(tmp_path):
     from harness.judge.providers.base import ProviderRefusal, ProviderTimeout
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     for i, (exc, reason) in enumerate([
         (ProviderTimeout("slow"), "timeout"),
@@ -362,7 +362,7 @@ def test_pr8_human_score_validates_against_rubric(tmp_path):
     from harness.ledger.events import record_reveal
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     record_reveal(ledger, ctx, verdict_event_id="cmp-1",
                   revealed={"judge_verdict_id": "j", "arm_identities": {}})
@@ -438,7 +438,7 @@ def test_ac6_exploratory_rendering(tmp_path):
     from harness.analyze.report import compute_findings, render_markdown
     from tests.fixtures.builders import locked_experiment, seed_trial_and_grade
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     for i in range(3):
         seed_trial_and_grade(ledger, ctx, trial_id=f"c{i}", task_id=f"t{i}", arm="control",
@@ -567,7 +567,7 @@ def test_p4_rubric_diagnostics_cover_union_of_ledgered_dims(tmp_path):
     from harness.ledger.events import record_process_score
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     record_process_score(ledger, ctx, process_score={
         "trial_id": "t1", "rubric_version": "custom-v2", "comparison_id": None,
         "scores": [
@@ -600,7 +600,7 @@ def test_process_score_refuses_tampered_chain(tmp_path):
     from harness.ledger.query import ChainIntegrityError
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     scores = [DimensionScore(dim_id=d.id, score=4) for d in r.dimensions]
     record_reveal(ledger, ctx, verdict_event_id="cmp-1",
@@ -625,7 +625,7 @@ def test_m_o3_missing_transcript_is_cant_score_never_fabricated(tmp_path):
     from nothing — the exact thing the CLI docstring promises never happens.
     Now: terminal CANT_SCORE(missing_transcript), one event, zero provider calls."""
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     r = _rubric()
     fp = FakeProvider([json.dumps({"scores": {d: 3 for d in r.dimension_ids}})])
     ps = score_trial_process("t1", "", r, ledger_path=ledger, ctx=ctx, ts="t",

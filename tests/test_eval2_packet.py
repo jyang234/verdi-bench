@@ -192,7 +192,7 @@ def test_ac2_arm_map_is_verdict_event_only_never_in_packet_or_render(tmp_path):
     from harness.judge.client import judge_pair
     from harness.judge.providers.fake import FakeProvider
     from harness.ledger.query import find_events
-    from tests.fixtures.builders import fixed_ctx
+    from tests.fixtures.builders import ctx_for
     from tests.fixtures.judge_fakes import make_config, verdict_json
 
     # structural: arm_map is not a channel the packet even carries.
@@ -204,7 +204,7 @@ def test_ac2_arm_map_is_verdict_event_only_never_in_packet_or_render(tmp_path):
     prov = FakeProvider([verdict_json("1"), verdict_json("2")])
     ledger = tmp_path / "l.ndjson"
     v = judge_pair(
-        make_packet(), make_config(), ledger, fixed_ctx(), ts="t0",
+        make_packet(), make_config(), ledger, ctx_for(tmp_path), ts="t0",
         provider=prov, arm_map=arm_map,
     )
     assert prov.calls, "provider was never called — the pin would be vacuous"

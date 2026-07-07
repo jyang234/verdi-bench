@@ -20,8 +20,8 @@ from harness.sdk import Experiment, Task, write_holdout_results
 def test_northstar_fake_engine_ab(tmp_path):
     exp = (
         Experiment("mini-ab", seed=1234, cost_ceiling_usd=10.0)
-        .arm("control", model="anthropic/claude-haiku-4-5-20251001", platform="claude_code")
         .arm("treatment", model="openai/gpt-4o-2024-08-06", platform="codex")
+        .arm("control", model="anthropic/claude-haiku-4-5-20251001", platform="claude_code")
         .judge("fake/deterministic-2026-01-01")  # rubric defaults to the library template
         .task(Task("t_add", prompt="Write solution.py defining add(a, b)...",
                    fake_behavior={"native_log": {"total_cost_usd": 0.01}}))
@@ -53,9 +53,9 @@ def test_northstar_fake_engine_ab(tmp_path):
     assert verdict.chain_ok
     md = findings.read_text(encoding="utf-8")
     # the known effect is recovered exactly: arm_a is the first-added arm
-    # (control), which loses both tasks to treatment, so the contender-frame
-    # paired delta is -1.0000 — a deterministic, re-derivable point estimate.
-    assert "mean paired delta: -1.0000" in md
+    # (treatment), which beats control on both tasks, so the contender-frame
+    # paired delta is +1.0000 — a deterministic, re-derivable point estimate.
+    assert "mean paired delta: 1.0000" in md
 
     counts = Counter(e.get("event") for e in ws.view().events)
     # one event per operation: exactly one lock, one findings render; 2 tasks x
