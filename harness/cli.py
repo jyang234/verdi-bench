@@ -58,6 +58,16 @@ def plan(
     flags = ", ".join(outcome.mde["flags"]) or "none"
     typer.echo(f"locked {experiment} (sha256={outcome.spec_sha256[:12]}…)")
     typer.echo(f"  MDE={mde}  flags={flags}")
+    # [ux-friction AC-9, D4]: when the lock recorded the task-count warning flag,
+    # surface it as one plain line naming the consequence — derived from the flag
+    # (its single source of truth), at the moment the design is created rather
+    # than only at analyze time. It is a warning, never a gate: the lock succeeded
+    # and the exit code stays 0.
+    if "insufficient_tasks_for_decision" in outcome.mde["flags"]:
+        typer.echo(
+            "  a decision needs ≥2 task clusters [F-H7]; "
+            "this design will render findings but no decision"
+        )
 
 
 @app.command("verify-chain")

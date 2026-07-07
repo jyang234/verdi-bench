@@ -180,8 +180,19 @@ def run_power_gate(
     as a lock-stage ``power_gate_skipped`` flag on the report (folded into the
     event by ``to_event_payload``), so it is a ledgered decision, not a silent
     no-check — and *not* an in-place mutation of power's return.
+
+    Task-count warning [ux-friction AC-9, D4]: a paired decision clusters on
+    tasks, so a suite with fewer than two known task clusters can render findings
+    but never a *decision* (F3/F-H7). This sets a lock-stage
+    ``insufficient_tasks_for_decision`` flag on the report — a WARNING beside the
+    power flags, never a gate: the lock still succeeds. ``n_task_clusters`` is
+    ``None`` exactly when no tasks are known (an absent or empty ``tasks.yaml`` ⇒
+    ``load_task_dicts`` returns ``[]``), the honest count-of-0 case, which warrants
+    the flag as much as an explicit one-task suite does.
     """
     report = mde_check(spec, variance_source, n_tasks=n_task_clusters, **mde_kwargs)
+    insufficient_tasks = n_task_clusters is None or n_task_clusters < 2
+    report = replace(report, insufficient_tasks_for_decision=insufficient_tasks)
     ack_payload: Optional[dict] = None
     if spec.hypothesized_effect is not None:
         mde_val = report.mde

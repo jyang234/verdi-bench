@@ -564,3 +564,65 @@ def test_judge_panel_absent_or_none_leaves_every_fixture_spec_valid():
     d = valid_experiment_dict()
     d["judge"] = {**d["judge"], "panel": None}
     assert ExperimentSpec.from_dict(d).judge.panel is None
+
+
+# --- AC-9: plan warns (never gates) when the suite can't support a decision ----
+_WARNING_LINE = (
+    "a decision needs ≥2 task clusters [F-H7]; "
+    "this design will render findings but no decision"
+)
+
+
+def _plan_via_cli(expdir: Path, n_tasks: int):
+    """Scaffold experiment.yaml + its rubric + a tasks.yaml carrying ``n_tasks``
+    tasks, then lock through the real `bench plan` path (plan_experiment loads
+    tasks.yaml via corpus.commit.load_task_dicts). Returns (CliRunner result,
+    ledger path)."""
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+
+    expdir.mkdir(parents=True, exist_ok=True)
+    write_experiment_yaml(expdir / "experiment.yaml")  # also materializes the rubric
+    tasks = [{"id": f"t{i}", "prompt": "solve it"} for i in range(n_tasks)]
+    (expdir / "tasks.yaml").write_text(
+        yaml.safe_dump({"tasks": tasks}), encoding="utf-8"
+    )
+    ledger = expdir / "ledger.ndjson"
+    r = CliRunner().invoke(
+        app, ["plan", str(expdir / "experiment.yaml"), "--ledger", str(ledger)]
+    )
+    return r, ledger
+
+
+def test_single_task_plan_warns_and_flags_but_still_locks(tmp_path):
+    """[ux-friction AC-9 + D4] A one-task suite can never yield a paired decision
+    (the bootstrap clusters on tasks — F3/F-H7), and today the user learns this
+    only at analyze time. plan now WARNS at lock: an
+    `insufficient_tasks_for_decision` string joins the lock event's existing mde
+    flags vector (beside power_gate_skipped) and the CLI echoes one line naming
+    the consequence. It is never a gate — the lock succeeds and exit stays 0 (D4).
+    RED today: the one-task plan locks with NO such flag and NO warning line."""
+    r, ledger = _plan_via_cli(tmp_path / "one-task", n_tasks=1)
+
+    assert r.exit_code == 0, r.output  # D4: a warning is never a gate
+    locked = find_events(ledger, events.EXPERIMENT_LOCKED)
+    assert len(locked) == 1  # the lock still happened
+    assert "insufficient_tasks_for_decision" in locked[0]["mde"]["flags"]
+    out = r.output + (r.stderr or "")
+    assert _WARNING_LINE in out  # disclosed at the moment the design is created
+
+
+def test_two_task_plan_carries_no_insufficient_tasks_flag_or_warning(tmp_path):
+    """[ux-friction AC-9] Two or more task clusters CAN support a decision, so the
+    warning and its flag are both absent — the disclosure appears only when there
+    is friction to disclose. (A single-task exploratory design stays legitimate
+    and lockable per D4; this pins that the two-task design locks silently.)"""
+    r, ledger = _plan_via_cli(tmp_path / "two-task", n_tasks=2)
+
+    assert r.exit_code == 0, r.output
+    locked = find_events(ledger, events.EXPERIMENT_LOCKED)
+    assert len(locked) == 1
+    assert "insufficient_tasks_for_decision" not in locked[0]["mde"]["flags"]
+    out = r.output + (r.stderr or "")
+    assert "a decision needs" not in out  # no warning line, not even paraphrased
