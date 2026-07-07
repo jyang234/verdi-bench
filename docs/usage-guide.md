@@ -274,7 +274,7 @@ Field-by-field, including the rules the schema will hold you to:
 | `judge.orders` | `both` (order-debiased, recommended) or `single`. |
 | `judge.escalation` | Optional `{kappa_threshold: 0.6, min_human_verdicts: 20}` — the calibration gate. |
 | `judge.token_ceiling` | Optional int `> 0`. Pre-registered cap on **total judge tokens** for the run; when reached, judging stops with a typed `judge_stopped_token_ceiling` event (control-reuse judging draws on the same cap, §12). Absent → unlimited. |
-| `judge.panel` | Accepted by the schema as a **v2 placeholder, currently inert** — no judging path reads it. Leave it unset; it still changes your spec hash. |
+| `judge.panel` | A **v2 placeholder, not implemented in v1** — kept in the schema as a breadcrumb but **refused when set**: a spec that sets it fails validation with a typed error naming the field and the fix. Leave it unset. |
 | `seed` | Integer. Seeds the paired interleave and every bootstrap. |
 | `cost_ceiling` | **Required.** `{amount > 0, currency}` (`currency` defaults to `USD`). Hitting it stops the run and refuses new trials. |
 

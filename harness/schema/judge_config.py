@@ -14,7 +14,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .errors import AliasJudgeIdError
+from .errors import AliasJudgeIdError, JudgePanelUnsupportedError
 
 # An id segment counts as "explicitly versioned" only if it carries a date or a
 # long numeric build stamp. JD-6: a bare dotted version (``1.5``, ``4.1``) names a
@@ -91,5 +91,20 @@ class JudgeConfig(BaseModel):
                 f"judge.model {v!r} is not a fully-versioned id "
                 "(expected '<provider>/<versioned-id>', e.g. "
                 "'google/gemini-1.5-pro-002'); alias ids are rejected at plan time"
+            )
+        return v
+
+    @field_validator("panel")
+    @classmethod
+    def _refuse_panel(cls, v: Optional[dict]) -> Optional[dict]:
+        # F9/D3: panel is a v2 breadcrumb that no judging path reads. Accepting it
+        # silently changes the locked spec hash while doing nothing — the exact
+        # silent no-op extra="forbid" exists to prevent. Refuse a SET panel with a
+        # named error, before a lock is ever written; the default None stays valid
+        # and the field itself remains in the schema as the v2 breadcrumb.
+        if v is not None:
+            raise JudgePanelUnsupportedError(
+                "judge.panel is a v2 placeholder not implemented in v1; "
+                "remove judge.panel from the spec"
             )
         return v

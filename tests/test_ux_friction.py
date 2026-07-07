@@ -16,7 +16,13 @@ from harness.ledger.query import find_events
 from harness.plan.api import plan_experiment
 from harness.plan.lock import AlreadyLockedError, lock_experiment
 from harness.status.aggregate import compute_status
-from tests.fixtures.builders import ctx_for, fixed_ctx, locked_experiment, write_experiment_yaml
+from tests.fixtures.builders import (
+    ctx_for,
+    fixed_ctx,
+    locked_experiment,
+    valid_experiment_dict,
+    write_experiment_yaml,
+)
 
 # small sim params keep the plan/lock power check fast in tests
 _TWO_TASKS = {"tasks": [{"id": "t1", "prompt": "p"}, {"id": "t2", "prompt": "p"}]}
@@ -518,3 +524,43 @@ def test_judge_summary_line_terse_when_all_substantive():
         verdicts=5, cant_judge=0,
     )
     assert _judge_summary_line(outcome) == "judged 5 comparison(s)"
+
+
+# --- AC-8: judge.panel is refused when set (v2 breadcrumb, D3) -----------------
+def test_judge_panel_set_is_refused_with_named_typed_error():
+    """[ux-friction AC-8] judge.panel is a v2 placeholder read by nothing (F9):
+    setting it silently changes the spec hash and does nothing else — the exact
+    silent no-op extra='forbid' exists to prevent. It must be refused at spec
+    load with a typed SpecError that names the field and the fix, before a lock
+    is ever written (before spend). RED today: the panel-set spec VALIDATES,
+    returning a spec whose judge.panel is the ignored dict."""
+    from harness.schema.errors import JudgePanelUnsupportedError, SpecError
+    from harness.schema.experiment import ExperimentSpec
+
+    spec_dict = valid_experiment_dict()
+    spec_dict["judge"] = {**spec_dict["judge"], "panel": {"size": 3}}
+    with pytest.raises(JudgePanelUnsupportedError) as exc:
+        ExperimentSpec.from_dict(spec_dict)
+    # the schema boundary surfaces the TYPED error, never a raw pydantic
+    # ValidationError (mirrors how AliasJudgeIdError flows through from_dict).
+    assert isinstance(exc.value, SpecError)
+    msg = str(exc.value)
+    assert "judge.panel" in msg  # names the field
+    assert "v2" in msg  # says it is a v2 placeholder not implemented in v1
+    assert "remove judge.panel from the spec" in msg  # names the fix
+
+
+def test_judge_panel_absent_or_none_leaves_every_fixture_spec_valid():
+    """[ux-friction AC-8] The refusal is scoped to a SET panel: the field stays in
+    the schema as the v2 breadcrumb (D3) and default None is untouched. A fixture
+    spec that omits panel validates unchanged, and an explicit panel=None (the
+    default, spelled out) stays valid too — no green path regresses."""
+    from harness.schema.experiment import ExperimentSpec
+
+    # the canonical starter/template fixture omits panel: still valid, panel None
+    spec = ExperimentSpec.from_dict(valid_experiment_dict())
+    assert spec.judge.panel is None
+    # explicit None is the default written out — still valid, still None
+    d = valid_experiment_dict()
+    d["judge"] = {**d["judge"], "panel": None}
+    assert ExperimentSpec.from_dict(d).judge.panel is None
