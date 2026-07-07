@@ -43,7 +43,19 @@ def _ok(*args):
 def test_phase4_exit_pipeline_through_bench_verbs(tmp_path):
     expdir = tmp_path / "exp"
     expdir.mkdir()
-    write_experiment_yaml(expdir / "experiment.yaml", judge=dict(_FAKE_JUDGE), repetitions=1)
+    # Arms pinned EXPLICITLY control-first — this pipeline test's premise (the
+    # control-passes injection below, the blinded response-map draw, the
+    # judge/human kappa alignment) froze under that order and is indifferent to
+    # which arm the template now declares first [ux-friction AC-7]; explicit
+    # inputs over invisible defaults (the D5 principle).
+    arms_control_first = [
+        {"name": "control", "platform": "claude_code",
+         "model": "anthropic/claude-haiku-4-5-20251001", "payload": {}},
+        {"name": "treatment", "platform": "codex",
+         "model": "openai/gpt-4o-2024-08-06", "payload": {}},
+    ]
+    write_experiment_yaml(expdir / "experiment.yaml", judge=dict(_FAKE_JUDGE),
+                          repetitions=1, arms=arms_control_first)
     (expdir / "rubric.md").write_text("Judge on correctness.", encoding="utf-8")
     (expdir / "tasks.yaml").write_text(
         yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "solve it", "task_class": "refactor"}]}),

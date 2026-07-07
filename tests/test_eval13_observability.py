@@ -238,7 +238,7 @@ def test_ac3_status_snapshot_from_fixture_ledger(tmp_path):
 
     st = snap["stages"]
     assert st["lock"]["locked"] is True and st["lock"]["seed"] == 1234
-    assert st["spec"]["arms"] == ["control", "treatment"]
+    assert st["spec"]["arms"] == ["treatment", "control"]  # template lock order
     assert st["spec"]["repetitions"] == 3
     assert st["spec_error"] is None
     # 2 tasks × 2 arms × 3 reps, via run's own enumeration

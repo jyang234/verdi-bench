@@ -131,7 +131,7 @@ def test_ac5_flags_render_beside_comparison(tmp_path):
     official = render_markdown(findings, ledger, "official", corpus_manifest=_full_corpus())
     exploratory = render_markdown(findings, ledger, "exploratory")
     for render in (official, exploratory):
-        comparison_at = render.index("Comparison: control vs treatment")
+        comparison_at = render.index("Comparison: treatment vs control")  # lock order
         flag_at = render.index("forensic flag [holdout_tamper]: trial c-0-0")
         next_heading = render.index("Confounds", comparison_at)
         # the flag sits inside the comparison block, before the next section
@@ -229,9 +229,13 @@ def _run_scan_experiment(tmp_path, *, tamper=False, absent_trajectory=False,
         }
     behavior = {} if absent_trajectory else {"native_log": native}
     tasks = {"task0": Task(id="task0", prompt="p", fake_behavior=behavior)}
+    # the planted native log is claude-code format (`messages`), so select the
+    # claude_code-platform arm by PLATFORM — intent-exact and arm-order-proof,
+    # never by position (arms[0] flipped when the template went contender-first).
+    control_arm = next(a for a in spec.arms if a.platform == "claude_code")
     res = schedule(
-        [Trial(task_id="task0", arm="control", repetition=0)],
-        tasks=tasks, arms={"control": spec.arms[0]}, workspace_root=tmp_path / "ws",
+        [Trial(task_id="task0", arm=control_arm.name, repetition=0)],
+        tasks=tasks, arms={control_arm.name: control_arm}, workspace_root=tmp_path / "ws",
         ledger_path=ledger, ctx=ctx, config=RunConfig(engine=FakeEngine()),
         cost_ceiling=100.0,
     )

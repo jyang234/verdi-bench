@@ -26,11 +26,25 @@ _FAKE_JUDGE = {
 }
 
 
+# Arms pinned EXPLICITLY control-first: the review flow's Response↔arm frame and
+# the judge's A/B follow spec arm order, and these tests' expectations (A=control)
+# froze under that order — indifferent to which arm the starter template now
+# declares first [ux-friction AC-7]; explicit inputs over invisible defaults
+# (the D5 principle).
+_ARMS_CONTROL_FIRST = [
+    {"name": "control", "platform": "claude_code",
+     "model": "anthropic/claude-haiku-4-5-20251001", "payload": {}},
+    {"name": "treatment", "platform": "codex",
+     "model": "openai/gpt-4o-2024-08-06", "payload": {}},
+]
+
+
 def _setup_judged(expdir, *, tasks=None):
     """Plan, seed two arms' graded trials, and judge — leaving verdicts to build
     a review packet from."""
     expdir.mkdir(parents=True, exist_ok=True)
-    write_experiment_yaml(expdir / "experiment.yaml", judge=dict(_FAKE_JUDGE))
+    write_experiment_yaml(expdir / "experiment.yaml", judge=dict(_FAKE_JUDGE),
+                          arms=list(_ARMS_CONTROL_FIRST))
     (expdir / "rubric.md").write_text("Judge on correctness.", encoding="utf-8")
     tasks = tasks or [{"id": "t1", "prompt": "solve it", "task_class": "refactor"}]
     (expdir / "tasks.yaml").write_text(yaml.safe_dump({"tasks": tasks}), encoding="utf-8")

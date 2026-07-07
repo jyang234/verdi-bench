@@ -1,8 +1,12 @@
-# Starter tasks.yaml — one placeholder task to edit [refactor 02 §2].
+# Starter tasks.yaml — two placeholder tasks to edit [refactor 02 §2].
 #
-# Each entry needs a unique `id` and the agent-visible `prompt`. For the real
-# grade path, add a `holdouts_dir:` per task (a read-only tree the grader mounts)
-# and, for the fake engine, a `fake_behavior:` block. See docs/usage-guide.md §2.3.
+# Each entry needs a unique `id` and the agent-visible `prompt`. Two tasks ship by
+# default because a paired decision needs at least two task clusters — a one-task
+# suite renders findings but no decision. For the real grade path, add a
+# `holdouts_dir:` per task (a read-only tree the grader mounts) and, for the fake
+# engine, a `fake_behavior:` block. See docs/usage-guide.md §2.3.
 tasks:
   - id: task-1
     prompt: describe the work
+  - id: task-2
+    prompt: describe another task

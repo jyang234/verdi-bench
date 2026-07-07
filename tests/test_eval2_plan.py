@@ -20,8 +20,12 @@ def test_ac5_alias_model_id_rejected():
 
 
 def test_ac5_versioned_judge_accepted():
+    # the builder-default (template) judge id is fully versioned and accepted —
+    # the acceptance companion to the alias rejection above. The validator is
+    # provider-neutral [EVAL-2-D001], so the keyless fake/ id (ux-friction D1-A)
+    # exercises the same version-specificity path the google id did.
     spec = ExperimentSpec.from_dict(valid_experiment_dict())
-    assert spec.judge.model == "google/gemini-1.5-pro-002"
+    assert spec.judge.model == "fake/deterministic-2026-01-01"
 
 
 def test_ac1_multiple_judges_same_packet(tmp_path):

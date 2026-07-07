@@ -591,9 +591,10 @@ def test_an8_decides_positive_gated_on_detection(tmp_path):
     noisy positive delta."""
     ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # rule delta_holdout_pass_rate > 0
-    # control slightly ahead on one noisy task ⇒ observed delta > 0 but CI includes 0
-    populate_paired_trials(ledger, ctx, control_pass=lambda i: i in {0, 1, 2, 4},
-              treatment_pass=lambda i: i in {0, 2, 4})
+    # treatment (the first-declared arm, so delta = treatment − control) slightly
+    # ahead on one noisy task ⇒ observed delta > 0 but CI includes 0
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: i in {0, 2, 4},
+              treatment_pass=lambda i: i in {0, 1, 2, 4})
     f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     cf = f.comparisons[0]
     detected = cf.stats["ci_low"] > 0 or cf.stats["ci_high"] < 0
@@ -604,10 +605,11 @@ def test_an8_decides_positive_gated_on_detection(tmp_path):
 
 
 def test_an8_decides_positive_true_when_detected(tmp_path):
-    """AN-8: a clean detected effect that meets the rule still decides positive."""
+    """AN-8: a clean detected effect that meets the rule still decides positive.
+    The winner is the FIRST-declared arm (treatment), so delta = +1 meets `> 0`."""
     ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: False, treatment_pass=lambda i: True)
     f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     cf = f.comparisons[0]
     assert cf.decision["detected"] is True

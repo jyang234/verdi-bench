@@ -27,6 +27,17 @@ _FAKE_JUDGE = {
     "model": "fake/deterministic-2026-01-01", "rubric": "rubrics/code-task-v1.md",
     "orders": "both", "temperature": 0,
 }
+# Arms pinned EXPLICITLY control-first: the reuse comparisons' A/B frame follows
+# spec arm order, and this suite's premise ("reused control is A, the fresh
+# contender is B") froze under that order — indifferent to which arm the starter
+# template now declares first [ux-friction AC-7]; explicit inputs over invisible
+# defaults (the D5 principle).
+_ARMS_CONTROL_FIRST = [
+    {"name": "control", "platform": "claude_code",
+     "model": "anthropic/claude-haiku-4-5-20251001", "payload": {}},
+    {"name": "treatment", "platform": "codex",
+     "model": "openai/gpt-4o-2024-08-06", "payload": {}},
+]
 
 
 def _lay_tasks(exp_dir):
@@ -39,7 +50,7 @@ def _lay_tasks(exp_dir):
 
 def _source(tmp_path):
     src = tmp_path / "src-exp"
-    locked_experiment(src, judge=_FAKE_JUDGE)
+    locked_experiment(src, judge=_FAKE_JUDGE, arms=list(_ARMS_CONTROL_FIRST))
     _lay_tasks(src)
     ledger = src / "ledger.ndjson"
     ctx = fixed_ctx(experiment_id="src-exp")
@@ -52,7 +63,9 @@ def _target_with_reuse(tmp_path):
     """Import a control bundle into a fresh target, then seed the contender."""
     bundle = build_bundle(_source(tmp_path), "control")
     tgt = tmp_path / "tgt-exp"
-    spec, _sp, ledger = locked_experiment(tgt, judge=_FAKE_JUDGE)
+    spec, _sp, ledger = locked_experiment(
+        tgt, judge=_FAKE_JUDGE, arms=list(_ARMS_CONTROL_FIRST)
+    )
     _lay_tasks(tgt)
     settings = load_run_settings(tgt, spec=spec)
     import_bundle(tgt, bundle, fixed_ctx(experiment_id="tgt-exp"),

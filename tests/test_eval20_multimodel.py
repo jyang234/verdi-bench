@@ -47,6 +47,17 @@ def _spec(**overrides) -> ExperimentSpec:
     return ExperimentSpec.from_dict(valid_experiment_dict(**overrides))
 
 
+# AC-3's premise IS a google judge (the aux-model overlap is against the judge's
+# vendor) — pinned EXPLICITLY here rather than leaked from the template default,
+# which is the keyless fake/ judge since ux-friction D1-A.
+_GOOGLE_JUDGE = {
+    "model": "google/gemini-1.5-pro-002",
+    "rubric": "rubrics/code-task-v1.md",
+    "orders": "both",
+    "temperature": 0,
+}
+
+
 # --- AC-1: schema -----------------------------------------------------------
 def test_ac1_aux_models_schema():
     spec = _spec(arms=AUX_ARMS)
@@ -121,7 +132,7 @@ def test_ac3_overlap_over_vendor_union():
             aux_models=[{"model": "google/gemma-2-27b-20240627"}],
         ),
     ]
-    overlap = judge_vendor_overlap(_spec(arms=arms))
+    overlap = judge_vendor_overlap(_spec(arms=arms, judge=dict(_GOOGLE_JUDGE)))
     assert overlap.overlap is True
     assert overlap.overlapping_arms == ["treatment"]
     assert overlap.overlapping_models == {
@@ -129,7 +140,9 @@ def test_ac3_overlap_over_vendor_union():
     }
     assert overlap.arm_vendor_sets["treatment"] == ["google", "meta"]
     # no aux overlap ⇒ clean, exactly as before
-    assert judge_vendor_overlap(_spec(arms=AUX_ARMS)).overlap is False
+    assert judge_vendor_overlap(
+        _spec(arms=AUX_ARMS, judge=dict(_GOOGLE_JUDGE))
+    ).overlap is False
 
 
 # --- AC-4: contamination honesty --------------------------------------------

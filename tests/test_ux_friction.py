@@ -661,3 +661,75 @@ def test_init_closing_message_teaches_injection_and_status(tmp_path):
     # the whole message stays compact — under the ~6-line budget (AC-10 vc)
     lines = [ln for ln in out.splitlines() if ln.strip()]
     assert len(lines) <= 6, out
+
+
+# --- AC-7: a contender-first, keyless, two-task scaffold that reaches a decision -
+def test_starter_template_declares_contender_first_two_tasks_fake_judge():
+    """[ux-friction AC-7 + D1-A] The single-source starter template now (a) declares
+    the CONTENDER arm FIRST, so the scaffolded `delta_holdout_pass_rate > 0` rule
+    pre-registers 'treatment beats control' (the paired delta is arms[0] − arms[1])
+    instead of F2's backwards 'control beats treatment'; (b) ships the keyless
+    fake/deterministic-2026-01-01 judge (D1-A) so the default path runs end to end
+    with no API key; and (c) starter-tasks.yaml ships TWO placeholder tasks so the
+    scaffold can reach a decision (n_tasks=1 renders 'no decision possible', F3).
+    RED today: arms[0] is control, the judge is google/gemini-1.5-pro-002, and the
+    tasks template ships a single task."""
+    from harness.sdk import starter_spec_text, starter_tasks_text
+
+    spec = yaml.safe_load(starter_spec_text())
+    assert [a["name"] for a in spec["arms"]] == ["treatment", "control"]  # contender first (F2)
+    assert spec["judge"]["model"] == "fake/deterministic-2026-01-01"  # keyless judge (D1-A)
+
+    tasks = yaml.safe_load(starter_tasks_text())["tasks"]
+    assert len(tasks) == 2  # two clusters: enough to support a decision (F3)
+    assert len({t["id"] for t in tasks}) == 2  # unique ids
+
+
+def test_scaffold_zero_edit_pipeline_reaches_met_decision(tmp_path):
+    """[ux-friction AC-7] The north star: `bench init` scaffolds the starter files,
+    and WITHOUT editing a single file — no judge swap, no second task, no API key,
+    no Docker — the keyless fake pipeline (plan → run → inject treatment-passes →
+    grade --runner local → judge → analyze --exploratory) reaches a MET decision on
+    a verifying chain.
+
+    The scaffold declares the contender first, so injecting treatment-passes drives
+    the paired delta (arms[0] − arms[1]) to +1.0, and the `> 0` rule reads MET. The
+    experiment is scaffolded via the exact bytes `bench init` writes (the init CLI,
+    not a hand-rolled spec), then driven through the public ExperimentWorkspace SDK.
+
+    RED today: the scaffold's google/gemini-1.5-pro-002 judge lands every comparison
+    as a keyless CANT_JUDGE (F4), its single task renders 'no decision possible' (F3),
+    and control-first makes the injected treatment win read as delta -1.0000 (F2) —
+    never a MET verdict on the untouched scaffold."""
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+    from harness.sdk import ExperimentWorkspace
+
+    expdir = tmp_path / "quickstart"
+    r = CliRunner().invoke(app, ["init", str(expdir)])  # the exact bytes bench init writes
+    assert r.exit_code == 0, r.output
+
+    ws = ExperimentWorkspace(expdir)
+    ws.plan(actor="tester")
+    ws.run(engine="fake")  # 2 arms × 2 tasks × 3 reps = 12 trials
+    ws.inject_holdout_results(lambda arm, task: arm == "treatment")  # contender wins
+    ws.grade(runner="local")
+    judged = ws.judge()
+    findings = ws.analyze(exploratory=True)
+
+    md = findings.read_text(encoding="utf-8")
+    assert "mean paired delta: 1.0000" in md  # RED today: -1.0000 (control-first, F2)
+    # the pre-registered rule reads MET (RED today: 'no decision possible', F3)
+    assert "Decision rule `delta_holdout_pass_rate > 0` ⇒ MET." in md
+
+    # the fake judge ran keyless: every comparison a substantive verdict, zero CANT_JUDGE
+    assert judged.cant_judge == 0  # RED today: keyless google → all CANT_JUDGE (F4)
+    verdicts = find_events(ws.ledger, events.JUDGE_VERDICT)
+    assert verdicts and all(v["verdict"]["winner"] != "CANT_JUDGE" for v in verdicts)
+
+    # two tasks: the lock carries no insufficient-tasks warning flag (RED: present, F3)
+    lock = find_events(ws.ledger, events.EXPERIMENT_LOCKED)[0]
+    assert "insufficient_tasks_for_decision" not in lock["mde"]["flags"]
+
+    assert ws.verify_chain().chain_ok  # the whole zero-edit run verifies end to end
