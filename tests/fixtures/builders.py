@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 
 from harness.ledger.events import EventContext
+from harness.ledger.identity import derive_experiment_id
 
 _counter = itertools.count()
 
@@ -26,11 +27,12 @@ def locked_experiment(dirpath, *, ctx=None, **overrides):
     sweep. Shared across EVAL-6/7/9 fixtures.
 
     The default lock ctx stamps ``experiment_id`` = the experiment directory's
-    name, mirroring the real-world invariant plan enforces (a lock's id is the
-    resolved experiment directory [ux-friction AC-1]) so a locked fixture models
-    a real ledger — status/scan headers title from that id [ux-friction AC-5].
+    name via :func:`ctx_for` (the production derivation seam), mirroring the
+    real-world invariant plan enforces (a lock's id is the resolved experiment
+    directory [ux-friction AC-1]) so a locked fixture models a real ledger —
+    status/scan headers title from that id [ux-friction AC-5].
     ``rich_experiment`` already runs/grades under this same dir-name ctx; the
-    default now keeps the lock event consistent with it.
+    default keeps the lock event consistent with it.
     """
     from harness.plan.lock import lock_experiment
 
@@ -38,7 +40,7 @@ def locked_experiment(dirpath, *, ctx=None, **overrides):
     dirpath.mkdir(parents=True, exist_ok=True)
     spec_path = write_experiment_yaml(dirpath / "experiment.yaml", **overrides)
     ledger = dirpath / "ledger.ndjson"
-    ctx = ctx or fixed_ctx(experiment_id=dirpath.name)
+    ctx = ctx or ctx_for(dirpath)
     outcome = lock_experiment(
         spec_path, ledger, ctx=ctx, n_sim=8, n_boot=40, deltas=[0.2, 0.4]
     )
@@ -98,14 +100,29 @@ def seed_trial_and_grade(
     return rec
 
 
-def fixed_ctx(experiment_id: str = "exp-fixture", actor: str = "tester") -> EventContext:
-    """Deterministic EventContext: monotonic synthetic timestamps, fixed actor."""
+def fixed_ctx(experiment_id: str, actor: str = "tester") -> EventContext:
+    """Deterministic EventContext: monotonic synthetic timestamps, fixed actor.
+
+    ``experiment_id`` is required — the old invisible ``"exp-fixture"`` default
+    is gone (human ruling 2026-07-07, Batch A review): a test with a real
+    experiment directory derives the id from it via :func:`ctx_for`; a
+    filesystem-less unit test passes a visible literal at the call site.
+    """
     seq = itertools.count()
 
     def clock() -> str:
         return f"2026-01-01T00:00:{next(seq):02d}+00:00"
 
     return EventContext(experiment_id=experiment_id, actor=actor, clock=clock)
+
+
+def ctx_for(dirpath, actor: str = "tester") -> EventContext:
+    """Deterministic ctx whose ``experiment_id`` derives from ``dirpath`` through
+    the SAME production seam every stage uses
+    (:func:`harness.ledger.identity.derive_experiment_id`), so a fixture ledger
+    models the dir-derived identity invariant plan enforces [ux-friction AC-1].
+    """
+    return fixed_ctx(derive_experiment_id(dirpath), actor=actor)
 
 
 def valid_experiment_dict(**overrides) -> dict:

@@ -8,7 +8,7 @@ from harness.run.engines.fake import FakeEngine
 from harness.run.interleave import schedule
 from harness.run.types import ProxyConfig, RunConfig, Task
 from harness.schema.experiment import Arm
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 
 
 def _arm():
@@ -22,7 +22,7 @@ def test_ac7_ceiling_stops_and_ledgered(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=r) for r in range(6)]
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-        ledger_path=tmp_path / "l.ndjson", ctx=fixed_ctx(),
+        ledger_path=tmp_path / "l.ndjson", ctx=ctx_for(tmp_path),
         config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
     )
     assert res.stopped_cost_ceiling is True
@@ -40,7 +40,7 @@ def test_ac7_no_stop_under_ceiling(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=r) for r in range(3)]
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-        ledger_path=tmp_path / "l.ndjson", ctx=fixed_ctx(),
+        ledger_path=tmp_path / "l.ndjson", ctx=ctx_for(tmp_path),
         config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
     )
     assert res.stopped_cost_ceiling is False
@@ -57,7 +57,7 @@ def test_ac7_rerun_resumes_not_duplicates(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=r) for r in range(3)]
     kw = dict(
         tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
+        ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
     )
     first = schedule(order, **kw)
     assert len(first.records) == 3
@@ -75,7 +75,7 @@ def test_ac7_rerun_after_ceiling_stop_adds_no_trials(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=r) for r in range(6)]
     kw = dict(
         tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+        ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
     )
     first = schedule(order, **kw)
     ran = len(first.records)
@@ -95,7 +95,7 @@ def test_ac7_proxy_cost_enforced_when_telemetry_null(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=r) for r in range(4)]
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+        ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
     )
     assert res.stopped_cost_ceiling is True  # 0.60 * 2 >= 1.00 stops before all 4
     assert len(res.records) < 4
@@ -115,7 +115,7 @@ def test_ac7_underreported_cost_enforced_via_proxy_max(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=r) for r in range(4)]
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+        ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
     )
     assert res.stopped_cost_ceiling is True  # 0.60 * 2 >= 1.00 stops before all 4
     assert len(res.records) < 4
@@ -136,7 +136,7 @@ def test_ac7_honest_self_report_still_drives_enforcement(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=r) for r in range(4)]
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+        ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
     )
     assert res.stopped_cost_ceiling is True  # 0.60 * 2 >= 1.00
     assert len(res.records) == 2
@@ -153,7 +153,7 @@ def test_ac7_underreported_spend_survives_resume(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=r) for r in range(4)]
     kw = dict(
         tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+        ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
     )
     first = schedule(order, **kw)
     assert first.stopped_cost_ceiling is True
@@ -173,7 +173,7 @@ def test_ac7_proxy_cost_delta_recorded_when_both_figures_exist(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=0)]
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-        ledger_path=tmp_path / "l.ndjson", ctx=fixed_ctx(),
+        ledger_path=tmp_path / "l.ndjson", ctx=ctx_for(tmp_path),
         config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
     )
     rec = res.records[0]
@@ -193,7 +193,7 @@ def test_ac7_infra_failed_attempts_count_against_ceiling(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=0)]
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+        ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
         max_infra_retries=10,
     )
     # with a fresh per-attempt guard the loop would retry 11x (burning 4.40);
@@ -212,7 +212,7 @@ def test_ac7_resume_after_infra_ceiling_stop_recovers_spend(tmp_path):
     ledger = tmp_path / "l.ndjson"
     order = [Trial(task_id="t", arm="A", repetition=0)]
     kw = dict(tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-              ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+              ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
               max_infra_retries=10)
     r1 = schedule(order, **kw)
     assert r1.stopped_cost_ceiling is True
@@ -232,7 +232,7 @@ def test_ac4_resume_executed_order_is_complete(tmp_path):
     ledger = tmp_path / "l.ndjson"
     order = [Trial(task_id="t", arm="A", repetition=r) for r in range(6)]
     base = dict(tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-                ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()))
+                ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()))
     schedule(order, cost_ceiling=1.00, **base)          # stops after ~3
     schedule(order, cost_ceiling=100.0, **base)         # resume the remainder
     last = latest_event(ledger, "executed_order")
@@ -262,7 +262,7 @@ def test_m8_post_engine_failure_spend_counts_against_ceiling(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=r) for r in range(3)]
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
+        ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()), cost_ceiling=1.00,
         max_infra_retries=0,
     )
     failures = find_events(ledger, "trial_infra_failed")
@@ -293,7 +293,7 @@ def test_m8_infra_spend_survives_resume(tmp_path):
     # seeded spend already exceeds it and the next attempt is REFUSED before it
     # runs — proving the infra cost was made durable across resume.
     kw = dict(tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-              ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=0.50,
+              ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()), cost_ceiling=0.50,
               max_infra_retries=0)
     schedule([Trial(task_id="t", arm="A", repetition=0)], **kw)  # spends 0.60, fails
     assert find_events(ledger, "trial_infra_failed")[0].get("cost") == 0.60
@@ -320,7 +320,7 @@ def test_m9_dead_proxy_aborts_run_fast(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=r) for r in range(5)]
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine(), proxy=proxy), cost_ceiling=100.0,
+        ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine(), proxy=proxy), cost_ceiling=100.0,
         max_infra_retries=3,
     )
     assert res.aborted_proxy_unavailable is True

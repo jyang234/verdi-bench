@@ -226,7 +226,7 @@ def test_infra_failed_trial_keeps_engine_reason(tmp_path):
 
 # --- AC-5: the exploratory consumer ----------------------------------------------
 def _seed_workflow_experiment(tmp_path):
-    from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
+    from tests.fixtures.builders import ctx_for, locked_experiment, seed_trial_and_grade
 
     arms = [
         {"name": "control", "platform": "claude_code",
@@ -235,7 +235,7 @@ def _seed_workflow_experiment(tmp_path):
          "aux_models": [{"model": DECLARED[1]}], "payload": {}},
     ]
     spec, _, ledger = locked_experiment(tmp_path, arms=arms)
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     seed_trial_and_grade(
         ledger, ctx, trial_id="t-1", task_id="task-1", arm="control",
         telemetry={"cost": 0.2},
@@ -269,7 +269,7 @@ def test_ac5_attributing_arm_with_null_telemetry_still_renders(tmp_path):
     from types import SimpleNamespace
 
     from harness.analyze.report import _secondary_lines, _secondary_metrics
-    from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
+    from tests.fixtures.builders import ctx_for, locked_experiment, seed_trial_and_grade
 
     arms = [
         {"name": "control", "platform": "claude_code",
@@ -278,7 +278,7 @@ def test_ac5_attributing_arm_with_null_telemetry_still_renders(tmp_path):
          "aux_models": [{"model": DECLARED[1]}], "payload": {}},
     ]
     spec, _, ledger = locked_experiment(tmp_path, arms=arms)
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     seed_trial_and_grade(
         ledger, ctx, trial_id="t-1", task_id="task-1", arm="control",
         telemetry={"cost": 0.2},
@@ -305,11 +305,11 @@ def test_ac5_unattributed_never_zero(tmp_path):
     lines = "\n".join(_secondary_lines(SimpleNamespace(secondary_metrics=sm)))
     assert "control: models=not attributed" in lines
     # and a ledger with NO attribution at all renders no attribution lines
-    from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
+    from tests.fixtures.builders import ctx_for, locked_experiment, seed_trial_and_grade
 
     spec2, _, ledger2 = locked_experiment(tmp_path / "plain")
     seed_trial_and_grade(
-        ledger2, fixed_ctx(), trial_id="t-9", task_id="task-1", arm="control"
+        ledger2, ctx_for(tmp_path / "plain"), trial_id="t-9", task_id="task-1", arm="control"
     )
     sm2 = _secondary_metrics(ledger2, spec2)
     lines2 = "\n".join(_secondary_lines(SimpleNamespace(secondary_metrics=sm2)))

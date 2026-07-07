@@ -13,12 +13,12 @@ from __future__ import annotations
 from harness.analyze.findings.render_html import render_html
 from harness.analyze.findings.sections import exploratory_sections
 from harness.analyze.report import compute_findings
-from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
+from tests.fixtures.builders import ctx_for, locked_experiment, seed_trial_and_grade
 from tests.fixtures.scenarios import FAST_STATS, populate_paired_trials
 
 
 def _paired_findings(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     return compute_findings(ledger, spec, spec.seed, **FAST_STATS), ledger
@@ -26,7 +26,7 @@ def _paired_findings(tmp_path):
 
 def _evil_findings(tmp_path):
     """A findings doc whose control arm NAME carries markup — the AN-5 case."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     evil = "ctl<script>alert(1)</script>"
     arms = [
         {"name": evil, "platform": "claude_code",

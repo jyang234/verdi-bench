@@ -29,7 +29,7 @@ from harness.run.interleave import schedule
 from harness.run.types import RunConfig, Task
 from harness.schema.experiment import Arm
 from harness.status.aggregate import compute_status
-from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
+from tests.fixtures.builders import ctx_for, locked_experiment, seed_trial_and_grade
 from tests.fixtures.servers import serve_experiment
 from tests.fixtures.tamper import reencode_line
 
@@ -56,7 +56,7 @@ def _run(tmp_path, order, *, arms, tasks, engine=None, cost_ceiling=100.0):
         arms=arms,
         workspace_root=tmp_path / "ws",
         ledger_path=tmp_path / "l.ndjson",
-        ctx=fixed_ctx(),
+        ctx=ctx_for(tmp_path),
         config=RunConfig(engine=engine or FakeEngine()),
         cost_ceiling=cost_ceiling,
         heartbeat_path=hb_path,
@@ -72,7 +72,7 @@ def test_ac1_heartbeat_lifecycle_and_clock_seam(tmp_path):
 
     doc = read_heartbeat(hb_path)
     assert doc["schema_version"] == 1
-    assert doc["experiment_id"] == "exp-fixture"
+    assert doc["experiment_id"] == tmp_path.name  # the dir-derived id ctx_for stamps
     assert doc["state"] == "finished"
     assert doc["in_flight"] is None
     # counters agree with the ledger's own trial events [AC-1]
@@ -193,7 +193,7 @@ def _fixture_experiment(tmp_path) -> Path:
         yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "p"}, {"id": "t2", "prompt": "p"}]}),
         encoding="utf-8",
     )
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     seed_trial_and_grade(
         ledger, ctx, trial_id="tr1", task_id="t1", arm="control", telemetry={"cost": 1.5}
     )

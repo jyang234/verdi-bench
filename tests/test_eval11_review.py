@@ -30,7 +30,7 @@ from harness.ledger.events import (
     record_forensics_report,
 )
 from harness.review.kappa import ReviewedItem
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 
 _CANARIES = ["control", "treatment", "claude-code", "openai/gpt-4o-2024-08-06"]
 
@@ -229,7 +229,7 @@ def test_spotcheck_kappa_pairs_llm_and_human(tmp_path):
     """LLM suspicions from the latest forensics_report pair with ledgered human
     spot-checks into the kappa table; CANT_REVIEW trials cannot calibrate."""
     ledger = tmp_path / "ledger.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     reviews = {
         "t-1": {"trial_id": "t-1",
                 "suspicions": {d: (d == "holdout_tamper") for d in DETECTOR_IDS},

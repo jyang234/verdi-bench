@@ -144,8 +144,8 @@ def test_phase4_exit_admission_reachable_and_schedulable_gate(tmp_path):
     _ok("corpus", "approve", str(expdir), "--candidate-id", "cand-x", "--task-sha", sha,
         "--signing-key", str(keyfile), "--approver", "alice")
     from harness.ledger.events import record_flake_baseline
-    from tests.fixtures.builders import fixed_ctx
-    record_flake_baseline(ledger, fixed_ctx(), task_id="cand-x", task_sha=sha, k=5,
+    from tests.fixtures.builders import ctx_for
+    record_flake_baseline(ledger, ctx_for(expdir), task_id="cand-x", task_sha=sha, k=5,
                           results=[{"run": i, "passed": True} for i in range(5)], verdict="clean")
     _ok("corpus", "admit", str(expdir), "--manifest", str(mpath), "--candidate-id", "cand-x",
         "--task-sha", sha, "--baseline-ref", "b1", "--keyring", str(keyring))

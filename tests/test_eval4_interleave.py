@@ -8,7 +8,7 @@ from harness.run.engines.fake import FakeEngine
 from harness.run.interleave import schedule
 from harness.run.types import RunConfig, Task
 from harness.schema.experiment import Arm
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 
 
 def _setup():
@@ -33,7 +33,7 @@ def test_ac4_interleave_from_seed(tmp_path):
     order = _order(1234, tasks, arms)
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-        ledger_path=tmp_path / "l.ndjson", ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()),
+        ledger_path=tmp_path / "l.ndjson", ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()),
         cost_ceiling=100.0,
     )
     # the executed order matches the derived order (all completed, no failures)
@@ -55,7 +55,7 @@ def test_rn15_unknown_arm_fails_cell_closed(tmp_path):
     ledger = tmp_path / "l.ndjson"
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-        ledger_path=ledger, ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()),
+        ledger_path=ledger, ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()),
         cost_ceiling=100.0,
     )
     failed = find_events(ledger, "trial_infra_failed")
@@ -83,7 +83,7 @@ def test_rn16_unwritable_secret_fails_cell_closed(tmp_path, monkeypatch):
     ledger = tmp_path / "l.ndjson"
     schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-        ledger_path=ledger, ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()),
+        ledger_path=ledger, ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()),
         cost_ceiling=100.0,
     )
     failed = find_events(ledger, "trial_infra_failed")
@@ -96,7 +96,7 @@ def test_ac4_executed_order_ledgered(tmp_path):
     order = _order(42, tasks, arms)
     schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-        ledger_path=tmp_path / "l.ndjson", ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()),
+        ledger_path=tmp_path / "l.ndjson", ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()),
         cost_ceiling=100.0,
     )
     evs = find_events(tmp_path / "l.ndjson", "executed_order")

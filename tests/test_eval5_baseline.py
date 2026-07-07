@@ -24,7 +24,7 @@ from harness.plan.interleave import Trial
 from harness.run.interleave import QuarantinedTaskError, schedule
 from harness.run.types import RunConfig, Task
 from harness.schema.experiment import Arm
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 from tests.fixtures.grade_fakes import SeqGradeRunner, write_workspace
 
 PASS = {"assertions": [{"id": "h1", "result": "pass"}]}
@@ -35,7 +35,7 @@ def test_ac2_baseline_clean(tmp_path):
     ws = write_workspace(tmp_path)
     ledger = tmp_path / "l.ndjson"
     container = GradingContainer(runner=SeqGradeRunner([PASS] * 5))
-    out = flake_baseline(GradeTask(id="t1", task_sha="sha1"), ledger, fixed_ctx(),
+    out = flake_baseline(GradeTask(id="t1", task_sha="sha1"), ledger, ctx_for(tmp_path),
                          workspace=ws, container=container)
     assert out.verdict == "clean"
     ev = find_events(ledger, "flake_baseline")[0]
@@ -48,7 +48,7 @@ def test_ac2_baseline_quarantine(tmp_path):
     ledger = tmp_path / "l.ndjson"
     # one of five runs fails ⇒ quarantined (zero tolerance)
     container = GradingContainer(runner=SeqGradeRunner([PASS, PASS, FAIL, PASS, PASS]))
-    out = flake_baseline(GradeTask(id="t1", task_sha="sha1"), ledger, fixed_ctx(),
+    out = flake_baseline(GradeTask(id="t1", task_sha="sha1"), ledger, ctx_for(tmp_path),
                          workspace=ws, container=container)
     assert out.verdict == "quarantined"
     # keyed by the task VERSION, not the bare id [D-2]
@@ -62,7 +62,7 @@ def test_gr13_baseline_runs_carry_assertion_vector(tmp_path):
     ws = write_workspace(tmp_path)
     ledger = tmp_path / "l.ndjson"
     container = GradingContainer(runner=SeqGradeRunner([PASS] * 5))
-    flake_baseline(GradeTask(id="t1", task_sha="sha1"), ledger, fixed_ctx(),
+    flake_baseline(GradeTask(id="t1", task_sha="sha1"), ledger, ctx_for(tmp_path),
                    workspace=ws, container=container)
     ev = find_events(ledger, "flake_baseline")[0]
     for r in ev["results"]:
@@ -76,7 +76,7 @@ def test_ac2_baseline_requires_k_at_least_one(tmp_path):
     ledger = tmp_path / "l.ndjson"
     ws = write_workspace(tmp_path)
     with pytest.raises(ValueError):
-        flake_baseline(GradeTask(id="t1", task_sha="sha1"), ledger, fixed_ctx(),
+        flake_baseline(GradeTask(id="t1", task_sha="sha1"), ledger, ctx_for(tmp_path),
                        workspace=ws, container=GradingContainer(runner=SeqGradeRunner([PASS])), k=0)
     assert find_events(ledger, "flake_baseline") == []
 
@@ -97,7 +97,7 @@ def test_ac2_transient_grader_outage_is_not_flake(tmp_path):
     ledger = tmp_path / "l.ndjson"
     ws = write_workspace(tmp_path)
     with pytest.raises(GraderUnavailableError):
-        flake_baseline(GradeTask(id="t1", task_sha="sha1"), ledger, fixed_ctx(),
+        flake_baseline(GradeTask(id="t1", task_sha="sha1"), ledger, ctx_for(tmp_path),
                        workspace=ws, container=GradingContainer(runner=DeadRunner()))
     assert find_events(ledger, "flake_baseline") == []  # no verdict ledgered
     assert load_quarantine(ledger) == set()  # NOT quarantined by the outage
@@ -121,7 +121,7 @@ def test_ac2_baseline_runs_are_independent_copies(tmp_path):
 
     ledger = tmp_path / "l.ndjson"
     ws = write_workspace(tmp_path)
-    flake_baseline(GradeTask(id="t1", task_sha="s"), ledger, fixed_ctx(),
+    flake_baseline(GradeTask(id="t1", task_sha="s"), ledger, ctx_for(tmp_path),
                    workspace=ws, container=GradingContainer(runner=RecordingRunner()), k=3)
     assert len(seen) == 3 and len(set(seen)) == 3  # three distinct fresh copies
     assert ws not in seen  # never the original (evidence untouched)
@@ -134,14 +134,14 @@ def test_ac2_quarantined_version_unschedulable(tmp_path):
 
     ledger = tmp_path / "l.ndjson"
     ws = write_workspace(tmp_path)
-    flake_baseline(GradeTask(id="t1", task_sha="bad"), ledger, fixed_ctx(),
+    flake_baseline(GradeTask(id="t1", task_sha="bad"), ledger, ctx_for(tmp_path),
                    workspace=ws, container=GradingContainer(runner=SeqGradeRunner([FAIL] * 5)))
     quarantined = load_quarantine(ledger)  # {("t1", "bad")}
 
     arms = {"A": Arm(name="A", platform="claude_code", model="anthropic/claude-3-5-sonnet-20241022")}
     order = [Trial(task_id="t1", arm="A", repetition=0)]
     common = dict(
-        arms=arms, workspace_root=tmp_path / "run", ctx=fixed_ctx(),
+        arms=arms, workspace_root=tmp_path / "run", ctx=ctx_for(tmp_path),
         config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
         quarantined_tasks=quarantined,
     )
@@ -160,9 +160,9 @@ def test_ac2_quarantine_is_version_scoped(tmp_path):
     flaky version's quarantine — the old version stays quarantined."""
     ledger = tmp_path / "l.ndjson"
     ws = write_workspace(tmp_path)
-    flake_baseline(GradeTask(id="t1", task_sha="old"), ledger, fixed_ctx(),
+    flake_baseline(GradeTask(id="t1", task_sha="old"), ledger, ctx_for(tmp_path),
                    workspace=ws, container=GradingContainer(runner=SeqGradeRunner([FAIL] * 5)))
-    flake_baseline(GradeTask(id="t1", task_sha="new"), ledger, fixed_ctx(),
+    flake_baseline(GradeTask(id="t1", task_sha="new"), ledger, ctx_for(tmp_path),
                    workspace=ws, container=GradingContainer(runner=SeqGradeRunner([PASS] * 5)))
     # only the old version is quarantined; the new clean version is schedulable
     assert load_quarantine(ledger) == {("t1", "old")}
@@ -173,10 +173,10 @@ def test_ac2_same_version_clean_rebaseline_clears(tmp_path):
     version's quarantine (latest-event-wins within a version)."""
     ledger = tmp_path / "l.ndjson"
     ws = write_workspace(tmp_path)
-    flake_baseline(GradeTask(id="t1", task_sha="v1"), ledger, fixed_ctx(),
+    flake_baseline(GradeTask(id="t1", task_sha="v1"), ledger, ctx_for(tmp_path),
                    workspace=ws, container=GradingContainer(runner=SeqGradeRunner([FAIL] * 5)))
     assert load_quarantine(ledger) == {("t1", "v1")}
-    flake_baseline(GradeTask(id="t1", task_sha="v1"), ledger, fixed_ctx(),
+    flake_baseline(GradeTask(id="t1", task_sha="v1"), ledger, ctx_for(tmp_path),
                    workspace=ws, container=GradingContainer(runner=SeqGradeRunner([PASS] * 5)))
     assert load_quarantine(ledger) == set()  # same version, now clean
 
@@ -195,7 +195,7 @@ def test_ac2_quarantine_refused_preflight_no_partial_run(tmp_path):
     ledger = tmp_path / "run.ndjson"
     with pytest.raises(QuarantinedTaskError):
         schedule(order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-                 ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
+                 ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
                  quarantined_tasks={("bad", "flaky")})
     assert find_events(ledger, "trial") == []  # nothing ran — pre-flight halt
 
@@ -210,7 +210,7 @@ def test_ac2_quarantine_without_task_sha_fails_loud(tmp_path):
     order = [Trial(task_id="t1", arm="A", repetition=0)]
     with pytest.raises(QuarantinedTaskError):
         schedule(order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-                 ledger_path=tmp_path / "run.ndjson", ctx=fixed_ctx(),
+                 ledger_path=tmp_path / "run.ndjson", ctx=ctx_for(tmp_path),
                  config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
                  quarantined_tasks={("t1", "some-sha")})
 

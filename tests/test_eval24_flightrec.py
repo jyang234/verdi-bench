@@ -27,7 +27,7 @@ from harness.run.flight_recorder import (
     persist_flight_recorder,
     resolve_flight_recorder,
 )
-from tests.fixtures.builders import fixed_ctx, locked_experiment
+from tests.fixtures.builders import ctx_for, locked_experiment
 
 
 # --- AC-1: additive-sha capture, redaction door, honest absence ----------------
@@ -54,7 +54,7 @@ def test_ac1_sha_hoisted_additive_absent_when_none(tmp_path):
     record), and a reasoning-less trial simply lacks the field — no reader may
     require it, the trajectory_sha precedent."""
     ledger = tmp_path / "ledger.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     with_fr = TrialRecord.assemble(
         trial_id="t1", task_id="a", arm="control", repetition=0, outcome=Outcome.completed,
         telemetry=Telemetry(), provenance=Provenance(), flight_recorder_sha="abc123",
@@ -199,7 +199,7 @@ def test_ac5_recorder_operator_tier_exploratory(tmp_path):
     (tmp_path / "tasks.yaml").write_text(
         yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "p"}]}), encoding="utf-8"
     )
-    ctx = fixed_ctx(experiment_id=tmp_path.name)
+    ctx = ctx_for(tmp_path)
     arms = {a.name: a for a in spec.arms}
     native = {"verdi_log_version": 1, "telemetry": {"tokens_out": 40},
               "trajectory": [{"kind": "file_edit", "files_touched": ["solution.py"], "agent": "worker-1"}],

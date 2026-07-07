@@ -12,7 +12,7 @@ from harness.contamination.canary import derive_canary, hash_canary
 from harness.corpus.registry import CorpusManifest, TaskEntry
 from harness.ledger.events import record_curation_approval, record_flake_baseline
 from harness.ledger.query import find_events
-from tests.fixtures.builders import fixed_ctx, write_experiment_yaml
+from tests.fixtures.builders import ctx_for, write_experiment_yaml
 
 _CURATOR_PRIV = "57d8af6bd26b16f1f558e600e70fb2a40a5349804c864b3513b12015dc155556"
 _CURATOR_PUB = "54f22d27057d6c0a336de3f2d0df143546f31591c169072e90f18f651e49e148"
@@ -46,7 +46,7 @@ def _admit_fixture(tmp_path, candidate: dict):
     exp = tmp_path / "exp"
     exp.mkdir()
     ledger = exp / "ledger.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(exp)
     sig, pk = sign_approval(
         _CURATOR_PRIV, candidate_id="cand-1", task_sha=sha, approver="curator"
     )
@@ -151,7 +151,7 @@ def _probe_experiment(tmp_path, *, tasks):
     # PRA-M2: contamination now gates on the lock like every other stage, so the
     # fixture must pre-register the experiment (lock is the genesis event).
     lock_experiment(
-        spec_path, exp / "ledger.ndjson", ctx=fixed_ctx(), n_sim=8, n_boot=40,
+        spec_path, exp / "ledger.ndjson", ctx=ctx_for(exp), n_sim=8, n_boot=40,
         deltas=[0.2, 0.4],
     )
     return exp
@@ -207,7 +207,7 @@ def test_probe_cli_scan_flags_and_echoes_alarm(tmp_path):
         provenance=Provenance(image_digest="d"), flags=Flags(),
         artifacts_path=str(ws / "artifacts"),
     )
-    record_trial(exp / "ledger.ndjson", fixed_ctx(), trial_record=rec.model_dump(mode="json"))
+    record_trial(exp / "ledger.ndjson", ctx_for(exp), trial_record=rec.model_dump(mode="json"))
 
     result = CliRunner().invoke(
         app, ["contamination", "probe", str(exp), "--actor", "tester"],

@@ -9,29 +9,29 @@ import pytest
 
 from harness.ledger import events
 from harness.ledger.events import EventContext, UnregisteredEventError
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 
 
 def test_ac6_event_provenance_stamped(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ev = events.record_chain_anchor(ledger, fixed_ctx(), head_hash="a" * 64, height=0)
+    ev = events.record_chain_anchor(ledger, ctx_for(tmp_path), head_hash="a" * 64, height=0)
     prov = ev["provenance"]
     assert set(prov) == {"ts", "actor", "experiment_id", "instrument"}
     assert set(prov["instrument"]) == {"version", "git_sha"}
     assert prov["actor"] == "tester"
-    assert prov["experiment_id"] == "exp-fixture"
+    assert prov["experiment_id"] == tmp_path.name  # the dir-derived id ctx_for stamps
 
 
 def test_ac6_unregistered_event_rejected(tmp_path):
     ledger = tmp_path / "l.ndjson"
     with pytest.raises(UnregisteredEventError):
-        events.emit(ledger, fixed_ctx(), "totally_made_up", {"x": 1})
+        events.emit(ledger, ctx_for(tmp_path), "totally_made_up", {"x": 1})
 
 
 def test_ac6_reserved_keys_rejected(tmp_path):
     ledger = tmp_path / "l.ndjson"
     with pytest.raises(ValueError):
-        events.emit(ledger, fixed_ctx(), events.CHAIN_ANCHOR, {"provenance": {}})
+        events.emit(ledger, ctx_for(tmp_path), events.CHAIN_ANCHOR, {"provenance": {}})
 
 
 def test_ac6_all_shipped_events_registered():

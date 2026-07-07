@@ -22,12 +22,12 @@ from harness.analyze.findings.render_html import render_html
 from harness.analyze.findings.render_md import render_markdown
 from harness.analyze.findings.sections import exploratory_sections, official_sections
 from harness.analyze.report import compute_findings
-from tests.fixtures.builders import fixed_ctx, locked_experiment
+from tests.fixtures.builders import ctx_for, locked_experiment
 from tests.fixtures.scenarios import FAST_STATS, populate_paired_trials
 
 
 def _paired_findings(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     populate_paired_trials(
         ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True

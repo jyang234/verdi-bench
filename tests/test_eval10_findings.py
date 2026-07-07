@@ -15,7 +15,7 @@ from harness.contamination.canary import derive_canary
 from harness.contamination.probe import ProbeTask, run_memory_probe
 from harness.corpus.registry import CorpusManifest, TaskEntry
 from harness.judge.providers.fake import FakeProvider
-from tests.fixtures.builders import fixed_ctx, locked_experiment
+from tests.fixtures.builders import ctx_for, locked_experiment
 from tests.fixtures.scenarios import (
     FAST_STATS,
     full_corpus,
@@ -69,7 +69,7 @@ def test_ac5_asymmetry_refuses_official(tmp_path):
     """One arm's model flagged on a task, the other clean by date: the fence
     refuses the official render, naming the task and the arms; exploratory
     still renders, watermarked, with the summary [AC-5, D001]."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _official_ready(tmp_path, ctx, arms=_ARMS_WITH_CUTOFFS)
     canary = derive_canary(_SHA)
     # control regurgitates the canary; treatment does not
@@ -99,7 +99,7 @@ def test_ac5_asymmetry_refuses_official(tmp_path):
 def test_ac5_symmetric_discloses(tmp_path):
     """Symmetric flagged contamination degrades both arms equally: the official
     render succeeds and carries the disclosed, non-suppressing caveat [AC-5]."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _official_ready(tmp_path, ctx, arms=_ARMS_WITH_CUTOFFS)
     canary = derive_canary(_SHA)
     # BOTH arms regurgitate — symmetric
@@ -121,7 +121,7 @@ def test_all_unknown_renders_official_with_caveat(tmp_path):
     """No dates, no probe: every (task, arm) pair is honestly unknown — the
     official render succeeds with the unknown caveat, never upgraded to clean
     [AC-5, AC-1 constraint]."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _official_ready(tmp_path, ctx)  # default arms: no cutoffs
     seed_matching_selfcheck(ledger, ctx, spec)
     # eval6's undated corpus: no created_at anywhere
@@ -139,7 +139,7 @@ def test_cant_probe_status_disclosed(tmp_path):
     a failed probe never silently reads as a clean one."""
     from harness.judge.providers.base import ProviderTimeout
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, ledger = _official_ready(tmp_path, ctx)
     run_memory_probe(
         ledger, ctx, arms=spec.arms,

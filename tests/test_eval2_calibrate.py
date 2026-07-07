@@ -28,7 +28,7 @@ def _gate(pairs, **kw):
 from harness.judge.schema import Verdict, VerdictProvenance, Winner
 from harness.ledger import events
 from harness.ledger.events import append_human_verdict, append_verdict
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 
 
 def _prov():
@@ -85,7 +85,7 @@ def test_ac7_insufficient_human_verdicts():
 
 def test_ac7_human_verdict_closes(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     jv = Verdict(winner=Winner.A, reason="x",
                  evidence=[{"kind": "diff", "response": "A", "hunk": "h"}],
                  provenance=_prov(), comparison_id="cmp-1")
@@ -101,7 +101,7 @@ def test_ac7_human_verdict_closes(tmp_path):
 
 def test_ac7_pairs_from_ledger(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     for i in range(3):
         jv = Verdict(winner=Winner.A, reason="x",
                      evidence=[{"kind": "diff", "response": "A", "hunk": "h"}],

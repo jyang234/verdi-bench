@@ -14,7 +14,7 @@ import pytest
 from harness.schema.errors import AuxModelError, ModelHostsError
 from harness.schema.experiment import Arm, ExperimentSpec
 from tests.fixtures.builders import (
-    fixed_ctx,
+    ctx_for,
     locked_experiment,
     valid_experiment_dict,
 )
@@ -163,7 +163,7 @@ def test_ac4_missing_aux_cutoff_is_unknown(tmp_path):
         dict(AUX_ARMS[1], aux_models=[{"model": "qwen/qwen2-coder-32b-20240901"}]),
     ]  # aux carries NO cutoff; primary does
     spec, _, ledger = locked_experiment(tmp_path, arms=arms)
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     seed_trial_and_grade(ledger, ctx, trial_id="t-1", task_id="task-1", arm="control")
     seed_trial_and_grade(ledger, ctx, trial_id="t-2", task_id="task-1", arm="treatment")
     manifest = SimpleNamespace(

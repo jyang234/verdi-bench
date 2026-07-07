@@ -10,7 +10,7 @@ from harness.judge.providers.base import ProviderTimeout
 from harness.judge.providers.fake import FakeProvider
 from harness.ledger.query import read_events
 from harness.schema.experiment import Arm
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 
 _SHA_A = "a1" * 32
 _SHA_B = "b2" * 32
@@ -51,7 +51,7 @@ def test_ac3_regurgitation_flags(tmp_path):
         "pass  # arm 2 control",                               # arm 2 CONTROL
     ])
     event = run_memory_probe(
-        ledger, fixed_ctx(),
+        ledger, ctx_for(tmp_path),
         arms=[_arm("control"), _arm("treatment", model="openai/gpt-4o-2024-08-06")],
         tasks=tasks, provider=provider,
     )
@@ -91,7 +91,7 @@ def test_ac3_cant_probe_fail_closed(tmp_path):
         ProviderTimeout("upstream deadline exceeded"),
     ])
     event = run_memory_probe(
-        ledger, fixed_ctx(),
+        ledger, ctx_for(tmp_path),
         arms=[_arm("control"), _arm("treatment", model="openai/gpt-4o-2024-08-06")],
         tasks=tasks, provider=provider,
         overlap_flags={"control": {"t1": True}},
@@ -112,7 +112,7 @@ def test_probe_unprobed_is_honest(tmp_path):
     absence of measurement is never reported as negative."""
     ledger = tmp_path / "ledger.ndjson"
     event = run_memory_probe(
-        ledger, fixed_ctx(),
+        ledger, ctx_for(tmp_path),
         arms=[_arm()],
         tasks=[ProbeTask(task_id="t-bare", task_sha=_SHA_A, prompt="do a thing")],
         provider=FakeProvider([]),  # no call must happen
@@ -131,7 +131,7 @@ def test_probe_merges_overlap_channel(tmp_path):
         ProbeTask(task_id="t2", task_sha=_SHA_B, prompt="p2"),
     ]
     event = run_memory_probe(
-        ledger, fixed_ctx(), arms=[_arm()], tasks=tasks,
+        ledger, ctx_for(tmp_path), arms=[_arm()], tasks=tasks,
         provider=FakeProvider([]),
         overlap_flags={"control": {"t1": True, "t2": False}},
     )
@@ -141,12 +141,12 @@ def test_probe_merges_overlap_channel(tmp_path):
 
     with pytest.raises(ProbeError, match="unknown arm"):
         run_memory_probe(
-            ledger, fixed_ctx(), arms=[_arm()], tasks=tasks,
+            ledger, ctx_for(tmp_path), arms=[_arm()], tasks=tasks,
             provider=FakeProvider([]), overlap_flags={"ghost": {}},
         )
     with pytest.raises(ProbeError, match="unknown task"):
         run_memory_probe(
-            ledger, fixed_ctx(), arms=[_arm()], tasks=tasks,
+            ledger, ctx_for(tmp_path), arms=[_arm()], tasks=tasks,
             provider=FakeProvider([]), overlap_flags={"control": {"ghost": True}},
         )
 
@@ -160,7 +160,7 @@ def test_probe_strips_embedded_marker_before_sending(tmp_path):
     canary = derive_canary(_SHA_A)
     provider = FakeProvider(["nothing memorized"])
     event = run_memory_probe(
-        ledger, fixed_ctx(), arms=[_arm()],
+        ledger, ctx_for(tmp_path), arms=[_arm()],
         tasks=[ProbeTask(task_id="t1", task_sha=_SHA_A,
                          prompt=f"Fix the parser.\n\n<!-- {canary} -->\n",
                          has_canary=True)],
@@ -180,7 +180,7 @@ def test_probe_refuses_canary_in_prompt(tmp_path):
     ledger = tmp_path / "ledger.ndjson"
     canary = derive_canary(_SHA_A)
     event = run_memory_probe(
-        ledger, fixed_ctx(), arms=[_arm()],
+        ledger, ctx_for(tmp_path), arms=[_arm()],
         tasks=[ProbeTask(task_id="t1", task_sha=_SHA_A,
                          prompt=f"the token {canary} appears verbatim",
                          has_canary=True)],
@@ -198,7 +198,7 @@ def test_probe_refuses_unfingerprintable_oracle(tmp_path):
     [review fix]."""
     ledger = tmp_path / "ledger.ndjson"
     event = run_memory_probe(
-        ledger, fixed_ctx(), arms=[_arm()],
+        ledger, ctx_for(tmp_path), arms=[_arm()],
         tasks=[ProbeTask(task_id="t1", task_sha=_SHA_A,
                          prompt="p", oracle="too short to compare")],
         provider=FakeProvider([]),  # must never be called
@@ -215,7 +215,7 @@ def test_m_c3_alarms_and_skipped_ride_the_probe_event(tmp_path):
     from scanned-clean downstream. They now ride the ledgered probe event."""
     ledger = tmp_path / "l.ndjson"
     ev = run_memory_probe(
-        ledger, fixed_ctx(),
+        ledger, ctx_for(tmp_path),
         arms=[_arm("control")],
         tasks=[ProbeTask(task_id="t1", task_sha=_SHA_A, prompt="p", has_canary=True)],
         provider=FakeProvider(["nothing memorized"]),
@@ -241,13 +241,13 @@ def test_m_c3_official_fence_refuses_on_insulation_alarm(tmp_path):
 
     ledger = tmp_path / "l.ndjson"
     run_memory_probe(  # legacy-shaped probe: no alarms field -> no refusal
-        ledger, fixed_ctx(), arms=[_arm("control")],
+        ledger, ctx_for(tmp_path), arms=[_arm("control")],
         tasks=[ProbeTask(task_id="t1", task_sha=_SHA_A, prompt="p", has_canary=True)],
         provider=FakeProvider(["nothing"]),
     )
     _assert_no_insulation_alarms(ledger)
     run_memory_probe(
-        ledger, fixed_ctx(), arms=[_arm("control")],
+        ledger, ctx_for(tmp_path), arms=[_arm("control")],
         tasks=[ProbeTask(task_id="t1", task_sha=_SHA_A, prompt="p", has_canary=True)],
         provider=FakeProvider(["nothing"]),
         alarms=["trial x: holdout leak"],
@@ -332,7 +332,7 @@ def test_m_c2_formulaic_continuation_no_longer_flags(tmp_path):
     # a clean strong continuer: reconstructs formulaic code in BOTH conditions
     provider = FakeProvider([true_remainder, control_remainder])
     event = run_memory_probe(
-        ledger, fixed_ctx(), arms=[_arm("control")],
+        ledger, ctx_for(tmp_path), arms=[_arm("control")],
         tasks=[ProbeTask(task_id="t-oracle", task_sha=_SHA_B,
                          prompt="p", oracle=_ORACLE)],
         provider=provider,

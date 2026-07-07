@@ -17,7 +17,7 @@ from harness.corpus.admit import admit_task
 from harness.corpus.registry import CorpusManifest, TaskEntry
 from harness.ledger.events import record_curation_approval, record_flake_baseline
 from harness.review.scrub import ScrubError, assert_identity_free, blind_scrub
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 
 # The fixed test curator keypair the eval8 admission fixtures use [D-P4-3].
 _CURATOR_PRIV = "57d8af6bd26b16f1f558e600e70fb2a40a5349804c864b3513b12015dc155556"
@@ -44,7 +44,7 @@ def _admissible(tmp_path, sha=_SHA):
     from harness.corpus.attestation import sign_approval
 
     ledger = tmp_path / "ledger.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     sig, pk = sign_approval(
         _CURATOR_PRIV, candidate_id="cand-1", task_sha=sha, approver="curator"
     )
@@ -169,7 +169,7 @@ def test_ac2_canary_never_published(tmp_path):
     arm = Arm(name="control", platform="claude_code",
               model="anthropic/claude-3-5-sonnet-20241022")
     run_memory_probe(
-        probe_ledger, fixed_ctx(),
+        probe_ledger, ctx_for(tmp_path),
         arms=[arm],
         tasks=[ProbeTask(task_id="cand-1", task_sha=sha_c,
                          prompt="Fix the bug in foo().", has_canary=True)],

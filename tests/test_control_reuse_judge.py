@@ -17,7 +17,7 @@ from harness.ledger import events
 from harness.ledger.query import find_events
 from harness.run.reuse import build_bundle, import_bundle
 from harness.run.settings import load_run_settings
-from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
+from tests.fixtures.builders import ctx_for, fixed_ctx, locked_experiment, seed_trial_and_grade
 
 _TASKS = {"tasks": [
     {"id": "t1", "prompt": "p1", "holdouts_dir": "holdouts/t1"},
@@ -113,4 +113,4 @@ def test_no_reuse_is_a_noop(tmp_path):
     spec, _sp, ledger = locked_experiment(tgt, judge=_FAKE_JUDGE)
     _lay_tasks(tgt)
     assert comparisons_from_reuse(ledger, tgt, spec) == []
-    assert judge_reused(ledger, tgt, spec, fixed_ctx(), **_judge_inputs(tgt, spec)) == 0
+    assert judge_reused(ledger, tgt, spec, ctx_for(tgt), **_judge_inputs(tgt, spec)) == 0

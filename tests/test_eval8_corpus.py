@@ -25,7 +25,7 @@ from harness.corpus.registry import (
 from harness.corpus.stratify import calibration_subset
 from harness.ledger import events
 from harness.ledger.events import record_curation_approval, record_flake_baseline
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for, fixed_ctx
 
 # A fixed test curator keypair + keyring (Ed25519; deterministic signing).
 # D-P7-3: the keyring binds approver id -> public key. The default approver
@@ -230,7 +230,7 @@ def _clean_baseline(ledger, ctx, sha="s" * 64):
 def test_dp4_3_admit_requires_authorized_signature(tmp_path):
     """A valid signature by an authorized, non-miner curator admits [D-P4-3]."""
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _pending_manifest(miner="miner-bob")
     _approve(ledger, ctx, "cand-1", "s" * 64, approver="curator-alice")
     _clean_baseline(ledger, ctx)
@@ -244,7 +244,7 @@ def test_dp4_3_self_approval_refused(tmp_path):
     from harness.corpus.admit import SelfApprovalError
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _pending_manifest(miner="curator-alice")  # miner == approver below
     _approve(ledger, ctx, "cand-1", "s" * 64, approver="curator-alice")
     _clean_baseline(ledger, ctx)
@@ -260,7 +260,7 @@ def test_dp4_3_admit_refuses_unrecorded_miner(tmp_path):
     from harness.corpus.admit import SelfApprovalError
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _pending_manifest(miner=None)  # miner never recorded
     _approve(ledger, ctx, "cand-1", "s" * 64, approver="curator-alice")
     _clean_baseline(ledger, ctx)
@@ -275,7 +275,7 @@ def test_dp4_3_off_keyring_signer_refused(tmp_path):
     from harness.corpus.admit import UnauthorizedCuratorError
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _pending_manifest(miner="miner-bob")
     # signed by _OTHER_PRIV, whose public key is NOT in _KEYRING
     _approve(ledger, ctx, "cand-1", "s" * 64, approver="curator-mallory", priv=_OTHER_PRIV)
@@ -295,7 +295,7 @@ def test_co7_relabeled_self_approval_refused(tmp_path):
     from harness.corpus.attestation import sign_approval
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _pending_manifest(miner="bob")
     keyring = {"alice": _CURATOR_PUB, "bob": _OTHER_PUB}  # both authorized approvers
     # bob signs an approval LABELED approver="alice" using his OWN key (_OTHER_PRIV)
@@ -326,7 +326,7 @@ def test_dp4_3_tampered_signature_refused(tmp_path):
     from harness.corpus.attestation import sign_approval
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _pending_manifest(miner="miner-bob")
     # sign for a DIFFERENT sha, then record it against "s"*64 -> signature won't verify
     sig, pk = sign_approval(_CURATOR_PRIV, candidate_id="cand-1", task_sha="x" * 64,
@@ -341,7 +341,7 @@ def test_dp4_3_tampered_signature_refused(tmp_path):
 
 def test_ac4_curation_required(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _pending_manifest()
     # no curation_approval ⇒ refused
     with pytest.raises(CurationRequiredError):
@@ -354,7 +354,7 @@ def test_ac4_curation_required(tmp_path):
 
 def test_ac4_baseline_prereq(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _pending_manifest()
     # approved but no clean baseline ⇒ refused
     _approve(ledger, ctx, "cand-1", "s" * 64)
@@ -385,7 +385,7 @@ def test_admit_refuses_tampered_chain(tmp_path):
     from harness.ledger.query import ChainIntegrityError
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _pending_manifest()
     _approve(ledger, ctx, "cand-1", "s" * 64)
     record_flake_baseline(
@@ -412,7 +412,7 @@ def test_admit_refuses_tampered_chain(tmp_path):
 
 def test_ac4_baseline_must_be_clean(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _pending_manifest()
     _approve(ledger, ctx, "cand-1", "s" * 64)
     # a quarantined baseline is not a clean baseline
@@ -483,7 +483,7 @@ def test_co1_internal_save_into_instrument_repo_refused(tmp_path):
 
 def test_co4_admission_ledgers_task_admitted(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _pending_manifest()
     _approve(ledger, ctx, "cand-1", "s" * 64)
     record_flake_baseline(ledger, ctx, task_id="cand-1", task_sha="s" * 64, k=5,
@@ -504,7 +504,7 @@ def test_co4_calibration_run_ledgered(tmp_path):
     src = _write_dataset(tmp_path / "ds")
     manifest = import_terminal_bench(DirectorySource(src), tmp_path / "cache")
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     ledger_calibration_run(ledger, ctx, manifest, {"anchor_delta": 0.01}, kind="subset")
     ev = find_events(ledger, "calibration_run")
     assert len(ev) == 1 and ev[0]["status"] == "subset-validated"
@@ -521,7 +521,7 @@ def test_co9_subset_draw_ledgered(tmp_path):
     manifest = import_terminal_bench(DirectorySource(src), tmp_path / "cache")
     subset = calibration_subset(manifest, seed=7, target_size=3, stratum_key="category")
     ledger = tmp_path / "l.ndjson"
-    ledger_subset_draw(ledger, fixed_ctx(), manifest, subset)
+    ledger_subset_draw(ledger, ctx_for(tmp_path), manifest, subset)
     ev = find_events(ledger, "subset_draw")
     assert len(ev) == 1
     assert ev[0]["seed"] == 7 and ev[0]["task_ids"] == subset.task_ids
@@ -677,7 +677,7 @@ def test_admit_with_persistence_probes_destinations_before_ledgering(tmp_path):
     if _os.geteuid() == 0:  # pragma: no cover - root ignores mode bits
         pytest.skip("os.access(W_OK) cannot be denied to root")
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _approved_baselined(ledger, ctx)
     ro = tmp_path / "ro"
     ro.mkdir()
@@ -702,7 +702,7 @@ def test_admit_with_persistence_reports_post_ledger_persist_failure(tmp_path):
     from harness.ledger.query import find_events
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     manifest = _approved_baselined(ledger, ctx)
     # The parent is writable (the pre-ledger probe passes) but manifest.save
     # hits a DIRECTORY at the manifest path — an OSError only phase 2 can see.
