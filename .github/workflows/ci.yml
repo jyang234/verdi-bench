@@ -14,7 +14,13 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Sync
-        run: uv sync --dev
+        # --extra otlp: the fast suite selects the OTLP protobuf decode unit test
+        # (test_otlp_decode.py's positive path encodes a real body via
+        # opentelemetry-proto). It is not docker-marked, so it runs here rather
+        # than on the docker job; without the extra it fails ModuleNotFoundError.
+        # The without-extra loud-failure path is still covered — its test
+        # monkeypatches opentelemetry away, so it does not rely on absence here.
+        run: uv sync --dev --extra otlp
       - name: Import-linter contracts
         run: uv run lint-imports
       - name: Fast suite (no Docker)
