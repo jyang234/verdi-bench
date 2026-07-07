@@ -63,13 +63,18 @@ test_change_register:   # tests-are-contracts: pre-approved by the human with th
 
 acceptance:
   - id: "AC-1"
-    text: "plan derives experiment_id from the RESOLVED experiment path: invoking bench plan on experiment.yaml, ./experiment.yaml, or an absolute path — from any cwd — produces the identical non-empty experiment_id (the experiment directory's real name). A resolved parent with an empty name refuses with a typed error rather than ever ledgering experiment_id=''."
-    vc: "The three invocation forms yield byte-identical provenance.experiment_id on the lock event; the cd-in form that reproduces today's '' now matches the absolute form; the refusal path names the offending path."
+    text: "Every experiment_id derivation resolves its path first, through ONE shared seam: plan (from the spec path's resolved parent) and every stage that stamps EventContext from the experiment directory — run, grade, and the shared cli_common.event_context the remaining ledgering verbs use — derive the id from the RESOLVED directory name. Invoking any ledgering verb via '.', a bare relative path, or an absolute path produces the identical non-empty experiment_id; a resolved name that is empty refuses with a typed error (naming the offending path) rather than ever ledgering ''. [Broadened at Batch A review 2026-07-07: the original plan-only scope under-delivered F1's 'every event' — bench run . / bench grade . still ledgered '' on trial/grade events.]"
+    vc: "plan's three invocation forms yield byte-identical provenance.experiment_id on the lock event; bench run . and bench grade . stamp trial/grade events with the directory's real name (today ''); a grep pins no remaining experiment_id=<path>.name construction outside the shared seam; the empty-name refusal names the path and appends nothing."
     touchpoints:
+      - "harness/ledger/ (new identity seam beside actor resolution)"
       - "harness/plan/api.py:34"
+      - "harness/run/api.py:250"
+      - "harness/grade/api.py:194"
+      - "harness/cli_common.py:60"
     tests:
       - "test_ac1_experiment_id_path_independent"
       - "test_ac1_empty_resolved_name_refused"
+      - "test_ac1_stage_events_experiment_id_resolved"
   - id: "AC-2"
     text: "GradeOutcome reports the split — scored count, cant_grade count, and per-reason counts — and the bench grade summary line discloses it whenever cant_grade > 0 (e.g. 'graded 6 trial(s): 0 scored, 6 cant_grade (holdout_results_missing ×6) — see bench status'). Exit code stays 0 (D2). The all-scored line stays terse."
     vc: "The live-run reproduction (scaffold, no injection, --runner local) fails on today's 'graded 6 trial(s)' and passes with the split; an all-scored run prints no cant_grade clause."
