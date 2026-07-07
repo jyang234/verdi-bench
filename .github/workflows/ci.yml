@@ -111,12 +111,16 @@ jobs:
         # VERDI_REQUIRE_DOCKER makes the docker fixture raise at import when the
         # daemon is absent, so the job cannot pass green by skipping every test
         # on a daemon-less runner (XC-1 residual, 7H-2).
-        # VERDI_REQUIRE_PROXY is NOT set here yet (decision P0-PROXY-CI, amended):
-        # the reference Squid config cannot emit the literal allow/deny decisions
-        # the scanner requires (documented caveat, docs/design/shakedown.md), so
-        # fail-closed today would mean a permanently red job. The guard exists
-        # (tests/fixtures/proxy.py) and gets wired here when the managed proxy
-        # ships (refactor plan 04 §1) and CI can provision it.
+        # VERDI_REQUIRE_PROXY is intentionally NOT set here (decision P0-PROXY-CI,
+        # closed): the managed metering-proxy path is fail-closed and is already
+        # covered on this job by its own docker-marked live e2e —
+        # test_e2e_managed_proxy.py stands the managed proxy up, drives an allowed
+        # and a denied host through it, and asserts the per-trial attribution. The
+        # only remaining proxy gate, test_reference_proxy_log_attributes_allow_and_deny,
+        # exercises the EXTERNAL reference-Squid deployment (deploy/metering-proxy/)
+        # that CI does not provision; VERDI_REQUIRE_PROXY is the operator-run switch
+        # that turns that test's skip into a loud failure once the reference proxy
+        # is stood up (tests/fixtures/proxy.py). Operator-run by design, not a TODO.
         env:
           VERDI_REQUIRE_DOCKER: "1"
         run: uv run pytest -m docker -q
