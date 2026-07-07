@@ -302,6 +302,101 @@ def test_full_pipeline_with_fakes_maps_block(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Toolchain provenance: the real path records which flowmap+groundwork build
+# produced the verdict, on the verdict assertion's free-text detail (NO schema
+# change) [integration plan §10 P0]. A version-probe failure degrades to
+# "unknown" and must NOT fail the grade — the verdict is already computed.
+# --------------------------------------------------------------------------- #
+
+def _fake_versioned_bin(
+    path: Path, *, version_line: str, version_exit: int = 0,
+    exit_code: int = 0, stdout: str = "", stderr: str = "",
+) -> str:
+    """A fake flowmap/groundwork that answers ``version`` distinctly from its other
+    subcommands (``graph`` / ``review``) — so the real capture_toolchain path is
+    exercised without the toolchain: ``<bin> version`` prints ``version_line`` and
+    exits ``version_exit``; anything else prints ``stdout`` and exits ``exit_code``."""
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "if len(sys.argv) > 1 and sys.argv[1] == 'version':\n"
+        f"    sys.stdout.write({version_line!r} + '\\n')\n"
+        f"    raise SystemExit({version_exit})\n"
+        f"sys.stdout.write({stdout!r})\n"
+        f"sys.stderr.write({stderr!r})\n"
+        f"raise SystemExit({exit_code})\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_capture_toolchain_reads_both_version_lines(tmp_path, monkeypatch):
+    """capture_toolchain probes ``version`` on the SAME resolved binaries and
+    returns each tool's verbatim one-line identity, no error."""
+    monkeypatch.setenv("VERDI_FLOWMAP_BIN", _fake_versioned_bin(
+        tmp_path / "flowmap", version_line="flowmap v1.2.3"))
+    monkeypatch.setenv("VERDI_GROUNDWORK_BIN", _fake_versioned_bin(
+        tmp_path / "groundwork", version_line="groundwork v4.5.6"))
+    tc = groundwork_shell.capture_toolchain(groundwork_shell._subprocess_env(tmp_path))
+    assert tc.error is None
+    assert tc.flowmap == "flowmap v1.2.3"
+    assert tc.groundwork == "groundwork v4.5.6"
+
+
+def test_full_pipeline_records_toolchain_versions_in_verdict_detail(tmp_path, monkeypatch):
+    """End-to-end real path: the ``groundwork:verdict`` assertion detail carries
+    ``; toolchain: flowmap <v>, groundwork <v>`` — provenance is additive; the
+    BLOCK → failed verdict is unchanged."""
+    monkeypatch.setattr(groundwork_shell, "CONTAINER_HOLDOUTS", tmp_path / "no-mount")
+    hd = tmp_path / "hd"
+    _plant_holdouts(hd)
+    monkeypatch.setenv("VERDI_FLOWMAP_BIN", _fake_versioned_bin(
+        tmp_path / "flowmap", version_line="flowmap v9.9.9-test",
+        stdout='{"nodes":[],"edges":[]}'))
+    monkeypatch.setenv("VERDI_GROUNDWORK_BIN", _fake_versioned_bin(
+        tmp_path / "groundwork", version_line="groundwork v8.8.8-test",
+        exit_code=1, stdout=json.dumps(load_review("block"))))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = GradeTask(id="t", task_sha="s", holdouts_dir=str(hd))
+    assertions = GroundworkGrader().grade(workspace, task)
+
+    verdict = next(a for a in assertions if a.id == _VERDICT_ASSERTION_ID)
+    assert "; toolchain: flowmap v9.9.9-test, groundwork v8.8.8-test" in verdict.detail
+    assert verdict.detail.startswith("groundwork review verdict: BLOCK")
+    # the verdict itself is unchanged — provenance never alters the pole
+    assert verdict.result == AssertionResult.failed
+    assert _results(assertions, "must_not_reach") == [AssertionResult.failed]
+
+
+def test_version_probe_failure_degrades_to_unknown_without_failing_grade(tmp_path, monkeypatch):
+    """A failing ``flowmap version`` (its ``graph`` still works, so the verdict
+    computes) degrades the toolchain line to ``unknown (<reason>)`` — the grade is
+    NOT failed: provenance is best-effort, the verdict is load-bearing."""
+    monkeypatch.setattr(groundwork_shell, "CONTAINER_HOLDOUTS", tmp_path / "no-mount")
+    hd = tmp_path / "hd"
+    _plant_holdouts(hd)
+    # `flowmap graph` succeeds (review runs); `flowmap version` exits non-zero.
+    monkeypatch.setenv("VERDI_FLOWMAP_BIN", _fake_versioned_bin(
+        tmp_path / "flowmap", version_line="", version_exit=3,
+        stdout='{"nodes":[],"edges":[]}'))
+    monkeypatch.setenv("VERDI_GROUNDWORK_BIN", _fake_versioned_bin(
+        tmp_path / "groundwork", version_line="groundwork v8.8.8-test",
+        exit_code=1, stdout=json.dumps(load_review("block"))))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = GradeTask(id="t", task_sha="s", holdouts_dir=str(hd))
+    assertions = GroundworkGrader().grade(workspace, task)  # must NOT raise
+
+    verdict = next(a for a in assertions if a.id == _VERDICT_ASSERTION_ID)
+    assert "; toolchain: unknown (" in verdict.detail
+    # the real verdict still computed and rode through untouched
+    assert verdict.result == AssertionResult.failed
+    assert _results(assertions, "must_not_reach") == [AssertionResult.failed]
+
+
+# --------------------------------------------------------------------------- #
 # Container wiring: the plugin container mounts the trusted holdouts read-only at
 # /holdouts, and the in-container task names that mount (never the host path).
 # --------------------------------------------------------------------------- #

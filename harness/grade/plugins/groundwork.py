@@ -77,6 +77,29 @@ def _finding_detail(finding: dict) -> str:
     return summary or edge or "(no detail)"
 
 
+def _toolchain_suffix(toolchain: groundwork_shell.Toolchain | None) -> str:
+    """The grade-PROVENANCE fragment appended to the ``groundwork:verdict`` assertion
+    detail — it records WHICH flowmap+groundwork build produced the verdict WITHOUT a
+    schema change: it rides ``Assertion.detail`` (a free string) on the frozen,
+    hash-chained grade event, so the toolchain version is recorded without touching a
+    versioned contract [integration plan §10 P0].
+
+    This is the SINGLE producer of the string, so the format is documented here:
+
+      * both versions captured →  ``"; toolchain: flowmap <v>, groundwork <v>"``
+        (each ``<tool> <v>`` is the tool's verbatim ``version`` line)
+      * a version probe failed  →  ``"; toolchain: unknown (<reason>)"``
+      * no toolchain (fixture tier / direct fixture-mapping caller) → ``""``
+
+    A version-probe failure degrades to ``unknown`` and is NEVER fatal: the verdict
+    is the load-bearing output; the toolchain line is best-effort disclosure."""
+    if toolchain is None:
+        return ""
+    if toolchain.error is not None:
+        return f"; toolchain: unknown ({toolchain.error})"
+    return f"; toolchain: {toolchain.flowmap}, {toolchain.groundwork}"
+
+
 @register_plugin
 class GroundworkGrader(GraderPlugin):
     id = "groundwork"
@@ -119,17 +142,23 @@ class GroundworkGrader(GraderPlugin):
         :func:`groundwork_shell.review_artifact`, which grade_trial turns into a
         terminal ``cant_grade(plugin_error)``. A silent empty vector is never a
         grade [F-M-O1, tenet 2]."""
-        artifact = groundwork_shell.review_artifact(workspace, task)
-        return self._map_review(artifact)
+        artifact, toolchain = groundwork_shell.review_artifact(workspace, task)
+        return self._map_review(artifact, toolchain)
 
-    def _map_review(self, artifact: dict) -> list[Assertion]:
+    def _map_review(
+        self, artifact: dict, toolchain: groundwork_shell.Toolchain | None = None
+    ) -> list[Assertion]:
         """Map a parsed ``groundwork review --json`` artifact to assertions.
 
         Emits one top-line verdict assertion (mapped through :data:`_VERDICT_MAP`;
         unknown → abstain) plus one per-finding assertion preserving groundwork's
         rule id: ``new_violations`` → ``fail`` (a proven gate break), and every
         caution (``new_cautions`` + ``standing_cautions`` — the graph abstaining
-        where it cannot prove a negative) → ``abstain``, NEVER ``pass``."""
+        where it cannot prove a negative) → ``abstain``, NEVER ``pass``.
+
+        ``toolchain`` (present on the real path; ``None`` for direct fixture-mapping
+        callers) rides the verdict assertion's detail as grade provenance — see
+        :func:`_toolchain_suffix`."""
         assertions: list[Assertion] = []
 
         verdict = str(artifact.get("verdict", ""))
@@ -140,6 +169,10 @@ class GroundworkGrader(GraderPlugin):
             # unknown/future verdict → abstain (fail closed), never a silent pass
             result = AssertionResult.abstain
             detail = f"unmapped groundwork verdict {verdict!r}"
+        # Provenance rides the verdict assertion's free-text detail — NO schema
+        # change (the grade event is a hash-chained, frozen contract; Assertion.detail
+        # is an unstructured string). _toolchain_suffix documents the exact format.
+        detail += _toolchain_suffix(toolchain)
         assertions.append(
             Assertion(id=_VERDICT_ASSERTION_ID, source=self._source, result=result, detail=detail)
         )

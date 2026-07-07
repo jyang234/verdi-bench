@@ -83,8 +83,9 @@ Verified against the verdi-go tree (`cmd/groundwork/main.go`, `cmd/flowmap/main.
 
 - **Exit codes**: `0` clean · `1` a computed verdict failed the gate · `2` operational
   error. A harness can distinguish "change failed the gate" from "gate failed to run".
-- **Machine-readable output**: `groundwork fitness|review|verify --json` emit canonical,
-  byte-stable JSON; `--sarif` exists for annotation use cases.
+- **Machine-readable output**: `groundwork review|verify --json` emit canonical,
+  byte-stable JSON; `fitness` offers `--sarif` (annotation use cases) only, not `--json`
+  (an upstream usage-string drift that advertised `fitness --json` was fixed in verdi-go).
 - **Determinism**: `graph.json` is byte-identical for a fixed source tree **per flowmap
   build** (CI regenerates fixtures and `git diff --exit-code`s them). Cross-version
   identity is explicitly not promised — pin one binary everywhere.
@@ -139,9 +140,10 @@ Real path, executed inside the grade container on the fresh workspace copy:
    Failure to build/type-check → the plugin raises → terminal `cant_grade(plugin_error)`
    (a workspace that does not compile is separately caught by functional holdouts; the
    distinction is preserved in assertion details).
-3. `groundwork verify policy.json base.graph.json branch.graph.json --json`
-   (and/or `fitness` on the branch graph — see D1). Exit `2` → raise (operational);
-   exit `0/1` → parse canonical JSON.
+3. `groundwork review policy.json base.graph.json branch.graph.json --json` — the
+   two-graph review whose top-line verdict is BLOCK / STRUCTURALLY-CLEAR /
+   NO-STRUCTURAL-SIGNAL (see D1). Exit `2` → raise (operational); exit `0/1` → parse
+   canonical JSON.
 4. Map per-rule verdicts through the existing `_VERDICT_MAP`; rule ids preserved;
    unknown verdicts → `abstain` with detail. `NO-STRUCTURAL-SIGNAL` is **never** a pass.
 
@@ -158,7 +160,8 @@ outgrows stdlib-only modules) a baked `GOMODCACHE`. The grade container is
 {"kind": "command", "argv": ["/usr/local/bin/verdi-groundwork-check", "<task-id>"]}
 ```
 
-where the wrapper script runs steps 1–3 above and exits with groundwork's exit code
+where the wrapper script runs steps 1–2 above, then `groundwork verify policy.json
+base.graph.json branch.graph.json --json`, and exits with groundwork's exit code
 (0 pass, 1 fail), mapping exit 2 to a loud non-zero distinct failure. Plugin
 assertions feed fractional scoring only; the `command` holdout feeds
 `holdout_pass_rate` — the primary metric.

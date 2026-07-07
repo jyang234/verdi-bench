@@ -77,6 +77,11 @@ def test_violating_variant_flags_a_failed_rule(tmp_path):
     assert rules.get("must_not_reach") == AssertionResult.failed.value, plugin
     # the top-line verdict is BLOCK → failed
     assert rules.get("groundwork:verdict") == AssertionResult.failed.value, plugin
+    # grade provenance [P0]: the verdict detail records the real flowmap+groundwork
+    # build identities (version value is build-dependent — assert the format, not it).
+    verdict = next(a for a in plugin if a["id"] == "groundwork:verdict")
+    assert "; toolchain: flowmap " in verdict["detail"], verdict
+    assert ", groundwork " in verdict["detail"], verdict
 
 
 def test_reference_variant_passes_with_no_failed_rule(tmp_path):

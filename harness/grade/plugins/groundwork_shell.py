@@ -37,7 +37,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from ..fence import NONCE_ENV
 
@@ -64,6 +64,10 @@ GROUNDWORK_DEFAULT = "groundwork"
 # hang fails the grade rather than stalling the batch.
 _FLOWMAP_TIMEOUT_S = 600
 _GROUNDWORK_TIMEOUT_S = 120
+# The `version` subcommand just prints a build stamp (no analysis, no I/O). A tight
+# ceiling so a hung version probe degrades provenance to "unknown" quickly rather
+# than stalling a grade whose verdict already computed.
+_VERSION_TIMEOUT_S = 30
 
 # groundwork's exit-code contract (cmd/groundwork/main.go): 0 clean, 1 a computed
 # verdict failed the gate (BLOCK), 2 operational error. flowmap exits non-zero on
@@ -238,13 +242,69 @@ def run_review(policy: Path, base_graph: Path, branch_graph: Path, env: dict) ->
     return artifact
 
 
-def review_artifact(workspace, task) -> dict:
-    """The full real-path pipeline → the parsed ``review`` artifact dict.
+class Toolchain(NamedTuple):
+    """The flowmap+groundwork build identity behind a real-path grade, for grade
+    PROVENANCE [integration plan §10 P0]. On success ``flowmap`` / ``groundwork``
+    each hold the tool's verbatim one-line ``version`` output (``flowmap <v>`` /
+    ``groundwork <v>``); on any failure both are ``None`` and ``error`` says why.
+
+    Provenance is BEST-EFFORT disclosure: a failed version probe degrades to
+    ``unknown`` and NEVER fails the grade — the verdict is the load-bearing output
+    and is already computed by the time versions are captured
+    (:func:`review_artifact`)."""
+
+    flowmap: Optional[str]
+    groundwork: Optional[str]
+    error: Optional[str] = None
+
+
+def _capture_version(env_var: str, default_name: str, env: dict) -> str:
+    """``<bin> version`` → the tool's verbatim single-line identity (``<tool> <v>``;
+    both tools print exactly one version line — cmd/flowmap/main.go,
+    cmd/groundwork/main.go). Raises on any failure; :func:`capture_toolchain`
+    catches it and degrades to ``unknown`` — a version probe never fails a grade."""
+    binary = _resolve_binary(env_var, default_name)
+    proc = subprocess.run(
+        [binary, "version"], capture_output=True, text=True,
+        timeout=_VERSION_TIMEOUT_S, env=env,
+    )
+    if proc.returncode != 0:
+        raise GroundworkShellError(
+            f"{default_name} version exited {proc.returncode}: {_stderr_tail(proc.stderr)}"
+        )
+    line = proc.stdout.strip()
+    if not line:
+        raise GroundworkShellError(f"{default_name} version printed no output")
+    return line.splitlines()[0].strip()
+
+
+def capture_toolchain(env: dict) -> Toolchain:
+    """Best-effort flowmap+groundwork build identity for grade provenance.
+
+    Probes ``version`` on the SAME binaries the grade used: :func:`_resolve_binary`
+    is a pure function of the environment, which does not change for the grade's
+    duration, so re-resolving here yields exactly the flowmap/groundwork that built
+    the branch graph and computed the review. ANY failure — a binary that vanished,
+    a non-zero version exit, a timeout, an exec error — is folded into
+    ``Toolchain.error`` and NEVER re-raised: provenance is disclosure and the verdict
+    does not depend on it [integration plan §10 P0]."""
+    try:
+        flowmap = _capture_version(FLOWMAP_BIN_ENV, FLOWMAP_DEFAULT, env)
+        groundwork = _capture_version(GROUNDWORK_BIN_ENV, GROUNDWORK_DEFAULT, env)
+    except (GroundworkShellError, OSError, subprocess.SubprocessError) as e:
+        return Toolchain(flowmap=None, groundwork=None, error=str(e))
+    return Toolchain(flowmap=flowmap, groundwork=groundwork)
+
+
+def review_artifact(workspace, task) -> tuple[dict, Toolchain]:
+    """The full real-path pipeline → ``(artifact, toolchain)``.
 
     Resolves the trusted assets from the holdouts side, regenerates the branch
-    graph from the workspace into a throwaway temp dir OUTSIDE the workspace, and
-    runs ``groundwork review``. The temp dir (branch graph + a writable GOCACHE)
-    is always removed. Every failure raises (→ ``cant_grade(plugin_error)``)."""
+    graph from the workspace into a throwaway temp dir OUTSIDE the workspace, runs
+    ``groundwork review``, and — once the verdict is computed — captures the
+    flowmap+groundwork build identity for grade provenance (best-effort; a version
+    probe never fails the grade). The temp dir (branch graph + a writable GOCACHE)
+    is always removed. Every REVIEW failure raises (→ ``cant_grade(plugin_error)``)."""
     policy, base_graph = resolve_assets(task)
     stamp = getattr(task, "task_sha", "") or ""
     tmp = Path(tempfile.mkdtemp(prefix="verdi-groundwork-"))
@@ -253,7 +313,9 @@ def review_artifact(workspace, task) -> dict:
         gocache.mkdir()
         env = _subprocess_env(gocache)
         branch = regenerate_branch_graph(workspace, stamp, tmp, env)
-        return run_review(policy, base_graph, branch, env)
+        artifact = run_review(policy, base_graph, branch, env)
+        toolchain = capture_toolchain(env)
+        return artifact, toolchain
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
