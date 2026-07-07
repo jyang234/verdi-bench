@@ -54,8 +54,8 @@ from harness.sdk import Experiment, Task, write_holdout_results
 
 exp = (
     Experiment("mini-ab", seed=1234, cost_ceiling_usd=10.0)
-    .arm("control",   model="anthropic/claude-haiku-4-5-20251001", platform="claude_code")
     .arm("treatment", model="openai/gpt-4o-2024-08-06",            platform="codex")
+    .arm("control",   model="anthropic/claude-haiku-4-5-20251001", platform="claude_code")
     .judge("fake/deterministic-2026-01-01")   # rubric defaults to the library template
     .task(Task("t_add", prompt="Write solution.py defining add(a, b)...",
                fake_behavior={"native_log": {"total_cost_usd": 0.01}}))
@@ -97,8 +97,9 @@ The builder methods you don't call fall back to documented defaults —
 `decision_rule "delta_holdout_pass_rate > 0"`, and corpus
 `{id: <experiment name>, version: "1.0.0"}`. The delta in that default rule is
 `arms[0] − arms[1]`, the FIRST `.arm(…)` you declare minus the second — so this
-example, which injects treatment-passes while declaring `control` first, produces
-a **negative** delta (treatment wins the tasks but is the second-declared arm).
+example, which declares `treatment` first and injects treatment-passes, produces
+a **positive** delta (the contender wins the tasks and is the first-declared arm),
+and the `> 0` rule reads MET. Declare your contender first.
 
 **Want the CLI, but a scaffold rather than a blank page?** `bench init <dir>`
 writes the same starter `experiment.yaml` / `tasks.yaml` / `rubric` from the one
