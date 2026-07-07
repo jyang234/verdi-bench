@@ -412,3 +412,109 @@ def test_grade_summary_line_lists_each_reason_sorted():
         "graded 10 trial(s): 7 scored, 3 cant_grade "
         "(holdout_results_missing ×2, unknown_task ×1) — see bench status"
     )
+
+
+# --- AC-3: bench judge's summary discloses verdicts vs cant_judge --------------
+_REAL_JUDGE = {  # a real-provider judge id (date-versioned, non-alias)
+    "model": "anthropic/claude-haiku-4-5-20251001",
+    "rubric": "rubric.md",
+    "orders": "both",
+    "temperature": 0,
+}
+
+
+def _graded_pairs_real_provider_judge(expdir: Path, n_tasks: int) -> Path:
+    """Plan a locked 2-arm experiment with a REAL-provider judge and seed
+    control+treatment graded trials for ``n_tasks`` tasks — a judgeable
+    comparison set (one comparison per task)."""
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+
+    expdir.mkdir(parents=True, exist_ok=True)
+    tasks = [{"id": f"t{i}", "prompt": "solve it", "task_class": "refactor"}
+             for i in range(n_tasks)]
+    write_experiment_yaml(expdir / "experiment.yaml", judge=dict(_REAL_JUDGE))
+    (expdir / "rubric.md").write_text("Judge on correctness.", encoding="utf-8")
+    (expdir / "tasks.yaml").write_text(yaml.safe_dump({"tasks": tasks}), encoding="utf-8")
+    ledger = expdir / "ledger.ndjson"
+    r = CliRunner().invoke(
+        app, ["plan", str(expdir / "experiment.yaml"), "--ledger", str(ledger)]
+    )
+    assert r.exit_code == 0, r.output
+    from tests.fixtures.builders import seed_trial_and_grade
+
+    ctx = ctx_for(expdir)
+    for i in range(n_tasks):
+        seed_trial_and_grade(ledger, ctx, trial_id=f"tr-{i}-c", task_id=f"t{i}",
+                             arm="control", passed=True)
+        seed_trial_and_grade(ledger, ctx, trial_id=f"tr-{i}-t", task_id=f"t{i}",
+                             arm="treatment", passed=False)
+    return ledger
+
+
+def test_judge_cli_discloses_cant_judge_and_exits_zero(tmp_path, monkeypatch):
+    """[ux-friction AC-3 + D2] The keyless real-provider reproduction: with the
+    provider key ABSENT every comparison lands CANT_JUDGE(provider_error), and
+    the `bench judge` summary must disclose the split rather than the
+    success-shaped bare `judged N comparison(s)` (F6). Exit stays 0 (D2).
+
+    No network is touched: the harness never auto-loads .env, and the absent key
+    makes require_key (judge/providers/_http.py) raise ProviderError as the
+    request headers are built — before urllib is ever reached — so the failure is
+    the missing key, not a live call."""
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+    from harness.judge.providers._http import require_key
+    from harness.judge.providers.base import ProviderError
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)  # keyless first-timer
+    # the provider fails on the MISSING KEY before any request (pinned at the seam)
+    with pytest.raises(ProviderError):
+        require_key("ANTHROPIC_API_KEY")
+
+    expdir = tmp_path / "judge-exp"
+    ledger = _graded_pairs_real_provider_judge(expdir, n_tasks=3)
+
+    r = CliRunner().invoke(app, ["judge", str(expdir)])
+    assert r.exit_code == 0, r.output  # D2: all-cant_judge is not a command failure
+
+    verdicts = find_events(ledger, events.JUDGE_VERDICT)
+    assert len(verdicts) == 3
+    assert all(v["verdict"]["winner"] == "CANT_JUDGE" for v in verdicts)
+    assert all(v["verdict"]["reason"] == "provider_error" for v in verdicts)
+
+    out = r.output + (r.stderr or "")
+    # RED today: the bare "judged 3 comparison(s)" with no split disclosed.
+    assert "judged 3 comparison(s): 0 verdicts, 3 cant_judge (provider_error ×3)" in out
+
+
+def test_judge_summary_line_discloses_cant_judge_split():
+    """[ux-friction AC-3] The disclosing line names the substantive/cant_judge
+    split with per-reason counts, visibly consistent with grade's line."""
+    from harness.judge.api import JudgeOutcome
+    from harness.judge.cli import _judge_summary_line
+
+    outcome = JudgeOutcome(
+        judged=3, stopped_ceiling=False, accumulated=0, ceiling=None,
+        n_reused=0, rubric_warning=False, calibration={},
+        verdicts=0, cant_judge=3, cant_judge_reasons={"provider_error": 3},
+    )
+    assert _judge_summary_line(outcome) == (
+        "judged 3 comparison(s): 0 verdicts, 3 cant_judge (provider_error ×3)"
+    )
+
+
+def test_judge_summary_line_terse_when_all_substantive():
+    """[ux-friction AC-3] When every comparison produced a substantive verdict the
+    line stays terse and quiet — the split appears only when cant_judge > 0."""
+    from harness.judge.api import JudgeOutcome
+    from harness.judge.cli import _judge_summary_line
+
+    outcome = JudgeOutcome(
+        judged=5, stopped_ceiling=False, accumulated=0, ceiling=None,
+        n_reused=0, rubric_warning=False, calibration={},
+        verdicts=5, cant_judge=0,
+    )
+    assert _judge_summary_line(outcome) == "judged 5 comparison(s)"

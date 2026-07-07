@@ -14,7 +14,29 @@ import typer
 from ..cli_common import refusal_exit
 from ..corpus.commit import TaskCommitmentError
 from ..ledger.actor import ActorResolutionError
-from .api import JudgeRubricError, judge_experiment
+from .api import JudgeOutcome, JudgeRubricError, judge_experiment
+
+
+def _judge_summary_line(outcome: JudgeOutcome) -> str:
+    """The native ``bench judge`` count line [ux-friction AC-3].
+
+    Terse when every comparison produced a substantive verdict (``judged N
+    comparison(s)``); when any landed CANT_JUDGE, discloses the split with
+    per-reason counts (e.g. a keyless real-provider judge → ``0 verdicts, 3
+    cant_judge (provider_error ×3)``), so a fail-closed pass cannot read as N
+    successes (F6). Same shape as grade's summary line; reasons sorted (no
+    dict-ordering assumption). Pure, so the string is pinned without a CLI."""
+    base = f"judged {outcome.judged} comparison(s)"
+    if outcome.cant_judge == 0:
+        return base
+    reasons = ", ".join(
+        f"{reason} ×{n}"
+        for reason, n in sorted(outcome.cant_judge_reasons.items())
+    )
+    return (
+        f"{base}: {outcome.verdicts} verdicts, {outcome.cant_judge} cant_judge "
+        f"({reasons})"
+    )
 
 
 def register(app: typer.Typer) -> None:
@@ -34,7 +56,7 @@ def register(app: typer.Typer) -> None:
                 "WARNING: lock predates rubric commitment (D-P7-6); the rubric "
                 "content is not pinned for this experiment", err=True,
             )
-        typer.echo(f"judged {outcome.judged} comparison(s)")
+        typer.echo(_judge_summary_line(outcome))
         if outcome.stopped_ceiling:
             typer.echo(
                 f"stopped at the pre-registered judge token ceiling "

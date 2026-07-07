@@ -22,13 +22,13 @@ unit tests.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import find_events
-from .schema import TRANSIENT_CANT_JUDGE
+from .schema import TRANSIENT_CANT_JUDGE, Winner
 
 if TYPE_CHECKING:
     from .assemble import Comparison
@@ -70,11 +70,18 @@ class SessionResult:
     """One :meth:`JudgingSession.run` pass: how many comparisons were newly
     judged, the running token accumulation after them (seed for the next pass),
     and whether the pre-registered judge token ceiling stopped the pass before it
-    finished [F-M-J3]."""
+    finished [F-M-J3].
+
+    ``judged`` splits into ``verdicts`` (substantive A/B/TIE) + the CANT_JUDGE
+    comparisons tallied by reason in ``cant_judge_reasons`` [ux-friction AC-3], so
+    the CLI can disclose a fail-closed pass instead of a success-shaped count.
+    Additive with defaults — the reused-control caller reads only ``judged``."""
 
     judged: int
     accumulated: int
     stopped_ceiling: bool
+    verdicts: int = 0
+    cant_judge_reasons: dict = field(default_factory=dict)
 
 
 # The native pairing lands under ``judge_verdict`` through ``judge_pair``'s default
@@ -160,6 +167,8 @@ class JudgingSession:
 
         already = self._already_judged(sink.kind)
         judged = 0
+        substantive = 0
+        cant_reasons: dict[str, int] = {}
         stopped_ceiling = False
         for cmp in comparisons:
             if cmp.comparison_id in already:
@@ -185,6 +194,14 @@ class JudgingSession:
             )
             accumulated += _usage_tokens(verdict.provenance.usage)
             judged += 1
+            # AC-3: split from the verdict actually appended — a CANT_JUDGE
+            # carries its fail-closed reason on ``reason``; everything else is a
+            # substantive verdict.
+            if verdict.winner == Winner.CANT_JUDGE:
+                cant_reasons[verdict.reason] = cant_reasons.get(verdict.reason, 0) + 1
+            else:
+                substantive += 1
         return SessionResult(
-            judged=judged, accumulated=accumulated, stopped_ceiling=stopped_ceiling
+            judged=judged, accumulated=accumulated, stopped_ceiling=stopped_ceiling,
+            verdicts=substantive, cant_judge_reasons=cant_reasons,
         )

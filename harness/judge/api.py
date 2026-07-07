@@ -13,7 +13,7 @@ summary from the returned :class:`JudgeOutcome`.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..errors import VerdiRefusal
@@ -30,6 +30,13 @@ class JudgeOutcome:
     ``rubric_warning`` flags a legacy lock (pre-rubric-commitment) so the CLI
     emits the same non-fatal warning the body did [D-P7-6]; ``calibration`` is
     the per-class kappa map the summary lines render [JD-9, D006].
+
+    ``judged`` (the native pass) splits into ``verdicts`` (substantive) +
+    ``cant_judge`` (fail-closed), with ``cant_judge_reasons`` a ``{reason: count}``
+    map [ux-friction AC-3], so the summary discloses a keyless/failing pass
+    instead of the success-shaped bare count (F6). Additive with defaults — no
+    existing constructor or serializer changes; the reused-control counts stay in
+    ``n_reused`` and their line is unchanged.
     """
 
     judged: int
@@ -39,6 +46,9 @@ class JudgeOutcome:
     n_reused: int
     rubric_warning: bool
     calibration: dict
+    verdicts: int = 0
+    cant_judge: int = 0
+    cant_judge_reasons: dict = field(default_factory=dict)
 
 
 def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome:
@@ -126,6 +136,9 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
     judged, accumulated, stopped_ceiling = (
         native.judged, native.accumulated, native.stopped_ceiling
     )
+    # AC-3: the verdict/cant_judge split of the native pass, for the summary line.
+    cant_judge_reasons = native.cant_judge_reasons
+    cant_judge = sum(cant_judge_reasons.values())
 
     # Control reuse [control-reuse plan]: also judge each fresh-contender vs
     # reused-control pair (a distinct kind the official judge_preference never
@@ -149,5 +162,6 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
     return JudgeOutcome(
         judged=judged, stopped_ceiling=stopped_ceiling, accumulated=accumulated,
         ceiling=ceiling, n_reused=n_reused, rubric_warning=rubric_warning,
-        calibration=cal,
+        calibration=cal, verdicts=native.verdicts, cant_judge=cant_judge,
+        cant_judge_reasons=cant_judge_reasons,
     )
