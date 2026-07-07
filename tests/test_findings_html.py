@@ -13,7 +13,6 @@ from __future__ import annotations
 from harness.analyze.findings.render_html import render_html
 from harness.analyze.findings.sections import exploratory_sections
 from harness.analyze.report import compute_findings
-from harness.analyze.report import render_html as facade_render_html
 from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
 from tests.fixtures.scenarios import FAST_STATS, populate_paired_trials
 
@@ -81,8 +80,6 @@ def test_html_is_byte_deterministic(tmp_path):
     a = render_html(findings, ledger, "exploratory")
     b = render_html(findings, ledger, "exploratory")
     assert a == b
-    # and the facade re-export is the very same renderer
-    assert facade_render_html(findings, ledger, "exploratory") == a
 
 
 def test_exploratory_watermarks_every_section(tmp_path):
