@@ -107,3 +107,29 @@ sanctioned wall; F2 `verdi.agent` validated where emitted.
    canonical sidecar names/networks (observed twice during this program as
    test-vs-script contention). Single-operator assumption; a per-run name
    suffix would lift it if ever needed.
+
+## Addendum — open items dispositioned (2026-07-06, refactor 13)
+
+All seven items above are resolved; see [13-open-items.md](13-open-items.md)
+and decisions.ndjson (OI-1/A8-EXEC, OI-2, OI-3, OI-7, P0-PROXY-CI closed):
+
+1. **A8 — DONE (OI-C):** verdict-JSON contract is harness-owned packet
+   framing (fingerprint v1→v2); rubric template slims to judgment criteria;
+   golden investigation proved the ledger golden's packet shas were synthetic
+   — zero fixture bytes moved; live L2 real-judge run 5/5 under framing v2.
+2. **`VerdiRefusal` — DONE (OI-B):** `harness/errors.py` base; ~48 refusal
+   types reparented; pydantic wrapped at the spec boundary message-verbatim;
+   `refusal_exit()` bare form is the uniform net, narrow ladders preserved;
+   AST completeness meta-test enforces the property.
+3. **Scheduler split — WON'T-DO** (recorded).
+4. **CI proxy wiring — CLOSED (OI-A):** managed path is CI-covered by its own
+   live e2e; the reference-Squid gate is operator-run by design.
+5. **Size notes — DONE (OI-A):** all four modules carry in-module rationales.
+6. **Holdout filename — DONE (OI-A):** three-way equality meta-test.
+7. **Sidecar collisions — DEFERRED** (recorded; single-operator posture).
+
+Post-pass gates: 1414 passed / 26 skipped / 10 contracts; shakedown 4/4 +
+18/18 both color modes; live L2 official 5/5 (real Anthropic judge, framing
+v2). Review model for this pass: every diff reviewed directly by the
+orchestrator; two orchestrator-found nits fixed at merge (a stale
+constant-name comment; nothing in OI-B/OI-C).
