@@ -15,3 +15,7 @@ htmlcov/
 .env
 .env.*
 !.env.example
+# UI prototype sandbox — an untracked playground by charter (prototype/README.md):
+# work proves out there, then gets re-implemented against harness/serve/static/
+# with tests; the directory itself is never merged.
+/prototype/
