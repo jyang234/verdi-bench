@@ -318,6 +318,15 @@ def lock_experiment(
             acknowledged_underpowered=ack_payload,
             rubric_sha256=rubric_sha256,
         )
+        # [ux-friction AC-6]: the lock event is durably appended, so every future
+        # planner is now refused by check_single_lock regardless of this flock —
+        # remove the stray guard file rather than leave it beside the ledger (F5).
+        # Safe under the held lock: a waiter that already opened this inode still
+        # acquires the flock and proceeds into that refusal; a later planner
+        # re-creating the path is refused by the OUTER check_single_lock before it
+        # ever reaches the guard. Only a SUCCESSFUL lock unlinks — a failed attempt
+        # raises out of this block and leaves cleanup unchanged.
+        guard.unlink(missing_ok=True)
     finally:
         try:
             fcntl.flock(gfd, fcntl.LOCK_UN)

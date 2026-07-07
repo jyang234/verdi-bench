@@ -14,10 +14,12 @@ import yaml
 from harness.ledger import events
 from harness.ledger.query import find_events
 from harness.plan.api import plan_experiment
-from tests.fixtures.builders import write_experiment_yaml
+from harness.plan.lock import AlreadyLockedError, lock_experiment
+from tests.fixtures.builders import fixed_ctx, write_experiment_yaml
 
-# small sim params keep the plan power check fast in tests
+# small sim params keep the plan/lock power check fast in tests
 _TWO_TASKS = {"tasks": [{"id": "t1", "prompt": "p"}, {"id": "t2", "prompt": "p"}]}
+_FAST_LOCK = dict(n_sim=8, n_boot=40, deltas=[0.2, 0.4])
 
 
 # --- AC-1: plan derives experiment_id from the RESOLVED experiment path -------
@@ -66,3 +68,35 @@ def test_plan_refuses_empty_resolved_experiment_name(tmp_path):
         plan_experiment(root_spec, ledger, actor="tester")
     assert str(root_spec) in str(exc.value)  # names the offending path
     assert not ledger.exists()  # refused before genesis: zero events appended
+
+
+# --- AC-6: a successful lock removes its <ledger>.planlock flock file ----------
+def test_successful_lock_removes_planlock_file(tmp_path):
+    """[ux-friction AC-6] After a green plan the experiment dir carries only the
+    user files and the ledger — the stray <ledger>.planlock flock file a
+    successful lock leaves today (F5) is removed on success."""
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    ledger = tmp_path / "ledger.ndjson"
+    lock_experiment(spec, ledger, ctx=fixed_ctx(), **_FAST_LOCK)
+
+    planlock = Path(str(ledger) + ".planlock")
+    assert not planlock.exists()  # cleaned up on success
+    assert len(find_events(ledger, events.EXPERIMENT_LOCKED)) == 1  # lock still happened
+
+
+def test_refused_second_lock_after_cleanup_does_not_resurrect_planlock(tmp_path):
+    """[ux-friction AC-6] Cleanup is safe: a second lock attempt is still refused
+    (AlreadyLockedError) by the outer single-lock check — which fires before the
+    flock guard is ever created — so it neither succeeds nor resurrects a stray
+    planlock file."""
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    ledger = tmp_path / "ledger.ndjson"
+    lock_experiment(spec, ledger, ctx=fixed_ctx(), **_FAST_LOCK)
+    planlock = Path(str(ledger) + ".planlock")
+    assert not planlock.exists()
+
+    with pytest.raises(AlreadyLockedError):
+        lock_experiment(spec, ledger, ctx=fixed_ctx(), **_FAST_LOCK)
+
+    assert not planlock.exists()  # the refused attempt left no stray guard file
+    assert len(find_events(ledger, events.EXPERIMENT_LOCKED)) == 1  # still exactly one
