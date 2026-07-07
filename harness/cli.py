@@ -40,16 +40,14 @@ def plan(
     ),
 ) -> None:
     """Validate, power-check, and write the genesis lock event."""
-    from .corpus.commit import TaskCommitmentError
-    from .ledger.actor import ActorResolutionError
-    from .ledger.query import ChainIntegrityError
     from .plan.api import plan_experiment
-    from .plan.lock import AlreadyLockedError, RubricCommitmentError, UnderpoweredError
 
-    with refusal_exit(
-        ActorResolutionError, UnderpoweredError, AlreadyLockedError,
-        TaskCommitmentError, ChainIntegrityError, RubricCommitmentError,
-    ):
+    # refusal_exit() catches VerdiRefusal uniformly: every plan/lock refusal
+    # (spec validation, actor, chain integrity, lock, rubric, task-commitment)
+    # maps to a clean exit 2 — no verb-forgot-to-enumerate traceback, and the
+    # structural pydantic vectors (extra key, single arm) no longer traceback
+    # [refactor 13 OI-B].
+    with refusal_exit():
         outcome = plan_experiment(
             experiment, ledger, acknowledge_underpowered=acknowledge_underpowered,
             attested_by=attested_by, corpus_manifest=corpus_manifest, actor=actor,
