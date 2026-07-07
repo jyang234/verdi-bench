@@ -219,6 +219,6 @@ def test_judge_reused_stops_at_token_ceiling(tmp_path):
         task_classes={t["id"]: "default" for t in task_dicts},
         ceiling=100, accumulated=100,  # already at the cap
     )
-    assert n == 0  # refuse-to-start at the ceiling
+    assert n.judged == 0  # refuse-to-start at the ceiling (judge_reused → SessionResult)
     assert find_events(ledger, events.REUSED_JUDGE_VERDICT) == []
     assert len(find_events(ledger, events.JUDGE_STOPPED_TOKEN_CEILING)) == 1

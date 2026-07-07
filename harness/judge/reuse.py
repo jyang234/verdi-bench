@@ -12,7 +12,7 @@ judge_preference / calibration never see it). Exploratory-only by construction.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ..corpus.public import content_sha
 from ..ledger import events
@@ -27,6 +27,9 @@ from .assemble import (
     read_workspace_diff,
 )
 from .packet import ResponseArtifacts
+
+if TYPE_CHECKING:
+    from .session import SessionResult
 
 
 def reused_control_arm(ledger_path) -> str | None:
@@ -143,25 +146,31 @@ def judge_reused(
     task_classes: dict,
     ceiling: Optional[int] = None,
     accumulated: int = 0,
-) -> int:
+) -> "SessionResult":
     """Judge every reused (contender vs reused-control) comparison, recording one
-    ``reused_judge_verdict`` each. Returns the number newly judged; no-op when
-    nothing was reused.
+    ``reused_judge_verdict`` each, and return this pass's :class:`SessionResult` —
+    its ``judged`` count plus the substantive-verdict / per-reason CANT_JUDGE split
+    the reused-control summary line discloses [ux-friction AC-3 residual]. An empty
+    result (``judged=0``) when nothing was reused.
 
-    Idempotent: skips comparisons that already carry a NON-transient reused
-    verdict, so a transient CANT_JUDGE (timeout / provider_error) is retried on a
-    re-run — the shared :class:`JudgingSession` semantics [refactor 05 §4].
+    The returned split reports THIS pass's outcomes, not a cumulative tally, because
+    the reused pass runs the identical :class:`JudgingSession` and is idempotent: it
+    skips comparisons already carrying a NON-transient reused verdict, but a
+    transient CANT_JUDGE (timeout / provider_error / parse) is retried on a re-run
+    [refactor 05 §4]. A later pass can therefore turn a provider_error into a
+    verdict, so the disclosed line names the current pass rather than the ledger's
+    accumulated history.
 
     Honors the same locked judge token ceiling as native judging [F-M-J3]:
     ``accumulated`` seeds the budget with prior spend (native + reused verdicts,
     so a re-run cannot reset it) and reused verdicts count against it — reuse
     cannot spend past the pre-registered cap. A refuse-to-start at the ceiling,
     like the cost guard."""
-    from .session import JudgingSession, VerdictSink
+    from .session import JudgingSession, SessionResult, VerdictSink
 
     comparisons = comparisons_from_reuse(ledger_path, experiment_dir, spec, task_classes=task_classes)
     if not comparisons:
-        return 0
+        return SessionResult(judged=0, accumulated=accumulated, stopped_ceiling=False)
     reused_from = _reused_from(ledger_path)
 
     def _append(lp, c, *, verdict):
@@ -175,7 +184,7 @@ def judge_reused(
         canaries=canaries, ceiling=ceiling,
     )
     sink = VerdictSink(kind=events.REUSED_JUDGE_VERDICT, append_verdict_fn=_append)
-    return session.run(comparisons, sink, accumulated=accumulated).judged
+    return session.run(comparisons, sink, accumulated=accumulated)
 
 
 # --- one-event property registration ----------------------------------------

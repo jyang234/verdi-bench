@@ -17,25 +17,51 @@ from ..ledger.actor import ActorResolutionError
 from .api import JudgeOutcome, JudgeRubricError, judge_experiment
 
 
-def _judge_summary_line(outcome: JudgeOutcome) -> str:
-    """The native ``bench judge`` count line [ux-friction AC-3].
+def _cant_judge_clause(
+    base: str, *, verdicts: int, cant_judge: int, cant_judge_reasons: dict, suffix: str = "",
+) -> str:
+    """Shared body of the ``bench judge`` summary lines [ux-friction AC-3].
 
-    Terse when every comparison produced a substantive verdict (``judged N
-    comparison(s)``); when any landed CANT_JUDGE, discloses the split with
-    per-reason counts (e.g. a keyless real-provider judge → ``0 verdicts, 3
-    cant_judge (provider_error ×3)``), so a fail-closed pass cannot read as N
-    successes (F6). Same shape as grade's summary line; reasons sorted (no
-    dict-ordering assumption). Pure, so the string is pinned without a CLI."""
-    base = f"judged {outcome.judged} comparison(s)"
-    if outcome.cant_judge == 0:
-        return base
+    Terse ``{base}{suffix}`` when no comparison landed CANT_JUDGE; when any did,
+    discloses the split with per-reason counts — ``{base}: X verdicts, Y cant_judge
+    (reason ×n){suffix}`` — so a fail-closed pass cannot read as N successes (F6).
+    Same shape as grade's summary line; reasons sorted (no dict-ordering
+    assumption). ``suffix`` (the reused line's `` [exploratory]``) stays LAST in both
+    branches. Pure, so each line is pinned without a CLI."""
+    if cant_judge == 0:
+        return f"{base}{suffix}"
     reasons = ", ".join(
-        f"{reason} ×{n}"
-        for reason, n in sorted(outcome.cant_judge_reasons.items())
+        f"{reason} ×{n}" for reason, n in sorted(cant_judge_reasons.items())
     )
-    return (
-        f"{base}: {outcome.verdicts} verdicts, {outcome.cant_judge} cant_judge "
-        f"({reasons})"
+    return f"{base}: {verdicts} verdicts, {cant_judge} cant_judge ({reasons}){suffix}"
+
+
+def _judge_summary_line(outcome: JudgeOutcome) -> str:
+    """The native ``bench judge`` count line [ux-friction AC-3]: ``judged N
+    comparison(s)``, disclosing ``N: X verdicts, Y cant_judge (reason ×n)`` when any
+    comparison landed CANT_JUDGE (a keyless real-provider judge → provider_error)."""
+    return _cant_judge_clause(
+        f"judged {outcome.judged} comparison(s)",
+        verdicts=outcome.verdicts, cant_judge=outcome.cant_judge,
+        cant_judge_reasons=outcome.cant_judge_reasons,
+    )
+
+
+def _reused_judge_summary_line(outcome: JudgeOutcome) -> str:
+    """The exploratory reused-control count line [ux-friction AC-3 residual].
+
+    The reused pass runs the same JudgingSession as the native pass, so it too lands
+    CANT_JUDGE (a keyless real-provider judge → provider_error) — which the bare
+    ``judged N reused-control comparison(s) [exploratory]`` hid as N successes. Same
+    disclosure as the native line, with the ``[exploratory]`` marker kept LAST. It
+    names THIS pass's outcomes: reuse retries a transient cant_judge on a later pass
+    (the shared session skips only NON-transient verdicts), so a re-run can turn a
+    provider_error into a verdict — the line is the current pass, not a cumulative
+    tally. Pure, so the string is pinned without a CLI."""
+    return _cant_judge_clause(
+        f"judged {outcome.n_reused} reused-control comparison(s)",
+        verdicts=outcome.reused_verdicts, cant_judge=outcome.reused_cant_judge,
+        cant_judge_reasons=outcome.reused_cant_judge_reasons, suffix=" [exploratory]",
     )
 
 
@@ -64,7 +90,7 @@ def register(app: typer.Typer) -> None:
                 "[F-M-J3]", err=True,
             )
         if outcome.n_reused:
-            typer.echo(f"judged {outcome.n_reused} reused-control comparison(s) [exploratory]")
+            typer.echo(_reused_judge_summary_line(outcome))
 
         for cls in sorted(outcome.calibration):
             c = outcome.calibration[cls]

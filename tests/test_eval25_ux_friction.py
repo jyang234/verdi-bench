@@ -526,6 +526,131 @@ def test_ac3_judge_summary_terse_all_substantive():
     assert _judge_summary_line(outcome) == "judged 5 comparison(s)"
 
 
+# --- AC-3 residual: the reused-control line discloses the same split -----------
+_REUSE_ARMS = [  # control-first: the reused control is arms[0], the contender arms[1]
+    {"name": "control", "platform": "claude_code",
+     "model": "anthropic/claude-haiku-4-5-20251001", "payload": {}},
+    {"name": "treatment", "platform": "codex",
+     "model": "openai/gpt-4o-2024-08-06", "payload": {}},
+]
+_REUSE_TASKS = {"tasks": [{"id": "t1", "prompt": "p1"}, {"id": "t2", "prompt": "p2"}]}
+
+
+def _reuse_target_keyless_real_judge(tmp_path: Path) -> Path:
+    """A target experiment with a REAL-provider judge, a reused control, and a fresh
+    contender, so `bench judge` runs the exploratory reused-control pass. Built from
+    the control-reuse fixtures' own pattern (build_bundle -> import_bundle), but
+    LOCKED THROUGH `bench plan` with the two tasks committed, so the judge verb's
+    post-lock task-commitment check passes end to end. The judge never runs on the
+    source (only the target is judged); the control fingerprint excludes the judge,
+    so source and target agree on it byte-for-byte."""
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+    from harness.plan.lock import assert_lock
+    from harness.run.reuse import build_bundle, import_bundle
+    from harness.run.settings import load_run_settings
+    from tests.fixtures.builders import seed_trial_and_grade
+
+    # source: a locked run with graded control trials (its own judge never runs)
+    src = tmp_path / "src-exp"
+    locked_experiment(src, arms=[dict(a) for a in _REUSE_ARMS])
+    (src / "tasks.yaml").write_text(yaml.safe_dump(_REUSE_TASKS), encoding="utf-8")
+    src_ledger = src / "ledger.ndjson"
+    src_ctx = fixed_ctx(experiment_id="src-exp")
+    for tid in ("t1", "t2"):
+        seed_trial_and_grade(src_ledger, src_ctx, trial_id=f"ctrl-{tid}",
+                             task_id=tid, arm="control", passed=True)
+    bundle = build_bundle(src, "control")
+
+    # target: same control arm + tasks, a REAL-provider judge, tasks committed at lock
+    tgt = tmp_path / "tgt-exp"
+    tgt.mkdir(parents=True, exist_ok=True)
+    write_experiment_yaml(tgt / "experiment.yaml", judge=dict(_REAL_JUDGE),
+                          arms=[dict(a) for a in _REUSE_ARMS])
+    (tgt / "tasks.yaml").write_text(yaml.safe_dump(_REUSE_TASKS), encoding="utf-8")
+    tgt_ledger = tgt / "ledger.ndjson"
+    r = CliRunner().invoke(
+        app, ["plan", str(tgt / "experiment.yaml"), "--ledger", str(tgt_ledger)]
+    )
+    assert r.exit_code == 0, r.output
+
+    spec = assert_lock(tgt / "experiment.yaml", tgt_ledger).spec
+    settings = load_run_settings(tgt, spec=spec)
+    import_bundle(tgt, bundle, ctx_for(tgt), engine="fake", spec=spec, settings=settings)
+
+    # a fresh contender (treatment) native trial per task: the reused pass pairs each
+    # against the reused control (its diff read from the snapshot import stashed)
+    tgt_ctx = ctx_for(tgt)
+    for tid in ("t1", "t2"):
+        seed_trial_and_grade(tgt_ledger, tgt_ctx, trial_id=f"cont-{tid}",
+                             task_id=tid, arm="treatment", passed=False)
+    return tgt
+
+
+def test_ac3_reused_line_discloses_cant_judge(tmp_path, monkeypatch):
+    """[ux-friction AC-3 residual] The exploratory reused-control pass runs the SAME
+    JudgingSession as the native pass, so a keyless real-provider judge lands every
+    reused comparison CANT_JUDGE(provider_error) too — yet `bench judge` printed a
+    bare `judged N reused-control comparison(s) [exploratory]`, reading as N reused
+    successes (the native line above already discloses; the reused line did not). The
+    reused line must disclose the same split, `[exploratory]` kept LAST. Exit stays
+    0 (D2).
+
+    Offline by construction, exactly as the native AC-3 reproduction: the harness
+    never auto-loads .env, and the absent key makes require_key raise ProviderError
+    as the request headers are built, before any network call is reached."""
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+    from harness.judge.providers._http import require_key
+    from harness.judge.providers.base import ProviderError
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)  # keyless first-timer
+    with pytest.raises(ProviderError):  # fails on the MISSING KEY before any request
+        require_key("ANTHROPIC_API_KEY")
+
+    tgt = _reuse_target_keyless_real_judge(tmp_path)
+    ledger = tgt / "ledger.ndjson"
+
+    r = CliRunner().invoke(app, ["judge", str(tgt)])
+    assert r.exit_code == 0, r.output  # D2: all-cant_judge is not a command failure
+
+    reused = find_events(ledger, events.REUSED_JUDGE_VERDICT)
+    assert len(reused) == 2  # one reused comparison per task
+    assert all(v["verdict"]["winner"] == "CANT_JUDGE" for v in reused)
+    assert all(v["verdict"]["reason"] == "provider_error" for v in reused)
+
+    out = r.output + (r.stderr or "")
+    # RED today: the bare "judged 2 reused-control comparison(s) [exploratory]".
+    assert (
+        "judged 2 reused-control comparison(s): 0 verdicts, 2 cant_judge "
+        "(provider_error ×2) [exploratory]"
+    ) in out
+
+    # the pure renderer is pinned without a CLI, both branches: the terse form (all
+    # reused verdicts substantive) preserves today's line, and `[exploratory]` stays
+    # LAST in the disclosing form.
+    from harness.judge.api import JudgeOutcome
+    from harness.judge.cli import _reused_judge_summary_line
+
+    def _oc(**kw) -> JudgeOutcome:
+        base = dict(judged=0, stopped_ceiling=False, accumulated=0, ceiling=None,
+                    rubric_warning=False, calibration={})
+        return JudgeOutcome(**{**base, **kw})
+
+    terse = _oc(n_reused=4, reused_verdicts=4, reused_cant_judge=0)
+    assert _reused_judge_summary_line(terse) == (
+        "judged 4 reused-control comparison(s) [exploratory]"
+    )
+    disclosing = _oc(n_reused=2, reused_verdicts=0, reused_cant_judge=2,
+                     reused_cant_judge_reasons={"provider_error": 2})
+    assert _reused_judge_summary_line(disclosing) == (
+        "judged 2 reused-control comparison(s): 0 verdicts, 2 cant_judge "
+        "(provider_error ×2) [exploratory]"
+    )
+
+
 # --- AC-8: judge.panel is refused when set (v2 breadcrumb, D3) -----------------
 def test_ac8_panel_set_refused_named_error():
     """[ux-friction AC-8] judge.panel is a v2 placeholder read by nothing (F9):

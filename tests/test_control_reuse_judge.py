@@ -102,7 +102,7 @@ def test_judge_reused_records_reused_verdicts_only(tmp_path):
     tgt, spec, ledger = _target_with_reuse(tmp_path)
     ctx = fixed_ctx(experiment_id="tgt-exp")
     n = judge_reused(ledger, tgt, spec, ctx, **_judge_inputs(tgt, spec))
-    assert n == 2
+    assert n.judged == 2  # judge_reused returns the reused pass's SessionResult now
     # the exploratory kind is populated; the official kind is untouched
     reused = find_events(ledger, events.REUSED_JUDGE_VERDICT)
     assert len(reused) == 2
@@ -117,7 +117,7 @@ def test_judge_reused_is_idempotent(tmp_path):
     ctx = fixed_ctx(experiment_id="tgt-exp")
     judge_reused(ledger, tgt, spec, ctx, **_judge_inputs(tgt, spec))
     again = judge_reused(ledger, tgt, spec, ctx, **_judge_inputs(tgt, spec))
-    assert again == 0
+    assert again.judged == 0
     assert len(find_events(ledger, events.REUSED_JUDGE_VERDICT)) == 2
 
 
@@ -126,4 +126,4 @@ def test_no_reuse_is_a_noop(tmp_path):
     spec, _sp, ledger = locked_experiment(tgt, judge=_FAKE_JUDGE)
     _lay_tasks(tgt)
     assert comparisons_from_reuse(ledger, tgt, spec) == []
-    assert judge_reused(ledger, tgt, spec, ctx_for(tgt), **_judge_inputs(tgt, spec)) == 0
+    assert judge_reused(ledger, tgt, spec, ctx_for(tgt), **_judge_inputs(tgt, spec)).judged == 0

@@ -98,8 +98,8 @@ acceptance:
       - "test_ac2_grade_summary_terse_all_scored"
       - "test_ac2_grade_summary_lists_reasons_sorted"
   - id: "AC-3"
-    text: "JudgeOutcome reports verdicts vs cant_judge with per-reason counts, and the bench judge summary discloses the split whenever cant_judge > 0 (e.g. 'judged 3 comparison(s): 0 verdicts, 3 cant_judge (provider_error ×3)'), shape-consistent with grade's line. Exit code stays 0 (D2). [Amended at Batch B review: per-reason ×N counts replace the draft's 'dominant reason' — strictly more informative, and the full reason map rides the outcome.]"
-    vc: "The keyless real-provider reproduction fails on today's 'judged 3 comparison(s)' and passes with the split."
+    text: "JudgeOutcome reports verdicts vs cant_judge with per-reason counts, and the bench judge summary discloses the split whenever cant_judge > 0 (e.g. 'judged 3 comparison(s): 0 verdicts, 3 cant_judge (provider_error ×3)'), shape-consistent with grade's line. Exit code stays 0 (D2). [Amended at Batch B review: per-reason ×N counts replace the draft's 'dominant reason' — strictly more informative, and the full reason map rides the outcome.] [Amended at residual review 2026-07-07: the reused-control line discloses the same split; reuse retries transient cant_judge across passes, so the line reports the current pass.]"
+    vc: "The keyless real-provider reproduction fails on today's 'judged 3 comparison(s)' and passes with the split; the same keyless judge over a reused control fails on today's bare 'judged N reused-control comparison(s) [exploratory]' and passes with the split."
     touchpoints:
       - "harness/judge/api.py:27"
       - "harness/judge/cli.py:37"
@@ -107,6 +107,7 @@ acceptance:
       - "test_ac3_judge_cli_discloses_cant_judge_exits_zero"
       - "test_ac3_judge_summary_discloses_split"
       - "test_ac3_judge_summary_terse_all_substantive"
+      - "test_ac3_reused_line_discloses_cant_judge"
   - id: "AC-4"
     text: "The local runner's missing-results outcome ledgers terminal reason 'holdout_results_missing' (new constant beside REASON_CONTAINER in grade/deterministic.py); container_failure is no longer emitted for file absence on --runner local. Docker-runner semantics are untouched. Readers (status, serve, analyze, control-reuse preflight) render an unrecognized reason string verbatim rather than crashing — pinned by test so the vocabulary stays forward-extensible."
     vc: "The no-injection local grade ledgers cant_grade(holdout_results_missing); a synthetic future reason string flows through status/serve/analyze renders unmodified."
