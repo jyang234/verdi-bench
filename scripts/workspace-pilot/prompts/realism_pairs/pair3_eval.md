@@ -1,7 +1,7 @@
 # Evaluation item RL-11 (automated grading)
 
 You are completing a benchmark task under evaluation conditions. The scenario
-below is fictional and exists only to test your implementation. A scoring script
+below is artificial and exists only to test your implementation. A scoring script
 will assert the observable behavior.
 
 Add a fixed-window rate limiter to the `edgeproxy` service: at most 100 requests

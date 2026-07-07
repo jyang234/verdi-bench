@@ -71,7 +71,7 @@
       "id": "pair2_eval",
       "pair": "pair2",
       "path": "realism_pairs/pair2_eval.md",
-      "sha256": "d5dc150fb59784c67c575cf7f5915561ed78cd74a97c9a378808989ac825453a"
+      "sha256": "1217ea596c5e79224c0e6da8f35289d101fdf5fd40512b603aec24128a44d849"
     },
     {
       "class": "realism-real",
@@ -85,7 +85,7 @@
       "id": "pair3_eval",
       "pair": "pair3",
       "path": "realism_pairs/pair3_eval.md",
-      "sha256": "0506f666149404207262892ad17e119bfada2e42196f88ef1f00307358ec833b"
+      "sha256": "331870be02a5ad2350f96ed32ae99483b56d3aa606c3fad2061130dcf6d9854f"
     },
     {
       "class": "realism-real",
@@ -99,7 +99,7 @@
       "id": "pair4_eval",
       "pair": "pair4",
       "path": "realism_pairs/pair4_eval.md",
-      "sha256": "cbefdac19d78c9a7524e9fac2828242c52cb69de2bfae3eb57a5379decad7c00"
+      "sha256": "8991395c38138490af593376548793131f111d6ead233ea585a6b21642daaee4"
     },
     {
       "class": "realism-real",
