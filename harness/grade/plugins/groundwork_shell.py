@@ -151,6 +151,49 @@ def resolve_assets(task) -> tuple[Path, Path]:
     return policy, base_graph
 
 
+def policy_substrate(policy_path: Path) -> str:
+    """The call-graph algorithm the TRUSTED holdouts policy declares it was proposed
+    against — its top-level ``substrate`` field (``rta`` | ``vta`` | ``cha``), or ``""``
+    when the field is absent (a hand-authored / pre-provenance policy). Source of truth
+    for the field: verdi-go ``internal/groundwork/policy/policy.go`` ``Policy.Substrate``.
+
+    Why the branch graph MUST be regenerated with it: the corpus's multi-impl task
+    classes pin their policy to VTA, and under flowmap's DEFAULT rta — which
+    over-approximates dynamic dispatch — a CLEAN solution's read route can appear to
+    reach a write and verify as BLOCKED (a false failure at grade time). Deriving the
+    algorithm here, from the read-only holdouts ``policy_path`` ONLY (:func:`resolve_assets`
+    never looks under /workspace), keeps the grader's substrate a pure function of the
+    trusted spec — a workspace decoy policy declaring a different substrate is ignored
+    by construction [integration plan §2, §3].
+
+    The value is returned VERBATIM for ``flowmap graph --algo``; flowmap validates the
+    vocabulary (one source of truth), so no substrate allow-list is duplicated here.
+    A policy that cannot be read or parsed as a JSON object — or whose ``substrate`` is
+    not a string — is an operational failure (:class:`GroundworkUnavailableError`): the
+    policy is a required trusted asset (``groundwork`` itself would refuse it too), so
+    fail LOUD at first touch rather than regenerate on a guessed substrate [fail closed]."""
+    try:
+        data = json.loads(policy_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise GroundworkUnavailableError(
+            f"groundwork policy at {policy_path} could not be read/parsed as JSON ({e}); "
+            f"it is a required trusted grading asset — refusing to regenerate the branch "
+            f"graph on an unknown substrate"
+        ) from e
+    if not isinstance(data, dict):
+        raise GroundworkUnavailableError(
+            f"groundwork policy at {policy_path} is not a JSON object "
+            f"(got {type(data).__name__}); it is a required trusted grading asset"
+        )
+    substrate = data.get("substrate", "")
+    if not isinstance(substrate, str):
+        raise GroundworkUnavailableError(
+            f"groundwork policy at {policy_path}: substrate must be a string, "
+            f"got {type(substrate).__name__}"
+        )
+    return substrate
+
+
 def _subprocess_env(gocache: Path) -> dict:
     """The child environment: inherit, drop the fence nonce (deep-dive §2.4), and
     point GOCACHE at a writable dir so flowmap's type-checker works even when the
@@ -161,8 +204,17 @@ def _subprocess_env(gocache: Path) -> dict:
     return env
 
 
-def regenerate_branch_graph(workspace, stamp: str, out_dir: Path, env: dict) -> Path:
-    """``flowmap graph [--stamp <stamp>] <workspace>`` → ``out_dir/branch.graph.json``.
+def regenerate_branch_graph(
+    workspace, stamp: str, out_dir: Path, env: dict, algo: str = ""
+) -> Path:
+    """``flowmap graph [--stamp <stamp>] [--algo <algo>] <workspace>`` →
+    ``out_dir/branch.graph.json``.
+
+    ``algo`` is the holdouts policy's declared ``substrate`` (:func:`policy_substrate`);
+    empty selects flowmap's default (rta). It MUST match the algorithm the policy was
+    proposed against — a vta-pinned task graded under rta over-approximates dispatch
+    and falsely BLOCKs a clean solution [integration plan §3]. Passed verbatim; flowmap
+    validates the vocabulary.
 
     The graph is written OUTSIDE the workspace (``out_dir`` is a throwaway temp
     dir) so nothing groundwork-derived lands in the graded tree. flowmap's flags
@@ -176,6 +228,8 @@ def regenerate_branch_graph(workspace, stamp: str, out_dir: Path, env: dict) -> 
     argv = [flowmap, "graph"]
     if stamp:
         argv += ["--stamp", stamp]
+    if algo:
+        argv += ["--algo", algo]
     argv.append(str(workspace))
     try:
         proc = subprocess.run(
@@ -300,19 +354,23 @@ def review_artifact(workspace, task) -> tuple[dict, Toolchain]:
     """The full real-path pipeline → ``(artifact, toolchain)``.
 
     Resolves the trusted assets from the holdouts side, regenerates the branch
-    graph from the workspace into a throwaway temp dir OUTSIDE the workspace, runs
+    graph from the workspace into a throwaway temp dir OUTSIDE the workspace — with
+    the call-graph algorithm the holdouts policy's ``substrate`` declares
+    (:func:`policy_substrate`; default rta), so a vta-pinned task class grades on the
+    substrate its policy was proposed against — runs
     ``groundwork review``, and — once the verdict is computed — captures the
     flowmap+groundwork build identity for grade provenance (best-effort; a version
     probe never fails the grade). The temp dir (branch graph + a writable GOCACHE)
     is always removed. Every REVIEW failure raises (→ ``cant_grade(plugin_error)``)."""
     policy, base_graph = resolve_assets(task)
+    algo = policy_substrate(policy)
     stamp = getattr(task, "task_sha", "") or ""
     tmp = Path(tempfile.mkdtemp(prefix="verdi-groundwork-"))
     try:
         gocache = tmp / "gocache"
         gocache.mkdir()
         env = _subprocess_env(gocache)
-        branch = regenerate_branch_graph(workspace, stamp, tmp, env)
+        branch = regenerate_branch_graph(workspace, stamp, tmp, env, algo)
         artifact = run_review(policy, base_graph, branch, env)
         toolchain = capture_toolchain(env)
         return artifact, toolchain

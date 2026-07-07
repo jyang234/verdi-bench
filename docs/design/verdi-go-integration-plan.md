@@ -137,9 +137,14 @@ Real path, executed inside the grade container on the fresh workspace copy:
 1. Locate task assets under `/holdouts/<task>/groundwork/`: `policy.json`,
    `base.graph.json` (CI-built, stamped), optional `flows/` corpus.
 2. `flowmap graph <workspace-module> --stamp <workspace_sha>` → `branch.graph.json`.
-   Failure to build/type-check → the plugin raises → terminal `cant_grade(plugin_error)`
-   (a workspace that does not compile is separately caught by functional holdouts; the
-   distinction is preserved in assertion details).
+   The branch graph is regenerated with the call-graph algorithm the **holdouts**
+   `policy.json`'s top-level `substrate` field declares (`--algo rta|vta|cha`, default
+   `rta` when absent; derived from the trusted holdouts copy only, never the workspace),
+   so the multi-impl task classes whose policies are pinned to VTA grade on that
+   substrate — under default RTA's dispatch over-approximation a clean solution can
+   falsely verify as blocked. Failure to build/type-check → the plugin raises → terminal
+   `cant_grade(plugin_error)` (a workspace that does not compile is separately caught by
+   functional holdouts; the distinction is preserved in assertion details).
 3. `groundwork review policy.json base.graph.json branch.graph.json --json` — the
    two-graph review whose top-line verdict is BLOCK / STRUCTURALLY-CLEAR /
    NO-STRUCTURAL-SIGNAL (see D1). Exit `2` → raise (operational); exit `0/1` → parse

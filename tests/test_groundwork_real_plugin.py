@@ -397,6 +397,123 @@ def test_version_probe_failure_degrades_to_unknown_without_failing_grade(tmp_pat
 
 
 # --------------------------------------------------------------------------- #
+# Substrate-aware branch-graph regeneration: the branch graph is regenerated with
+# the call-graph algorithm the TRUSTED holdouts policy's `substrate` declares, so a
+# vta-pinned task class grades on its own substrate (under default rta a clean
+# solution can falsely verify as BLOCKed — rta over-approximates dispatch)
+# [integration plan §3; verdi-go policy.go Policy.Substrate]. The algorithm is
+# derived from the holdouts policy ONLY — a workspace decoy is ignored by
+# construction. A recording fake flowmap captures the `graph` argv.
+# --------------------------------------------------------------------------- #
+
+def _recording_flowmap(
+    path: Path, argv_log: Path, *, version_line: str = "flowmap vtest",
+    stdout: str = '{"nodes":[],"edges":[]}',
+) -> str:
+    """A fake flowmap that RECORDS the argv of its ``graph`` invocation to
+    ``argv_log`` (as JSON) so a test can assert the ``--algo``/``--stamp`` flags and
+    their position relative to the workspace path, answers ``version`` distinctly (so
+    the real ``capture_toolchain`` path still runs), and prints a minimal graph for
+    ``graph``. Only the ``graph`` argv is logged — the later ``version`` probe must not
+    overwrite it."""
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, json\n"
+        "cmd = sys.argv[1] if len(sys.argv) > 1 else ''\n"
+        "if cmd == 'version':\n"
+        f"    sys.stdout.write({version_line!r} + '\\n')\n"
+        "    raise SystemExit(0)\n"
+        "if cmd == 'graph':\n"
+        f"    open({str(argv_log)!r}, 'w', encoding='utf-8').write(json.dumps(sys.argv))\n"
+        f"    sys.stdout.write({stdout!r})\n"
+        "    raise SystemExit(0)\n"
+        "raise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return str(path)
+
+
+def _record_regen(tmp_path, monkeypatch, *, holdouts_policy: str, workspace_decoy: str | None = None) -> list:
+    """Run the real ``review_artifact`` pipeline with fake binaries over a planted
+    holdouts ``policy.json`` (and optionally a workspace decoy policy), returning the
+    recorded ``flowmap graph`` argv."""
+    monkeypatch.setattr(groundwork_shell, "CONTAINER_HOLDOUTS", tmp_path / "no-mount")
+    hd = tmp_path / "hd"
+    _plant_holdouts(hd, policy=holdouts_policy)
+    argv_log = tmp_path / "flowmap_argv.json"
+    monkeypatch.setenv("VERDI_FLOWMAP_BIN", _recording_flowmap(tmp_path / "flowmap", argv_log))
+    monkeypatch.setenv("VERDI_GROUNDWORK_BIN", _fake_versioned_bin(
+        tmp_path / "groundwork", version_line="groundwork vtest",
+        exit_code=1, stdout=json.dumps(load_review("block"))))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    if workspace_decoy is not None:
+        (workspace / "groundwork").mkdir(parents=True)
+        (workspace / "groundwork" / "policy.json").write_text(workspace_decoy, encoding="utf-8")
+    task = GradeTask(id="t", task_sha="s", holdouts_dir=str(hd))
+    groundwork_shell.review_artifact(workspace, task)
+    return json.loads(argv_log.read_text(encoding="utf-8"))
+
+
+def test_regen_passes_algo_from_holdouts_substrate_before_workspace(tmp_path, monkeypatch):
+    """A holdouts policy with ``substrate: vta`` → ``flowmap graph --algo vta`` with
+    the flag BEFORE the workspace path (flowmap requires flags first)."""
+    argv = _record_regen(
+        tmp_path, monkeypatch,
+        holdouts_policy='{"service":"invsvc","version":1,"substrate":"vta"}')
+    assert "--algo" in argv, argv
+    assert argv[argv.index("--algo") + 1] == "vta", argv
+    # the workspace positional is present and the flag precedes it
+    ws = str(tmp_path / "workspace")
+    assert ws in argv, argv
+    assert argv.index("--algo") < argv.index(ws), argv
+
+
+def test_regen_omits_algo_when_policy_has_no_substrate(tmp_path, monkeypatch):
+    """A policy WITHOUT ``substrate`` → no ``--algo`` (flowmap's default rta). This is
+    the invsvc-fixture case: behavior is unchanged for pre-provenance policies."""
+    argv = _record_regen(
+        tmp_path, monkeypatch, holdouts_policy='{"service":"invsvc","version":1}')
+    assert "--algo" not in argv, argv
+
+
+def test_decoy_workspace_substrate_does_not_influence_algo(tmp_path, monkeypatch):
+    """SECURITY [plan §2]: the substrate is derived from the HOLDOUTS policy only. A
+    workspace decoy declaring a DIFFERENT substrate is structurally ignored
+    (:func:`resolve_assets` never looks under /workspace), so the graded party cannot
+    choose the grader's call-graph algorithm."""
+    argv = _record_regen(
+        tmp_path, monkeypatch,
+        holdouts_policy='{"service":"invsvc","version":1,"substrate":"vta"}',
+        workspace_decoy='{"service":"attacker","version":1,"substrate":"cha"}')
+    # holdouts vta wins; the decoy's cha never reaches the argv
+    assert argv[argv.index("--algo") + 1] == "vta", argv
+    assert "cha" not in argv, argv
+
+
+def test_policy_substrate_unparseable_json_fails_closed_naming_path(tmp_path):
+    """An unparseable policy is an operational failure whose detail NAMES the policy
+    path — the policy is a required trusted asset, so regenerating on a guessed
+    substrate is refused [fail closed]."""
+    bad = tmp_path / "policy.json"
+    bad.write_text("{not valid json", encoding="utf-8")
+    with pytest.raises(GroundworkUnavailableError) as ei:
+        groundwork_shell.policy_substrate(bad)
+    assert str(bad) in str(ei.value)
+
+
+def test_policy_substrate_reads_field_and_defaults_empty(tmp_path):
+    """The helper returns the verbatim substrate when present and ``""`` when absent —
+    the two inputs the regeneration path branches on."""
+    p = tmp_path / "policy.json"
+    p.write_text('{"service":"s","version":1,"substrate":"vta"}', encoding="utf-8")
+    assert groundwork_shell.policy_substrate(p) == "vta"
+    p.write_text('{"service":"s","version":1}', encoding="utf-8")
+    assert groundwork_shell.policy_substrate(p) == ""
+
+
+# --------------------------------------------------------------------------- #
 # Container wiring: the plugin container mounts the trusted holdouts read-only at
 # /holdouts, and the in-container task names that mount (never the host path).
 # --------------------------------------------------------------------------- #

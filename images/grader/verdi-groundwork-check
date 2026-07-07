@@ -8,10 +8,14 @@
 # It runs INSIDE the network-less grade container, where /workspace is the
 # agent's solution copy and /holdouts is this task's read-only holdouts mount.
 #
-# It regenerates the branch graph FROM /workspace and runs
+# It regenerates the branch graph FROM /workspace — with the call-graph algorithm
+# the HOLDOUTS policy's "substrate" declares (rta|vta|cha; default rta), so a
+# vta-pinned task grades on the substrate its policy was proposed against and a
+# clean solution is not falsely BLOCKed by rta's dispatch over-approximation — and
+# runs
 #   groundwork verify <policy> <base-graph> <branch-graph> --json
 # so the graded party can never forge a verdict with a planted graph.json
-# [integration plan §2, D2].
+# [integration plan §2, §3, D2].
 #
 # SECURITY INVARIANT: the policy and base graph are read from the HOLDOUTS side
 # ONLY — NEVER from the workspace. The workspace is agent-authored; a policy or
@@ -63,11 +67,34 @@ export GOCACHE="${GOCACHE:-$WORK/gocache}"
 mkdir -p "$GOCACHE"
 BRANCH_GRAPH="$WORK/branch.graph.json"
 
+# The call-graph algorithm to regenerate with: the HOLDOUTS policy's top-level
+# "substrate" field (rta|vta|cha), read from $POLICY ONLY — never the workspace, so
+# the graded party cannot pick the grader's algorithm. Empty/absent -> no flag
+# (flowmap defaults to rta). Passed verbatim to `flowmap graph --algo`; flowmap
+# validates the vocabulary (one source of truth). A policy that will not parse as a
+# JSON object, or whose substrate is not a string, is an operational failure — fail
+# LOUD at first touch rather than regenerate on a guessed substrate (groundwork
+# verify below would refuse it too). See verdi-go policy.go Policy.Substrate.
+SUBSTRATE="$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError) as e:
+    raise SystemExit("not valid JSON: %s" % e)
+s = d.get("substrate", "") if isinstance(d, dict) else None
+if not isinstance(s, str):
+    raise SystemExit("substrate must be a string (or absent)")
+print(s)
+' "$POLICY" 2> "$WORK/policy.err")" \
+	|| fail_operational "could not derive substrate from policy $POLICY: $(tail -c 300 "$WORK/policy.err")"
+ALGO_ARGS=()
+[ -n "$SUBSTRATE" ] && ALGO_ARGS=(--algo "$SUBSTRATE")
+
 # Regenerate the branch graph from the workspace. flowmap flags MUST precede the
 # directory argument. A non-zero exit is a load/type-check failure.
 STAMP_ARGS=()
 [ -n "$TASK_ID" ] && STAMP_ARGS=(--stamp "$TASK_ID")
-if ! "$FLOWMAP" graph "${STAMP_ARGS[@]}" "$WORKSPACE" > "$BRANCH_GRAPH" 2> "$WORK/flowmap.err"; then
+if ! "$FLOWMAP" graph "${STAMP_ARGS[@]}" "${ALGO_ARGS[@]}" "$WORKSPACE" > "$BRANCH_GRAPH" 2> "$WORK/flowmap.err"; then
 	fail_operational "flowmap graph failed (workspace did not type-check): $(tail -c 600 "$WORK/flowmap.err")"
 fi
 
