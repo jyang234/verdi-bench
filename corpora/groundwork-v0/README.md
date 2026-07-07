@@ -1,0 +1,253 @@
+# groundwork-v0 corpus
+
+Corpus v0 for the verdi-go × verdi-bench flagship experiment
+(`docs/design/verdi-go-integration-plan.md`, Track A3 / §5–§6, decisions **D1**
+both-holdout-roles, **D3** stdlib-only). Sixteen closed-loop Go coding tasks. Each
+plants a **clean trap**: a realistic feature whose *natural* implementation trips
+exactly one architectural invariant that the `groundwork` gate enforces, while a
+disciplined implementation does not — and the tempting implementation is
+**functionally correct**, so only the invariant distinguishes the two.
+
+The corpus exists to measure the one surviving in-loop result of verdi-go's own
+A/B postmortem (Tier 9b): *does a sound gate surfaced in the coding loop stop an
+agent from shipping a working-but-invariant-violating change that it otherwise
+reviews right past?* It is **not** a discovery benchmark — the postmortem killed
+every per-instance capability claim (§7 there). The trap classes and the
+mandatory null class follow the postmortem's clean-trap discipline (§9a/§9b) and
+its anti-cherry-pick posture (nulls kept in the tally).
+
+## Contents / class ratios
+
+| class            | ids            | n | trap dimension |
+|------------------|----------------|---|----------------|
+| reach-trap       | `gw-r1`..`gw-r5` | 5 | natural impl writes on a read route / skips a layer / bypasses a waypoint / blows an I/O budget / writes from a goroutine |
+| obligation-trap  | `gw-o1`..`gw-o4` | 4 | easy edit leaks a CFG exit (tx / semaphore / batch not released; publish not audit-dominated) |
+| null (mandatory) | `gw-n1`..`gw-n4` | 4 | none binds — measures false friction (over-abstention); anti-cherry-pick |
+| multi-impl residual | `gw-m1`..`gw-m3` | 3 | forbidden effect hidden behind interface dispatch; only VTA resolves the live impl (the postmortem's one untested residual) |
+
+Total **16** tasks (plan §5 target: 12–30 for v0). Every reach/obligation/multi
+trap spans a distinct `groundwork` invariant family so the corpus is not a single
+rule wearing sixteen costumes.
+
+## Method
+
+### Clean-trap discipline (binding — from the 9a/9b postmortem)
+
+1. **Exactly one property under test.** The `exemplar-violation/` tree violates
+   ONE rule (the trap) and is not incidentally buggy in any other way. 9a's false
+   null came from over-determined traps whose incidental bugs let a reviewer
+   reject on plain-correctness grounds without ever needing the invariant.
+2. **The tempting implementation is functionally CORRECT.** Its acceptance test
+   passes; the leak/skip/over-write is invisible to functional tests and caught
+   only by the gate. This is what makes the gate's value (not a test's) the thing
+   under measurement.
+3. **Neutral prompts.** `prompt.md` requests the feature only — never the policy,
+   the invariant, layering, groundwork, or evaluation, and never a hint at the
+   trap.
+4. **Functional parity.** Both trees satisfy the prompt identically on
+   observable behavior; the diff between `solution/` and `exemplar-violation/` is
+   minimal (ideally one function or, for multi-impl, one wiring line).
+
+### Seeds and mutation (D3: stdlib-only)
+
+Seeded by copying then **mutating** verdi-go's committed stdlib-only fixtures
+(`testdata/groundwork/{layeredsvc,blindsvc,obligsvc}`) — renamed module paths,
+packages, domain vocabulary, and string literals — because the originals are
+public and memorization must not help (EVAL-10 contamination posture). Multi-impl
+tasks (`gw-m*`) are authored fresh. Every workspace is its own module
+(`example.com/<fresh-name>`, `go` directive ≤ 1.24) and passes
+`go build ./... && go vet ./... && go test ./...` as shipped.
+
+Each workspace uses two seams the seed fixtures lack, both required to make a
+static-analysis fixture *functionally testable* (the fixtures' DB layer is a nil
+`*sql.DB` that panics if run):
+
+- the DB layer is an **interface** (`repo.Store`) with a live `database/sql`
+  implementation (analyzed, never executed) and an in-test in-memory fake. Test
+  files are excluded from the flowmap graph, so fakes never pollute the analysis.
+- a **`wire` composition seam** (`wire.Handler(...) http.Handler`) so a hidden
+  feature test can drive the fully-wired handler. For a `layering` policy `wire`
+  is listed in `layering.roots` (composition legitimately touches every layer).
+
+### Policy authorship
+
+`groundwork init` against the seed graph, then human curation to the trap's
+invariant (the policy *is* the trap's spec). Each policy is `groundwork
+policy-check`-clean and focused: the trap's rule is the binding invariant, other
+families held dormant, so cell (c) names exactly one rule.
+
+## Holdout composition (the one-holdout reality)
+
+`harness/grade/holdouts.py` exposes **exactly one** declared `holdout.json` per
+task (a discriminated union `assertion|pytest|command`; verified against source —
+`load_declared_holdout` returns a single object, and the grade path executes one).
+The plan's D1 wants *both* a functional check and the groundwork gate feeding the
+binary score. With one holdout, they are composed into a single `command`
+holdout:
+
+```
+sh -c 'set -e;
+       cp /holdouts/<id>/functional/feature_test.go ./<pkg>/feature_test.go;
+       go test ./...;
+       /usr/local/bin/verdi-groundwork-check <id>'
+```
+
+so `holdout_pass_rate` = **"shipped a working feature that respects the
+invariant"** — a broken submission fails (go test) and a working-but-violating one
+fails (the gate). Per-rule attribution rides the separate `plugin_ids:
+[groundwork]` vector (fractional/forensic color, D1). `verdi-groundwork-check` is
+the grader-image wrapper (plan §3): it regenerates the branch graph from the
+workspace **with the policy's substrate** and runs `groundwork verify`.
+
+The hidden feature test (`feature_test.go`, absent from the agent's workspace, so
+the base ships green) is materialized to `holdouts/<id>/functional/` and injected
+at grade time; the trusted `policy.json` + `base.graph.json` live under
+`holdouts/<id>/groundwork/` (the grader regenerates the branch graph — D2, never
+trusts an agent-supplied graph). A per-task canary is stamped into the holdout
+material and declared in `holdout_canaries` so a leak scan (AC-9) can assert it
+never reaches the trial.
+
+## Substrate: RTA vs VTA
+
+Reach / obligation / null tasks use **RTA** (flowmap default). Multi-impl tasks
+pin **VTA** in the policy and must be built `flowmap graph --algo vta`: with two+
+implementations of an interface instantiated in one tree, RTA over-approximates
+dispatch and *false-BLOCKs the clean solution*; VTA resolves the field to its
+wired concrete value. That RTA→false-positive / VTA→clean contrast IS the
+residual (the gate computes the live set; a hand-tracer / RTA cannot). See each
+`gw-m*/expected.md`.
+
+## Validation matrix
+
+Per task, with the pinned binaries (`build_tasks.py --check`):
+
+- **(a)** base `workspace/`: `groundwork fitness policy base.graph` → exit **0**.
+- **(b)** `solution/`: `go test ./...` passes **and** `groundwork verify policy
+  base.graph solution.graph` → exit **0**.
+- **(c)** `exemplar-violation/`: `go test ./...` passes **and** `groundwork verify
+  policy base.graph exemplar.graph` → exit **1** naming the trap rule (for **null**
+  tasks this tree is a *plausible alternative* and the expectation is exit **0**).
+
+<!-- VALIDATION_MATRIX -->
+Committed run (flowmap/groundwork built from verdi-go HEAD, self-reported build
+`v0.0.0-20260707120445-827ad9a0d237`, Go 1.24.x). `go(w/s/e)` = build+vet+test on
+workspace/solution/exemplar; `a.fit` = base fitness rc 0; `b.sol` = solution
+verify rc 0; `c.exm` = exemplar verify rc as expected (1 for traps, 0 for
+nulls); `rule` = the family named in cell (c). Regenerate with
+`FLOWMAP=… GROUNDWORK=… python3 build_tasks.py --check`.
+
+```
+id       class            sub  go(w/s/e)  a.fit  b.sol  c.exm  rule
+-------------------------------------------------------------------
+gw-m1    multi-impl       vta  P/P/P      ok     ok     ok     must_not_reach
+gw-m2    multi-impl       vta  P/P/P      ok     ok     ok     must_not_reach
+gw-m3    multi-impl       vta  P/P/P      ok     ok     ok     must_not_reach
+gw-n1    null             rta  P/P/P      ok     ok     ok     (clean)
+gw-n2    null             rta  P/P/P      ok     ok     ok     (clean)
+gw-n3    null             rta  P/P/P      ok     ok     ok     (clean)
+gw-n4    null             rta  P/P/P      ok     ok     ok     (clean)
+gw-o1    obligation-trap  rta  P/P/P      ok     ok     ok     obligation
+gw-o2    obligation-trap  rta  P/P/P      ok     ok     ok     obligation
+gw-o3    obligation-trap  rta  P/P/P      ok     ok     ok     obligation
+gw-o4    obligation-trap  rta  P/P/P      ok     ok     ok     obligation
+gw-r1    reach-trap       rta  P/P/P      ok     ok     ok     layering
+gw-r2    reach-trap       rta  P/P/P      ok     ok     ok     must_not_reach
+gw-r3    reach-trap       rta  P/P/P      ok     ok     ok     io_budget
+gw-r4    reach-trap       rta  P/P/P      ok     ok     ok     must_pass_through
+gw-r5    reach-trap       rta  P/P/P      ok     ok     ok     no_concurrent_reach
+-------------------------------------------------------------------
+ALL CELLS GREEN
+```
+
+Specific rule ids named in cell (c): `gw-o1` `tx-must-close` · `gw-o2`
+`slot-must-release` · `gw-o3` `audit-before-publish` · `gw-o4` `batch-must-close`
+· `gw-r2`/`gw-m1`/`gw-m2`/`gw-m3` `read-route-stays-read-only` · `gw-r4`
+`writes-through-authorize` · `gw-r5` `no-concurrent-db-writes`. The multi-impl
+residual is additionally confirmed on all three `gw-m*` tasks out-of-matrix: the
+clean solution **false-BLOCKs under `--algo rta`** (rc 1) and passes under `vta`
+(rc 0).
+
+`--check` also enforces: `groundwork policy-check` clean per policy; the hidden
+feature test exists and is byte-identical between `solution/` and
+`exemplar-violation/` (functional parity); the committed `workspace/graph.json`
+matches a fresh build (staleness guard); and policy↔meta substrate agreement.
+<!-- /VALIDATION_MATRIX -->
+
+## Task inventory
+
+<!-- TASK_INVENTORY -->
+| id | class | seed | binding rule | trap |
+|----|-------|------|--------------|------|
+| gw-r1 | reach-trap | layeredsvc | `layering` | history reads done directly in the api handler, skipping core (new api→repo edge) |
+| gw-r2 | reach-trap | layeredsvc | `must_not_reach` | per-GET view counter persisted via a repo UPDATE on the GET path (write on a read route) |
+| gw-r3 | reach-trap | layeredsvc | `io_budget` | finalize writes a separate audit_log row on top of UPDATE invoices + INSERT receipts — 3 distinct write targets over the budget of 2 |
+| gw-r4 | reach-trap | layeredsvc | `must_pass_through` | DELETE /docs/{id} skips the `core.Service.Authorize` waypoint every other write passes through |
+| gw-r5 | reach-trap | layeredsvc | `no_concurrent_reach` | the send-audit INSERT fired on a `go` goroutine — a DB write along a concurrent edge |
+| gw-o1 | obligation-trap | obligsvc | `tx-must-close` | Transfer returns on the debit-error branch without releasing the transaction |
+| gw-o2 | obligation-trap | obligsvc | `slot-must-release` | Process returns on the validation-error branch without releasing the limiter slot |
+| gw-o3 | obligation-trap | obligsvc | `audit-before-publish` | Approve publishes before writing the audit entry (publish not audit-dominated) |
+| gw-o4 | obligation-trap | obligsvc | `batch-must-close` | Import returns on the row-rejected branch without flushing or discarding the batch |
+| gw-n1 | null | layeredsvc | none (reach-null) | a legitimate 1-write create on a write route; a 2-write alternative also stays clean |
+| gw-n2 | null | layeredsvc | none (layering-null) | a clean read composed through core; a variant with an extra derived field also stays clean |
+| gw-n3 | null | obligsvc | none (obligation-null) | a balance read that opens no transaction; nothing to leak |
+| gw-n4 | null | blindsvc | none (blind-spot-null) | a dynamic publish watched by a must_not_reach on a *different* route, which abstains (CAUTION) over the blind frontier — non-blocking |
+| gw-m1 | multi-impl | authored fresh | `must_not_reach` | view-counting reuses the ledger-backed Counter → db UPDATE behind dispatch; only VTA resolves the live impl |
+| gw-m2 | multi-impl | authored fresh | `must_not_reach` | read-receipting reuses the DB-backed recorder → db INSERT behind dispatch |
+| gw-m3 | multi-impl | authored fresh | `must_not_reach` | read-activity reuses the bus-backed emitter → bus PUBLISH behind dispatch |
+
+Per-task detail (which rule binds, why the tempting code is functionally
+correct, expected verdicts) lives in each `tasks/<id>/expected.md`;
+machine-readable facts in `tasks/<id>/task.meta.json`.
+<!-- /TASK_INVENTORY -->
+
+## build_tasks.py
+
+Stdlib-only (imports no harness code); shells out to the pinned binaries via
+`$FLOWMAP` / `$GROUNDWORK` / `$GO`.
+
+```bash
+FLOWMAP=/path/flowmap GROUNDWORK=/path/groundwork python3 build_tasks.py --check
+python3 build_tasks.py --out <expt-dir>          # tasks.yaml + holdouts/<id>/
+python3 build_tasks.py --solutions <sol-dir>     # reference trees for the k=5 baseline
+```
+
+`--out` emits `tasks.yaml` (the workspace inlined via the schema's `files:` map;
+`plugin_ids:[groundwork]`; `holdouts_dir`; `holdout_canaries`) as JSON — which is
+valid YAML, so the harness's lenient reader loads it and the write-side `TaskSpec`
+(`extra=forbid`) accepts it. Output is deterministic (sorted walks, key-sorted
+JSON, no timestamps).
+
+## Provenance & determinism
+
+- Seeds: verdi-go `testdata/groundwork/{layeredsvc,blindsvc,obligsvc}` (mutated).
+- Graphs: **never hand-written** — every `graph.json` is produced by the pinned
+  `flowmap` build. `graph.json` is byte-identical for a fixed source tree *per
+  flowmap build only* (cross-version identity is not promised); `--check`
+  regenerates and diffs the committed `workspace/graph.json` as a determinism
+  guard, and the grader regenerates at grade time regardless (D2). Pin one
+  `flowmap`/`groundwork` binary across trial images, grader image, and these
+  committed graphs, or groundwork will (correctly) flag mismatch.
+- Toolchain: authored/validated against `flowmap`/`groundwork` built from verdi-go
+  at the reviewed HEAD, Go 1.24.x. The grader image's analyzer toolchain must be
+  ≥ the highest `go` directive any workspace declares (all are `go 1.24.0`).
+
+## Admission (P2) — caveats and open items
+
+- **Contamination:** fixture ancestry is public. Seeds are mutated, but run the
+  EVAL-10 contamination probe before any official render (plan §5, §9).
+- **k=5 flake baseline** on each reference solution (`--solutions` output) is an
+  admission prerequisite (plan §10 P2) and will also catch any groundwork
+  nondeterminism — run it before admission.
+- **Grader-image substrate:** the `verdi-groundwork-check` wrapper MUST build the
+  branch graph with each task's declared substrate (`task.meta.json.graph_substrate`).
+  Multi-impl tasks are unsound under RTA (they false-BLOCK clean solutions) — the
+  wrapper reading the policy's `substrate` field closes this. Flagged as a P2
+  gate item.
+- **Functional-holdout API pinning:** the injected `feature_test.go` drives the
+  service through its `wire.Handler` / `core.Service` construction seam, so it
+  pins that seam's signature. Prompts establish the seam; a correct implementation
+  matches it. Standard for a hidden acceptance test, but noted so reviewers judge
+  prompt specificity deliberately.
+- **Scale:** graphs are ~10–40 nodes; findings must scope claims to corpus size
+  (plan §9). Larger services (`loansvc`-class) join once the grader image bakes a
+  `GOMODCACHE`.
