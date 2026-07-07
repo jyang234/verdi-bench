@@ -1,0 +1,4 @@
+{"init":true,"session":"1"}
+{"call":{"name":"ground","arguments":{"fqn":"example.com/ordersvc/internal/api.(*API).GetOrder"}},"service":"graph.json","session":"1"}
+{"call":{"name":"reach","arguments":{"fqn":"example.com/ordersvc/internal/repo.(*Store).UpdateViews"}},"service":"graph.json","session":"1"}
+{"call":{"name":"fitness","arguments":{}},"service":"graph.json","session":"1"}

@@ -1,0 +1,1 @@
+{"schema_version":3,"trial_id":"trial-no-edits","platform":"claude_code","steps":[{"kind":"message","command":"","detail":"Investigating; no edit needed."},{"kind":"tool_call","command":"","detail":"grounding card ..."},{"kind":"tool_call","command":"","detail":"all invariants hold; no cautions"}]}
