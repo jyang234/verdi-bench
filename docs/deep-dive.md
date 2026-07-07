@@ -52,8 +52,8 @@ names the events each stage appends.
 
 ```yaml
 arms:
-  - {name: control,   platform: claude_code, model: anthropic/claude-3-5-sonnet-20241022, payload: {}}
-  - {name: treatment, platform: codex,       model: openai/gpt-4o-2024-08-06,             payload: {}}
+  - {name: control,   platform: claude_code, model: anthropic/claude-haiku-4-5-20251001, payload: {}}
+  - {name: treatment, platform: codex,       model: openai/gpt-4o-2024-08-06,            payload: {}}
 corpus: {id: public-mini, version: "1.0.0"}
 repetitions: 3
 primary_metric: holdout_pass_rate
@@ -62,6 +62,11 @@ judge: {model: google/gemini-1.5-pro-002, rubric: rubrics/code-task-v1.md, order
 seed: 1234
 cost_ceiling: {amount: 25.0, currency: USD}
 ```
+
+This is the shape of the one canonical starter template
+(`harness/sdk/templates/starter-experiment.yaml`) that `bench init`, the SDK
+builder, the author surface, and the usage guide all derive from — edit that file,
+not a copy, when the example needs to change.
 
 Schema validation (`harness/schema/`) is strict: `primary_metric` must come
 from the closed EVAL-3 metric vocabulary — you cannot register a judge
@@ -94,11 +99,16 @@ prompt delivered read-only at `/verdi/request.json` *outside* the graded
 workspace, provider keys env-injected, egress confined to a metering proxy
 with per-trial attribution, kill-on-timeout). The Harbor library is importable
 only by the engine seam — an import-linter contract plus an AST sweep
-(`tests/test_eval4_seam.py`) keep it that way.
+(`tests/test_eval4_seam.py`) keep it that way. The Docker *mechanics* themselves
+— argv construction, the daemon probe, the metered network, and the
+metering-proxy lifecycle — live in `harness/hermetic/`, the one layer that talks
+to Docker; harbor and the grader route through it.
 
 Three of those container guarantees fail *closed* rather than degrading
-silently. The metering proxy is an **external operational component** (a
-reference squid config ships in `deploy/metering-proxy/`); a
+silently. The metering proxy can be a **managed** one the harness stands up and
+tears down around the run (`proxy.managed`, or `bench proxy up`), or an
+**external operational component** (a reference squid config ships in
+`deploy/metering-proxy/`); a
 configured-but-absent per-trial proxy log raises rather than being read as zero
 egress and zero cost [PRA-H4], and a proxy that is unreachable at preflight
 aborts the run instead of letting trials leak egress un-metered [PRA-M9].
@@ -320,7 +330,8 @@ experiments at the realized N and verifies the chosen CI method actually
 achieves its nominal coverage, appending **`selfcheck`**. An official render
 requires a current, passing selfcheck.
 
-`bench analyze` computes findings (`harness/analyze/report.py`): paired
+`bench analyze` computes findings (`harness/analyze/findings/`, re-exported
+through the `harness/analyze/report.py` facade): paired
 per-task deltas, bootstrap CIs (method — `percentile`, `bca`, or
 `cluster_robust_t` — selected by empirical coverage under
 `harness/analyze/nullsim.py`, and each finding records the method that
@@ -373,7 +384,7 @@ This section is the skeptic's index: claim → mechanism → owner.
 | No operation happened off the record | every verb routes through typed constructors in `events.py`; direct chain writes are contract-forbidden | one-event property sweep `test_ac7_one_event_per_operation` over the closed entrypoint registry |
 | The ledger you're shown is the ledger that was written | hash chain + optional external anchors | `test_eval3_chain.py`, `test_eval3_anchors.py` |
 | Arms never saw graders' answers | holdouts/rubrics outside trial workspaces; canary strings planted and asserted absent | `test_ac9_holdout_canaries_absent`, `test_ac1_holdouts_readonly` |
-| Grades are mechanical | no-LLM import contracts on `harness/grade/`, the `harness/forensics/` deterministic tier, and the `harness/contamination/` detectors | four of the eight import-linter contracts |
+| Grades are mechanical | no-LLM import contracts on `harness/grade/`, the `harness/forensics/` deterministic tier, and the `harness/contamination/` detectors | three of the ten import-linter contracts |
 | The judge can't favor a brand | identity scrub with per-experiment canaries; property tests plant canaries and assert absence from payloads | `test_ac1_scrub_canaries` and packet property tests |
 | Judge weight is earned, not assumed | order-consistency diagnostics; IPW kappa vs blinded humans; escalation gate at κ<0.6 | `test_eval2_calibrate.py`, `test_eval7_review.py` kappa suite |
 | Secrets don't leak into artifacts | capture-side redaction plus defense-in-depth rescans before any provider call; property tests with generated secrets | `test_ac2_capture_post_redaction`, redaction suites in eval4 |
@@ -382,11 +393,12 @@ This section is the skeptic's index: claim → mechanism → owner.
 | Nothing suppresses evidence | flags/confounds/quarantines render beside the comparison in *both* renders, non-suppressing | `test_ac5_flags_render_beside_comparison` |
 | Docs match the binary | README verb coverage and both this doc's and the README's spelled-out contract counts are tested; AC coverage is recomputed at collection | `test_readme_consistency.py`, `tests/ac_coverage.py` hook |
 
-Five structural contracts complete the set: Harbor is importable only through
+Seven structural contracts complete the set: Harbor is importable only through
 the engine seam, ledger appends flow only through the typed constructors, the
-blinded reviewer surface never imports the unblinded operator tier, the
-authoring ceremony and reviewer surface name no LLM client, and read-only
-observability names no LLM client. Precision on the last two [truth-up]:
+SDK facade is a leaf no subsystem imports, the identity-blind judge imports no
+OTLP span decoder, the blinded reviewer surface never imports the unblinded
+operator tier, the authoring ceremony and reviewer surface name no LLM client,
+and read-only observability names no LLM client. Precision on the last two [truth-up]:
 those bans are on *direct* imports (a legitimate, never-executed transitive
 chain to the provider seam exists through analyze's advisory review); the
 grading/forensics/contamination-detector bans are fully transitive — no
@@ -467,8 +479,10 @@ itself, and so should its documentation:
 
 - **Everything local is `ADVISORY`.** The trusted tier is a planned CI-tier
   cutover; today's stamps say exactly what they mean.
-- **Two adapters** (claude-code, codex). Their telemetry nulls are
-  deliberately asymmetric — cross-vendor token counts are flagged
+- **Two native adapters** (claude-code, codex) parse a stack's own log; every
+  other stack integrates through the zero-code `generic` normalized log or the
+  `otlp` span projection (`docs/adapters.md`). The native adapters' telemetry
+  nulls are deliberately asymmetric — cross-vendor token counts are flagged
   incomparable rather than compared.
 - **Serial local execution.** Rigor costs wall-clock; there is no fleet
   scheduler. Repetitions × tasks × 2 arms run one at a time.

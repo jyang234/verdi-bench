@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import getpass
 
+from ..errors import VerdiRefusal
 
-class ActorResolutionError(RuntimeError):
+
+class ActorResolutionError(VerdiRefusal, RuntimeError):
     """Neither ``--actor`` nor the OS user could name the actor — refuse rather
     than ledger a ``"unknown"`` that masks who acted [GR-12]."""
 

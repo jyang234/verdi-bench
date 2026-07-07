@@ -15,25 +15,78 @@ This module computes **no new statistic**: the paired delta/CI/decision come fro
 :func:`harness.analyze.report.compute_findings`, and the per-arm absolute score is
 the mean :func:`harness.analyze.report.per_arm_absolute_scores` already exposes.
 The card only *projects and formats*.
+
+Size note (the master plan's Phase-5 exit gate asks any >500-line module to
+state its reason): one versioned comparability artifact — model, canonical
+serialization, renders, and comparison refusals — that computes no new
+statistic; the pieces share the ``battery_sha`` comparability contract, so
+keeping them together keeps that contract single-sourced.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Optional, Union
+
+from pydantic import BaseModel, ConfigDict
 
 from ..corpus.commit import content_sha
+from ..errors import VerdiRefusal
 from ..ledger import events
 from ..ledger.query import find_events, read_events, verify
-from .report import asymmetry_line, compute_findings, per_arm_absolute_scores
+from .findings.extract import compute_findings, per_arm_absolute_scores
+from .findings.sections import asymmetry_line
 
 CARD_SCHEMA_VERSION = 2
 
 
-class CardError(RuntimeError):
+class CardError(VerdiRefusal, RuntimeError):
     """A card cannot be built or two cards cannot be compared — stated with the
     reason. Fail loud [master plan §7.7]: a card that silently omits provenance
     or silently compares mismatched batteries would defeat its own purpose."""
+
+
+class ResultCard(BaseModel):
+    """The typed result card [refactor 07 §5] — mirrors the card dict EXACTLY.
+
+    Top-level fields are typed; the section blocks stay dicts (the
+    :class:`~harness.analyze.report.FindingsDocument` convention), so
+    ``model_dump()`` IS today's dict and :func:`serialize_card` reproduces the
+    golden-pinned bytes unchanged. Any field change is a ``CARD_SCHEMA_VERSION``
+    bump + a comparability story — out of scope here [07 §5].
+
+    Mapping-style reads (``card["battery"]``, ``card.get("comparison")``) are
+    kept so a card and its re-loaded JSON dict expose one read interface —
+    :func:`compare_cards` accepts either.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    schema_version: int
+    # {version, git_sha, tier} — tier is always ADVISORY [AN-11]
+    instrument: dict
+    # the comparability key + its basis [design §'battery_sha semantics']
+    battery: dict
+    primary_metric: str
+    decision_rule: str
+    # per-arm {name, model, aux_models, absolute_score, n} — the leaderboard
+    # number; None score for a pairwise-only metric, never faked
+    arms: list[dict]
+    # the pre-registered primary pair's co-equal delta/CI/decision block;
+    # None when the findings carry no comparison
+    comparison: Optional[dict]
+    provenance: dict
+    disclosures: dict
+
+    def __getitem__(self, key: str):
+        if key not in type(self).model_fields:
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def get(self, key: str, default=None):
+        """Dict-parity read — the same ``.get`` a re-loaded card JSON offers."""
+        if key not in type(self).model_fields:
+            return default
+        return getattr(self, key)
 
 
 def _lock_event(ledger_path) -> dict:
@@ -124,8 +177,8 @@ def build_card(
     *,
     task_ids: list[str],
     corpus_manifest=None,
-) -> dict:
-    """Project a completed, analyzed run into a result card (pure).
+) -> ResultCard:
+    """Project a completed, analyzed run into a typed :class:`ResultCard` (pure).
 
     ``task_ids`` are the committed task ids (the CLI reads them from tasks.yaml).
     Requires a prior ``bench analyze`` (the card certifies a rendered result).
@@ -193,19 +246,19 @@ def build_card(
         q["trial_id"] for q in (findings.forensics or {}).get("quarantined", [])
     ]
 
-    return {
-        "schema_version": CARD_SCHEMA_VERSION,
-        "instrument": {
+    return ResultCard(
+        schema_version=CARD_SCHEMA_VERSION,
+        instrument={
             "version": prov.instrument_version,
             "git_sha": prov.instrument_git_sha,
             "tier": "ADVISORY",
         },
-        "battery": _battery(ledger_path, task_ids, corpus_manifest),
-        "primary_metric": primary,
-        "decision_rule": findings.decision_rule,
-        "arms": arms,
-        "comparison": comparison,
-        "provenance": {
+        battery=_battery(ledger_path, task_ids, corpus_manifest),
+        primary_metric=primary,
+        decision_rule=findings.decision_rule,
+        arms=arms,
+        comparison=comparison,
+        provenance={
             "spec_sha256": lock.get("spec_sha256"),
             "lock_commitment_sha": (lock.get("task_commitment") or {}).get("task_shas_sha256"),
             "ledger_head": prov.ledger_head_hash,
@@ -218,21 +271,26 @@ def build_card(
             "selfcheck": selfcheck,
             "rubric_committed": findings.rubric_committed,
         },
-        "disclosures": {
+        disclosures={
             "confounds": [c.get("flag") for c in findings.confounds],
             "contamination": findings.contamination,
             "forensic_quarantines": forensic_quarantines,
             "excluded_metrics": excluded_metrics,
         },
-    }
+    )
 
 
-def serialize_card(card: dict) -> str:
-    """Canonical, byte-deterministic JSON — the citable, diffable artifact."""
-    return json.dumps(card, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+def serialize_card(card: Union[ResultCard, dict]) -> str:
+    """Canonical, byte-deterministic JSON — the citable, diffable artifact.
+
+    Accepts the typed card or its re-loaded dict form; the model dumps to
+    exactly the dict it mirrors, so the bytes are unchanged (golden-pinned)
+    [refactor 07 §5]."""
+    payload = card.model_dump(mode="json") if isinstance(card, ResultCard) else card
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-# --- human-facing renders (pure projections of the card dict) ---------------
+# --- human-facing renders (pure projections of the typed card) --------------
 def _fmt_score(v) -> str:
     return "n/a (pairwise-only)" if v is None else f"{v:.4f}"
 
@@ -246,26 +304,26 @@ def _pct(v) -> str:
     return "n/a" if v is None else f"{int(round(v * 100))}%"
 
 
-def render_card_markdown(card: dict) -> str:
+def render_card_markdown(card: ResultCard) -> str:
     """A human-readable markdown render — deterministic, leads with the co-equal
     score + delta, and keeps every honesty stamp visible."""
-    b = card["battery"]
-    inst = card["instrument"]
-    prov = card["provenance"]
-    comp = card.get("comparison") or {}
+    b = card.battery
+    inst = card.instrument
+    prov = card.provenance
+    comp = card.comparison or {}
     lines: list[str] = []
     lines.append(f"# verdi-bench result card — {b.get('corpus_id') or 'experiment'}")
     lines.append("")
     lines.append(
         f"**Tier:** {inst['tier']} · **Mode:** {prov['mode']} · "
-        f"**Primary metric:** `{card['primary_metric']}` · **Battery n:** {b['n_tasks']}"
+        f"**Primary metric:** `{card.primary_metric}` · **Battery n:** {b['n_tasks']}"
     )
     lines.append("")
     lines.append("## Scores (per arm)")
     lines.append("")
     lines.append("| arm | model | absolute score | n |")
     lines.append("|---|---|---|---|")
-    for a in card["arms"]:
+    for a in card.arms:
         lines.append(
             f"| {a['name']} | `{a['model']}` | {_fmt_score(a['absolute_score'])} | {a['n']} |"
         )
@@ -280,7 +338,7 @@ def render_card_markdown(card: dict) -> str:
             f"decides_positive: {comp.get('decides_positive')}."
         )
         lines.append("")
-        lines.append(f"Decision rule: `{card['decision_rule']}` · MDE: {_fmt(comp.get('mde'))}")
+        lines.append(f"Decision rule: `{card.decision_rule}` · MDE: {_fmt(comp.get('mde'))}")
         if prov["mode"] != "official":
             lines.append("")
             lines.append(
@@ -314,7 +372,7 @@ def render_card_markdown(card: dict) -> str:
     )
     lines.append(f"- selfcheck: {prov.get('selfcheck')} · rubric committed: {prov.get('rubric_committed')}")
     lines.append("")
-    d = card["disclosures"]
+    d = card.disclosures
     lines.append("## Disclosures")
     lines.append("")
     lines.append(f"- confounds: {', '.join(d['confounds']) or 'none'}")
@@ -339,15 +397,15 @@ def render_card_markdown(card: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_card_html(card: dict) -> str:
+def render_card_html(card: ResultCard) -> str:
     """A compact, self-contained HTML card (inline style, no external references)
     — the shareable/publishable artifact. Byte-deterministic for a fixed card."""
     import html as _html
 
-    b = card["battery"]
-    prov = card["provenance"]
-    comp = card.get("comparison") or {}
-    inst = card["instrument"]
+    b = card.battery
+    prov = card.provenance
+    comp = card.comparison or {}
+    inst = card.instrument
 
     def esc(x) -> str:
         return _html.escape(str(x))
@@ -355,7 +413,7 @@ def render_card_html(card: dict) -> str:
     rows = "".join(
         f"<tr><td>{esc(a['name'])}</td><td><code>{esc(a['model'])}</code></td>"
         f"<td class=n>{esc(_fmt_score(a['absolute_score']))}</td><td class=n>{a['n']}</td></tr>"
-        for a in card["arms"]
+        for a in card.arms
     )
     exploratory_note = (
         "" if prov["mode"] == "official"
@@ -373,7 +431,7 @@ def render_card_html(card: dict) -> str:
     ds = f" &middot; dataset {esc(dataset['name'])}@{esc(dataset['version'])}" if dataset else ""
     # F-M-O5: content parity with the markdown card's Disclosures section — the
     # shareable artifact must not be the disclosure-free one.
-    d = card["disclosures"]
+    d = card.disclosures
     contam = d.get("contamination") or {}
     asym = contam.get("asymmetric") or []
     disclosures = "".join(
@@ -399,10 +457,10 @@ def render_card_html(card: dict) -> str:
         f"<title>verdi-bench result card</title><style>{style}</style></head><body>"
         f"<h1>verdi-bench result card &mdash; {esc(b.get('corpus_id') or 'experiment')}</h1>"
         f"<p class=stamp>Tier {esc(inst['tier'])} &middot; mode {esc(prov['mode'])} &middot; "
-        f"metric <code>{esc(card['primary_metric'])}</code> &middot; battery n {esc(b['n_tasks'])}</p>"
+        f"metric <code>{esc(card.primary_metric)}</code> &middot; battery n {esc(b['n_tasks'])}</p>"
         f"<h2>Scores</h2><table><tr><th>arm</th><th>model</th><th>absolute score</th><th>n</th></tr>{rows}</table>"
         f"<h2>Comparison</h2><p>{delta_line}<br><span class=stamp>rule "
-        f"<code>{esc(card['decision_rule'])}</code> &middot; MDE {esc(_fmt(comp.get('mde')))}</span></p>"
+        f"<code>{esc(card.decision_rule)}</code> &middot; MDE {esc(_fmt(comp.get('mde')))}</span></p>"
         f"<h2>Battery</h2><p class=sha>{esc(b['battery_sha'])}</p>"
         f"<p class=stamp>basis {esc(b['battery_basis'])}{ds}. Comparable iff battery_sha + basis + metric match.</p>"
         f"<h2>Provenance</h2><p class=sha>spec {esc(prov.get('spec_sha256'))}<br>"
@@ -416,12 +474,17 @@ def render_card_html(card: dict) -> str:
 
 
 # --- comparability ---------------------------------------------------------
-def _comparability_key(card: dict) -> tuple:
+# A card for comparison: the typed model, or its re-loaded JSON dict (`bench
+# card compare` reads card files) — the model's mapping reads keep one code path.
+CardLike = Union[ResultCard, dict]
+
+
+def _comparability_key(card: CardLike) -> tuple:
     b = card.get("battery", {})
     return (b.get("battery_sha"), b.get("battery_basis"), card.get("primary_metric"))
 
 
-def compare_cards(card_a: dict, card_b: dict) -> dict:
+def compare_cards(card_a: CardLike, card_b: CardLike) -> dict:
     """Compare two cards, refusing loudly across different task sets/metrics.
 
     Comparable iff ``(battery_sha, battery_basis, primary_metric)`` match — i.e.
@@ -439,14 +502,14 @@ def compare_cards(card_a: dict, card_b: dict) -> dict:
             reasons.append(f"different primary metric ({ka[2]!r} vs {kb[2]!r})")
         raise CardError("cards are not comparable: " + "; ".join(reasons))
 
-    def _scores(card: dict) -> dict:
+    def _scores(card: CardLike) -> dict:
         # carry the model: two comparable cards may reuse an arm NAME for
         # different models, so a name-only side-by-side would silently compare
         # unlike models.
         return {a["name"]: {"model": a["model"], "absolute_score": a["absolute_score"], "n": a["n"]}
                 for a in card.get("arms", [])}
 
-    def _delta(card: dict):
+    def _delta(card: CardLike):
         c = card.get("comparison") or {}
         return {"arm_a": c.get("arm_a"), "arm_b": c.get("arm_b"),
                 "delta": c.get("delta"), "ci_low": c.get("ci_low"), "ci_high": c.get("ci_high")}

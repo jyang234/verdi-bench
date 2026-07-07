@@ -108,6 +108,11 @@ class TrialRecord(BaseModel):
     # record_trial hoists it to the top-level additive event field, the
     # trajectory_sha precedent [EVAL-24-D001]; readers take it from the EVENT.
     flight_recorder_sha: Optional[str] = None
+    # refactor 09 §5 A13: sha256 of the persisted otlp_spans.json artifact (per-trial
+    # OTLP span capture). None when no collector was configured (honest absence).
+    # Transport only — record_trial hoists it to the top-level additive event field,
+    # the trajectory_sha/flight_recorder_sha precedent; readers take it from the EVENT.
+    spans_sha: Optional[str] = None
 
     @model_validator(mode="after")
     def _nulls_match_telemetry(self) -> "TrialRecord":
@@ -138,6 +143,7 @@ class TrialRecord(BaseModel):
         artifacts_path: Optional[str] = None,
         trajectory_sha: Optional[str] = None,
         flight_recorder_sha: Optional[str] = None,
+        spans_sha: Optional[str] = None,
     ) -> "TrialRecord":
         return cls(
             trial_id=trial_id,
@@ -153,6 +159,7 @@ class TrialRecord(BaseModel):
             artifacts_path=artifacts_path,
             trajectory_sha=trajectory_sha,
             flight_recorder_sha=flight_recorder_sha,
+            spans_sha=spans_sha,
         )
 
 

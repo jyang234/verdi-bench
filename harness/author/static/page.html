@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>verdi-bench — author</title>
+<style>
+__TOKENS_CSS__  * { box-sizing: border-box; margin: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--plane); color: var(--ink-1); padding: 18px; font-size: 14px; line-height: 1.45; }
+  main { max-width: 1180px; margin: 0 auto; display: grid; gap: 12px; }
+  .banner { background: var(--surface-1); border: 1px solid var(--border);
+            border-left: 3px solid var(--accent); border-radius: 6px; padding: 9px 14px;
+            color: var(--ink-2); font-size: 13px; }
+  .banner strong { color: var(--ink-1); }
+  header.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  header.bar .crumb { font-size: 16px; font-weight: 650; }
+  header.bar .crumb .up { color: var(--ink-3); font-weight: 400; cursor: pointer; }
+  header.bar .crumb .up:hover { color: var(--ink-1); text-decoration: underline; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px; border-radius: 999px;
+          border: 1px solid var(--border); background: var(--surface-1); color: var(--ink-2);
+          font-size: 12px; white-space: nowrap; }
+  .chip.ok { color: var(--good); } .chip.bad { color: var(--critical); } .chip.warn { color: var(--warning); }
+  .spacer { flex: 1; }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
+  h2 { font-size: 13px; font-weight: 650; color: var(--ink-2); margin-bottom: 8px; }
+  .btn { font: inherit; font-size: 12.5px; color: var(--ink-2); border: 1px solid var(--border);
+         border-radius: 6px; padding: 4px 12px; background: var(--surface-1); cursor: pointer; }
+  .btn:hover { border-color: var(--ink-3); color: var(--ink-1); }
+  .btn.primary { color: var(--surface-1); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .btn:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  input.field { font: inherit; font-size: 13px; color: var(--ink-1); background: var(--surface-1);
+                border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; min-width: 200px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; color: var(--ink-3); font-size: 11.5px; font-weight: 500;
+       border-bottom: 1px solid var(--hairline); padding: 4px 8px 6px 0; }
+  td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--hairline); }
+  tr:last-child td { border-bottom: none; }
+  tr.row { cursor: pointer; } tr.row:hover td { background: var(--soft); }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+  .dim { color: var(--ink-2); } .dim3 { color: var(--ink-3); }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .split { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(300px, 1fr); gap: 12px; align-items: start; }
+  textarea.pane { width: 100%; min-height: 380px; resize: vertical;
+                  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px;
+                  line-height: 1.5; color: var(--ink-1); background: var(--surface-1);
+                  border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+  textarea.pane:disabled { color: var(--ink-2); background: var(--plane); }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .tab { font-size: 12px; padding: 2px 11px; border-radius: 999px; border: 1px solid var(--border);
+         cursor: pointer; color: var(--ink-2); background: var(--surface-1); }
+  .tab.on { background: var(--soft); border-color: var(--accent); color: var(--ink-1); }
+  ul.plain { list-style: none; display: grid; gap: 4px; }
+  ul.plain li { font-size: 12.5px; color: var(--ink-2); display: flex; gap: 8px; align-items: baseline; }
+  .err { color: var(--critical); }
+  pre.msg { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; color: var(--ink-2);
+            white-space: pre-wrap; word-break: break-word; background: var(--plane);
+            border: 1px solid var(--hairline); border-radius: 6px; padding: 8px 10px; }
+  label.ack { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; color: var(--ink-2); }
+  .kbdrow { color: var(--ink-3); font-size: 12px; }
+  @media (max-width: 880px) { .split { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="banner"><strong>Authoring surface — pre-registration only.</strong>
+    Drafts are plain directories; nothing here is an experiment until you lock it,
+    and the lock is the surface's only ledgered operation. After the lock, the
+    pre-registration is immutable: re-planning means a new draft. Stage execution
+    stays in the CLI; the operator view watches it.</div>
+  <header class="bar" id="bar"></header>
+  <div id="app"></div>
+  <div class="kbdrow">the text pane is canonical: what Save writes is what previews read and what the lock hashes</div>
+</main>
+
+<script>
+__APP_JS__
+</script>
+</body>
+</html>

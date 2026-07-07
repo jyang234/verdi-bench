@@ -14,7 +14,13 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Sync
-        run: uv sync --dev
+        # --extra otlp: the fast suite selects the OTLP protobuf decode unit test
+        # (test_otlp_decode.py's positive path encodes a real body via
+        # opentelemetry-proto). It is not docker-marked, so it runs here rather
+        # than on the docker job; without the extra it fails ModuleNotFoundError.
+        # The without-extra loud-failure path is still covered — its test
+        # monkeypatches opentelemetry away, so it does not rely on absence here.
+        run: uv sync --dev --extra otlp
       - name: Import-linter contracts
         run: uv run lint-imports
       - name: Fast suite (no Docker)
@@ -39,12 +45,14 @@ jobs:
       - name: Compile under 3.12 (syntax/compat gate)
         run: uv run --no-project --python 3.12 python -m compileall -q harness tests conftest.py
 
-  # Browser UI acceptance suite [PRA-H5]. The EVAL-14/17/18/19 page-drive tests
+  # Browser UI acceptance suite [PRA-H5]. The browser-marked page-drive tests
   # need node + the playwright package + a Chromium build; on the fast job they
-  # skip (no browser), so 10 acceptance criteria never executed in CI. This job
-  # provisions the stack, points the env-configurable paths at it, and runs with
-  # VERDI_REQUIRE_BROWSER=1 so it CANNOT green-pass by skipping (mirrors the
-  # docker job's VERDI_REQUIRE_DOCKER guard).
+  # skip (no browser). This job provisions the stack, points the
+  # env-configurable paths at it, and runs with VERDI_REQUIRE_BROWSER=1 so it
+  # CANNOT green-pass by skipping (mirrors the docker job's
+  # VERDI_REQUIRE_DOCKER guard). Selection is by marker, not path enumeration:
+  # the old four-file list silently omitted test_serve_legibility's drives
+  # (defect D6, refactor plan 01 §3) — a marker cannot rot that way.
   browser:
     runs-on: ubuntu-latest
     steps:
@@ -70,12 +78,25 @@ jobs:
         # instead of skipping every UI AC test green.
         env:
           VERDI_REQUIRE_BROWSER: "1"
-        run: >
-          uv run pytest -q
-          tests/test_eval14_page_drive.py
-          tests/test_eval17_author.py
-          tests/test_eval18_review_serve.py
-          tests/test_eval19_operator_p2.py
+        run: uv run pytest -m browser -q
+
+  # Behavioral acceptance shakedown [refactor plan 01 §3]: the hermetic golden
+  # path plus the tripwire matrix, driven end-to-end through the real bench CLI
+  # — no keys, no Docker, no browser. Every advertised fence must fire with its
+  # exact reason string; a refactor that breaks one now fails CI instead of
+  # only failing whoever remembers to run `make shakedown` locally.
+  shakedown:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # git sha provenance needs history
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync
+        run: uv sync --dev
+      - name: Hermetic shakedown (golden path + tripwires)
+        run: make shakedown
 
   # Real-container suite: the docker-marked tests that exercise the grade + Harbor
   # paths against a live daemon. GitHub-hosted ubuntu runners ship with Docker, so
@@ -89,11 +110,23 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Sync
-        run: uv sync --dev
+        # --extra otlp: the OTLP capture e2es decode protobuf envelopes host-side
+        # (A14 optional extra); without it the docker job would fail on them.
+        run: uv sync --dev --extra otlp
       - name: Docker suite (real containers)
         # VERDI_REQUIRE_DOCKER makes the docker fixture raise at import when the
         # daemon is absent, so the job cannot pass green by skipping every test
         # on a daemon-less runner (XC-1 residual, 7H-2).
+        # VERDI_REQUIRE_PROXY is intentionally NOT set here (decision P0-PROXY-CI,
+        # closed): the managed metering-proxy path is fail-closed and is already
+        # covered on this job by its own docker-marked live e2e —
+        # test_e2e_managed_proxy.py stands the managed proxy up, drives an allowed
+        # and a denied host through it, and asserts the per-trial attribution. The
+        # only remaining proxy gate, test_reference_proxy_log_attributes_allow_and_deny,
+        # exercises the EXTERNAL reference-Squid deployment (deploy/metering-proxy/)
+        # that CI does not provision; VERDI_REQUIRE_PROXY is the operator-run switch
+        # that turns that test's skip into a loud failure once the reference proxy
+        # is stood up (tests/fixtures/proxy.py). Operator-run by design, not a TODO.
         env:
           VERDI_REQUIRE_DOCKER: "1"
         run: uv run pytest -m docker -q

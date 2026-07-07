@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.test_import_contracts import _REPO, _run_lint
+from tests.fixtures.lint import REPO, run_lint
 
 
 def test_ac6_detectors_llm_free():
@@ -13,8 +13,8 @@ def test_ac6_detectors_llm_free():
     only LLM-touching module, importing the provider seam like ``harness.process``
     does; the deterministic tier (dating, canary, overlap, summary) may not.
     """
-    assert _run_lint().returncode == 0, "contracts must be green before planting"
-    path = _REPO / "harness/contamination/overlap.py"
+    assert run_lint().returncode == 0, "contracts must be green before planting"
+    path = REPO / "harness/contamination/overlap.py"
     original = path.read_text(encoding="utf-8")
     injected = (
         original
@@ -23,7 +23,7 @@ def test_ac6_detectors_llm_free():
     )
     try:
         path.write_text(injected, encoding="utf-8")
-        result = _run_lint()
+        result = run_lint()
         assert result.returncode != 0, (
             "planting an LLM-client import into the overlap detector did not "
             f"break any contract:\n{result.stdout}"
@@ -32,4 +32,4 @@ def test_ac6_detectors_llm_free():
         assert "judge.client" in result.stdout, result.stdout
     finally:
         path.write_text(original, encoding="utf-8")
-    assert _run_lint().returncode == 0, "restoration must leave contracts green"
+    assert run_lint().returncode == 0, "restoration must leave contracts green"

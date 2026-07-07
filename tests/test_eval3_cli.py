@@ -121,3 +121,25 @@ def test_plan_experiment_id_is_dir_name(tmp_path):
 
     lock = find_events(ledger, events.EXPERIMENT_LOCKED)[0]
     assert lock["provenance"]["experiment_id"] == "my-experiment"
+
+
+def test_plan_verb_safety_net_unmapped_refusal_is_clean_exit_2(tmp_path, monkeypatch):
+    """OI-B: a refusal the plan verb never enumerated still surfaces as a clean
+    exit 2 with its message (not a traceback), because `bench plan` maps
+    refusal_exit() uniformly over the VerdiRefusal base [refactor 13 OI-B]."""
+    import harness.plan.api as plan_api
+    from harness.errors import VerdiRefusal
+
+    class _NovelPlanRefusal(VerdiRefusal):
+        pass
+
+    def _refuse(*args, **kwargs):
+        raise _NovelPlanRefusal("a plan refusal no verb enumerated")
+
+    monkeypatch.setattr(plan_api, "plan_experiment", _refuse)
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    r = runner.invoke(app, ["plan", str(spec), "--ledger", str(tmp_path / "ledger.ndjson")])
+    assert r.exit_code == 2, r.output
+    assert "a plan refusal no verb enumerated" in r.output
+    # a clean typer.Exit, never a raw traceback of the novel refusal
+    assert not isinstance(r.exception, _NovelPlanRefusal)

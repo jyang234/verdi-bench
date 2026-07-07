@@ -26,6 +26,7 @@ from harness.cli import app
 from harness.ledger.query import find_events
 from harness.schema.experiment import ExperimentSpec
 from tests.fixtures.builders import write_experiment_yaml
+from tests.fixtures.grading import write_holdout_results
 
 runner = CliRunner()
 
@@ -56,10 +57,7 @@ def _graded_analyzed(tmp_path, *, name="exp", prompt="solve it",
         rec = ev["trial_record"]
         ws = Path(rec["artifacts_path"]).parent
         passed = control_pass if rec["arm"] == "control" else treatment_pass
-        (ws / "holdout_results.json").write_text(
-            json.dumps({"assertions": [{"id": "h1", "result": "pass" if passed else "fail"}]}),
-            encoding="utf-8",
-        )
+        write_holdout_results(ws, passed)
     _ok("grade", expdir, "--runner", "local")
     _ok("analyze", expdir, "--exploratory")
     spec = ExperimentSpec.from_yaml(expdir / "experiment.yaml")
@@ -97,6 +95,26 @@ def test_card_carries_absolute_score_and_paired_delta_co_equal(tmp_path):
 def test_card_is_byte_deterministic(tmp_path):
     expdir, spec = _graded_analyzed(tmp_path)
     assert serialize_card(_card(expdir, spec)) == serialize_card(_card(expdir, spec))
+
+
+def test_card_is_a_typed_model_mirroring_the_dict_exactly(tmp_path):
+    """[refactor 07 §5] build_card returns the typed ResultCard whose dump IS
+    today's card dict: same field set, mapping reads equal to attribute reads,
+    and serialize_card over the model vs its re-loaded dict form is
+    byte-identical (golden_card.json separately pins the absolute bytes)."""
+    from harness.analyze.card import ResultCard
+
+    expdir, spec = _graded_analyzed(tmp_path)
+    card = _card(expdir, spec)
+    assert isinstance(card, ResultCard)
+    dumped = json.loads(serialize_card(card))
+    assert set(dumped) == set(ResultCard.model_fields)
+    assert serialize_card(dumped) == serialize_card(card)   # dict form: same bytes
+    assert card["battery"] == card.battery                  # mapping = attribute
+    assert card.get("comparison") == card.comparison
+    assert card.get("no_such_field") is None
+    with pytest.raises(KeyError):
+        card["no_such_field"]
 
 
 def test_exploratory_card_never_claims_official(tmp_path):
@@ -212,7 +230,7 @@ def test_compare_matches_same_battery(tmp_path):
     assert result["arms"]["b"]["treatment"]["absolute_score"] == 1.0
     # the side-by-side carries the model, so unlike models under a shared arm
     # name are not silently compared
-    assert result["arms"]["a"]["control"]["model"] == "anthropic/claude-3-5-sonnet-20241022"
+    assert result["arms"]["a"]["control"]["model"] == "anthropic/claude-haiku-4-5-20251001"
 
 
 def test_compare_refuses_different_battery(tmp_path):
@@ -307,10 +325,7 @@ def test_swebench_card_has_corpus_battery_and_resolved_rates(tmp_path):
         rec = ev["trial_record"]
         ws = Path(rec["artifacts_path"]).parent
         passed = rec["arm"] == "control"
-        (ws / "holdout_results.json").write_text(
-            json.dumps({"assertions": [{"id": "t::a", "result": "pass" if passed else "fail"}]}),
-            encoding="utf-8",
-        )
+        write_holdout_results(ws, passed, assertion_id="t::a")
     _ok("grade", expdir, "--runner", "local")
     _ok("analyze", expdir, "--exploratory")
 

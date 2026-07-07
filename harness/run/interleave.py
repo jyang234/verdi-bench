@@ -27,6 +27,7 @@ from typing import Optional
 from ..adapters import UnknownPlatformError
 from ..adapters.base import Outcome, TrialRecord
 from ..adapters.generic import GenericLogError
+from ..adapters.otlp import SpanMappingError
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import find_events
@@ -36,7 +37,7 @@ from .budget import CostGuard, enforcement_cost
 from .flight_recorder import FlightRecorderCorruptError
 from .heartbeat import RunHeartbeat
 from .redact import RedactionError
-from .seam import HoldoutLeakError, new_trial_id, run_trial
+from .seam import HoldoutLeakError, PostEngineFailure, new_trial_id, run_trial
 from .trajectory import TrajectoryCorruptError
 from .types import RunConfig, Task
 
@@ -57,6 +58,12 @@ _PER_TRIAL_REASONS: dict[type, str] = {
     RedactionError: "redaction_error",
     TrajectoryCorruptError: "trajectory_corrupt",
     FlightRecorderCorruptError: "flight_recorder_corrupt",
+    # refactor 10 §3 / A12: an otlp_spans.json that cannot be normalized (invalid
+    # wrapper, or a verdi.agent outside the closed vocabulary) fails the trial
+    # closed as spans_corrupt — the seam raises it inside the capture pipeline
+    # (wrapped in PostEngineFailure so it carries the incurred spend), and its
+    # cause maps here, the TrajectoryCorruptError discipline.
+    SpanMappingError: "spans_corrupt",
 }
 
 
@@ -284,17 +291,23 @@ def schedule(
                 # failing every remaining cell identically.
                 out.aborted_proxy_unavailable = True
                 break
-            except Exception as exc:  # noqa: BLE001 — ANY per-trial fault fails THIS
-                # cell closed (ledgered, reason-tagged), never escapes to abort the
-                # whole run [RN-15]. Not swallowed: surfaced as trial_infra_failed.
-                # PRA-M8: a post-engine failure (redaction/trajectory) carries the
-                # spend already incurred on the exception; ledger it AND feed it to
-                # the guard so it counts against the ceiling and survives resume.
-                spend = getattr(exc, "enforcement_cost", None)
-                _fail_cell(out, ledger_path, ctx, planned, reason=_reason_for(exc),
-                           hb=hb, cost=spend)
-                if spend is not None:
-                    guard.add(spend)
+            except PostEngineFailure as exc:
+                # PRA-M8: a failure AFTER the engine ran carries the already-incurred
+                # spend explicitly on the typed failure. Ledger it (the reason is
+                # mapped from the underlying cause, keeping this module the owner of
+                # the trial_infra_failed vocabulary) AND feed it to the guard so it
+                # counts against the ceiling and survives resume.
+                _fail_cell(out, ledger_path, ctx, planned, reason=_reason_for(exc.cause),
+                           hb=hb, cost=exc.spend)
+                if exc.spend is not None:
+                    guard.add(exc.spend)
+                continue
+            except Exception as exc:  # noqa: BLE001 — ANY OTHER per-trial fault fails
+                # THIS cell closed (ledgered, reason-tagged), never escapes to abort
+                # the whole run [RN-15]. Not swallowed: surfaced as trial_infra_failed.
+                # A pre-engine or adapter fault (holdout leak, unknown platform,
+                # generic-log parse) carries no incurred spend.
+                _fail_cell(out, ledger_path, ctx, planned, reason=_reason_for(exc), hb=hb)
                 continue
             if out.stopped_cost_ceiling:
                 break  # budget exhausted inside the infra-rerun loop [RN-3]
@@ -405,7 +418,7 @@ def _run_trial_entrypoint(ctx_dir: str) -> None:
 
     d = Path(ctx_dir)
     task = Task(id="t", prompt="hello", fake_behavior={"outcome": "completed", "native_log": {}})
-    arm = Arm(name="A", platform="claude_code", model="anthropic/claude-3-5-sonnet-20241022")
+    arm = Arm(name="A", platform="claude_code", model="anthropic/claude-haiku-4-5-20251001")
     rec = run_trial(task, arm, d / "ws", RunConfig(engine=FakeEngine()))
     events.record_trial(
         d / "ledger.ndjson",

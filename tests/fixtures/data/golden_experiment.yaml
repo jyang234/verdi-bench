@@ -1,0 +1,29 @@
+# Golden serialization-guard experiment [refactor 01 §1]. The sha256 of this
+# exact file is committed in golden_ledger.ndjson's experiment_locked event —
+# do not reformat.
+arms:
+  - name: control
+    platform: claude_code
+    model: anthropic/claude-haiku-4-5-20251001
+    training_cutoff: "2025-02-01T00:00:00Z"
+    payload: {}
+  - name: treatment
+    platform: codex
+    model: openai/gpt-4.1-mini-2025-04-14
+    training_cutoff: "2025-04-01T00:00:00Z"
+    payload: {}
+corpus:
+  id: public-mini
+  version: 1.0.0
+repetitions: 2
+primary_metric: holdout_pass_rate
+decision_rule: delta_holdout_pass_rate > 0
+judge:
+  model: fake/deterministic-2026-01-01
+  rubric: rubrics/golden-rubric.md
+  orders: both
+  temperature: 0
+seed: 20260203
+cost_ceiling:
+  amount: 10.0
+  currency: USD

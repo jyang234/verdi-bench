@@ -26,10 +26,11 @@ from pathlib import Path
 
 import yaml
 
+from ..errors import VerdiRefusal
 from .public import content_sha
 
 
-class TaskCommitmentError(ValueError):
+class TaskCommitmentError(VerdiRefusal, ValueError):
     """The tasks no longer match the commitment pinned at lock, or the task
     source is malformed [PL-7]."""
 

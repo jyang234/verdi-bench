@@ -1,6 +1,6 @@
 """Paired A/B comparison payload [EVAL-14 AC-6].
 
-Reuses the judge's own assembly (``comparisons_from_ledger`` — the same
+Reuses the judge's own assembly (``native_comparisons_from_ledger`` — the same
 pairing, the same review-packet diff artifacts) and joins each pair's grade
 outcomes and advisory verdict. Deterministic and advisory tiers stay separate
 fields, never blended into one score; the summary watermark is decided by the
@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..analyze.fence import official_fence_report
-from ..judge.assemble import comparisons_from_ledger
+from ..judge.assemble import native_comparisons_from_ledger
 from ..ledger import events
 from ..ledger.query import find_events
 from ..run.flight_recorder import resolve_flight_recorder
@@ -91,7 +91,7 @@ def paired_comparisons(experiment_dir, *, corpus_manifest=None) -> dict:
         ]
 
     pairs: list[dict] = []
-    for cmp_ in comparisons_from_ledger(ledger_path, spec):
+    for cmp_ in native_comparisons_from_ledger(ledger_path, spec):
         tid_a = trial_ids.get((cmp_.task_id, cmp_.repetition, arm_a))
         tid_b = trial_ids.get((cmp_.task_id, cmp_.repetition, arm_b))
         pass_a: Optional[bool] = grades.get(tid_a)

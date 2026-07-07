@@ -1,14 +1,15 @@
 """Provider interface [EVAL-2 §3].
 
 Thin per-provider clients behind one ``complete(model_id, messages, temperature)
--> text`` interface, versions pinned. Deliberately not a heavyweight router — pins
-stay explicit and refusal/timeout semantics stay under our control. There is **no
-vendor allow/deny list**; any provider prefix resolves [D001].
+-> Completion`` interface, versions pinned. Deliberately not a heavyweight router
+— pins stay explicit and refusal/timeout semantics stay under our control. There
+is **no vendor allow/deny list**; any provider prefix resolves [D001].
 """
 
 from __future__ import annotations
 
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Callable, Optional, Protocol
 
 
 class ProviderError(RuntimeError):
@@ -53,8 +54,25 @@ class ProviderContextOverflow(ProviderError):
         self.max_tokens = max_tokens
 
 
+@dataclass(frozen=True)
+class Completion:
+    """One provider call's result [refactor 05 §3]: the response ``text`` and the
+    provider-reported token ``usage`` for THIS call.
+
+    ``usage`` is the normalized ``{input_tokens, output_tokens}`` shape
+    (:func:`normalize_usage`), or None when the provider reports none — honest
+    absence, never zero-imputed (the D004 posture). Usage rides the return value
+    so a caller cannot forget to read it: there is no mutable per-provider field
+    that a failed or re-issued call could leave stale."""
+
+    text: str
+    usage: Optional[dict] = None
+
+
 class Provider(Protocol):
-    def complete(self, model_id: str, messages: list[dict], temperature: float) -> str: ...
+    def complete(
+        self, model_id: str, messages: list[dict], temperature: float
+    ) -> Completion: ...
 
 
 def provider_failure_reason(exc: ProviderError) -> str:
@@ -75,27 +93,52 @@ def provider_failure_reason(exc: ProviderError) -> str:
     return "provider_error"
 
 
+# Prefix -> lazy factory. The vendor import lives INSIDE each factory so it fires
+# only when that prefix is resolved: the grade/status/serve LLM-free import
+# contracts depend on no vendor SDK loading at module import [refactor 05 §3]. A
+# registry, not an if/elif ladder, so a new prefix is one table entry — but it is
+# still not a vendor allow/deny list: an unregistered prefix fails closed to
+# ProviderError, exactly the CANT_*(provider_error) path callers already handle
+# [D001].
+def _anthropic() -> Provider:
+    from .anthropic import AnthropicProvider
+
+    return AnthropicProvider()
+
+
+def _openai() -> Provider:
+    from .openai import OpenAIProvider
+
+    return OpenAIProvider()
+
+
+def _google() -> Provider:
+    from .google import GoogleProvider
+
+    return GoogleProvider()
+
+
+def _fake() -> Provider:
+    # The deterministic no-network provider — the analog of `--engine fake`,
+    # selected by a `fake/...` model prefix; serves judge verdicts and process
+    # scores.
+    from .fake import DeterministicFakeProvider
+
+    return DeterministicFakeProvider()
+
+
+_PROVIDER_REGISTRY: dict[str, Callable[[], Provider]] = {
+    "anthropic": _anthropic,
+    "openai": _openai,
+    "google": _google,
+    "fake": _fake,
+}
+
+
 def get_provider(model_id: str) -> Provider:
     """Resolve a provider by the ``<provider>/...`` prefix. No allow/deny list."""
-    provider = model_id.split("/", 1)[0]
-    if provider == "anthropic":
-        from .anthropic import AnthropicProvider
-
-        return AnthropicProvider()
-    if provider == "openai":
-        from .openai import OpenAIProvider
-
-        return OpenAIProvider()
-    if provider == "google":
-        from .google import GoogleProvider
-
-        return GoogleProvider()
-    if provider == "fake":
-        # The deterministic no-network provider — the analog of `--engine fake`,
-        # selected by a `fake/...` model prefix; serves judge verdicts and process
-        # scores. Not a vendor allow/deny entry: any prefix still resolves or
-        # fails closed [D001].
-        from .fake import DeterministicFakeProvider
-
-        return DeterministicFakeProvider()
-    raise ProviderError(f"no client for provider prefix {provider!r}")
+    prefix = model_id.split("/", 1)[0]
+    factory = _PROVIDER_REGISTRY.get(prefix)
+    if factory is None:
+        raise ProviderError(f"no client for provider prefix {prefix!r}")
+    return factory()

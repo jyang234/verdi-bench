@@ -1,25 +1,49 @@
 """Portable helpers for the shakedown acceptance scripts.
 
-Drives the installed ``bench`` console script (sibling to the venv python) as a
-subprocess so every step exercises the real CLI, and reads the ledger through
-``harness.ledger.query``. Generated run state goes under ``_run/`` (git-ignored);
-committed inputs live under ``assets/``.
+After the SDK + images + hermetic conversions (refactor 08 §1, Phase 3D) EVERY
+shakedown script — the hermetic golden/official/tripwires and the real-container
+harbor/harbor_multiagent — authors + drives experiments in-process through
+``harness.sdk`` (builders + ``ExperimentWorkspace``), builds images through
+``harness.images``, and meters egress through the managed proxy: no hand-built
+spec dicts, no ``inject_grades``, no raw ``docker`` calls, and reads go through
+``LedgerView``. So what stays here is genuinely script-local: the ``Tally``,
+``_run/`` staging, and the one ``bench`` subprocess driver kept for the vectors
+whose *point* is the installed console script (the pre-registration refusals
+exercise the CLI's refusal→exit-code mapping).
+
+``dump_yaml`` stays load-bearing for the hermetic suite (``tripwires.py`` emits
+deliberately-invalid specs the validating SDK builder would refuse). Scripts
+import ``harness.*`` freely but never ``tests.*``.
+
+This module is script-local *plumbing* — the ``Tally``, ``_run/`` staging, the
+``bench`` console-script driver, ANSI stripping, key gating, and layer banners.
+The shared known-answer scenario *content* (the golden experiment shape and the
+harbor helpers) lives in ``_scenario.py``.
 """
 from __future__ import annotations
 
-import json
+import re
 import shutil
 import subprocess
 import sys
-from collections import Counter
 from pathlib import Path
 
 import yaml
 
+from harness.sdk import MissingEnvKeysError, require_env_keys
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-ASSETS = HERE / "assets"
 RUN = HERE / "_run"
+
+# Strip terminal color so substring assertions on captured CLI output are stable
+# under FORCE_COLOR (typer/rich emit SGR escapes that otherwise break matches) —
+# the sanctioned fix for the known FORCE_COLOR shakedown flake (refactor 08 §1).
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def strip_ansi(s: str) -> str:
+    return _ANSI.sub("", s or "")
 
 
 def _bench_bin() -> str:
@@ -39,9 +63,10 @@ BENCH = _bench_bin()
 
 
 def bench(*args, check=True, env=None) -> subprocess.CompletedProcess:
-    """Invoke ``bench <args>``; echo the command + output tail."""
+    """Invoke ``bench <args>``; echo the command + output tail (ANSI-stripped)."""
     cmd = [BENCH, *(str(a) for a in args)]
     r = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True, env=env)
+    r.stdout, r.stderr = strip_ansi(r.stdout), strip_ansi(r.stderr)
     print("$ bench " + " ".join(str(a) for a in args))
     for line in ((r.stdout or "") + (r.stderr or "")).strip().splitlines():
         print("    " + line)
@@ -49,25 +74,6 @@ def bench(*args, check=True, env=None) -> subprocess.CompletedProcess:
     if check and r.returncode != 0:
         raise SystemExit(f"FAILED ({r.returncode}): bench {' '.join(str(a) for a in args)}")
     return r
-
-
-def events(ledger, kind=None):
-    from harness.ledger.query import find_events, read_events
-    return read_events(Path(ledger)) if kind is None else find_events(Path(ledger), kind)
-
-
-def event_counts(ledger) -> dict:
-    return dict(sorted(Counter(e.get("event") for e in events(ledger)).items()))
-
-
-def stage(name: str, template: str = "golden") -> Path:
-    """Fresh ``_run/<name>`` seeded from ``assets/<template>``; returns the dir."""
-    d = RUN / name
-    if d.exists():
-        shutil.rmtree(d)
-    d.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(ASSETS / template, d)
-    return d
 
 
 def empty_dir(name: str) -> Path:
@@ -78,27 +84,22 @@ def empty_dir(name: str) -> Path:
     return d
 
 
-def inject_grades(ledger, passes) -> int:
-    """Write per-arm ``holdout_results.json`` into each trial workspace — the
-    operator step the arm-blind fake engine needs for a decisive A/B."""
-    n = 0
-    for ev in events(ledger, "trial"):
-        rec = ev["trial_record"]
-        ws = Path(rec["artifacts_path"]).parent
-        ws.mkdir(parents=True, exist_ok=True)
-        result = "pass" if passes(rec["arm"], rec["task_id"]) else "fail"
-        (ws / "holdout_results.json").write_text(
-            json.dumps({"assertions": [{"id": "h1", "result": result}]}), encoding="utf-8")
-        n += 1
-    return n
-
-
-def load_yaml(path):
-    return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-
-
 def dump_yaml(path, data):
     Path(path).write_text(yaml.safe_dump(data), encoding="utf-8")
+
+
+def banner(title: str) -> None:
+    """Print a layer header: a rule, the title on its own line, then a rule."""
+    rule = "=" * 72
+    print(f"{rule}\n{title}\n{rule}")
+
+
+def require_keys_or_exit(*keys: str, script: str) -> None:
+    """Gate on required env keys; on a miss, exit with the ``--env-file .env`` hint."""
+    try:
+        require_env_keys(*keys)
+    except MissingEnvKeysError as e:
+        raise SystemExit(f"{e}\nrun: uv run --env-file .env python scripts/shakedown/{script}")
 
 
 class Tally:

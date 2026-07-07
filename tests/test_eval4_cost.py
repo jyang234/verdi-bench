@@ -6,7 +6,7 @@ from harness.ledger.query import find_events
 from harness.plan.interleave import Trial
 from harness.run.engines.fake import FakeEngine
 from harness.run.interleave import schedule
-from harness.run.types import RunConfig, Task
+from harness.run.types import ProxyConfig, RunConfig, Task
 from harness.schema.experiment import Arm
 from tests.fixtures.builders import fixed_ctx
 
@@ -303,20 +303,29 @@ def test_m8_infra_spend_survives_resume(tmp_path):
 
 
 def test_m9_dead_proxy_aborts_run_fast(tmp_path):
-    """PRA-M9: a proxy_log_missing infra failure aborts the whole run after the
+    """PRA-M9/A10: a proxy_log_missing infra failure aborts the whole run after the
     first trial (a dead proxy is a run-level fault) rather than grinding through
-    every remaining trial producing identical failures and burning wall-clock."""
+    every remaining trial producing identical failures and burning wall-clock.
+
+    A10: the fake now derives proxy_log_missing ORGANICALLY from the shared
+    EngineBase scan (a configured proxy whose log never appears) instead of
+    hand-scripting the reason string — the same fail-closed path Harbor takes."""
     arms = {"A": _arm()}
-    tasks = {"t": Task(id="t", prompt="p", fake_behavior={
-        "native_log": {}, "outcome": "infra_failed", "infra_reason": "proxy_log_missing"})}
+    # a configured metering proxy whose log file never appears (a dead proxy): the
+    # agent makes no egress, so the fake writes no proxy log, and the inherited
+    # _scan_proxy_log fails closed proxy_log_missing [refactor 04 §2, PRA-H4/A10].
+    proxy = ProxyConfig(proxy_url="http://proxy:3128", log_path=str(tmp_path / "dead-proxy.jsonl"))
+    tasks = {"t": Task(id="t", prompt="p", fake_behavior={"native_log": {}})}
     ledger = tmp_path / "l.ndjson"
     order = [Trial(task_id="t", arm="A", repetition=r) for r in range(5)]
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
+        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine(), proxy=proxy), cost_ceiling=100.0,
         max_infra_retries=3,
     )
     assert res.aborted_proxy_unavailable is True
     # exactly ONE attempt was ledgered (no retries, no remaining cells), proving
     # the run aborted fast rather than failing all 5 (x retries) trials.
-    assert len(find_events(ledger, "trial_infra_failed")) == 1
+    infra = find_events(ledger, "trial_infra_failed")
+    assert len(infra) == 1
+    assert infra[0]["reason"] == "proxy_log_missing"  # from the real scan, not a script

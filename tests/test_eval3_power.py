@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from pydantic import ValidationError
 
 from harness.plan.power import (
     AssumedVariance,
@@ -13,6 +12,7 @@ from harness.plan.power import (
     mde_check,
     simulate_clustered_pair_deltas,
 )
+from harness.schema.errors import SpecError
 from harness.schema.experiment import ExperimentSpec
 from tests.fixtures.builders import valid_experiment_dict
 
@@ -28,7 +28,10 @@ def test_pl12_hypothesized_effect_bounded():
     >1 value is refused at plan (was unbounded — always underpowered / always
     passing)."""
     for bad in (-0.1, 0.0, 1.5, 2.0):
-        with pytest.raises(ValidationError):
+        # a structural pydantic bound (gt=0, le=1) now surfaces through the
+        # ExperimentSpec loader boundary as a SpecError-family SpecValidationError
+        # rather than a raw ValidationError [refactor 13 OI-B].
+        with pytest.raises(SpecError):
             _spec(hypothesized_effect=bad)
     assert _spec(hypothesized_effect=0.3).hypothesized_effect == 0.3
     assert _spec(hypothesized_effect=1.0).hypothesized_effect == 1.0
@@ -42,7 +45,7 @@ def test_pl1_mde_check_uses_real_n_override():
     design's real size is the corpus's task-*cluster* count plus ``repetitions``,
     not a flat ``n`` observation count (D-P5-4)."""
     res = mde_check(_spec(), AssumedVariance(p=0.5, rho=0.3, n_tasks=999), n_tasks=8, **FAST)
-    assert res["n_tasks"] == 8  # the real cluster count, not 999
+    assert res.n_tasks == 8  # the real cluster count, not 999
 
 
 # --- D-P5-4 / power-N: cluster by task, reps correlated within a task --------
@@ -83,13 +86,13 @@ def test_dp5_4_correlated_reps_do_not_beat_independent_tasks():
         _spec(repetitions=1), AssumedVariance(p=0.5, rho=0.6, n_tasks=999),
         n_tasks=30, repetitions=1, **FAST,
     )
-    assert clustered["repetitions"] == 3 and clustered["n_tasks"] == 10
+    assert clustered.repetitions == 3 and clustered.n_tasks == 10
     # 10 correlated clusters detect a larger-or-equal minimum effect than 30
     # independent tasks (a None MDE = "cannot detect in range" is the largest).
-    if clustered["mde"] is None:
+    if clustered.mde is None:
         assert True
     else:
-        assert flat["mde"] is not None and clustered["mde"] >= flat["mde"]
+        assert flat.mde is not None and clustered.mde >= flat.mde
 
 
 def test_pl5_calibration_variance_from_runs():
@@ -111,33 +114,33 @@ def test_ac4_mde_computed():
     # deltas top out at 0.5, so it held regardless of what the sim computed [XC-4].)
     small = mde_check(_spec(), AssumedVariance(p=0.5, rho=0.3, n_tasks=8), **FAST)
     large = mde_check(_spec(), AssumedVariance(p=0.5, rho=0.3, n_tasks=200), **FAST)
-    assert small["method"] == "paired_binary_bootstrap_sim"
+    assert small.method == "paired_binary_bootstrap_sim"
     # the small design must actually resolve an MDE in range (not None)...
-    assert small["mde"] is not None
+    assert small.mde is not None
     # ...and the larger design must detect a strictly smaller effect. Fails if
     # the power model stops responding to N.
-    assert large["mde"] is not None and large["mde"] < small["mde"]
+    assert large.mde is not None and large.mde < small.mde
 
 
 def test_ac4_assumed_variance_flagged():
     res = mde_check(_spec(), AssumedVariance(), **FAST)
-    assert "assumption_based_mde" in res["flags"]
+    assert "assumption_based_mde" in res.flags
 
 
 def test_ac4_calibration_variance_not_flagged():
     res = mde_check(_spec(), CalibrationVariance(p=0.5, rho=0.3, n_tasks=80), **FAST)
-    assert "assumption_based_mde" not in res["flags"]
+    assert "assumption_based_mde" not in res.flags
 
 
 def test_ac4_mde_deterministic_for_seed():
     a = mde_check(_spec(seed=7), AssumedVariance(n_tasks=60), **FAST)
     b = mde_check(_spec(seed=7), AssumedVariance(n_tasks=60), **FAST)
-    assert a["power_curve"] == b["power_curve"]
+    assert a.power_curve == b.power_curve
 
 
 def test_ac4_power_increases_with_effect():
     res = mde_check(_spec(), AssumedVariance(p=0.5, rho=0.2, n_tasks=100), **FAST)
-    powers = [pt["power"] for pt in res["power_curve"]]
+    powers = [pt["power"] for pt in res.power_curve]
     # monotone-ish: the largest effect should have power >= the smallest
     assert powers[-1] >= powers[0]
 

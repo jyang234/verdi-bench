@@ -102,24 +102,16 @@ def fixed_ctx(experiment_id: str = "exp-fixture", actor: str = "tester") -> Even
 
 
 def valid_experiment_dict(**overrides) -> dict:
-    base = {
-        "arms": [
-            {"name": "control", "platform": "claude_code", "model": "anthropic/claude-3-5-sonnet-20241022", "payload": {}},
-            {"name": "treatment", "platform": "codex", "model": "openai/gpt-4o-2024-08-06", "payload": {}},
-        ],
-        "corpus": {"id": "public-mini", "version": "1.0.0"},
-        "repetitions": 3,
-        "primary_metric": "holdout_pass_rate",
-        "decision_rule": "delta_holdout_pass_rate > 0",
-        "judge": {
-            "model": "google/gemini-1.5-pro-002",
-            "rubric": "rubrics/code-task-v1.md",
-            "orders": "both",
-            "temperature": 0,
-        },
-        "seed": 1234,
-        "cost_ceiling": {"amount": 25.0, "currency": "USD"},
-    }
+    # Derived from the ONE canonical starter template [refactor 02 §2]: the
+    # example spec lives in exactly one file, and this fixture parses it rather
+    # than keeping a divergent copy. The template's fields are chosen to equal
+    # this fixture's historical base, so parsing it is byte-neutral for the many
+    # callers that pin the produced spec (test_starter_template_single_source
+    # asserts the equality). Tests import the sdk freely (the leaf contract
+    # governs harness.*, not tests.*).
+    from harness.sdk import starter_spec_text
+
+    base = yaml.safe_load(starter_spec_text())
     base.update(overrides)
     return base
 

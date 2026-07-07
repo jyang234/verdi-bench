@@ -12,6 +12,7 @@ from harness.grade.types import Assertion, AssertionResult, GradeTask
 from harness.ledger.query import find_events
 from tests.fixtures.builders import fixed_ctx
 from tests.fixtures.grade_fakes import ScriptedGradeRunner, write_workspace
+from tests.fixtures.grading import write_holdout_results
 
 
 def test_ac4_plugin_contract(tmp_path):
@@ -67,6 +68,35 @@ def test_ac4_plugin_abstain_does_not_fail_binary(tmp_path):
 
 def test_ac4_groundwork_registered():
     assert isinstance(get_plugin("groundwork"), GroundworkGrader)
+
+
+def test_builtin_plugins_resolve_on_the_run_plugin_path_without_cli():
+    """[refactor 01 §4 D3] The in-container entrypoint imports only
+    ``harness.grade.run_plugin`` / ``harness.grade.plugins`` — never
+    ``harness.grade.cli`` — so registration must ride the plugins package
+    itself. Before the fix the only registration transport was a side-effect
+    import in grade/cli.py, leaving every real containerized plugin run an
+    ``UnknownPluginError``. Fresh interpreter: this suite imports the CLI
+    in-process, which would mask the defect."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "import harness.grade.run_plugin  # the in-container entrypoint module\n"
+        "from harness.grade.plugins import BUILTIN_PLUGINS, get_plugin\n"
+        "assert 'harness.grade.cli' not in sys.modules, 'cli leaked into the entrypoint path'\n"
+        "assert 'groundwork' in BUILTIN_PLUGINS\n"
+        "print(type(get_plugin('groundwork')).__name__)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, (
+        "a registered built-in plugin must resolve on the run_plugin path "
+        f"without grade/cli having been imported;\nstderr:\n{result.stderr}"
+    )
+    assert result.stdout.strip() == "GroundworkGrader"
 
 
 def test_ac4_unknown_plugin_fails_closed(tmp_path):
@@ -168,9 +198,7 @@ def test_m_o1_groundwork_without_fixture_output_fails_the_grade_closed(tmp_path)
 
     ws = tmp_path / "ws"
     ws.mkdir()
-    (ws / "holdout_results.json").write_text(
-        '{"assertions": [{"id": "h1", "result": "pass"}]}', encoding="utf-8"
-    )
+    write_holdout_results(ws, True)
     ledger = tmp_path / "l.ndjson"
     task = GradeTask(id="t", task_sha="s", plugin_ids=["groundwork"])
     out = grade_trial("t1", task, ws, ledger, fixed_ctx(),

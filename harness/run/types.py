@@ -15,6 +15,12 @@ from ..schema.experiment import Arm
 
 DEFAULT_TIMEOUT_S = 1800  # 30 minutes [D002]
 
+# The single default trial resource envelope [refactor 04 §4]. Pinned per trial
+# and recorded in provenance so both arms face identical quotas (D003/AC-6). One
+# definition, referenced by RunConfig and RunSettings and the run.config.yaml
+# null-fallback — previously restated at three sites that could silently drift.
+DEFAULT_QUOTAS = Quotas(cpus=2.0, mem="4g")
+
 
 @dataclass
 class Task:
@@ -31,6 +37,14 @@ class Task:
     # content sha of this task version — the scheduler compares (id, task_sha)
     # against the flake quarantine so quarantine is version-scoped [D-2].
     task_sha: Optional[str] = None
+    # EnvironmentSpec [refactor 03 §5, A3]: a task's declared environment. `files`
+    # (relative path → contents) are staged into /workspace pre-trial by BOTH
+    # engines; `env` (NAME → VALUE, never secrets) is injected by Harbor after the
+    # provider-key env; `extra_hosts` extends the derived proxy allowlist (consumed
+    # by the settings/egress path, not the engine).
+    files: dict = field(default_factory=dict)
+    env: dict = field(default_factory=dict)
+    extra_hosts: list = field(default_factory=list)
 
 
 @dataclass
@@ -61,6 +75,21 @@ class ProxyConfig:
 
 
 @dataclass
+class OtlpConfig:
+    """In-trial OTLP trace-capture configuration [refactor 09 §4, A11].
+
+    ``endpoint`` is where the arm's OTel exporter posts spans (the hermetic
+    collector, ``http://verdi-trace-collector:4318``); ``log_path`` is the
+    host-side envelope JSONL the post-run ladder reads to extract this trial's
+    slice. ``None`` on a :class:`TrialRequest` means no collector is configured —
+    zero behavior change. Additive and None-defaulted everywhere; the frozen
+    ``request.json`` is untouched because this rides standard OTel env vars."""
+
+    endpoint: str
+    log_path: Optional[str] = None
+
+
+@dataclass
 class TrialRequest:
     """What an engine receives. There is **no field for holdout content** — the
     request type is the allowlist, so holdouts/canaries are unreachable by an
@@ -78,8 +107,18 @@ class TrialRequest:
     timeout_s: int
     ts: str
     proxy: Optional[ProxyConfig] = None
+    # In-trial OTLP trace capture [refactor 09 §4, A11]: when set, the engine
+    # injects the OTel exporter env vars so the arm's spans reach the hermetic
+    # collector, and the post-run ladder extracts this trial's slice. None =
+    # no collector configured (zero behavior change).
+    otlp: Optional[OtlpConfig] = None
     provider_keys: dict = field(default_factory=dict)  # injected at trial start [AC-8]
     fake_behavior: dict = field(default_factory=dict)  # FAKE ENGINE ONLY
+    # EnvironmentSpec [refactor 03 §5, A3]: `files` staged into /workspace pre-trial
+    # (both engines); `env` non-secret vars injected by Harbor after the provider
+    # keys, never overriding them.
+    files: dict = field(default_factory=dict)
+    env: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -100,6 +139,9 @@ class EngineResult:
     executed_at: Optional[str] = None
     # proxy-metered cost, kept as a cross-check signal only [risks §10]
     proxy_metered_cost: Optional[float] = None
+    # refactor 09 §4/§5: sha256 of the persisted otlp_spans.json artifact the shared
+    # _read_span_log wrote, or None (no collector configured, or span_log_missing).
+    spans_sha: Optional[str] = None
     # machine-readable reason an infra failure occurred, set by the engine so the
     # scheduler ledgers a real reason instead of a fake-only placeholder [RN-14]
     failure_reason: Optional[str] = None
@@ -115,8 +157,11 @@ class Engine(Protocol):
 class RunConfig:
     engine: Engine
     default_timeout_s: int = DEFAULT_TIMEOUT_S
-    quotas: Quotas = field(default_factory=lambda: Quotas(cpus=2.0, mem="4g"))
+    quotas: Quotas = field(default_factory=lambda: DEFAULT_QUOTAS.model_copy())
     proxy: Optional[ProxyConfig] = None
+    # In-trial OTLP trace capture [refactor 09 §4, A11]: threaded onto each
+    # TrialRequest by the seam. None = no collector configured.
+    otlp: Optional[OtlpConfig] = None
     redact_extra_patterns: list[str] = field(default_factory=list)
     provider_keys: dict = field(default_factory=dict)
     # PRA-M2: per-arm allowlist of provider-key NAMES. When set, an arm's

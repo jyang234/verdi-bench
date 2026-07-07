@@ -14,7 +14,7 @@ import hashlib
 import json
 
 from ..blind.core import arm_canaries
-from ..judge.assemble import comparisons_from_ledger as assemble_comparisons
+from ..judge.assemble import native_comparisons_from_ledger as assemble_comparisons
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..plan.seeds import sub_seed

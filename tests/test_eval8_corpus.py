@@ -623,3 +623,97 @@ def test_m_o6_bump_reimport_carries_quarantine_and_never_a_stale_baseline(tmp_pa
     assert m2.task(changed_id).sha != m1.task(changed_id).sha  # changed content
     assert m2.task(changed_id).baseline_ref is None          # never rides the bump
     assert m2.task(changed_id).status == "admitted"          # public policy unchanged
+
+
+# --- calibrate statistics moved out of the thin CLI [refactor 07 §3] --------
+def test_realized_calibration_run_derives_run_from_grades(tmp_path):
+    """The inline calibrate stats moved into a corpus function: it derives the
+    calibration ``run`` record (mean holdout pass rate + task count) from the
+    ledger's grades — the exact record the CLI/api used to inline."""
+    from harness.corpus.ledger_ops import realized_calibration_run
+    from tests.fixtures.builders import seed_trial_and_grade
+
+    ledger = tmp_path / "ledger.ndjson"
+    ctx = fixed_ctx(experiment_id="exp")
+    seed_trial_and_grade(ledger, ctx, trial_id="t1", task_id="ta", arm="control", passed=True)
+    seed_trial_and_grade(ledger, ctx, trial_id="t2", task_id="tb", arm="control", passed=False)
+    assert realized_calibration_run(ledger, rho=0.3, kind="full") == {
+        "p": 0.5, "rho": 0.3, "n_tasks": 2, "kind": "full",
+    }
+
+
+def test_realized_calibration_run_refuses_a_ledger_with_no_grades(tmp_path):
+    """Fail loudly, never a silent p over zero tasks [fail loudly]."""
+    from harness.corpus.ledger_ops import NoGradedTrialsError, realized_calibration_run
+
+    empty = tmp_path / "empty.ndjson"
+    empty.write_text("", encoding="utf-8")
+    with pytest.raises(NoGradedTrialsError, match="no graded trials"):
+        realized_calibration_run(empty, rho=0.3, kind="subset")
+
+
+# --- admit's two-phase persistence moved beside admit_task [refactor 07 §3] --
+def _approved_baselined(ledger, ctx):
+    """A pending candidate with every ledger precondition satisfied, so the
+    persistence tests refuse/report for exactly the reason under test."""
+    manifest = _pending_manifest()
+    _approve(ledger, ctx, "cand-1", "s" * 64)
+    record_flake_baseline(
+        ledger, ctx, task_id="cand-1", task_sha="s" * 64, k=5,
+        results=[{"run": i, "passed": True} for i in range(5)], verdict="clean",
+    )
+    return manifest
+
+
+def test_admit_with_persistence_probes_destinations_before_ledgering(tmp_path):
+    """PRA-M11 phase 1: a non-writable manifest destination refuses with NOTHING
+    ledgered and the candidate still pending — every other precondition holds,
+    so the refusal is exactly the destination probe."""
+    import os as _os
+
+    from harness.corpus.admit import AdmitDestinationError, admit_with_persistence
+    from harness.ledger.query import find_events
+
+    if _os.geteuid() == 0:  # pragma: no cover - root ignores mode bits
+        pytest.skip("os.access(W_OK) cannot be denied to root")
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    manifest = _approved_baselined(ledger, ctx)
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o555)
+    try:
+        with pytest.raises(AdmitDestinationError, match="not writable"):
+            admit_with_persistence(
+                manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+                baseline_ref="b1", keyring=_KEYRING, manifest_path=ro / "manifest.json",
+            )
+    finally:
+        ro.chmod(0o755)
+    assert find_events(ledger, "task_admitted") == []
+    assert manifest.task("cand-1").status == "pending-curation"
+
+
+def test_admit_with_persistence_reports_post_ledger_persist_failure(tmp_path):
+    """PRA-M11 phase 2: a persistence failure AFTER the ledger write is returned
+    as ``persist_error`` with the recovery hint — the admission is on the chain,
+    never swallowed and never re-raised as if nothing was ledgered."""
+    from harness.corpus.admit import admit_with_persistence
+    from harness.ledger.query import find_events
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    manifest = _approved_baselined(ledger, ctx)
+    # The parent is writable (the pre-ledger probe passes) but manifest.save
+    # hits a DIRECTORY at the manifest path — an OSError only phase 2 can see.
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.mkdir()
+    outcome = admit_with_persistence(
+        manifest, ledger, ctx, candidate_id="cand-1", task_sha="s" * 64,
+        baseline_ref="b1", keyring=_KEYRING, manifest_path=manifest_path,
+    )
+    assert len(find_events(ledger, "task_admitted")) == 1  # on the chain
+    assert outcome.embedded_path is None
+    assert outcome.persist_error is not None
+    assert "The admission is on the chain" in outcome.persist_error
+    assert str(manifest_path) in outcome.persist_error  # names the reconcile target

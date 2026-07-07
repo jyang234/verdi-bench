@@ -1,22 +1,68 @@
-"""Engine factory — the single place Harbor is imported.
+"""Engine registry — the single place engines are named and Harbor is imported.
 
-Keeping the ``harbor`` import inside ``harness.run.engines`` (never in the seam,
-scheduler, budget, or CLI) is what makes "Harbor confined to the seam" [AC-1]
-structurally true. Callers ask for an engine by name; they never name Harbor.
+Keeping engine construction behind :data:`ENGINES` (and the ``harbor`` import inside
+its factory, never in the seam, scheduler, budget, or CLI) is what makes "Harbor
+confined to the seam" [AC-1] structurally true: callers ask for an engine by name
+via :func:`get_engine`; they never import an engine module themselves.
+
+Adding an engine is one :data:`ENGINES` entry [refactor 04 §2]: the ``bench run
+--engine`` help (:func:`engine_choices`) and the unknown-engine error both derive
+from ``ENGINES.keys()``, and the cross-engine contract suite parametrizes over the
+registry — so a new engine is wired and contract-tested by that single line.
 """
 
 from __future__ import annotations
 
-from ..types import Engine
+from typing import Callable
+
+from .base import EngineBase
 
 
-def get_engine(name: str, **kwargs) -> Engine:
-    if name == "fake":
-        from .fake import FakeEngine
+def _fake() -> EngineBase:
+    from .fake import FakeEngine
 
-        return FakeEngine()
-    if name == "harbor":
-        from .harbor import HarborEngine
+    return FakeEngine()
 
-        return HarborEngine(**kwargs)
-    raise ValueError(f"unknown engine {name!r}; expected 'fake' or 'harbor'")
+
+def _harbor() -> EngineBase:
+    from .harbor import HarborEngine
+
+    return HarborEngine()
+
+
+# name -> zero-arg factory; insertion order is the CLI's rendering order.
+ENGINES: dict[str, Callable[[], EngineBase]] = {
+    "fake": _fake,
+    "harbor": _harbor,
+}
+
+
+def engine_choices() -> str:
+    """The registered engine names rendered for ``--engine`` help as ``fake | harbor``."""
+    return " | ".join(ENGINES)
+
+
+def get_engine(name: str) -> EngineBase:
+    """Construct the engine registered under ``name`` [AC-1].
+
+    An unknown name fails loudly with the closed choice list derived from the
+    registry — never a silent default."""
+    try:
+        factory = ENGINES[name]
+    except KeyError:
+        expected = " or ".join(repr(k) for k in ENGINES)
+        raise ValueError(f"unknown engine {name!r}; expected {expected}") from None
+    return factory()
+
+
+def manages_real_infra(name: str) -> bool:
+    """Whether the engine registered under ``name`` manages real infrastructure
+    (docker) that the managed metering proxy / OTLP collector must wrap around
+    [refactor 11 §G5c].
+
+    Reads the engine's own :attr:`EngineBase.manages_real_infra` declaration, so
+    infra gating derives from the registry instead of an ``engine == "fake"``
+    string literal a new offline engine would have to know to imitate. Constructing
+    the engine to read the flag is cheap and side-effect-free (no daemon probe at
+    construction) and honours the lazy harbor import the registry seam depends on."""
+    return get_engine(name).manages_real_infra

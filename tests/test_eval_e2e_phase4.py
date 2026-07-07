@@ -21,6 +21,7 @@ from harness.cli import app
 from harness.corpus.registry import CorpusManifest, TaskEntry
 from harness.ledger.query import find_events
 from tests.fixtures.builders import write_experiment_yaml
+from tests.fixtures.grading import write_holdout_results
 
 runner = CliRunner()
 
@@ -60,10 +61,7 @@ def test_phase4_exit_pipeline_through_bench_verbs(tmp_path):
               (ev["trial_record"] for ev in find_events(ledger, "trial"))}
     for (arm, _rep), rec in trials.items():
         ws = Path(rec["artifacts_path"]).parent
-        result = "pass" if arm == "control" else "fail"
-        (ws / "holdout_results.json").write_text(
-            json.dumps({"assertions": [{"id": "h1", "result": result}]}), encoding="utf-8"
-        )
+        write_holdout_results(ws, arm == "control")
     _ok("grade", str(expdir), "--runner", "local")
 
     # judge → review build → record → reveal

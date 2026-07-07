@@ -12,7 +12,12 @@ from pathlib import Path
 import pytest
 
 from harness.grade.baseline import DEFAULT_K, flake_baseline, load_quarantine
-from harness.grade.container import GraderUnavailableError, GradingContainer, HoldoutRun
+from harness.grade.container import (
+    GradeRunner,
+    GraderUnavailableError,
+    GradingContainer,
+    HoldoutRun,
+)
 from harness.grade.types import GradeTask
 from harness.ledger.query import find_events
 from harness.plan.interleave import Trial
@@ -80,8 +85,12 @@ def test_ac2_transient_grader_outage_is_not_flake(tmp_path):
     """GR-8: a transient grader-unavailable outage is NOT flake evidence — it
     fails loud (no verdict, no quarantine) so an infra hiccup can't quarantine a
     healthy task version."""
-    class DeadRunner:
+    class DeadRunner(GradeRunner):
         grader_name = "dead"
+        runs_plugins_in_container = False
+        grades_in_place = False
+        def preflight(self) -> None:
+            """No-op: the outage surfaces from run_holdouts, not preflight."""
         def run_holdouts(self, cmd, workspace, holdouts_dir, nonce=None):
             raise GraderUnavailableError("docker daemon down")
 
@@ -100,8 +109,12 @@ def test_ac2_baseline_runs_are_independent_copies(tmp_path):
     guarantee)."""
     seen: list[Path] = []
 
-    class RecordingRunner:
+    class RecordingRunner(GradeRunner):
         grader_name = "rec"
+        runs_plugins_in_container = False
+        grades_in_place = False
+        def preflight(self) -> None:
+            """No daemon to probe."""
         def run_holdouts(self, cmd, workspace, holdouts_dir, nonce=None):
             seen.append(Path(workspace))
             return HoldoutRun(PASS)

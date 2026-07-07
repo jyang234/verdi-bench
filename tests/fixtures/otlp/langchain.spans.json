@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "trial_id": "fixture-langchain",
+  "batches": [
+    {
+      "content_type": "application/json",
+      "resource_spans": [
+        {
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "verdi.fixture"
+              },
+              "spans": [
+                {
+                  "name": "ChatOpenAI",
+                  "spanId": "a1",
+                  "startTimeUnixNano": "1700000000000000000",
+                  "endTimeUnixNano": "1700000000001000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.operation.name",
+                      "value": {
+                        "stringValue": "chat"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.request.model",
+                      "value": {
+                        "stringValue": "gpt-4o-2024-08-06"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.system",
+                      "value": {
+                        "stringValue": "openai"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.input_tokens",
+                      "value": {
+                        "intValue": "1200"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.output_tokens",
+                      "value": {
+                        "intValue": "340"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.content.completion",
+                      "value": {
+                        "stringValue": "The sum is 42."
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "tool:duckduckgo_search",
+                  "spanId": "a2",
+                  "startTimeUnixNano": "1700000000500000000",
+                  "endTimeUnixNano": "1700000000501000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.operation.name",
+                      "value": {
+                        "stringValue": "execute_tool"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.tool.name",
+                      "value": {
+                        "stringValue": "duckduckgo_search"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.tool.arguments",
+                      "value": {
+                        "stringValue": "{\"query\": \"capital of france\"}"
+                      }
+                    }
+                  ],
+                  "parentSpanId": "a1"
+                },
+                {
+                  "name": "HTTP POST",
+                  "spanId": "a3",
+                  "startTimeUnixNano": "1700000000600000000",
+                  "endTimeUnixNano": "1700000000601000000",
+                  "attributes": [
+                    {
+                      "key": "http.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "http.url",
+                      "value": {
+                        "stringValue": "https://api.openai.com/v1"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

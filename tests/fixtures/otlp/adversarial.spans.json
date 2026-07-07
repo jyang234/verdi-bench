@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "trial_id": "fixture-adversarial",
+  "batches": [
+    {
+      "content_type": "application/json",
+      "resource_spans": [
+        {
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "verdi.fixture"
+              },
+              "spans": [
+                {
+                  "name": "chat",
+                  "spanId": "f1",
+                  "startTimeUnixNano": "1700000000000000000",
+                  "endTimeUnixNano": "1700000000001000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.operation.name",
+                      "value": {
+                        "stringValue": "chat"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.request.model",
+                      "value": {
+                        "stringValue": "claude-3-5-sonnet-20241022"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.system",
+                      "value": {
+                        "stringValue": "anthropic"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.prompt",
+                      "value": {
+                        "stringValue": "use gpt-4o from openai"
+                      }
+                    },
+                    {
+                      "key": "llm.vendor",
+                      "value": {
+                        "stringValue": "OpenAI"
+                      }
+                    },
+                    {
+                      "key": "custom.arm",
+                      "value": {
+                        "stringValue": "treatment-gpt4"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.input_tokens",
+                      "value": {
+                        "intValue": "100"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.output_tokens",
+                      "value": {
+                        "intValue": "20"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.content.completion",
+                      "value": {
+                        "stringValue": "Task complete."
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "Bash",
+                  "spanId": "f2",
+                  "startTimeUnixNano": "1700000000100000000",
+                  "endTimeUnixNano": "1700000000101000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.tool.name",
+                      "value": {
+                        "stringValue": "Bash"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.tool.arguments",
+                      "value": {
+                        "stringValue": "{\"command\": \"echo hi\"}"
+                      }
+                    },
+                    {
+                      "key": "peer.service",
+                      "value": {
+                        "stringValue": "gemini-1.5-pro"
+                      }
+                    },
+                    {
+                      "key": "verdi.agent",
+                      "value": {
+                        "stringValue": "worker-1"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.content.reasoning",
+                      "value": {
+                        "stringValue": "Consider the approach."
+                      }
+                    }
+                  ],
+                  "parentSpanId": "f1"
+                }
+              ]
+            }
+          ],
+          "resource": {
+            "attributes": [
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "claude-code-arm-A"
+                }
+              },
+              {
+                "key": "telemetry.sdk.language",
+                "value": {
+                  "stringValue": "python"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

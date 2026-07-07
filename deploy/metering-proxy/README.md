@@ -2,11 +2,20 @@
 
 `bench run --engine harbor` confines trial egress to a **metering proxy** on an
 internal docker network and reads that proxy's structured log for per-trial
-attribution, egress-violation flagging, and cost enforcement. The proxy is an
-**external operational component** — it is not bundled into the harness image
-because deployments vary (Squid, a devcontainer proxy, an internal gateway).
-This directory is a **reference** implementation of the contract the engine
-depends on; validate it in your environment before trusting a real run.
+attribution, egress-violation flagging, and cost enforcement.
+
+**The harness ships a managed metering proxy — that is the harness-native path.**
+The stdlib CONNECT proxy in `harness/hermetic/` is stood up and torn down around a
+run by `MeteringProxy` / `run.config` `proxy.managed`, or out of band with `bench
+proxy up` / `bench proxy down` (`docs/usage-guide.md` §6). It needs no external
+component and is what the shakedown (L6) and the e2e tests use.
+
+This directory is the **external-production reference** for the *other* path —
+when deployment policy has you run your own proxy (Squid, a devcontainer proxy, an
+internal gateway) instead of the managed one. It documents the exact log/auth
+contract the engine depends on (see the trial-image egress obligation in
+[`docs/images.md`](../../docs/images.md)); validate it in your environment before
+trusting a real run.
 
 > Since PRA-H4, a configured-but-missing proxy log makes a trial fail
 > `infra_failed(proxy_log_missing)` rather than silently reporting zero
@@ -44,6 +53,15 @@ never from the sha-locked `experiment.yaml` or the ledger.
   carrying the trial id, and a JSON `logformat` matching the schema above.
 - `docker-compose.yml` — brings the proxy up on the `verdi-metered` internal
   network the engine attaches trials to.
+
+> **Squid-version caveat.** Harbor presents the trial id as a basic-auth
+> *username with an empty password* (`_with_trial_auth`); Squid 6 refuses an
+> empty-password credential in core, so validate the auth against your Squid
+> version before trusting attribution. The **shipped** in-repo path avoids this
+> entirely: the managed metering proxy (`harness/hermetic/_proxy_container.py`,
+> stood up and torn down by `MeteringProxy` / `run.config` `proxy.managed`)
+> accepts the username-only credential natively and is what the shakedown (L6)
+> and the e2e tests use.
 
 ## Validation
 

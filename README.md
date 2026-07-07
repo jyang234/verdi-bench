@@ -77,7 +77,7 @@ Implemented stories (following the `00-EVAL-1` master-plan build order):
 All EVAL-1 child stories plus the Phase-7 roadmap stories (EVAL-10/11/12) and
 the operator/authoring/reviewer stories EVAL-13 through EVAL-21 are built. The
 fast suite (`uv run pytest -m "not docker"`) is green — over 700 tests — and
-`make verify` runs it plus the 8 import-linter contracts. Two more CI jobs cover
+`make verify` runs it plus the 10 import-linter contracts. Two more CI jobs cover
 what the fast suite cannot: a `docker`-marked suite of real-container tests (the
 grade container, a Harbor trial, redaction, digest-pinning, kill-on-timeout,
 network-less plugin isolation, metering-proxy egress attribution, and a
@@ -91,6 +91,21 @@ collection fails if any story's pre-registered acceptance criteria (from its
 names an AC its story does not declare, or if an AC test is disabled with an
 unconditional `@pytest.mark.skip`. `--ac-report` additionally prints the
 exercised AC numbers.
+
+An **instrument-to-product refactor program** (`docs/design/refactor/`) then built
+the write path and hermetic infrastructure the shakedown had proved were
+hand-rolled. It added a Python **SDK** (`harness.sdk` — the fluent `Experiment`
+builder and the stage-driving `ExperimentWorkspace`) plus a `bench init` scaffold,
+so an experiment can be authored, locked, run, graded, judged, and analyzed from
+Python with no subprocess and no hand-written YAML; maintained **trial images**
+(`harness/images`, a `verdi-base` + `verdi_agent`, checked by
+`bench images build` and `bench images verify`); a **hermetic** Docker layer that
+owns the networks, a **managed metering proxy**, and a **trace collector**
+(`bench proxy up`, `bench otlp up`); a holdout hierarchy with an executing local
+runner; and **in-trial OTLP trace capture** projected into the trajectory
+(`platform: otlp`). The measurement core is unchanged — the refactor
+composed the existing subsystems around it, proven by byte-identical contract
+goldens. See `docs/design/refactor/` for the master plan and per-domain plans.
 
 ## Provisional decisions
 
@@ -137,6 +152,26 @@ Everything the run produced — who did what, in what order, under which
 instrument version — is on the ledger, and `findings.exploratory.dossier.html`
 is a single self-contained file you can archive or hand to a reviewer.
 
+Or drive the same experiment from **Python** with the SDK — the builder writes
+those same files (they remain the source of truth for what gets locked) and runs
+the pipeline in-process:
+
+```python
+from harness.sdk import Experiment, Task
+
+ws = (Experiment("demo", seed=1234, cost_ceiling_usd=10.0)
+      .arm("control",   model="anthropic/claude-haiku-4-5-20251001", platform="claude_code")
+      .arm("treatment", model="openai/gpt-4o-2024-08-06",            platform="codex")
+      .judge("fake/deterministic-2026-01-01")
+      .task(Task("t1", prompt="Write solution.py defining add(a, b)..."))
+      ).write("demo")                 # writes experiment.yaml, tasks.yaml, rubric.md
+ws.plan(actor="me"); ws.run(engine="fake"); ws.grade(runner="local"); ws.judge()
+ws.analyze(exploratory=True)          # findings + dossier — the same bytes the CLI writes
+```
+
+The usage guide §0.5 shows the complete runnable flow (including the fake-path
+grade step), and `init <dir>` scaffolds the files if you prefer the CLI.
+
 ## Usage
 
 Every ledgering verb accepts `--actor <name>` (recorded on its events; refused
@@ -144,10 +179,18 @@ loudly rather than defaulted to `unknown` when the OS user is unresolvable).
 
 ```bash
 uv sync
+uv run bench init   <experiment-dir>                         # scaffold experiment.yaml/tasks.yaml/rubric from templates (not ledgered)
 uv run bench plan   experiment.yaml --ledger ledger.ndjson   # validate + lock (commits rubric hash)
 uv run bench run    <experiment-dir>                          # execute trials
 uv run bench run    <experiment-dir> --reuse-control <bundle> # reuse an unchanged control (exploratory; preflight refuses on drift)
 uv run bench control-cache export <experiment-dir> --arm control --out control.bundle.json   # export a control arm for reuse
+uv run bench proxy up   --allow api.anthropic.com --allow api.openai.com   # stand up the managed metering proxy for harbor egress (ledgers nothing)
+uv run bench proxy down                                       # tear the managed metering proxy + its networks down
+uv run bench otlp  up                                         # stand up the managed OTLP trace collector for in-trial span capture (ledgers nothing)
+uv run bench otlp  down                                       # tear the collector + its network down (deletes the raw envelope log unless --keep-raw)
+uv run bench images list                                      # official trial images: name -> tag (ledgers nothing)
+uv run bench images build generic-llm --pin                  # build (FROM verdi-base first) and pin a trial image to a sha256 digest
+uv run bench images verify <image-ref>                       # offline compliance check: hardened + network-none, asserts the harbor contract
 uv run bench grade  <experiment-dir>                          # deterministic grades
 uv run bench grade  <experiment-dir> --retry-terminal <trial-id>   # ledgered terminal-cant_grade override
 uv run bench judge  <experiment-dir>                          # identity-blind advisory verdicts (idempotent)
@@ -172,6 +215,7 @@ uv run bench author <workspace-dir> [--actor <name>]   # draft/validate/preview 
 uv run bench corpus import <tasks-dir> --cache <dir>   # idempotent public import (harbor json dir)
 uv run bench corpus import <swe-bench.jsonl> --cache <dir> --benchmark swebench [--image-template T]   # a standardized battery
 uv run bench corpus materialize <manifest> --cache <dir> --out <experiment-dir> [--all]   # → runnable tasks.yaml + holdouts
+uv run bench corpus validate-tasks <experiment-dir>   # strict-lint tasks.yaml (unknown keys / drift traps); ledgers nothing
 uv run bench corpus subset <manifest> --seed 1234      # stratified calibration subset
 uv run bench corpus mine <mr.json> --ticket t.txt --out cand.json
 uv run bench corpus review <cand.json>                 # curation view

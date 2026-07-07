@@ -15,8 +15,12 @@ type = forbidden
 allow_indirect_imports = True
 source_modules =
     harness.cli
+    harness.cli_common
     harness.entrypoints
+    harness._entrypoint_fixtures
     harness.version
+    harness.http_guard
+    harness.errors
     harness.schema
     harness.ledger
     harness.plan
@@ -34,27 +38,49 @@ source_modules =
     harness.run.interleave
     harness.run.budget
     harness.run.cli
+    harness.run.api
     harness.run.egress
     harness.run.redact
     harness.run.types
     harness.run.settings
     harness.run.trajectory
     harness.run.heartbeat
+    harness.run.engines.base
     harness.run.engines.fake
     harness.status
     harness.serve
     harness.author
+    harness.sdk
+    harness.hermetic
+    harness.images
+    harness.webkit
 forbidden_modules =
     harness.run.engines.harbor
 
 [importlinter:contract:grade-has-no-llm-clients]
 name = Deterministic grading imports no LLM client [EVAL-5 constraint]
 type = forbidden
+# harness.hermetic.otlp_decode is the sole internal gateway to opentelemetry-proto
+# (the lazy protobuf import lives there), so forbidding it keeps deterministic
+# grading free of both the span decoder and its optional heavy dep [refactor 09 §6].
 source_modules =
     harness.grade
 forbidden_modules =
     harness.judge.providers
     harness.judge.client
+    harness.hermetic.otlp_decode
+
+[importlinter:contract:judge-imports-no-span-decoder]
+name = The identity-blind judge imports no OTLP span decoder [refactor 09 §6]
+type = forbidden
+# otlp_spans.json is operator/forensics-tier: raw spans name models and vendors
+# (gen_ai.request.model, service.name), so they must never enter the judge packet.
+# The judge importing the span decoder would be the structural path to that leak;
+# forbidding otlp_decode (the sole gateway to opentelemetry-proto) blocks it.
+source_modules =
+    harness.judge
+forbidden_modules =
+    harness.hermetic.otlp_decode
 
 [importlinter:contract:contamination-detectors-have-no-llm-clients]
 name = Deterministic contamination detectors import no LLM client [EVAL-10 AC-6]
@@ -67,6 +93,7 @@ source_modules =
     harness.contamination.dating
     harness.contamination.canary
     harness.contamination.overlap
+    harness.contamination.channels
     harness.contamination.scan
     harness.contamination.summary
 forbidden_modules =
@@ -81,9 +108,12 @@ type = forbidden
 allow_indirect_imports = True
 source_modules =
     harness.cli
+    harness.cli_common
     harness.entrypoints
+    harness._entrypoint_fixtures
     harness.version
     harness.http_guard
+    harness.errors
     harness.schema
     harness.plan
     harness.run
@@ -100,15 +130,23 @@ source_modules =
     harness.status
     harness.serve
     harness.author
+    harness.sdk
+    harness.hermetic
+    harness.images
+    harness.webkit
 forbidden_modules =
     harness.ledger.chain
 
 [importlinter:contract:forensics-deterministic-tier-llm-free]
 name = Deterministic forensics imports no LLM client [EVAL-11 AC-3]
 type = forbidden
+# The assembler is the deterministic ledger+disk → TrialEvidence phase [refactor
+# 06 §5]: it prepares (splices, byte-budgets) the transcript but requests no
+# completion — the advisory pass (review.py) is the sole provider-touching phase.
 source_modules =
     harness.forensics.metrics
     harness.forensics.detectors
+    harness.forensics.assembler
 forbidden_modules =
     harness.judge.providers
     harness.judge.client
@@ -156,3 +194,42 @@ source_modules =
 forbidden_modules =
     harness.judge.providers
     harness.judge.client
+
+[importlinter:contract:sdk-is-a-leaf]
+name = The SDK facade is a leaf consumer — no subsystem imports it [refactor 02 §1, master plan §3, A5]
+# sdk composes and re-exports subsystems; the import direction is strictly
+# sdk -> subsystems, never the reverse. Every other harness package (the
+# subsystems AND the peer surfaces, incl. cli — `bench init` reads the template
+# data FILES, it does not import the sdk package) is forbidden from importing
+# harness.sdk. This also covers the plan's explicit "review must not import sdk".
+type = forbidden
+source_modules =
+    harness.cli
+    harness.cli_common
+    harness.entrypoints
+    harness._entrypoint_fixtures
+    harness.version
+    harness.http_guard
+    harness.errors
+    harness.schema
+    harness.ledger
+    harness.plan
+    harness.run
+    harness.adapters
+    harness.grade
+    harness.judge
+    harness.analyze
+    harness.review
+    harness.process
+    harness.corpus
+    harness.contamination
+    harness.blind
+    harness.forensics
+    harness.status
+    harness.serve
+    harness.author
+    harness.hermetic
+    harness.images
+    harness.webkit
+forbidden_modules =
+    harness.sdk

@@ -13,14 +13,19 @@ seams the CLI already trusts.
 The actor binds at launch (resolve_actor — refused loudly, never
 "unknown"); ``attested_by`` is an explicit ceremony field. Loopback by
 default: this surface can mutate, so exposing it is a deliberate act.
+
+[refactor 07 §4] The mechanical transport (``_send``/``_json``/``_read_json_object``,
+the host+CSRF guards, route-table dispatch, the ``type("Bound…Handler", …)``
+factory including this server's state injection) comes from the tier-neutral
+:class:`harness.webkit.http.JsonRouteHandler`. The two-POST-only mutation
+surface, the per-method error semantics (a ``/api/schedule`` refusal is a 500,
+the ceremony refusals are typed 409s), and the preview parity stay here.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
@@ -28,7 +33,6 @@ from urllib.parse import parse_qs, urlparse
 import yaml
 
 from ..corpus.commit import TaskCommitmentError, load_task_dicts
-from ..http_guard import ForbiddenError, check_csrf, check_host
 from ..ledger.events import EventContext
 from ..ledger.query import ChainIntegrityError, find_events
 from ..plan.interleave import derive_schedule, enumerate_trials
@@ -36,11 +40,16 @@ from ..plan.lock import (
     AlreadyLockedError,
     RubricCommitmentError,
     UnderpoweredError,
+    UnknownArmPlatformError,
+    check_arm_platforms,
+    commit_rubric,
     lock_experiment,
+    spec_sha256,
 )
 from ..plan.power import AssumedVariance, mde_check
 from ..schema.errors import SpecError
 from ..schema.experiment import ExperimentSpec
+from ..webkit.http import JsonRouteHandler, NotFound, Refused, bind_handler
 from .page import AUTHOR_PAGE
 
 DEFAULT_HOST = "127.0.0.1"  # a mutating surface: exposing it is a deliberate act
@@ -54,15 +63,56 @@ _DRAFT_FILE_RE = re.compile(r"^(experiment\.yaml|tasks\.yaml|rubrics/[A-Za-z0-9.
 _QUICK_POWER = {"n_sim": 8, "n_boot": 40, "deltas": [0.05, 0.1, 0.2, 0.3, 0.4, 0.5]}
 
 
-class _NotFound(Exception):
+def _rubric_commits(d: Path, spec: ExperimentSpec) -> bool:
+    """True iff the lock's own ``commit_rubric`` preflight step would accept the
+    draft's rubric — preview parity by composition, not re-implementation."""
+    try:
+        commit_rubric(d / "experiment.yaml", spec)
+        return True
+    except RubricCommitmentError:
+        return False
+
+
+class _NotFound(NotFound):
     """Route-level 404 with an actionable message."""
 
 
-class _Refused(Exception):
+class _Refused(Refused):
     """Route-level 409: the operation is refused for a stated reason."""
 
 
-class AuthorHandler(BaseHTTPRequestHandler):
+def _get_error(exc: BaseException) -> Optional[tuple[int, dict]]:
+    """Preview-read error map: a missing draft/file is a 404. Everything else —
+    including a ``_Refused`` from ``/api/schedule`` on an invalid ``tasks.yaml`` —
+    falls through to a served 500, exactly as the original ``do_GET`` ``except``
+    ladder (which named only ``_NotFound``) did."""
+    if isinstance(exc, _NotFound):
+        return (404, {"error": str(exc)})
+    return None
+
+
+def _post_error(exc: BaseException) -> Optional[tuple[int, dict]]:
+    """Ceremony error map: a bad name/file is a 404 (plain); a ``_Refused``
+    precondition is a 409 (plain); the plan/schema typed refusals are 409s
+    rendered with their own ``error_class`` [AC-2]. Anything else → served 500.
+    Order preserves the original ``except`` ladder."""
+    if isinstance(exc, _NotFound):
+        return (404, {"error": str(exc)})
+    if isinstance(exc, _Refused):
+        return (409, {"error": str(exc)})
+    if isinstance(exc, (
+        UnderpoweredError,
+        AlreadyLockedError,
+        TaskCommitmentError,
+        ChainIntegrityError,
+        RubricCommitmentError,
+        SpecError,
+    )):
+        return (409, {"error_class": type(exc).__name__, "error": str(exc)})
+    return None
+
+
+class AuthorHandler(JsonRouteHandler):
     """The authoring routes over one workspace root (bound by make_author_server)."""
 
     workspace_root: Path
@@ -70,76 +120,51 @@ class AuthorHandler(BaseHTTPRequestHandler):
     lock_kwargs: Optional[dict]  # operational MDE tuning (the bench-plan builders' knob)
 
     server_version = "verdi-bench-author"
-    sys_version = ""
-    protocol_version = "HTTP/1.1"
 
     # -- GET: page + pure preview reads over saved drafts -----------------------
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
-        parsed = urlparse(self.path)
-        q = parse_qs(parsed.query)
-        try:
-            check_host(self.headers, self.server.server_address)  # PRA-M16
-            if parsed.path == "/":
-                self._send(200, AUTHOR_PAGE.encode("utf-8"), "text/html; charset=utf-8")
-            elif parsed.path == "/favicon.ico":
-                self._send(204, b"", "image/x-icon")
-            elif parsed.path == "/api/drafts":
-                self._json(200, {"actor": self.actor, "drafts": self._drafts()})
-            elif parsed.path == "/api/draft":
-                self._json(200, self._draft(q))
-            elif parsed.path == "/api/validate":
-                self._json(200, self._validate(q))
-            elif parsed.path == "/api/power":
-                self._json(200, self._power(q))
-            elif parsed.path == "/api/schedule":
-                self._json(200, self._schedule(q))
-            elif parsed.path == "/api/sha":
-                d = self._dir(q)
-                self._json(200, {"spec_sha256": _spec_sha(d)})
-            else:
-                self._json(404, {"error": f"unknown path {parsed.path!r}"})
-        except ForbiddenError as e:
-            self._json(403, {"error": str(e)})
-        except _NotFound as e:
-            self._json(404, {"error": str(e)})
-        except Exception as e:  # noqa: BLE001 — served as 500, never a dropped
-            # connection; nothing is retried or defaulted.
-            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+        q = parse_qs(urlparse(self.path).query)
+        table = {
+            "/": lambda: self._send(200, AUTHOR_PAGE.encode("utf-8"), "text/html; charset=utf-8"),
+            "/favicon.ico": lambda: self._send(204, b"", "image/x-icon"),
+            "/api/drafts": lambda: self._json(200, {"actor": self.actor, "drafts": self._drafts()}),
+            "/api/draft": lambda: self._json(200, self._draft(q)),
+            "/api/validate": lambda: self._json(200, self._validate(q)),
+            "/api/power": lambda: self._json(200, self._power(q)),
+            "/api/schedule": lambda: self._json(200, self._schedule(q)),
+            "/api/sha": lambda: self._json(
+                200, {"spec_sha256": spec_sha256(self._dir(q) / "experiment.yaml")}
+            ),
+        }
+        self.dispatch(
+            table,
+            guard=self._guard_host,  # PRA-M16
+            unknown=lambda p: (404, {"error": f"unknown path {p!r}"}),
+            error=_get_error,
+        )
 
     # -- POST: the two enumerated ceremony endpoints, nothing else -------------
     def do_POST(self) -> None:  # noqa: N802
-        parsed = urlparse(self.path)
-        try:
+        prepared: dict = {}
+
+        def prepare() -> None:
             # PRA-H2: the ceremony endpoints mutate state (draft writes, and the
-            # chain-anchored lock). Guard Host + Origin + Content-Type before
-            # reading the body so a cross-site page cannot forge a lock.
-            check_host(self.headers, self.server.server_address)
-            check_csrf(self.headers, self.server.server_address)
-            body = self._body()
-            if parsed.path == "/api/draft":
-                self._json(200, self._write_draft(body))
-            elif parsed.path == "/api/lock":
-                self._json(200, self._lock(body))
-            else:
-                self._json(404, {"error": f"no such ceremony endpoint {parsed.path!r}"})
-        except ForbiddenError as e:
-            self._json(403, {"error": str(e)})
-        except _NotFound as e:
-            self._json(404, {"error": str(e)})
-        except _Refused as e:
-            self._json(409, {"error": str(e)})
-        except (
-            UnderpoweredError,
-            AlreadyLockedError,
-            TaskCommitmentError,
-            ChainIntegrityError,
-            RubricCommitmentError,
-            SpecError,
-        ) as e:
-            # the typed refusals, each rendered with its own message [AC-2]
-            self._json(409, {"error_class": type(e).__name__, "error": str(e)})
-        except Exception as e:  # noqa: BLE001
-            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            # chain-anchored lock). Guard Host + Origin + Content-Type, then read
+            # the body (a malformed body is a 404) before dispatch, so a
+            # cross-site page cannot forge a lock.
+            self._guard_host_and_csrf()
+            prepared["body"] = self._read_json_object()
+
+        table = {
+            "/api/draft": lambda: self._json(200, self._write_draft(prepared["body"])),
+            "/api/lock": lambda: self._json(200, self._lock(prepared["body"])),
+        }
+        self.dispatch(
+            table,
+            guard=prepare,
+            unknown=lambda p: (404, {"error": f"no such ceremony endpoint {p!r}"}),
+            error=_post_error,
+        )
 
     # -- draft resolution --------------------------------------------------------
     def _named(self, name: Optional[str]) -> Path:
@@ -205,8 +230,18 @@ class AuthorHandler(BaseHTTPRequestHandler):
         return ExperimentSpec.from_yaml_text(text, source=str(d / "experiment.yaml"))
 
     def _validate(self, q: dict) -> dict:
+        """Preview parity with the lock's preflight steps [refactor 02 §4].
+
+        Composes the same steps ``lock_experiment`` runs that can refuse a *fresh
+        draft*: spec-parse+hash, arm-platform capability, rubric presence, and
+        task validity — so a green preview cannot then refuse at lock. The lock's
+        chain-state steps (chain integrity, single-lock) are legitimately skipped:
+        a draft under preview has no ledger to verify and is unlocked by
+        definition. The power gate is served by ``/api/power`` (a heavy sim and a
+        soft, acknowledgeable gate, not a structural refusal). All a pure read.
+        """
         d = self._dir(q)
-        out: dict = {"name": d.name, "spec_sha256": _spec_sha(d)}
+        out: dict = {"name": d.name, "spec_sha256": spec_sha256(d / "experiment.yaml")}
         try:
             spec = self._spec(d)
             out["spec"] = {
@@ -219,8 +254,20 @@ class AuthorHandler(BaseHTTPRequestHandler):
                 "cost_ceiling": spec.cost_ceiling.amount,
                 "hypothesized_effect": spec.hypothesized_effect,
                 "rubric": spec.judge.rubric,
-                "rubric_present": (d / spec.judge.rubric).exists(),
+                # Rubric parity: the SAME commit_rubric preflight the lock runs
+                # (is_file + readable), not a parallel exists() re-implementation
+                # that previews a directory rubric green [P1 review F1].
+                "rubric_present": _rubric_commits(d, spec),
             }
+            # Platform-capability parity: the SAME preflight step the lock runs,
+            # closing the audited gap where an unregistered platform previewed
+            # green then refused at lock with UnknownArmPlatformError.
+            try:
+                check_arm_platforms(spec)
+                out["platform"] = {"ok": True}
+            except UnknownArmPlatformError as e:
+                out["platform"] = {"ok": False, "error_class": type(e).__name__,
+                                   "error": str(e)}
         except (SpecError, yaml.YAMLError) as e:
             out["spec"] = {"ok": False, "error_class": type(e).__name__, "error": str(e)}
         try:
@@ -244,7 +291,7 @@ class AuthorHandler(BaseHTTPRequestHandler):
         return {
             "quick": quick,
             "note": "quick estimate — the lock recomputes at full fidelity" if quick else "",
-            "mde": mde,
+            "mde": mde.to_event_payload(),
         }
 
     def _schedule(self, q: dict) -> dict:
@@ -289,7 +336,11 @@ class AuthorHandler(BaseHTTPRequestHandler):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
             written.append(rel)
-        return {"name": d.name, "saved": sorted(written), "spec_sha256": _spec_sha(d)}
+        # A draft may be saved before its experiment.yaml exists (e.g. tasks
+        # first), so the sha is None until there are bytes to hash.
+        exp = d / "experiment.yaml"
+        sha = spec_sha256(exp) if exp.exists() else None
+        return {"name": d.name, "saved": sorted(written), "spec_sha256": sha}
 
     def _lock(self, body: dict) -> dict:
         d = self._named(body.get("name"))
@@ -317,57 +368,15 @@ class AuthorHandler(BaseHTTPRequestHandler):
         }
 
     # -- refuse everything else ------------------------------------------------------
-    def _method_not_allowed(self) -> None:
-        body = json.dumps(
-            {"error": "authoring surface: GET previews + the two ceremony POSTs only"}
-        ).encode("utf-8")
-        self.send_response(405)
-        self.send_header("Allow", "GET, POST")
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    do_PUT = _method_not_allowed  # noqa: N815 - BaseHTTPRequestHandler contract
-    do_DELETE = _method_not_allowed  # noqa: N815
-    do_PATCH = _method_not_allowed  # noqa: N815
-
-    # -- plumbing ---------------------------------------------------------------------
-    def _body(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b""
-        try:
-            parsed = json.loads(raw.decode("utf-8")) if raw else {}
-        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            raise _NotFound(f"request body is not JSON: {e}") from e
-        if not isinstance(parsed, dict):
-            raise _NotFound("request body must be a JSON object")
-        return parsed
-
-    def _send(self, status: int, body: bytes, content_type: str) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _json(self, status: int, payload) -> None:
-        self._send(
-            status,
-            json.dumps(payload, sort_keys=True).encode("utf-8"),
-            "application/json",
+    def _refuse_method(self) -> None:
+        self._method_not_allowed(
+            "GET, POST",
+            "authoring surface: GET previews + the two ceremony POSTs only",
         )
 
-    def log_message(self, format: str, *args) -> None:  # noqa: A002 - stdlib name
-        """Quiet: the CLI prints the one line that matters."""
-
-
-def _spec_sha(d: Path) -> Optional[str]:
-    p = d / "experiment.yaml"
-    if not p.exists():
-        return None
-    return hashlib.sha256(p.read_bytes()).hexdigest()
+    do_PUT = _refuse_method  # noqa: N815 - BaseHTTPRequestHandler contract
+    do_DELETE = _refuse_method  # noqa: N815
+    do_PATCH = _refuse_method  # noqa: N815
 
 
 def make_author_server(
@@ -389,9 +398,11 @@ def make_author_server(
     root = Path(root)
     if not root.is_dir():
         raise NotADirectoryError(f"workspace root {root} is not a directory")
-    handler = type(
+    handler = bind_handler(
+        AuthorHandler,
         "BoundAuthorHandler",
-        (AuthorHandler,),
-        {"workspace_root": root, "actor": actor, "lock_kwargs": lock_kwargs},
+        workspace_root=root,
+        actor=actor,
+        lock_kwargs=lock_kwargs,
     )
     return ThreadingHTTPServer((host, port), handler)

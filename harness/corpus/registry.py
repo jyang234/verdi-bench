@@ -24,6 +24,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from ..errors import VerdiRefusal
+
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 HARBOR_FORMAT = "harbor"
 
@@ -31,7 +33,7 @@ HARBOR_FORMAT = "harbor"
 INSTRUMENT_ROOT = Path(__file__).resolve().parents[2]
 
 
-class CorpusError(ValueError):
+class CorpusError(VerdiRefusal, ValueError):
     """Base for corpus-manifest failures."""
 
 

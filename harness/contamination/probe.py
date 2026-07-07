@@ -16,6 +16,11 @@ outcomes — never a silent partial probe. The deterministic AC-4 overlap flags
 passed in by the caller ride *every* event, complete or not: an unrelated
 provider outage must not erase evidence already computed from disk. Canary
 values are unrepresentable in the event: hash-only [AC-2].
+
+The three detection channels and the event payload's shape live in
+:mod:`harness.contamination.channels` [refactor 06 §3] — this module orchestrates
+the provider calls and feeds each completion to the pure channel functions, so
+the evidence labels are declared once and the payload is typed.
 """
 
 from __future__ import annotations
@@ -35,7 +40,19 @@ from ..judge.providers.base import (
 from ..ledger.events import EventContext, record_contamination_probe
 from ..schema.experiment import Arm
 from .canary import derive_canary, hash_canary, strip_canary
-from .overlap import DEFAULT_OVERLAP_THRESHOLD, fingerprintable, solution_overlap
+from .channels import (
+    FLAGGED,
+    NEGATIVE,
+    STATUS_CANT_PROBE,
+    STATUS_COMPLETE,
+    UNPROBED,
+    ArmProbe,
+    ContaminationProbePayload,
+    canary_regurgitation_channel,
+    oracle_prefix_channel,
+    solution_overlap_channel,
+)
+from .overlap import DEFAULT_OVERLAP_THRESHOLD, fingerprintable
 
 
 class ProbeError(ValueError):
@@ -64,13 +81,6 @@ def _canary_probe_body(task: ProbeTask) -> str:
     """The canary-probe prompt body: the task content without its marker."""
     return strip_canary(task.prompt, derive_canary(task.task_sha))
 
-
-# F-M-C2 (approved): the oracle-prefix channel flags only when the TRUE
-# prefix outperforms a perturbed CONTROL prefix by at least this margin.
-# Without a control, formulaic code a clean model can legitimately continue
-# tripped the >=threshold reconstruction test — and one false positive is
-# asymmetric, refusing the official render.
-ORACLE_CONTROL_MARGIN = 0.2
 
 _IDENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{3,}\b")
 _CONTROL_STOPWORDS = frozenset(keyword.kwlist) | {
@@ -177,22 +187,39 @@ def run_memory_probe(
                 f"overlap_flags for arm {arm_name!r} names unknown task(s) {unknown}"
             )
 
-    base = {"threshold": resolved_threshold, "overlap_flags": overlap_flags}
     # F-M-C3 (additive): the scan's insulation alarms and unscanned trials ride
     # the SAME event as the overlap flags — previously stderr-only, so a
     # holdout-leak breach or a wiped-workspace UNSCANNED trial evaporated and
-    # was indistinguishable from scanned-clean in every downstream summary.
-    if alarms is not None:
-        base["alarms"] = list(alarms)
-    if skipped is not None:
-        base["skipped"] = list(skipped)
+    # was indistinguishable from scanned-clean in every downstream summary. The
+    # typed payload omits them when absent (None), so pass them unconditionally.
+    alarms_out = list(alarms) if alarms is not None else None
+    skipped_out = list(skipped) if skipped is not None else None
+
+    def _record_cant(reason: str, *, task_id: Optional[str] = None) -> dict:
+        payload = ContaminationProbePayload(
+            status=STATUS_CANT_PROBE, reason=reason, task_id=task_id,
+            threshold=resolved_threshold, overlap_flags=overlap_flags,
+            alarms=alarms_out, skipped=skipped_out,
+        )
+        return record_contamination_probe(ledger_path, ctx, probe=payload.model_dump())
+
     refused = _preflight(tasks)
     if refused is not None:
-        probe = {"status": "cant_probe", **refused, **base}
-        return record_contamination_probe(ledger_path, ctx, probe=probe)
+        return _record_cant(refused["reason"], task_id=refused["task_id"])
 
+    # This multi-call loop deliberately does NOT route through the shared
+    # judge.envelope.scored_completion [refactor 11 §G5b]. That envelope is a
+    # single-call scored-JSON sequence (empty-input → token-gate → complete →
+    # JSON-parse), whereas a membership probe feeds RAW completions to its
+    # detection channels, combines a true + control completion per oracle task,
+    # and fails the WHOLE run closed on any provider error (discarding partial
+    # arms — test_ac3_cant_probe_fail_closed). Adopting it would inject
+    # empty-input/context-overflow CANT paths absent from this tier's frozen
+    # reason set and could not express the two-call oracle channel — not
+    # byte-neutral. The provider seam it DOES share (get_provider +
+    # provider_failure_reason) keeps the fault mapping single-sourced.
     try:
-        arms_out: dict[str, dict] = {}
+        arms_out: dict[str, ArmProbe] = {}
         for arm in arms:
             prov = provider if provider is not None else get_provider(arm.model)
             oracle_scores: dict[str, dict] = {}
@@ -211,10 +238,11 @@ def run_memory_probe(
                             _canary_probe_body(task),
                         ),
                         0.0,
-                    )
+                    ).text
                     measured = True
-                    if canary in completion:
-                        hits.append("canary_regurgitation")
+                    label = canary_regurgitation_channel(canary, completion)
+                    if label:
+                        hits.append(label)
                 if task.oracle is not None:
                     prefix, remainder = _split_oracle(task.oracle)
                     completion = prov.complete(
@@ -224,7 +252,7 @@ def run_memory_probe(
                             prefix,
                         ),
                         0.0,
-                    )
+                    ).text
                     # F-M-C2: the CONTROL condition — the same ask over the
                     # identifier-perturbed prefix, scored against the
                     # identically-perturbed remainder. Doubles the provider
@@ -240,65 +268,49 @@ def run_memory_probe(
                             c_prefix,
                         ),
                         0.0,
-                    )
+                    ).text
                     measured = True
-                    continuation = solution_overlap(
-                        completion, oracle=remainder, threshold=resolved_threshold
-                    )
-                    control = solution_overlap(
-                        control_completion, oracle=c_remainder,
+                    label, oracle_scores[task.task_id] = oracle_prefix_channel(
+                        completion, control_completion,
+                        remainder=remainder, control_remainder=c_remainder,
                         threshold=resolved_threshold,
                     )
-                    true_score = continuation.oracle_score or 0.0
-                    control_score = control.oracle_score or 0.0
-                    margin = round(true_score - control_score, 4)
-                    oracle_scores[task.task_id] = {
-                        "true": round(true_score, 4),
-                        "control": round(control_score, 4),
-                        "margin": margin,
-                    }
-                    if continuation.flagged and margin >= ORACLE_CONTROL_MARGIN:
-                        hits.append("oracle_prefix")
+                    if label:
+                        hits.append(label)
                 scanned = overlap_flags.get(arm.name, {})
                 if task.task_id in scanned:
                     measured = True
-                    if scanned[task.task_id]:
-                        hits.append("solution_overlap")
+                    label = solution_overlap_channel(scanned[task.task_id])
+                    if label:
+                        hits.append(label)
                 if hits:
-                    outcomes[task.task_id] = "flagged"
+                    outcomes[task.task_id] = FLAGGED
                 elif measured:
-                    outcomes[task.task_id] = "negative"
+                    outcomes[task.task_id] = NEGATIVE
                 else:
-                    outcomes[task.task_id] = "unprobed"
+                    outcomes[task.task_id] = UNPROBED
                 evidence[task.task_id] = hits
-            arms_out[arm.name] = {
-                "model": arm.model,
-                "outcomes": outcomes,
-                "evidence": evidence,
-            }
-            if oracle_scores:  # additive [F-M-C2]: true/control/margin per task
-                arms_out[arm.name]["oracle_scores"] = oracle_scores
+            # additive [F-M-C2]: true/control/margin per task, omitted when no
+            # oracle task ran (the ArmProbe model drops an empty oracle_scores).
+            arms_out[arm.name] = ArmProbe(
+                model=arm.model, outcomes=outcomes, evidence=evidence,
+                oracle_scores=oracle_scores or None,
+            )
     except ProviderError as e:
-        probe = {
-            "status": "cant_probe",
-            "reason": provider_failure_reason(e),
-            **base,
-        }
-        return record_contamination_probe(ledger_path, ctx, probe=probe)
+        return _record_cant(provider_failure_reason(e))
 
-    probe = {
-        "status": "complete",
-        "reason": None,
-        **base,
-        "arms": arms_out,
+    payload = ContaminationProbePayload(
+        status=STATUS_COMPLETE, reason=None,
+        threshold=resolved_threshold, overlap_flags=overlap_flags,
+        alarms=alarms_out, skipped=skipped_out, arms=arms_out,
         # hash-only: the canary value is a secret of the instrument [AC-2]
-        "canary_sha256": {
+        canary_sha256={
             t.task_id: hash_canary(derive_canary(t.task_sha))
             for t in tasks
             if t.has_canary
         },
-    }
-    return record_contamination_probe(ledger_path, ctx, probe=probe)
+    )
+    return record_contamination_probe(ledger_path, ctx, probe=payload.model_dump())
 
 
 # --- one-event property registration [EVAL-3 §M7, XC-3] --------------------

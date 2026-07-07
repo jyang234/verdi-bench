@@ -33,6 +33,7 @@ from typing import Optional
 
 import yaml
 
+from ..errors import VerdiRefusal
 from .registry import CorpusManifest
 
 # Keys of a Harbor task that are safe to show the agent (the trial request).
@@ -45,7 +46,7 @@ HOLDOUTS_SUBDIR = "holdouts"
 HOLDOUT_SPEC_FILENAME = "holdout.json"
 
 
-class MaterializeError(RuntimeError):
+class MaterializeError(VerdiRefusal, RuntimeError):
     """The cache and manifest disagree — a task the manifest names has no cached
     content. Fail loud rather than silently materialize a partial corpus."""
 

@@ -9,6 +9,7 @@ rubric so a silent anchor edit can't retro-desync existing scores.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import yaml
@@ -99,3 +100,15 @@ class ProcessRubric(BaseModel):
 
 def default_rubric() -> ProcessRubric:
     return ProcessRubric.from_yaml(_DEFAULT_RUBRIC)
+
+
+def process_rubric_sha256(path=None) -> str:
+    """The process-rubric FILE's content sha [refactor 06 §7, P4-RUBRIC].
+
+    The same normalized-text hash convention the judging-rubric commitment uses
+    (``plan.lock.commit_rubric``), so a ``process_score``'s recorded rubric
+    provenance is comparable and CRLF-checkout drift is a non-event. Hashes the
+    default v1 file when no custom ``--rubric`` was given, so the field always
+    names the rubric that actually scored."""
+    p = Path(path) if path is not None else _DEFAULT_RUBRIC
+    return hashlib.sha256(p.read_text(encoding="utf-8").encode("utf-8")).hexdigest()

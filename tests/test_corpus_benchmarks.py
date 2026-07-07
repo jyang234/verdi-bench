@@ -126,6 +126,79 @@ def test_duplicate_instance_id_is_refused(tmp_path):
         SweBenchSource(export).fetch()
 
 
+# --- the importer registry [refactor 07 §3] ---------------------------------
+def test_importer_registry_lists_the_valid_benchmarks():
+    """The valid --benchmark set lives in exactly one place: the IMPORTERS
+    registry. importer_names() / importer_help() DERIVE from it (they were
+    hand-synced strings), so a new importer's name + description appear in both
+    without editing a second copy. Pin the DERIVATION, not a byte snapshot."""
+    from harness.corpus.benchmarks import IMPORTERS, importer_help, importer_names
+
+    assert set(IMPORTERS) == {"dir", "swebench"}
+    assert all(name == spec.name for name, spec in IMPORTERS.items())
+    # names() is every registry key, ' | '-joined in registry order — no key
+    # missing, none invented
+    assert [seg.strip() for seg in importer_names().split("|")] == list(IMPORTERS)
+    # help() prefixes "Source format: " then names every key AND its registry
+    # description, ' | '-joined — derived wholesale from IMPORTERS, none beyond it
+    help_text = importer_help()
+    assert help_text.startswith("Source format: ")
+    body = help_text.removeprefix("Source format: ")
+    assert [seg.strip() for seg in body.split(" | ")] == [
+        f"'{name}' ({spec.description})" for name, spec in IMPORTERS.items()
+    ]
+
+
+def test_corpus_import_refuses_unknown_benchmark_with_derived_message(tmp_path):
+    """An unknown --benchmark is refused with a message that names the offending
+    value AND lists the valid importers DERIVED from the registry (importer_names),
+    so a new importer appears in the refusal without editing a second string."""
+    from harness.corpus.api import UnknownBenchmarkError, corpus_import
+    from harness.corpus.benchmarks import IMPORTERS, importer_names
+
+    with pytest.raises(UnknownBenchmarkError) as exc:
+        corpus_import(tmp_path, cache=tmp_path / "c", benchmark="nope")
+    msg = str(exc.value)
+    assert "nope" in msg                    # names the offending value
+    assert importer_names() in msg          # the registry-derived valid set, verbatim
+    for name in IMPORTERS:                   # and every valid importer is offered
+        assert name in msg
+
+
+def test_corpus_import_swebench_through_the_registry(tmp_path):
+    """--benchmark swebench routes through IMPORTERS to SweBenchSource + the
+    swe-bench dataset identity, unchanged from the hand-synced dispatch."""
+    from harness.corpus.api import corpus_import
+    from harness.corpus.registry import CorpusManifest
+
+    export = _write_export(tmp_path / "instances.jsonl", [_INSTANCE])
+    cache = tmp_path / "cache"
+    outcome = corpus_import(export, cache=cache, benchmark="swebench")
+    assert outcome.n_tasks == 1
+    m = CorpusManifest.load(cache / "manifest.json")
+    assert m.dataset.name == "swe-bench"
+    assert m.dataset.version == "SWE-bench_Verified"
+    assert m.corpus_id == "swe-bench"
+
+
+def test_corpus_import_dir_through_the_registry(tmp_path):
+    """--benchmark dir routes through IMPORTERS to DirectorySource + the
+    terminal-bench default identity."""
+    from harness.corpus.api import corpus_import
+    from harness.corpus.registry import CorpusManifest
+
+    ds = tmp_path / "ds"
+    ds.mkdir()
+    (ds / "t1.json").write_text(json.dumps({"id": "t1", "prompt": "p"}), encoding="utf-8")
+    cache = tmp_path / "cache"
+    outcome = corpus_import(ds, cache=cache, benchmark="dir")
+    assert outcome.n_tasks == 1
+    m = CorpusManifest.load(cache / "manifest.json")
+    assert m.dataset.name == "terminal-bench"
+    assert m.dataset.version == "2.0"
+    assert m.corpus_id == "terminal-bench"
+
+
 # --- materialization (runnable + insulated) ---------------------------------
 def test_materialize_is_runnable_and_hides_the_tests(tmp_path):
     export = _write_export(tmp_path / "instances.jsonl", [_INSTANCE])

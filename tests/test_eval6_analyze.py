@@ -20,7 +20,6 @@ from harness.corpus.registry import CorpusManifest, TaskEntry
 from harness.judge.schema import Evidence, Verdict, VerdictProvenance, Winner
 from harness.ledger.events import (
     append_verdict,
-    record_calibration_run,
     record_executed_order,
     record_grade,
     record_trial_infra_failed,
@@ -31,74 +30,13 @@ from tests.fixtures.builders import (
     locked_experiment,
     seed_trial_and_grade,
 )
-
-_FAST = dict(coverage_n_sim=40, n_boot=500)
-
-
-def _full_corpus():
-    # AN-2: the fence binds the cited manifest to the pre-registered spec corpus
-    # (public-mini@1.0.0) and to the tasks the experiment ran (task0..task4), so
-    # the manifest must match both — the old terminal-bench@2.0.0 / one-task
-    # manifest was the mismatch the shipped tests baked in.
-    m = CorpusManifest(
-        corpus_id="public-mini", semver="1.0.0", kind="public",
-        tasks=[TaskEntry(task_id=f"task{i}", sha="a" * 64, status="admitted") for i in range(5)],
-    )
-    # status is kept for provenance, but the FENCE now reads the ledgered
-    # calibration_run events (CO-4), so official tests must _seed_full_calibration.
-    m.calibration.status = "full-run-validated"
-    return m
-
-
-def _seed_full_calibration(ledger, ctx, *, corpus_id="public-mini", semver="1.0.0"):
-    """Ledger a full-run-validated calibration_run for the corpus — the chain-
-    anchored status the AN-2 fence binds to (not the mutable manifest JSON).
-
-    Also seeds a passing selfcheck: EVAL-1-D008 makes a passed ledgered selfcheck
-    an official-render prerequisite, so the official-ready fixtures need one.
-    (A refusal test that trips an earlier fence check still refuses — the
-    selfcheck check is the fence's last.)"""
-    record_calibration_run(
-        ledger, ctx, corpus_id=corpus_id, semver=semver, kind="full",
-        run={"p": 0.5, "rho": 0.3, "n_tasks": 5}, status="full-run-validated",
-    )
-
-
-def _seed_matching_selfcheck(ledger, ctx, spec, *, n_sim=40, n_boot=500):
-    """Seed a passing, current selfcheck [EVAL-1-D008] whose validated CI method
-    matches the method ``compute_findings`` will deploy.
-
-    Runs the real selection (same ``spec.seed`` + params) so ``selected_method``
-    aligns with the render's, then forces ``passed=True``. Call BEFORE
-    ``compute_findings`` and after all data events — the findings are head-bound
-    (``_assert_head_hash``), so nothing may be appended between compute and
-    render, and the selfcheck event does not affect the delta selection. Pass the
-    same ``n_sim``/``n_boot`` the test's ``compute_findings`` uses."""
-    from harness.analyze.selfcheck import run_selfcheck
-    from harness.ledger.events import record_selfcheck
-
-    res = run_selfcheck(ledger, spec, n_sim=n_sim, n_boot=n_boot)
-    res["passed"] = True  # official tests here exercise OTHER gates, not pass/fail
-    record_selfcheck(ledger, ctx, **res)
-
-
-def _populate(ledger, ctx, *, control_pass, treatment_pass, tasks=5, reps=2,
-              control_tel=None, treatment_tel=None, control_prov=None, treatment_prov=None):
-    control_tel = control_tel if control_tel is not None else {"cost": 1.0, "wall_time_s": 10.0}
-    treatment_tel = treatment_tel if treatment_tel is not None else {"cost": 1.1, "wall_time_s": 9.0}
-    for i in range(tasks):
-        for rep in range(reps):
-            seed_trial_and_grade(
-                ledger, ctx, trial_id=f"c-{i}-{rep}", task_id=f"task{i}", arm="control",
-                repetition=rep, passed=control_pass(i), telemetry=control_tel,
-                provenance=control_prov or {"image_digest": "digestC"},
-            )
-            seed_trial_and_grade(
-                ledger, ctx, trial_id=f"t-{i}-{rep}", task_id=f"task{i}", arm="treatment",
-                repetition=rep, passed=treatment_pass(i), telemetry=treatment_tel,
-                provenance=treatment_prov or {"image_digest": "digestT"},
-            )
-
+from tests.fixtures.scenarios import (
+    FAST_STATS,
+    full_corpus,
+    populate_paired_trials,
+    seed_full_calibration,
+    seed_matching_selfcheck,
+)
 
 # --- AC-1: paired bootstrap + reproducibility --------------------------------
 def test_ac1_paired_bootstrap():
@@ -117,9 +55,9 @@ def test_ac1_reproducible_seeded(tmp_path):
     # whole findings document is byte-identical for a fixed (ledger, seed)
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: i % 2 == 0, treatment_pass=lambda i: True)
-    f1 = compute_findings(ledger, spec, spec.seed, **_FAST)
-    f2 = compute_findings(ledger, spec, spec.seed, **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: i % 2 == 0, treatment_pass=lambda i: True)
+    f1 = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
+    f2 = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     assert f1.model_dump_json() == f2.model_dump_json()
 
 
@@ -140,8 +78,8 @@ def test_ac2_effect_sizes():
 def test_ac3_mde_in_report(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     md = render_markdown(f, ledger, "exploratory")
     assert "MDE =" in md
     assert "Minimum detectable effect" in md
@@ -151,9 +89,9 @@ def test_ac3_null_phrasing(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     # identical arms ⇒ per-task deltas all 0 ⇒ CI contains 0 ⇒ null
-    _populate(ledger, ctx, control_pass=lambda i: i % 2 == 0,
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: i % 2 == 0,
               treatment_pass=lambda i: i % 2 == 0)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     md = render_markdown(f, ledger, "exploratory")
     assert "no effect ≥ MDE detected".lower() in md.lower()
 
@@ -162,7 +100,7 @@ def test_ac3_null_phrasing(tmp_path):
 def _clean(tmp_path, name="clean"):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / name, ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True,
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True,
               control_tel={"cost": 1.0, "wall_time_s": 10.0, "tokens_in": 5, "tokens_out": 5,
                            "tokens_cache": 1, "tool_calls": 2},
               treatment_tel={"cost": 1.0, "wall_time_s": 10.0, "tokens_in": 5, "tokens_out": 5,
@@ -201,7 +139,7 @@ def test_ac4_flags_emitted_telemetry_null(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "tn", ctx=ctx)
     # control omits tokens_in; treatment has it ⇒ asymmetric null on tokens_in only
-    _populate(
+    populate_paired_trials(
         ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True,
         control_tel={"cost": 1.0, "wall_time_s": 10.0, "tokens_out": 5, "tokens_cache": 1,
                      "tool_calls": 2},
@@ -230,7 +168,7 @@ def test_an4_continuous_metric_uses_continuous_null(tmp_path):
         seed_trial_and_grade(ledger, ctx, trial_id=f"t-{i}", task_id=f"task{i}", arm="treatment",
                              telemetry={"cost": 1.1 + 0.1 * i, "wall_time_s": 9.0},
                              provenance={"image_digest": "d"})
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
     assert f.ci_selection["null_model"] == "paired_continuous"
     assert f.ci_selection["n_tasks"] == 6  # realized paired-task count, not 50
 
@@ -240,10 +178,52 @@ def test_an4_binary_metric_uses_binary_null_at_realized_n(tmp_path):
     realized paired-task count."""
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # holdout_pass_rate
-    _populate(ledger, ctx, control_pass=lambda i: i % 2 == 0, treatment_pass=lambda i: True)
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: i % 2 == 0, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
     assert f.ci_selection["null_model"] == "paired_binary"
-    assert f.ci_selection["n_tasks"] == 5  # _populate seeds 5 paired tasks
+    assert f.ci_selection["n_tasks"] == 5  # populate_paired_trials seeds 5 paired tasks
+
+
+# --- the MetricDef registry [refactor 07 §2]: keyed by the closed enum, pinned --
+def test_metric_registry_keys_match_the_closed_enum():
+    """The MetricDef registry is keyed by EXACTLY the closed PrimaryMetric
+    vocabulary — a new enum value without a MetricDef (or a stray registry key)
+    fails here, so the string-dispatch registry and the schema enum can never
+    drift apart. Each entry is self-consistent (keyed by its own id)."""
+    from harness.analyze.report import METRICS
+    from harness.schema.metrics import PrimaryMetric
+
+    assert set(METRICS) == set(PrimaryMetric.values())
+    assert all(mid == mdef.id for mid, mdef in METRICS.items())
+
+
+def test_metric_registry_pins_null_model_claim_tag_and_pairwise():
+    """AN-4/AN-6: the per-metric null model, claim tag, and pairwise-only flag
+    are pinned at the registry — the one place the render and selfcheck now read
+    the disclosure labels the string-dispatch used to compute in four files."""
+    from harness.analyze.nullsim import NULL_BINARY, NULL_CONTINUOUS
+    from harness.analyze.report import METRICS
+
+    expected = {
+        "holdout_pass_rate": (NULL_BINARY, "computed", False, None),
+        "judge_preference": (NULL_BINARY, "judgment", True, None),
+        "cost_per_task": (NULL_CONTINUOUS, "computed", False, "cost"),
+        "wall_time": (NULL_CONTINUOUS, "computed", False, "wall_time_s"),
+    }
+    for mid, (null_model, claim_tag, pairwise_only, field) in expected.items():
+        m = METRICS[mid]
+        assert (m.null_model, m.claim_tag, m.pairwise_only, m.telemetry_field) == (
+            null_model, claim_tag, pairwise_only, field
+        )
+
+
+def test_metric_def_unregistered_fails_loudly():
+    """A missing metric never silently skips a section: the lookup raises a
+    named AnalyzeError instead of returning None [refactor 07 §2, fail loudly]."""
+    from harness.analyze.report import AnalyzeError, metric_def
+
+    with pytest.raises(AnalyzeError, match="no MetricDef registered for primary metric"):
+        metric_def("composite_made_up_metric")
 
 
 # --- AN-1 / AN-7: judge-preference filtered by arm pair, clustered, not imputed -
@@ -293,7 +273,7 @@ def test_an1_judge_preference_filtered_by_arm_pair(tmp_path):
     for i in range(4):
         _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
         _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     by_label = {cf.label: cf for cf in f.comparisons}
     assert by_label["control vs treatment"].effect["mean_paired_delta"] == 1.0
     assert by_label["control vs challenger"].effect["mean_paired_delta"] == -1.0
@@ -310,7 +290,7 @@ def test_an1_attribution_follows_inverted_arm_map(tmp_path):
     inverted = {"A": "treatment", "B": "control"}  # response A is NOT arms[0]
     for i in range(4):
         _seed_pref_verdict(ledger, ctx, cid=f"iv-{i}", task_id=f"t{i}", winner="A", arm_map=inverted)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     by_label = {cf.label: cf for cf in f.comparisons}
     # winner A → treatment (via arm_map), so treatment wins every task and the
     # control-vs-treatment delta (control_rate - treatment_rate) is -1.0, not +1.0.
@@ -328,7 +308,7 @@ def test_m4_multi_arm_default_only_primary_pair_official(tmp_path):
     for i in range(4):
         _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
         _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     by_label = {cf.label: cf for cf in f.comparisons}
     assert by_label["control vs treatment"].official_decision is True
     assert by_label["control vs challenger"].official_decision is False
@@ -349,13 +329,13 @@ def test_m4_multi_arm_holm_makes_every_pair_official(tmp_path):
     for i in range(4):
         _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
         _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     assert f.multi_arm["correction"] == "holm"
     for cf in f.comparisons:
         assert cf.official_decision is True
         assert "holm_p" in cf.decision and cf.decision["correction"] == "holm"
     # deterministic in seed: recomputing yields identical Holm p-values
-    f2 = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f2 = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     assert [c.decision["holm_p"] for c in f.comparisons] == [
         c.decision["holm_p"] for c in f2.comparisons
     ]
@@ -371,7 +351,7 @@ def test_h7_correction_is_read_from_the_locked_spec(tmp_path):
     for i in range(4):
         _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
         _seed_pref_verdict(ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}", winner="B", arm_map=cc)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     assert f.multi_arm["correction"] == "holm"
     for cf in f.comparisons:
         assert cf.official_decision is True and "holm_p" in cf.decision
@@ -385,7 +365,7 @@ def test_h7_single_task_pair_is_never_detected(tmp_path):
     spec, ledger = _pref_ledger(tmp_path, ctx, arms=_PREF_ARMS[:2])
     _seed_pref_verdict(ledger, ctx, cid="c-0", task_id="t0", winner="A",
                        arm_map={"A": "control", "B": "treatment"})
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     cf = f.comparisons[0]
     assert cf.n_tasks == 1
     assert cf.decision["detected"] is False
@@ -407,7 +387,7 @@ def test_h7_holm_single_task_secondary_pair_floored(tmp_path):
     for i in range(8):
         _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
     _seed_pref_verdict(ledger, ctx, cid="cc-0", task_id="t0", winner="A", arm_map=cc)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     by_label = {cf.label: cf for cf in f.comparisons}
     sec = by_label["control vs challenger"]
     assert sec.n_tasks == 1
@@ -505,7 +485,7 @@ def _holm_divergent_findings(tmp_path):
             ledger, ctx, cid=f"cc-{i}", task_id=f"t{i}",
             winner="A" if i % 2 == 0 else "B", arm_map=cc,
         )
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     return f, ledger
 
 
@@ -566,7 +546,7 @@ def test_an10_ci_selection_reports_deployed_n_boot(tmp_path):
     ci_selection cannot silently diverge from the bootstrap that produced the CI."""
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: i % 2 == 0)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: i % 2 == 0)
     n_boot = 321  # a non-default value
     f = compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, n_boot=n_boot)
     assert f.ci_selection["n_boot"] == n_boot
@@ -582,7 +562,7 @@ def test_an1_cant_judge_and_tie_excluded_not_imputed(tmp_path):
         _seed_pref_verdict(ledger, ctx, cid=f"w-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
     _seed_pref_verdict(ledger, ctx, cid="tie", task_id="t3", winner="TIE", arm_map=ct)
     _seed_pref_verdict(ledger, ctx, cid="cant", task_id="t4", winner="CANT_JUDGE", arm_map=ct)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     cf = f.comparisons[0]
     assert cf.n_tasks == 3  # only the real A/B tasks, not 5
     assert cf.effect["mean_paired_delta"] == 1.0  # not diluted to 0.6 by imputed 0s
@@ -598,7 +578,7 @@ def test_an1_per_task_winrate_clusters_reps(tmp_path):
     _seed_pref_verdict(ledger, ctx, cid="a1", task_id="t0", winner="A", arm_map=ct)  # t0 winrate 1.0
     _seed_pref_verdict(ledger, ctx, cid="b0", task_id="t1", winner="A", arm_map=ct)
     _seed_pref_verdict(ledger, ctx, cid="b1", task_id="t1", winner="B", arm_map=ct)  # t1 winrate 0.5
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     cf = f.comparisons[0]
     assert cf.n_tasks == 2  # two task clusters, not four verdicts
     assert cf.effect["mean_paired_delta"] == 0.5  # mean of per-task deltas (+1, 0)
@@ -612,9 +592,9 @@ def test_an8_decides_positive_gated_on_detection(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # rule delta_holdout_pass_rate > 0
     # control slightly ahead on one noisy task ⇒ observed delta > 0 but CI includes 0
-    _populate(ledger, ctx, control_pass=lambda i: i in {0, 1, 2, 4},
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: i in {0, 1, 2, 4},
               treatment_pass=lambda i: i in {0, 2, 4})
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     cf = f.comparisons[0]
     detected = cf.stats["ci_low"] > 0 or cf.stats["ci_high"] < 0
     assert detected is False
@@ -627,8 +607,8 @@ def test_an8_decides_positive_true_when_detected(tmp_path):
     """AN-8: a clean detected effect that meets the rule still decides positive."""
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     cf = f.comparisons[0]
     assert cf.decision["detected"] is True
     assert cf.decision["decides_positive"] is True
@@ -639,9 +619,9 @@ def test_an9_orphan_grades_flagged(tmp_path):
     flagged loudly, not silently dropped (which would shrink n in silence)."""
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     record_grade(ledger, ctx, trial_id="ghost", task_sha="s", assertions=[], binary_score=True)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     assert f.ledger_consistency["n_orphan_grades"] == 1
     assert "ghost" in f.ledger_consistency["orphan_grades"]
     md = render_markdown(f, ledger, "exploratory")
@@ -654,8 +634,8 @@ def test_an6_computed_metric_tagged_computed(tmp_path):
     shows the marker; a deterministic outcome metric is [computed]."""
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # holdout_pass_rate
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     assert f.comparisons and all(cf.claim_tag == "computed" for cf in f.comparisons)
     assert "[computed]" in render_markdown(f, ledger, "exploratory")
 
@@ -667,7 +647,7 @@ def test_an6_judge_preference_tagged_judgment(tmp_path):
     ct = {"A": "control", "B": "treatment"}
     for i in range(3):
         _seed_pref_verdict(ledger, ctx, cid=f"w-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     assert f.comparisons and all(cf.claim_tag == "judgment" for cf in f.comparisons)
     assert "[judgment]" in render_markdown(f, ledger, "exploratory")
 
@@ -688,7 +668,7 @@ def test_an5_render_html_escapes_arm_name(tmp_path):
                              passed=True, provenance={"image_digest": "d"})
         seed_trial_and_grade(ledger, ctx, trial_id=f"x{i}", task_id=f"t{i}", arm="treatment",
                              passed=False, provenance={"image_digest": "d"})
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     html_out = render_html(f, ledger, "exploratory")
     assert "<script>alert(1)</script>" not in html_out  # not emitted verbatim
     assert "&lt;script&gt;" in html_out                  # escaped
@@ -706,13 +686,25 @@ def test_coverage_insufficient_echoes_ci_level():
     assert sel.nominal == 0.90
 
 
+def test_coverage_of_method_type_hints_resolve():
+    """[refactor 01 §4 D7] ``Optional`` was used in coverage_of_method's return
+    annotation but never imported — masked by ``from __future__ import
+    annotations`` until anything evaluated the hints (NameError)."""
+    import typing
+
+    from harness.analyze.nullsim import coverage_of_method
+
+    hints = typing.get_type_hints(coverage_of_method)
+    assert hints["return"] == typing.Optional[float]
+
+
 def test_an11_advisory_tier_surfaced(tmp_path):
     """AN-11: local/fake results are ADVISORY-tier; the render surfaces the tier so
     'Local = ADVISORY' is honestly reflected, not silently stamped."""
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     assert f.tier["advisory"] is True
     assert "ADVISORY" in render_markdown(f, ledger, "exploratory")
 
@@ -794,12 +786,12 @@ def test_ac4_flags_emitted_judge_vendor_overlap(tmp_path):
 def test_ac5_unregistered_refused(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
     # official render for a non-primary metric is refused
     with pytest.raises(UnregisteredOfficialError):
         render_markdown(f, ledger, "official", metric="cost_per_task",
-                        corpus_manifest=_full_corpus())
+                        corpus_manifest=full_corpus())
     # official render against a corpus that is not the pre-registered one is
     # refused (AN-2: corpus "c" ≠ the spec's public-mini)
     with pytest.raises(CorpusMismatchError):
@@ -818,7 +810,7 @@ def test_an3_refused_official_render_ledgers_cant_analyze(tmp_path):
 
     ctx = fixed_ctx()
     _, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     exp_dir = tmp_path / "e"
     before = len(find_events(ledger, "cant_analyze"))
     result = CliRunner().invoke(app, ["analyze", str(exp_dir), "--official"])  # no --corpus
@@ -863,7 +855,7 @@ def test_an3_bad_corpus_manifest_fails_closed(tmp_path):
 
     ctx = fixed_ctx()
     _, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     exp_dir = tmp_path / "e"
     bad = exp_dir / "bad_corpus.json"
     bad.write_text("{ this is not valid json", encoding="utf-8")
@@ -883,7 +875,7 @@ def test_an3_successful_render_event_before_files(tmp_path):
 
     ctx = fixed_ctx()
     _, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
     exp_dir = tmp_path / "e"
     result = CliRunner().invoke(app, ["analyze", str(exp_dir), "--exploratory"])
     assert result.exit_code == 0, result.output
@@ -895,11 +887,11 @@ def test_an3_successful_render_event_before_files(tmp_path):
 def test_ac5_official_happy_path(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
-    _seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
-    _seed_matching_selfcheck(ledger, ctx, spec)
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
-    md = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
+    seed_matching_selfcheck(ledger, ctx, spec)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
+    md = render_markdown(f, ledger, "official", corpus_manifest=full_corpus())
     assert "Official findings" in md
     assert "EXPLORATORY" not in md  # official carries no watermark
     assert spec.primary_metric.value in md
@@ -916,7 +908,7 @@ def test_dp7_2_override_disclosure_in_official_render(tmp_path):
 
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
 
     # Production override shape [D-P7-2]: an extra trial whose first grade
     # attempt was a terminal cant_grade, then the --retry-terminal re-attempt's
@@ -936,11 +928,11 @@ def test_dp7_2_override_disclosure_in_official_render(tmp_path):
         binary_score=True, override_of=event_line_hash(overridden),
     )
 
-    _seed_full_calibration(ledger, ctx)
-    _seed_matching_selfcheck(ledger, ctx, spec)
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    seed_full_calibration(ledger, ctx)
+    seed_matching_selfcheck(ledger, ctx, spec)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
     assert f.overrides == {"n_override_events": 1, "override_trials": ["c-0-2"]}
-    official = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+    official = render_markdown(f, ledger, "official", corpus_manifest=full_corpus())
     assert "Official findings" in official
     assert "Terminal overrides" in official
     assert "1 override-graded re-attempt(s)" in official and "c-0-2" in official
@@ -952,13 +944,13 @@ def test_d002_identity_blind_disclosure_in_both_renders(tmp_path):
     holdout_pass_rate because the packet includes holdout results by design."""
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
-    _seed_full_calibration(ledger, ctx)
-    _seed_matching_selfcheck(ledger, ctx, spec)
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    seed_full_calibration(ledger, ctx)
+    seed_matching_selfcheck(ledger, ctx, spec)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
     for md in (
         render_markdown(f, ledger, "exploratory"),
-        render_markdown(f, ledger, "official", corpus_manifest=_full_corpus()),
+        render_markdown(f, ledger, "official", corpus_manifest=full_corpus()),
     ):
         assert "identity-blind" in md
         assert "not independent of holdout_pass_rate" in md
@@ -993,8 +985,8 @@ def test_dp7_6_official_fence_refuses_rubric_mismatch(tmp_path):
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     lock = find_events(ledger, "experiment_locked")[0]
     assert lock.get("rubric_sha256")  # lock committed a rubric hash
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
-    _seed_full_calibration(ledger, ctx)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    seed_full_calibration(ledger, ctx)
     prov = VerdictProvenance(
         judge_model="fake/x", rubric_sha256="deadbeef" * 8, packet_sha256="p",
         call_ids=["c1", "c2"], orders="both", temperature=0.0, ts="t",
@@ -1004,9 +996,9 @@ def test_dp7_6_official_fence_refuses_rubric_mismatch(tmp_path):
                 source="judge", comparison_id="cmp-task0-r0", task_class="refactor")
     append_verdict(ledger, ctx, verdict=v.model_dump(mode="json"))
 
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
     with pytest.raises(RubricMismatchError):
-        render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+        render_markdown(f, ledger, "official", corpus_manifest=full_corpus())
 
 
 def test_dp7_6_legacy_lock_official_caveat(tmp_path):
@@ -1029,14 +1021,14 @@ def test_dp7_6_legacy_lock_official_caveat(tmp_path):
     # a LEGACY lock — no rubric_sha256 field
     record_experiment_locked(
         ledger, ctx, spec_sha256=spec_sha256(spec_path), spec_path=str(spec_path),
-        seed=spec.seed, mde=mde, attested_by="t", method="m",
+        seed=spec.seed, mde=mde.to_event_payload(), attested_by="t", method="m",
     )
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
-    _seed_full_calibration(ledger, ctx)
-    _seed_matching_selfcheck(ledger, ctx, spec)
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: False)
+    seed_full_calibration(ledger, ctx)
+    seed_matching_selfcheck(ledger, ctx, spec)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
     assert f.rubric_committed is False
-    md = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+    md = render_markdown(f, ledger, "official", corpus_manifest=full_corpus())
     assert "CAVEAT" in md and "rubric" in md.lower()
 
 
@@ -1047,9 +1039,9 @@ def test_an2_official_fence_refuses_mismatched_corpus(tmp_path):
     TOTALLY-DIFFERENT-CORPUS bypass."""
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)  # spec corpus public-mini@1.0.0
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
-    _seed_full_calibration(ledger, ctx)
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    seed_full_calibration(ledger, ctx)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
     wrong = CorpusManifest(
         corpus_id="totally-different", semver="9.9.9", kind="public",
         tasks=[TaskEntry(task_id=f"task{i}", sha="a" * 64, status="admitted") for i in range(5)],
@@ -1064,10 +1056,10 @@ def test_an2_official_fence_refuses_unledgered_status(tmp_path):
     ledgered calibration_run) is refused — the JSON status is not trusted."""
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
-    with pytest.raises(CalibrationIncompleteError):  # _full_corpus status set in memory only
-        render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
+    with pytest.raises(CalibrationIncompleteError):  # full_corpus status set in memory only
+        render_markdown(f, ledger, "official", corpus_manifest=full_corpus())
 
 
 def test_an2_official_fence_refuses_uncovered_task(tmp_path):
@@ -1075,9 +1067,9 @@ def test_an2_official_fence_refuses_uncovered_task(tmp_path):
     data and is refused, even with the right id/semver and a ledgered status."""
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)  # task0..4
-    _seed_full_calibration(ledger, ctx)
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)  # task0..4
+    seed_full_calibration(ledger, ctx)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
     short = CorpusManifest(
         corpus_id="public-mini", semver="1.0.0", kind="public",
         tasks=[TaskEntry(task_id=f"task{i}", sha="a" * 64, status="admitted") for i in range(3)],
@@ -1089,8 +1081,8 @@ def test_an2_official_fence_refuses_uncovered_task(tmp_path):
 def test_ac5_exploratory_watermark(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     md = render_markdown(f, ledger, "exploratory")
     # every markdown section (### header) is preceded by a watermark line
     lines = md.splitlines()
@@ -1108,8 +1100,8 @@ def test_ac5_exploratory_watermark(tmp_path):
 def test_ac6_finding_provenance(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
     p = f.provenance
     assert p.instrument_version and p.instrument_git_sha
     assert p.corpus["corpus_id"] == "public-mini"
@@ -1128,8 +1120,8 @@ def test_ac6_finding_provenance(tmp_path):
 def test_ac6_stale_findings_refused(tmp_path):
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     # mutate the ledger head after computing ⇒ render cross-check fails [AC-6]
     record_trial_infra_failed(ledger, ctx, trial_id="x", task_id="task0", arm="control",
                               reason="late")
@@ -1151,16 +1143,16 @@ def test_ac7_asymmetric_nulls_excluded(tmp_path):
         seed_trial_and_grade(ledger, ctx, trial_id=f"t-{i}", task_id=f"task{i}", arm="treatment",
                              telemetry={"cost": 1.0, "wall_time_s": 9.0},
                              provenance={"image_digest": "d"})
-    _seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
-    _seed_matching_selfcheck(ledger, ctx, spec)
-    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=_full_corpus(), **_FAST)
+    seed_full_calibration(ledger, ctx)  # AN-2: ledgered full-run-validated
+    seed_matching_selfcheck(ledger, ctx, spec)
+    f = compute_findings(ledger, spec, spec.seed, corpus_manifest=full_corpus(), **FAST_STATS)
     cf = f.comparisons[0]
     assert cf.excluded_from_official is True
     assert "asymmetric" in cf.exclusion_reason
     # the confound flag rides too (disclosure, not suppression)
     assert "telemetry_null_asymmetry" in {c["flag"] for c in f.confounds}
     # official render marks it excluded rather than imputing
-    md = render_markdown(f, ledger, "official", corpus_manifest=_full_corpus())
+    md = render_markdown(f, ledger, "official", corpus_manifest=full_corpus())
     assert "EXCLUDED" in md
 
 
@@ -1168,10 +1160,10 @@ def test_ac7_raw_tokens_never_cross_vendors(tmp_path):
     ctx = fixed_ctx()
     # control anthropic, treatment openai (default fixture) ⇒ cross-vendor
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True,
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True,
               control_tel={"tokens_in": 100, "cost": 1.0, "wall_time_s": 10.0},
               treatment_tel={"tokens_in": 50, "cost": 1.0, "wall_time_s": 9.0})
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     sm = f.secondary_metrics
     assert sm["cross_vendor"] is True
     assert "tokens_in" in sm["vendor_incomparable_fields"]
@@ -1186,7 +1178,7 @@ def test_analyze_one_render_event(tmp_path):
 
     ctx = fixed_ctx()
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
-    _populate(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
+    populate_paired_trials(ledger, ctx, control_pass=lambda i: True, treatment_pass=lambda i: True)
 
     from harness.ledger.query import find_events
 
@@ -1223,14 +1215,14 @@ def test_m_j1_terminal_cant_judge_exclusions_are_disclosed(tmp_path):
         )
         append_verdict(ledger, ctx, verdict=v.model_dump(mode="json"))
 
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     assert f.judge_coverage["verdicts"] == 7
     assert f.judge_coverage["cant_judge"] == {"context_overflow": 1, "identity_leak": 2}
     assert f.judge_coverage["terminal_cant_judge"] == 3
 
     md = render_markdown(f, ledger, "exploratory")
     assert "Judge coverage" in md and "identity_leak: 2" in md
-    titles = [sec["title"] for sec in _disclosure_sections(f)]
+    titles = [sec.title for sec in _disclosure_sections(f)]  # now Section objects [refactor 11 §G3]
     assert "Judge coverage" in titles  # dossier parity
 
 
@@ -1241,7 +1233,7 @@ def test_m_j1_full_judge_coverage_discloses_nothing(tmp_path):
     ct = {"A": "control", "B": "treatment"}
     for i in range(3):
         _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}", winner="A", arm_map=ct)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     assert f.judge_coverage["cant_judge"] == {}
     assert "Judge coverage" not in render_markdown(f, ledger, "exploratory")
 
@@ -1263,7 +1255,7 @@ def test_m_s3_achieved_mde_reconciled_to_realized_n(tmp_path):
     for i in range(realized):  # a mean-zero pattern: the null phrasing renders
         _seed_pref_verdict(ledger, ctx, cid=f"ct-{i}", task_id=f"t{i}",
                            winner="A" if i % 2 == 0 else "B", arm_map=ct)
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     mde = f.mde
     assert mde.realized_n_tasks == realized
     assert mde.achieved_value is not None and mde.achieved_value > mde.value
@@ -1300,7 +1292,7 @@ def test_m_j2_identity_leak_rate_disclosed_per_task_class(tmp_path):
         )
         append_verdict(ledger, ctx, verdict=v.model_dump(mode="json"))
 
-    f = compute_findings(ledger, spec, spec.seed, **_FAST)
+    f = compute_findings(ledger, spec, spec.seed, **FAST_STATS)
     assert f.judge_coverage["identity_leak_by_class"] == {"google_api": 2, "refactor": 1}
     md = render_markdown(f, ledger, "exploratory")
     assert "identity_leak by task class" in md and "google_api: 2" in md

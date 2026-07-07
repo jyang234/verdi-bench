@@ -20,32 +20,19 @@ Browser drives skip honestly without the node/playwright/chromium stack
 
 from __future__ import annotations
 
-import threading
-
+import pytest
 import yaml
 
 from harness.adapters.base import Flags, Outcome, Provenance, Telemetry, TrialRecord
 from harness.judge.assemble import comparison_id_for
 from harness.ledger import events as ledger_events
-from harness.serve.server import make_server
 from harness.serve.workspace import scan_workspace
 from harness.status.aggregate import compute_status
 from tests.fixtures.browser import drive
 from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
-from tests.test_eval14_observability_ui import rich_experiment
-
-
-def _serve_root(root):
-    srv = make_server(None, root=root, port=0)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
-    return srv, thread, f"http://127.0.0.1:{srv.server_address[1]}"
-
-
-def _stop(srv, thread):
-    srv.shutdown()
-    srv.server_close()
-    thread.join(timeout=5)
+from tests.fixtures.scenarios import linked_experiment, reasoning_experiment, rich_experiment
+from tests.fixtures.servers import serve_root
+from tests.fixtures.tamper import flip_bytes
 
 
 def _record_trial(ledger, ctx, *, trial_id, task_id, arm, repetition=0, telemetry=None):
@@ -86,11 +73,9 @@ def _tampered_fixture(dirpath):
     """A locked experiment with one trial whose ledger then loses chain
     integrity (a rewritten byte) — the withheld-everywhere state."""
     _paired_fixture(dirpath)
-    ledger = dirpath / "ledger.ndjson"
-    lines = ledger.read_text(encoding="utf-8").splitlines()
-    assert '"tester"' in lines[1], "fixture expects the actor on the trial line"
-    lines[1] = lines[1].replace('"tester"', '"intruder"', 1)
-    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # flip_bytes refuses when the actor is not on the trial line, so a drifted
+    # fixture fails loudly instead of tampering nothing
+    flip_bytes(dirpath / "ledger.ndjson", 1, '"tester"', '"intruder"')
 
 
 # --- server-side: additive home-row / status fields --------------------------------
@@ -114,10 +99,10 @@ def test_status_spec_summary_names_arm_models(tmp_path):
 
 
 # --- fail-closed rendering on a broken chain ---------------------------------------
+@pytest.mark.browser
 def test_broken_chain_withholds_every_screen_without_lying(tmp_path):
     _tampered_fixture(tmp_path / "exp-t")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         # NOTE: assertions read the RENDERED #app / #bar nodes, never
         # document.body.textContent — body text includes the page's own
         # <script> source, which contains most UI literals.
@@ -165,19 +150,17 @@ def test_broken_chain_withholds_every_screen_without_lying(tmp_path):
         # the 409s are the point of this scenario: Chromium logs each refused
         # /api read as a console resource error; anything ELSE is a real bug
         assert all("409" in e and e.startswith("console:") for e in out["__errors"]), out["__errors"]
-    finally:
-        _stop(srv, thread)
 
 
 # --- home rows: arms, truthful lifecycle states, denominators ----------------------
+@pytest.mark.browser
 def test_home_rows_surface_arms_states_and_denominators(tmp_path):
     rich_experiment(tmp_path / "exp-a")
     # locked with a plan but nothing run: "ready · locked", never "unplanned"
     locked_experiment(tmp_path / "exp-fresh", repetitions=1)
     (tmp_path / "exp-fresh" / "tasks.yaml").write_text(
         yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "p"}]}), encoding="utf-8")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         # assertions read the rendered #app subtree — body.textContent would
         # also match the page's own <script> source
         body = """
@@ -189,7 +172,7 @@ def test_home_rows_surface_arms_states_and_denominators(tmp_path):
     return {
       headers: [...document.querySelectorAll('th')].map(t => t.textContent),
       arms: app.includes('control vs treatment'),
-      models: app.includes('claude-3-5-sonnet'),
+      models: app.includes('claude-haiku-4-5'),
       states: rows.map(r => r.cells[1].textContent),
       gradedCell: rows[0].cells[6].textContent,
       updated: rows[0].cells[9].textContent,
@@ -204,34 +187,43 @@ def test_home_rows_surface_arms_states_and_denominators(tmp_path):
         assert out["home"]["gradedCell"].startswith("4/4")  # graded / cells done
         assert out["home"]["updated"].endswith("ago")  # relative, absolute in title
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)
 
 
 # --- overview: result strip mirrors compare; stages navigate; feed deep-links ------
+@pytest.mark.browser
 def test_overview_result_strip_stage_nav_and_feed_links(tmp_path):
     fx = rich_experiment(tmp_path / "exp-a")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
-  await page.goto(BASE + '/#/exp/exp-a', { waitUntil: 'networkidle' });
+  // the feed is collapsed behind a disclosure now; feed=1 opens #feedbox
+  await page.goto(BASE + '/#/exp/exp-a?feed=1', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
   out.strip = await page.evaluate(() => {
     const app = document.getElementById('app').textContent;
+    // the literal 'Judge (ADVISORY)' is gone; the verdict card's judge line now
+    // carries the advisory marking as a '(ADVISORY)' suffix
+    const judge = document.querySelector('.card.verdict .verdict-judge');
     return { present: app.includes('Result so far'),
              lead: app.includes('treatment leads'),
-             advisory: app.includes('Judge (ADVISORY)') };
+             advisory: !!judge && judge.textContent.includes('(ADVISORY)') };
   });
   out.feed = await page.evaluate(() => {
     const items = [...document.querySelectorAll('#feedbox li')];
-    const q = items.find(li => li.textContent.includes('forensic_quarantine'));
+    // rows show the humanized kind ('quarantined'); the internal kind rides the
+    // .k span's title, so find the quarantine row by that title
+    const q = items.find(li => { const k = li.querySelector('.k');
+      return k && k.getAttribute('title') === 'forensic_quarantine'; });
     return { quarantineSummary: q ? q.textContent : '',
              clickable: items.filter(li => li.className.includes('click')).length };
   });
-  // a grade feed row deep-links to that trial's grade tab
+  // a grade feed row deep-links to that trial's grade tab; the fixture's grades
+  // are consecutive and fold into one run, so isolate the kind (folding is
+  // suppressed under an active filter) to click an individual, deep-linking row
+  await page.goto(BASE + '/#/exp/exp-a?feed=1&kind=grade', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(1500);
   await page.evaluate(() => {
     [...document.querySelectorAll('#feedbox li.click')]
-      .find(li => li.textContent.includes(' grade') || li.textContent.includes('grade'))
+      .find(li => li.textContent.includes('grade'))
       .click();
   });
   await page.waitForTimeout(700);
@@ -257,28 +249,28 @@ def test_overview_result_strip_stage_nav_and_feed_links(tmp_path):
         assert "/trial/" in out["afterFeedClick"] and "tab=grade" in out["afterFeedClick"]
         assert out["afterStageClick"] == "#/exp/exp-a/compare"
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)
 
 
 # --- trials: sortable by URL state, units in headers, verdict in the panel ---------
+@pytest.mark.browser
 def test_trials_sort_units_and_panel_verdict(tmp_path):
     _paired_fixture(tmp_path / "exp-p")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-p/trials', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1800);
   out.headers = await page.evaluate(() => [...document.querySelectorAll('th')].map(t => t.textContent));
-  // click the cost header: desc first, nulls last, state in the URL
+  // click the cost header: desc first, nulls last, state in the URL. Column
+  // order is task(0) arm(1) rep(2) outcome(3) grade(4) cost(5) wall(6) …, so
+  // the cost cell is index 5 now.
   await page.evaluate(() => {
     [...document.querySelectorAll('th.sortable')].find(t => t.textContent.startsWith('cost')).click();
   });
   await page.waitForTimeout(600);
   out.sorted = await page.evaluate(() => ({
     route: location.hash,
-    firstCost: document.querySelectorAll('tr.row')[0].cells[6].textContent,
-    lastCost: [...document.querySelectorAll('tr.row')].pop().cells[6].textContent }));
+    firstCost: document.querySelectorAll('tr.row')[0].cells[5].textContent,
+    lastCost: [...document.querySelectorAll('tr.row')].pop().cells[5].textContent }));
   // the selected trial's panel names its pair's advisory verdict
   await page.goto(BASE + '/#/exp/exp-p/trials?sel=trial-b1', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1500);
@@ -292,17 +284,15 @@ def test_trials_sort_units_and_panel_verdict(tmp_path):
         assert out["sorted"]["lastCost"] == "—"  # unmeasured sorts last
         assert "judge on this pair: B (ADVISORY)" in out["panel"]
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)
 
 
 # --- trial detail: telemetry + advisory verdict + forensics three-state ------------
+@pytest.mark.browser
 def test_trial_detail_surfaces_telemetry_verdict_and_forensics_state(tmp_path):
     fx = rich_experiment(tmp_path / "exp-a")
     _paired_fixture(tmp_path / "exp-p")  # no forensics scan on this ledger
     clean = fx["trial_ids"][("t2", "control")]  # scanned, covered, no flags
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-a/trial/""" + clean + """', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1800);
@@ -326,23 +316,21 @@ def test_trial_detail_surfaces_telemetry_verdict_and_forensics_state(tmp_path):
         assert "cost 0.9" in out["telemetry"]
         assert "judge on this pair (ADVISORY): B" in out["telemetry"]
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)
 
 
 # --- compare: an opened flight recorder must survive the poll re-render ------------
+@pytest.mark.browser
 def test_compare_flight_recorder_stays_open_across_polls(tmp_path):
     """The open/closed state of a flight-recorder panel is VIEW state: it must
     live in the URL like every other view knob (panel/facets/slice), so the
     1.5s poll re-render cannot swallow the operator's click, a shared link
     reproduces the open panel [AC-3], and closing round-trips the same way."""
-    from tests.test_eval14_page_drive import _reasoning_experiment
-
-    _reasoning_experiment(tmp_path / "exp-r")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    reasoning_experiment(tmp_path / "exp-r")
+    with serve_root(tmp_path) as base:
         body = """
-  await page.goto(BASE + '/#/exp/exp-r/compare', { waitUntil: 'networkidle' });
+  // the recorder drawer lives inside an expanded pair row now: open the row via
+  // the URL (?open=) so details.fr exists but stays closed until its own click
+  await page.goto(BASE + '/#/exp/exp-r/compare?open=cmp-t1-r0', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
   const frState = () => ({
     open: !!document.querySelector('details.fr[open]'),
@@ -370,22 +358,18 @@ def test_compare_flight_recorder_stays_open_across_polls(tmp_path):
         assert out["reloaded"] is True     # the URL reproduces the view
         assert out["closed"] == {"open": False, "frParam": None}
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)
 
 
 # --- trial process view: one timeline of thought and action ------------------------
+@pytest.mark.browser
 def test_process_view_interleaves_thought_and_action(tmp_path):
     """The process tab renders ONE timeline: turn-linked reasoning precedes its
     step, clock-only reasoning merges by the trial clock, undeclared spans land
     in an explicit unlinked section — and a reasoning-less trial is honestly
     action-only. Placement is the stack's declaration, never inferred."""
-    from tests.test_flight_recorder_v3 import _linked_experiment
-
-    trial_ids = _linked_experiment(tmp_path / "exp-l")
+    trial_ids = linked_experiment(tmp_path / "exp-l")
     rich_experiment(tmp_path / "exp-a")  # no reasoning: the action-only case
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-l/trial/""" + trial_ids[0] + """?tab=process', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
@@ -410,14 +394,12 @@ def test_process_view_interleaves_thought_and_action(tmp_path):
         assert out["linked"]["unlinkedHeading"] is True
         assert out["linked"]["processTabOn"] is True
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)
 
 
+@pytest.mark.browser
 def test_process_view_without_reasoning_is_action_only(tmp_path):
     fx = rich_experiment(tmp_path / "exp-a")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-a/trial/""" + fx["flagged"] + """?tab=process', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1800);
@@ -432,22 +414,18 @@ def test_process_view_without_reasoning_is_action_only(tmp_path):
         assert out["p"]["actionOnly"] is True
         assert out["p"]["steps"] == 3 and out["p"]["thoughts"] == 0
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)
 
 
 # --- compare: reasoning entries show measured usage; absence stays absent ----------
+@pytest.mark.browser
 def test_compare_reasoning_entries_show_measured_usage(tmp_path):
     """A reasoning entry's measured tokens/cost render beside its content, so a
     post-reveal human can tell a metered model turn from an unmeasured one (the
     reference agent's orchestrator, a v1 recorder, ...). Null renders as NOTHING
     — unmeasured is never dressed as zero, and the page never claims
     'code-authored' (that would be an inference the data cannot prove)."""
-    from tests.test_eval14_page_drive import _reasoning_experiment
-
-    _reasoning_experiment(tmp_path / "exp-r")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    reasoning_experiment(tmp_path / "exp-r")
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-r/compare?fr=cmp-t1-r0', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2200);
@@ -462,29 +440,36 @@ def test_compare_reasoning_entries_show_measured_usage(tmp_path):
         assert len(out["meta"]["metas"]) == 2
         assert all("412 tok" in m and "0.0021" in m for m in out["meta"]["metas"])
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)
 
 
 # --- compare: ungraded stays neutral; the pair index navigates ---------------------
+@pytest.mark.browser
 def test_compare_ungraded_pair_neutral_and_index(tmp_path):
     _paired_fixture(tmp_path / "exp-p")
-    srv, thread, base = _serve_root(tmp_path)
-    try:
+    with serve_root(tmp_path) as base:
         body = """
   await page.goto(BASE + '/#/exp/exp-p/compare', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
   out.cmp = await page.evaluate(() => {
-    const chips = [...document.querySelectorAll('.chip')];
-    const ungraded = chips.filter(c => c.textContent.includes('holdout: ungraded'));
-    const idxRows = [...document.querySelectorAll('.card table tr.row')];
+    // the 'holdout: ungraded' chip is gone; an ungraded holdout now renders as a
+    // neutral span.dim3 'ungraded' inside the pair row (no ok/bad class — the
+    // neutral-not-red honesty contract). The t2 pair is ungraded on both arms.
+    const ungraded = [...document.querySelectorAll('tr.pairjump span.dim3')]
+      .filter(c => c.textContent === 'ungraded');
+    // the judge tally is a statchip in the 'judge' statgroup; its .l names the
+    // arm (not a bare letter) and its .n carries the count
+    const judgeGroup = [...document.querySelectorAll('.statgroup')].find(g => {
+      const l = g.querySelector('.statlabel'); return l && l.textContent.includes('judge'); });
+    const judgeTallyNamed = !!judgeGroup && [...judgeGroup.querySelectorAll('.statchip')].some(c => {
+      const l = c.querySelector('.l'), n = c.querySelector('.n');
+      return l && n && l.textContent === 'treatment' && n.textContent === '1'; });
     return {
       ungradedCount: ungraded.length,
       ungradedNeutral: ungraded.every(c => !c.className.includes('bad') && !c.className.includes('ok')),
       excludedNote: document.getElementById('app').textContent.includes('not fully graded, excluded'),
-      judgeTallyNamed: chips.some(c => c.textContent.startsWith('B \\u00b7 treatment 1')),
-      indexRows: idxRows.length,
-      anchors: [...document.querySelectorAll('.card.pairjump')].map(c => c.id),
+      judgeTallyNamed: judgeTallyNamed,
+      indexRows: document.querySelectorAll('tr.pairjump').length,
+      anchors: [...document.querySelectorAll('tr.pairjump')].map(c => c.id),
     };
   });
 """
@@ -500,5 +485,3 @@ def test_compare_ungraded_pair_neutral_and_index(tmp_path):
         assert out["cmp"]["indexRows"] == 2
         assert set(out["cmp"]["anchors"]) == {"pair-cmp-t1-r0", "pair-cmp-t2-r0"}
         assert out["__errors"] == []
-    finally:
-        _stop(srv, thread)

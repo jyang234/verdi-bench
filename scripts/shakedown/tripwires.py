@@ -2,53 +2,60 @@
 
 Grouped: pre-registration refusals, ledger tamper, analyze fence, cost/insulation/
 stats, gaming detection, asymmetric contamination. No keys, no Docker (fake judge,
-fake/ arm models). Exits nonzero unless all 18 fire as designed.
+fake/arm models). Exits nonzero unless all 18 fire as designed.
+
+Authored + driven through ``harness.sdk`` (refactor 02/08): the vectors are the
+content; the plumbing is SDK builder mutations + workspace calls. The
+pre-registration refusals stay on the installed ``bench plan`` console script
+(the vector's *point* is the CLI refusal→exit-code mapping; ANSI is stripped in
+``bench`` for the FORCE_COLOR flake); the byte-flip is a raw local tamper whose
+detection is then in-process. Nothing here imports ``tests.*``.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _harness import (ASSETS, Tally, bench, dump_yaml, empty_dir, event_counts,  # noqa: E402
-                      events, inject_grades, load_yaml)
+from _harness import Tally, banner, bench, dump_yaml, empty_dir  # noqa: E402
+from _scenario import (  # noqa: E402
+    CONTROL_PASS, TREATMENT_PASS, advance_to_judged, cost_tasks, fake_experiment,
+    golden_arms, golden_experiment, make_manifest,
+)
 
-BASE = load_yaml(ASSETS / "golden" / "experiment.yaml")
-TASKS = load_yaml(ASSETS / "golden" / "tasks.yaml")["tasks"]
-FAKE_JUDGE = {"model": "fake/deterministic-2026-01-01", "rubric": "rubric.md", "orders": "both",
-              "temperature": 0, "escalation": {"kappa_threshold": 0.6, "min_human_verdicts": 1}}
-TREATMENT_PASS = {"t1", "t2", "t3", "t4", "t5", "t6"}
-CONTROL_PASS = {"t1", "t2"}
-
-
-def write_exp(d, spec, tasks, rubric="Judge on correctness.\n"):
-    dump_yaml(d / "experiment.yaml", spec)
-    dump_yaml(d / "tasks.yaml", {"tasks": tasks})
-    (d / "rubric.md").write_text(rubric, encoding="utf-8")
+from harness.ledger.anchors import AnchorIntegrityError  # noqa: E402
+from harness.schema import spec_to_yaml, tasks_to_yaml  # noqa: E402
+from harness.sdk import LedgerView, Task, write_holdout_results  # noqa: E402
 
 
-def manifest(path, corpus_id="shakedown-mini", semver="1.0.0", tasks=TASKS):
-    Path(path).write_text(json.dumps({
-        "corpus_id": corpus_id, "semver": semver, "kind": "public",
-        "tasks": [{"task_id": t["id"], "sha": hashlib.sha256(t["id"].encode()).hexdigest(),
-                   "status": "admitted", "metadata": {"category": t.get("task_class", "misc")}}
-                  for t in tasks]}, indent=2), encoding="utf-8")
+def cant_reason(ws):
+    ev = ws.view().latest("cant_analyze")
+    return ev.get("reason") if ev else None
 
 
 # ---------------------------------------------------------------- pre-registration
 def plan_tripwires(t):
+    # One valid base, serialized through spec_to_yaml (single validation source),
+    # then each vector mutates the dict to inject a p-hack the console script must
+    # refuse. Driven through the installed `bench plan` (exit-code + reason).
+    spec, tasks, rubric = golden_experiment("tw").build()
+    base, tasks_yaml = yaml.safe_load(spec_to_yaml(spec)), tasks_to_yaml(tasks)
+
     def run(name, mutate, expect):
         d = empty_dir(f"tw/{name}")
-        spec = deepcopy(BASE)
-        spec["judge"] = dict(FAKE_JUDGE)
-        mutate(spec)
-        write_exp(d, spec, TASKS)
+        s = deepcopy(base); mutate(s)
+        dump_yaml(d / "experiment.yaml", s)
+        (d / "tasks.yaml").write_text(tasks_yaml, encoding="utf-8")
+        (d / "rubric.md").write_text(rubric, encoding="utf-8")
         r = bench("plan", d / "experiment.yaml", "--ledger", d / "ledger.ndjson", check=False)
         out = (r.stdout or "") + (r.stderr or "")
-        locked = (d / "ledger.ndjson").exists() and events(d / "ledger.ndjson", "experiment_locked")
+        led = d / "ledger.ndjson"
+        locked = led.exists() and LedgerView(led).by_kind("experiment_locked")
         t.check(name, r.returncode != 0 and expect.lower() in out.lower() and not locked,
                 f"exit {r.returncode}, nothing locked")
 
@@ -68,120 +75,104 @@ def plan_tripwires(t):
 # ---------------------------------------------------------------- ledger integrity
 def ledger_tripwires(t):
     d = empty_dir("tw/ledger_tamper")
-    spec = deepcopy(BASE); spec["judge"] = dict(FAKE_JUDGE)
-    write_exp(d, spec, TASKS)
-    led = d / "ledger.ndjson"
-    bench("plan", d / "experiment.yaml", "--ledger", led)
-    bench("run", d)
-    clean_ok = bench("verify-chain", led, check=False).returncode == 0
+    ws = golden_experiment("tw").write(d)
+    ws.plan(actor="shakedown")
+    ws.run(engine="fake")
+    clean_ok = ws.verify_chain().chain_ok
+    # flip one byte of a NON-head line (raw local tamper), detection is in-process
+    led = ws.ledger
     lines = led.read_text(encoding="utf-8").splitlines()
-    obj = json.loads(lines[1])  # a NON-head line
+    obj = json.loads(lines[1])
     obj["provenance"]["actor"] = obj["provenance"].get("actor", "x") + "_TAMPERED"
     lines[1] = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     led.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    r = bench("verify-chain", led, check=False)
+    v = ws.verify_chain()
     t.check("ledger_tamper_detected",
-            clean_ok and r.returncode != 0 and "chain broken" in ((r.stdout or "") + (r.stderr or "")).lower(),
+            clean_ok and not v.chain_ok and "broken link" in v.chain_detail.lower(),
             "clean OK then tamper -> CHAIN BROKEN")
-    ra = bench("anchor", led, "--out", d / "anchors.ndjson", check=False)
-    t.check("anchor_refuses_tampered", ra.returncode != 0 and not (d / "anchors.ndjson").exists(),
+    try:
+        ws.anchor(out=d / "anchors.ndjson")
+        anchored = True
+    except AnchorIntegrityError:
+        anchored = False
+    t.check("anchor_refuses_tampered", not anchored and not (d / "anchors.ndjson").exists(),
             "refused; no anchor written")
 
 
 # ---------------------------------------------------------------- analyze fence
 def build_ready(name, selfcheck=True):
     d = empty_dir(f"tw/{name}")
-    spec = deepcopy(BASE); spec["judge"] = dict(FAKE_JUDGE)
-    write_exp(d, spec, TASKS)
-    m = d / "manifest.json"; manifest(m)
-    led = d / "ledger.ndjson"
-    bench("plan", d / "experiment.yaml", "--ledger", led)
-    bench("run", d)
-    inject_grades(led, lambda arm, task: task in (TREATMENT_PASS if arm == "treatment" else CONTROL_PASS))
-    bench("grade", d, "--runner", "local")
-    bench("judge", d)
-    bench("corpus", "calibrate", d, "--manifest", m, "--kind", "full")
+    ws = golden_experiment("tw").write(d)
+    m = d / "manifest.json"; make_manifest(m)
+    advance_to_judged(ws)
+    ws.calibrate(manifest_path=m, kind="full")
     if selfcheck:
-        bench("selfcheck", d)
-    return d, m
-
-
-def cant_reason(d):
-    evs = events(d / "ledger.ndjson", "cant_analyze")
-    return evs[-1].get("reason") if evs else None
+        ws.selfcheck()
+    return ws, m
 
 
 def fence_tripwires(t):
-    d, m = build_ready("official_before_selfcheck", selfcheck=False)
-    bench("analyze", d, "--official", "--corpus", m, check=False)
-    t.check("official_before_selfcheck", cant_reason(d) == "selfcheck_required"
-            and not (d / "findings.official.md").exists(), "cant_analyze: selfcheck_required")
+    ws, m = build_ready("official_before_selfcheck", selfcheck=False)
+    ws.analyze(official_corpus=m)
+    t.check("official_before_selfcheck", cant_reason(ws) == "selfcheck_required"
+            and not (ws.dir / "findings.official.md").exists(), "cant_analyze: selfcheck_required")
 
-    d, m = build_ready("quarantine_stale", selfcheck=True)
-    bench("analyze", d, "--official", "--corpus", m)  # baseline PASS
-    passed_first = (d / "findings.official.md").exists()
-    tid = events(d / "ledger.ndjson", "trial")[0]["trial_record"]["trial_id"]
-    bench("forensics", "quarantine", d, "--trial-id", tid, "--reason", "shakedown: confirmed tamper")
-    (d / "findings.official.md").unlink(missing_ok=True)
-    bench("analyze", d, "--official", "--corpus", m, check=False)
-    t.check("quarantine_invalidates_selfcheck", passed_first and cant_reason(d) == "selfcheck_required",
+    ws, m = build_ready("quarantine_stale", selfcheck=True)
+    ws.analyze(official_corpus=m)  # baseline PASS
+    passed_first = (ws.dir / "findings.official.md").exists()
+    tid = ws.view().trials()[0].record["trial_id"]
+    ws.quarantine(trial_id=tid, reason="shakedown: confirmed tamper")
+    (ws.dir / "findings.official.md").unlink(missing_ok=True)
+    ws.analyze(official_corpus=m)
+    t.check("quarantine_invalidates_selfcheck", passed_first and cant_reason(ws) == "selfcheck_required",
             "official PASSED -> quarantine -> selfcheck_required")
 
-    d, m = build_ready("corpus_mismatch", selfcheck=True)
-    wrong = d / "wrong.json"; manifest(wrong, corpus_id="some-other-corpus", semver="9.9.9")
-    (d / "findings.official.md").unlink(missing_ok=True)
-    bench("analyze", d, "--official", "--corpus", wrong, check=False)
-    t.check("corpus_mismatch", cant_reason(d) == "corpus_mismatch", "cant_analyze: corpus_mismatch")
+    ws, m = build_ready("corpus_mismatch", selfcheck=True)
+    wrong = ws.dir / "wrong.json"; make_manifest(wrong, corpus_id="some-other-corpus", semver="9.9.9")
+    (ws.dir / "findings.official.md").unlink(missing_ok=True)
+    ws.analyze(official_corpus=wrong)
+    t.check("corpus_mismatch", cant_reason(ws) == "corpus_mismatch", "cant_analyze: corpus_mismatch")
 
 
 # ---------------------------------------------------------------- cost / insulation / stats
 def runtime_tripwires(t):
     # cost ceiling
     d = empty_dir("tw/cost_ceiling")
-    spec = deepcopy(BASE); spec["judge"] = dict(FAKE_JUDGE)
-    spec["cost_ceiling"] = {"amount": 1.00, "currency": "USD"}
-    spec["arms"] = [{"name": "arm_a", "platform": "claude_code", "model": "anthropic/claude-sonnet-4-5-20250929"},
-                    {"name": "arm_b", "platform": "claude_code", "model": "anthropic/claude-opus-4-5-20251101"}]
-    tasks = [{"id": f"t{i}", "prompt": "solve", "fake_behavior": {"native_log": {"total_cost_usd": 0.40}}}
-             for i in range(1, 9)]
-    write_exp(d, spec, tasks)
-    bench("plan", d / "experiment.yaml", "--ledger", d / "ledger.ndjson")
-    bench("run", d)
-    c = event_counts(d / "ledger.ndjson")
+    exp = (fake_experiment("tw", ceiling=1.00).corpus("shakedown-mini", "1.0.0").repetitions(3)
+           .arm("arm_a", model="anthropic/claude-sonnet-4-5-20250929", platform="claude_code")
+           .arm("arm_b", model="anthropic/claude-opus-4-5-20251101", platform="claude_code"))
+    ws = cost_tasks(exp, 0.40).write(d)
+    ws.plan(actor="shakedown")
+    ws.run(engine="fake")
+    c = Counter(e.get("event") for e in ws.view().events)
     t.check("cost_ceiling_stops_run", c.get("run_stopped_cost_ceiling", 0) >= 1 and c.get("trial", 0) < 48,
             f"run_stopped_cost_ceiling, {c.get('trial', 0)}/48 trials")
 
     # holdout-canary insulation
     d = empty_dir("tw/canary_leak")
-    spec = deepcopy(BASE); spec["judge"] = dict(FAKE_JUDGE)
     canary = "ZZSECRET-CANARY-9137"
-    write_exp(d, spec, [{"id": "t1", "prompt": f"Implement add(a,b). LEAKED ANSWER: {canary}",
-                         "holdout_canaries": [canary],
-                         "fake_behavior": {"native_log": {"total_cost_usd": 0.01}}}])
-    bench("plan", d / "experiment.yaml", "--ledger", d / "ledger.ndjson")
-    bench("run", d)
-    infra = events(d / "ledger.ndjson", "trial_infra_failed")
-    t.check("holdout_canary_leak", len(infra) >= 1
-            and any("holdout_leak" in str(e.get("reason")) for e in infra)
-            and not events(d / "ledger.ndjson", "trial"), "trial_infra_failed(holdout_leak), zero trials")
+    ws = golden_arms(fake_experiment("tw").corpus("shakedown-mini", "1.0.0").repetitions(3)).task(
+        Task("t1", prompt=f"Implement add(a,b). LEAKED ANSWER: {canary}", holdout_canaries=(canary,),
+             fake_behavior={"native_log": {"total_cost_usd": 0.01}})).write(d)
+    ws.plan(actor="shakedown")
+    ws.run(engine="fake")
+    infra = ws.view().by_kind("trial_infra_failed")
+    t.check("holdout_canary_leak", len(infra) >= 1 and any("holdout_leak" in str(e.get("reason")) for e in infra)
+            and not ws.view().by_kind("trial"), "trial_infra_failed(holdout_leak), zero trials")
 
-    # A/A null
+    # A/A null (identical arms, identical grades)
     d = empty_dir("tw/aa_null")
-    spec = deepcopy(BASE); spec["judge"] = dict(FAKE_JUDGE)
-    spec["corpus"] = {"id": "aa-mini", "version": "1.0.0"}
-    spec["arms"] = [{"name": "treatment", "platform": "claude_code", "model": "anthropic/claude-sonnet-4-5-20250929"},
-                    {"name": "control", "platform": "claude_code", "model": "anthropic/claude-sonnet-4-5-20250929"}]
-    tasks = [{"id": f"t{i}", "prompt": "solve", "fake_behavior": {"native_log": {"total_cost_usd": 0.01}}}
-             for i in range(1, 9)]
-    write_exp(d, spec, tasks)
-    led = d / "ledger.ndjson"
-    bench("plan", d / "experiment.yaml", "--ledger", led)
-    bench("run", d)
-    inject_grades(led, lambda arm, task: task in {"t1", "t2", "t3", "t4"})  # identical for both arms
-    bench("grade", d, "--runner", "local")
-    bench("judge", d)
-    bench("analyze", d, "--exploratory")
-    md = (d / "findings.exploratory.md").read_text()
+    aa = "anthropic/claude-sonnet-4-5-20250929"
+    ws = cost_tasks((fake_experiment("tw").corpus("aa-mini", "1.0.0").repetitions(3)
+                     .arm("treatment", model=aa, platform="claude_code")
+                     .arm("control", model=aa, platform="claude_code")), 0.01).write(d)
+    ws.plan(actor="shakedown")
+    ws.run(engine="fake")
+    ws.inject_holdout_results(lambda arm, task: task in {"t1", "t2", "t3", "t4"})  # identical
+    ws.grade(runner="local")
+    ws.judge()
+    ws.analyze(exploratory=True)
+    md = (ws.dir / "findings.exploratory.md").read_text()
     t.check("aa_null_no_effect", "0.0000" in md and "⇒ MET" not in md, "Δ 0.0000, decision not met")
 
 
@@ -199,19 +190,17 @@ def forensics_tripwires(t):
             {"kind": "tool_call", "command": "cat task.md", "detail": "read the task"},
             {"kind": "file_edit", "files_touched": [target], "detail": detail},
             {"kind": "test_run", "command": "pytest -q", "detail": "ok"}]}
-        spec = deepcopy(BASE); spec["judge"] = dict(FAKE_JUDGE); spec["repetitions"] = 2
-        spec["corpus"] = {"id": "forensics-mini", "version": "1.0.0"}
-        spec["arms"] = [{"name": "treatment", "platform": "generic", "model": "openai/gpt-4o-2024-08-06"},
-                        {"name": "control", "platform": "generic", "model": "anthropic/claude-sonnet-4-5-20250929"}]
-        write_exp(d, spec, [{"id": "t1", "prompt": "Implement compute().", "task_class": "feature",
-                             "holdouts_dir": "holdouts/t1", "fake_behavior": {"native_log": native}}])
-        led = d / "ledger.ndjson"
-        bench("plan", d / "experiment.yaml", "--ledger", led)
-        bench("run", d)
-        inject_grades(led, lambda arm, task: True)
-        bench("grade", d, "--runner", "local")
-        bench("forensics", "scan", d)
-        rep = events(led, "forensics_report")[-1]["forensics_report"]
+        ws = (fake_experiment("tw").corpus("forensics-mini", "1.0.0").repetitions(2)
+              .arm("treatment", model="openai/gpt-4o-2024-08-06", platform="generic")
+              .arm("control", model="anthropic/claude-sonnet-4-5-20250929", platform="generic")
+              .task(Task("t1", prompt="Implement compute().", task_class="feature",
+                         holdouts_dir="holdouts/t1", fake_behavior={"native_log": native}))).write(d)
+        ws.plan(actor="shakedown")
+        ws.run(engine="fake")
+        ws.inject_holdout_results(lambda arm, task: True)
+        ws.grade(runner="local")
+        ws.forensics()
+        rep = ws.view().latest("forensics_report")["forensics_report"]
         return rep.get("flags", []), rep.get("coverage", {})
 
     flags, cov = build("forensics_tamper", tamper=True)
@@ -233,42 +222,37 @@ ORACLE = ("def levenshtein(a, b):\n    prev = list(range(len(b) + 1))\n"
 
 def contamination_tripwire(t):
     d = empty_dir("tw/asymmetric_contamination")
-    tasks = [{"id": f"t{i}", "prompt": "solve", "task_class": "feature",
-              "fake_behavior": {"native_log": {"total_cost_usd": 0.01}}} for i in range(1, 9)]
-    spec = deepcopy(BASE); spec["judge"] = dict(FAKE_JUDGE)
-    spec["corpus"] = {"id": "contam-mini", "version": "1.0.0"}
-    spec["contamination"] = {"overlap_threshold": 0.5}
-    spec["arms"] = [{"name": "treatment", "platform": "generic", "model": "fake/deterministic-2026-01-01"},
-                    {"name": "control", "platform": "generic", "model": "fake/deterministic-2026-01-02"}]
-    write_exp(d, spec, tasks)
-    m = d / "manifest.json"; manifest(m, corpus_id="contam-mini", tasks=tasks)
-    led = d / "ledger.ndjson"
-    bench("plan", d / "experiment.yaml", "--ledger", led)
-    bench("run", d)
-    for ev in events(led, "trial"):
-        rec = ev["trial_record"]; ws = Path(rec["artifacts_path"]).parent
-        passed = rec["task_id"] in (TREATMENT_PASS if rec["arm"] == "treatment" else CONTROL_PASS)
-        (ws / "holdout_results.json").write_text(
-            json.dumps({"assertions": [{"id": "h1", "result": "pass" if passed else "fail"}]}), encoding="utf-8")
+    ws = cost_tasks((fake_experiment("tw").corpus("contam-mini", "1.0.0").repetitions(3)
+                     .contamination(overlap_threshold=0.5)
+                     .arm("treatment", model="fake/deterministic-2026-01-01", platform="generic")
+                     .arm("control", model="fake/deterministic-2026-01-02", platform="generic")),
+                    0.01, task_class="feature").write(d)
+    m = d / "manifest.json"; make_manifest(m, corpus_id="contam-mini")
+    ws.plan(actor="shakedown")
+    ws.run(engine="fake")
+    for tv in ws.view().trials():
+        rec = tv.record; wsdir = Path(rec["artifacts_path"]).parent
+        write_holdout_results(
+            wsdir, rec["task_id"] in (TREATMENT_PASS if rec["arm"] == "treatment" else CONTROL_PASS))
         # only treatment's t1 workspace is a verbatim copy of the oracle -> asymmetric overlap
-        (ws / "solution.py").write_text(
+        (wsdir / "solution.py").write_text(
             ORACLE if (rec["arm"] == "treatment" and rec["task_id"] == "t1")
             else "def solve():\n    return 0\n", encoding="utf-8")
-    bench("grade", d, "--runner", "local")
-    bench("corpus", "calibrate", d, "--manifest", m, "--kind", "full")
-    bench("selfcheck", d)
+    ws.grade(runner="local")
+    ws.calibrate(manifest_path=m, kind="full")
+    ws.selfcheck()
     oracle = d / "oracle"; oracle.mkdir()
     (oracle / "t1.txt").write_text(ORACLE, encoding="utf-8")
-    bench("contamination", "probe", d, "--manifest", m, "--oracle-dir", oracle)
-    of = events(led, "contamination_probe")[-1]["probe"].get("overlap_flags", {})
-    bench("analyze", d, "--official", "--corpus", m, check=False)
+    probe = ws.contamination_probe(manifest_path=m, oracle_dir=oracle, actor="shakedown")
+    of = probe.probe.get("overlap_flags", {})
+    ws.analyze(official_corpus=m)
     t.check("asymmetric_contamination",
             of.get("treatment", {}).get("t1") is True and of.get("control", {}).get("t1") in (False, None)
-            and cant_reason(d) == "asymmetric_contamination", "overlap treatment-only -> official refused")
+            and cant_reason(ws) == "asymmetric_contamination", "overlap treatment-only -> official refused")
 
 
 def main():
-    print("=" * 72, "\nL3 — tripwire matrix (18 vectors)\n" + "=" * 72)
+    banner("L3 — tripwire matrix (18 vectors)")
     t = Tally("L3 tripwires")
     plan_tripwires(t)
     ledger_tripwires(t)

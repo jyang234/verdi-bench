@@ -1,7 +1,8 @@
 """``bench`` CLI — verb registry; stories add subcommands [master plan §3.2].
 
-EVAL-3 ships ``plan``, ``verify-chain``, ``anchor``. EVAL-4 adds ``run``,
-EVAL-5 adds ``grade`` (registered below as they are built).
+``plan``, ``verify-chain``, ``anchor`` are thin shells over their stage APIs
+(:mod:`harness.plan.api`, :mod:`harness.ledger.api`); each later story registers
+its own verbs via ``register(app)``.
 """
 
 from __future__ import annotations
@@ -11,18 +12,13 @@ from typing import Optional
 
 import typer
 
+from .cli_common import refusal_exit
+
 app = typer.Typer(
     add_completion=False,
     help="verdi-bench — benchmark-grade A/B evaluation for agent stacks.",
     no_args_is_help=True,
 )
-
-
-def _default_ctx(experiment_id: str, actor_flag: Optional[str] = None):
-    from .ledger.actor import resolve_actor
-    from .ledger.events import EventContext
-
-    return EventContext(experiment_id=experiment_id, actor=resolve_actor(actor_flag))
 
 
 @app.command()
@@ -44,57 +40,21 @@ def plan(
     ),
 ) -> None:
     """Validate, power-check, and write the genesis lock event."""
-    from .corpus.commit import TaskCommitmentError, load_task_dicts
-    from .ledger.actor import ActorResolutionError
-    from .ledger.query import ChainIntegrityError
-    from .plan.lock import (
-        AlreadyLockedError,
-        RubricCommitmentError,
-        UnderpoweredError,
-        lock_experiment,
-    )
-    from .plan.power import calibration_variance_from_runs
+    from .plan.api import plan_experiment
 
-    # PL-8: stamp the experiment *directory* name, exactly as run/grade do
-    # (``experiment_dir.name``) — one ledger, one experiment_id. No stem fallback:
-    # that diverged from run/grade for a bare path.
-    try:
-        ctx = _default_ctx(experiment_id=experiment.parent.name, actor_flag=actor)
-    except ActorResolutionError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(code=2)
-    # PL-5: feed the power gate real calibration variance when a corpus manifest
-    # with calibration runs is supplied; otherwise the lock falls back to
-    # AssumedVariance (flagged assumption_based_mde).
-    variance_source = None
-    if corpus_manifest is not None:
-        from .corpus.registry import CorpusManifest
-
-        manifest = CorpusManifest.load(corpus_manifest)
-        variance_source = calibration_variance_from_runs(manifest.calibration.runs)
-    try:
-        # PL-7/D-6: commit the task content (tasks.yaml in the experiment dir) into
-        # the lock so a post-lock swap is refused by run/grade.
-        task_dicts = load_task_dicts(experiment.parent)
-        outcome = lock_experiment(
-            experiment,
-            ledger,
-            ctx=ctx,
-            acknowledge_underpowered=acknowledge_underpowered,
-            attested_by=attested_by,
-            task_dicts=task_dicts,
-            variance_source=variance_source,
+    # refusal_exit() catches VerdiRefusal uniformly: every plan/lock refusal
+    # (spec validation, actor, chain integrity, lock, rubric, task-commitment)
+    # maps to a clean exit 2 — no verb-forgot-to-enumerate traceback, and the
+    # structural pydantic vectors (extra key, single arm) no longer traceback
+    # [refactor 13 OI-B].
+    with refusal_exit():
+        outcome = plan_experiment(
+            experiment, ledger, acknowledge_underpowered=acknowledge_underpowered,
+            attested_by=attested_by, corpus_manifest=corpus_manifest, actor=actor,
         )
-    except (
-        UnderpoweredError,
-        AlreadyLockedError,
-        TaskCommitmentError,
-        ChainIntegrityError,
-        RubricCommitmentError,
-    ) as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(code=2)
-    mde = outcome.mde["mde"]
+    # The MDE scalar reads off the typed report; the ledgered flags (incl. the
+    # lock-stage power_gate_skipped) live on the event payload the report rendered.
+    mde = outcome.mde_report.mde
     flags = ", ".join(outcome.mde["flags"]) or "none"
     typer.echo(f"locked {experiment} (sha256={outcome.spec_sha256[:12]}…)")
     typer.echo(f"  MDE={mde}  flags={flags}")
@@ -108,20 +68,18 @@ def verify_chain_cmd(
     ),
 ) -> None:
     """Verify the hash chain; nonzero exit names the first broken link."""
-    from .ledger.anchors import verify_against_anchor
-    from .ledger.query import verify  # read-side seam; never import ledger.chain directly
+    from .ledger.api import verify_chain
 
-    result = verify(ledger)
-    if not result.ok:
-        typer.echo(f"CHAIN BROKEN: {result.detail}", err=True)
+    verdict = verify_chain(ledger, against_anchor=against_anchor)
+    if not verdict.chain_ok:
+        typer.echo(f"CHAIN BROKEN: {verdict.chain_detail}", err=True)
         raise typer.Exit(code=1)
     typer.echo("chain OK")
-    if against_anchor is not None:
-        ar = verify_against_anchor(ledger, against_anchor)
-        if not ar.ok:
-            typer.echo(f"ANCHOR MISMATCH: {ar.detail}", err=True)
+    if verdict.anchor_checked:
+        if not verdict.anchor_ok:
+            typer.echo(f"ANCHOR MISMATCH: {verdict.anchor_detail}", err=True)
             raise typer.Exit(code=1)
-        typer.echo(f"anchor OK: {ar.detail}")
+        typer.echo(f"anchor OK: {verdict.anchor_detail}")
 
 
 @app.command()
@@ -138,44 +96,69 @@ def anchor(
     auditable, chained record — not just an external-file side effect [PL-4].
     """
     from .ledger.actor import ActorResolutionError
-    from .ledger.anchors import AnchorIntegrityError, anchor_record, write_anchor
-    from .ledger.events import record_chain_anchor
+    from .ledger.anchors import AnchorIntegrityError
+    from .ledger.api import anchor as record_anchor
 
-    # Route the timestamp through the EventContext clock seam rather than a bare
-    # wall-clock read in the CLI [PL-4 / determinism]. Capture the pre-anchor
-    # head, then ledger that same head.
     try:
-        ctx = _default_ctx(experiment_id=ledger.parent.name, actor_flag=actor)
-    except ActorResolutionError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(code=2)
-    # 7A-2: anchor_record chain-verifies first and refuses tampered history
-    # before writing anything; exit 1 and append neither the event nor the file.
-    try:
-        rec = anchor_record(ledger, ts=ctx.clock())
+        with refusal_exit(ActorResolutionError):
+            outcome = record_anchor(ledger, out=out, actor=actor)
     except AnchorIntegrityError as e:
         typer.echo(f"CHAIN BROKEN: {e}", err=True)
         raise typer.Exit(code=1)
-    # Ledger the anchoring FIRST (durable, fsync'd), then write the external
-    # checkpoint. A crash between the two thus leaves an in-chain record with no
-    # external file (re-anchoring recreates it) rather than an orphaned external
-    # checkpoint with no ledgered record [PRA-L5].
-    record_chain_anchor(ledger, ctx, head_hash=rec["head_hash"], height=rec["height"])
-    write_anchor(out, rec)
-    typer.echo(f"anchored head={rec['head_hash'][:12]}… height={rec['height']}")
+    typer.echo(f"anchored head={outcome.head_hash[:12]}… height={outcome.height}")
+
+
+@app.command()
+def init(
+    directory: Path = typer.Argument(..., help="Target dir to scaffold (must be empty)"),
+) -> None:
+    """Scaffold experiment.yaml / tasks.yaml / rubric from the starter templates.
+
+    The no-browser equivalent of the author surface's draft seeding [refactor 02
+    §5]. NOT a ledgered operation (no entrypoint): it only writes files, then you
+    edit and ``bench plan``. Refuses a non-empty target so it can never clobber
+    work. Reads the shared template DATA files directly (the sdk-is-a-leaf
+    contract forbids the CLI from importing the sdk package; the file is the
+    shared contract, not the code).
+    """
+    import yaml
+
+    templates = Path(__file__).resolve().parent / "sdk" / "templates"
+    if directory.exists() and any(directory.iterdir()):
+        typer.echo(f"{directory} is not empty — refusing to scaffold over it", err=True)
+        raise typer.Exit(code=2)
+    spec_text = (templates / "starter-experiment.yaml").read_text(encoding="utf-8")
+    tasks_text = (templates / "starter-tasks.yaml").read_text(encoding="utf-8")
+    rubric_text = (templates / "judge-rubric.md").read_text(encoding="utf-8")
+    # The rubric lands where the spec's judge.rubric points, so the scaffold is
+    # internally consistent (`bench plan` finds the rubric it commits).
+    rubric_rel = (yaml.safe_load(spec_text).get("judge") or {}).get("rubric", "rubric.md")
+
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "experiment.yaml").write_text(spec_text, encoding="utf-8")
+    (directory / "tasks.yaml").write_text(tasks_text, encoding="utf-8")
+    rubric_path = directory / rubric_rel
+    rubric_path.parent.mkdir(parents=True, exist_ok=True)
+    rubric_path.write_text(rubric_text, encoding="utf-8")
+    typer.echo(f"scaffolded {directory}: experiment.yaml, tasks.yaml, {rubric_rel}")
+    typer.echo("  edit the files, then: bench plan experiment.yaml --ledger ledger.ndjson")
 
 
 def _register_stage_commands() -> None:
     """Attach stage subcommands built in later stories, if present.
 
-    Only a genuinely-absent module is tolerated (ModuleNotFoundError); any other
-    error (a real bug inside a present stage CLI) propagates rather than
-    degrading to a silently-missing subcommand.
+    Only a genuinely-absent stage module is tolerated: the except clause checks
+    ``e.name`` against the module being imported, so a *transitive*
+    ModuleNotFoundError (a missing dependency inside a present stage CLI — a
+    real bug) propagates rather than degrading to a silently-missing
+    subcommand [refactor 01 §4 D1].
     """
     from importlib import import_module
 
     for module_name, attr in [
         (".run.cli", "register"),
+        (".hermetic.cli", "register"),
+        (".images.cli", "register"),
         (".grade.cli", "register"),
         (".judge.cli", "register"),
         (".corpus.cli", "register"),
@@ -190,8 +173,12 @@ def _register_stage_commands() -> None:
     ]:
         try:
             mod = import_module(module_name, __package__)
-        except ModuleNotFoundError:  # pragma: no cover - stage not present yet
-            continue
+        except ModuleNotFoundError as e:
+            if e.name != f"{__package__}{module_name}":
+                # A transitive miss inside a present stage CLI: re-raise —
+                # swallowing it would silently drop the verb [refactor 01 §4 D1].
+                raise
+            continue  # pragma: no cover - the stage module itself is absent
         getattr(mod, attr)(app)
 
 

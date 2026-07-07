@@ -16,6 +16,16 @@ dependencies = [
     "cryptography>=49.0.0",
 ]
 
+[project.optional-dependencies]
+# In-trial OTLP protobuf span decoding [refactor 09 §5, A14]. Optional so a
+# JSON-only install stays lean; a protobuf envelope encountered without it raises
+# a loud, actionable OtlpDependencyError (harness/hermetic/otlp_decode.py). The
+# import is lazy — nothing here is pulled unless a protobuf body is decoded.
+otlp = [
+    "opentelemetry-proto>=1.20,<2",
+    "protobuf>=4,<6",
+]
+
 [project.scripts]
 bench = "harness.cli:main"
 
@@ -37,4 +47,5 @@ packages = ["harness"]
 testpaths = ["tests"]
 markers = [
     "docker: tests that require a live Docker daemon (deselect with '-m \"not docker\"')",
+    "browser: tests that drive the served page in a real Chromium via node playwright (the CI browser job runs '-m browser' under VERDI_REQUIRE_BROWSER=1)",
 ]

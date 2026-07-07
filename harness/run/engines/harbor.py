@@ -1,7 +1,20 @@
 """Harbor engine [EVAL-4 §M2] — hermetic, pinned, network-insulated trials.
 
-**This is the only module that may import/talk to Harbor/Docker** [AC-1,
-import-linter contract]. Everything else speaks the engine seam.
+**Harbor is the only ENGINE, and the only module that may name harbor** [AC-1,
+import-linter contract + the AST seam sweep]. All docker *mechanics* now live in
+:mod:`harness.hermetic` (A6, refactor 04 §1): this module builds its trial argv
+through :class:`~harness.hermetic.docker.HardenedCommand` and runs it through a
+:class:`~harness.hermetic.docker.DockerClient`, so "who talks to Docker" is the
+hermetic layer — the old "only this module talks to Docker" claim was already
+false via ``grade/container.py`` and is re-scoped honestly here.
+
+Harbor is now a :class:`~harness.run.engines.base.EngineBase` subclass [refactor
+04 §2]: it fills only the two engine-specific seams — ``_resolve_image`` (pin the
+image to an immutable digest or refuse) and ``_execute`` (run the container and
+map its result) — and inherits the shared fail-closed telemetry/egress readers and
+the outcome-downgrade precedence. The reason vocabulary and the fail-closed error
+signals now live in ``base``; they are re-exported here so callers that name Harbor
+(the confined seam) still reach ``ProxyLogMissingError``/``TelemetryCorruptError``.
 
 Hermetic posture [D001, D005]:
 * Pinned image ref (digest captured into provenance).
@@ -12,36 +25,68 @@ Hermetic posture [D001, D005]:
 * Provider keys injected as env at trial start — never baked into image layers
   or written to the ledger [AC-8].
 
-Actual daemon calls sit behind an injectable ``runner`` so command construction
-and result mapping are unit-testable without a live Docker; the true
-container-inspect assertions are ``@pytest.mark.docker``.
+Actual daemon calls sit behind an injectable ``runner`` (the ``CommandRunner``
+seam, now backed by ``DockerClient``) so command construction and result mapping
+are unit-testable without a live Docker; the true container-inspect assertions
+are ``@pytest.mark.docker``.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Protocol
+from urllib.parse import urlsplit
 
 from ...adapters.base import Outcome, Quotas
-from ..types import EngineResult, TrialRequest
+from ...hermetic.docker import (
+    DAEMON_ERROR_EXIT,
+    TIMEOUT_EXIT,
+    DockerClient,
+    HardenedCommand,
+)
+from ...hermetic.network import METERED_NETWORK
+from ...hermetic.network import ensure_metered_network as _ensure_metered_network
+from ..types import TrialRequest
+from .base import (
+    EngineBase,
+    ExecOutcome,
+    ProxyLogMissingError,
+    ResolvedImage,
+    TelemetryCorruptError,
+)
+
+# Re-exported for callers confined to the Harbor seam (tests + the metering e2e
+# import these from here); the definitions now live in ``base`` so every engine
+# shares them [refactor 04 §2].
+__all__ = [
+    "HARBOR_VERSION",
+    "TRIAL_REQUEST_MOUNT",
+    "METERED_NETWORK",
+    "RunOutput",
+    "CommandRunner",
+    "DockerCliRunner",
+    "HarborEngine",
+    "ProxyLogMissingError",
+    "TelemetryCorruptError",
+]
 
 HARBOR_VERSION = "harbor-pinned-0.1.0"  # version-pinned in images [D005]
 
-# The trial-image contract [RN-4, EVAL-4-D-8]: the harness writes the task prompt
-# and arm configuration to a host file and bind-mounts it READ-ONLY at this path,
-# OUTSIDE /workspace (so it never pollutes the graded workspace copy). A pre-baked
-# trial image's entrypoint reads it to learn its task and which arm it is.
+# The trial-image contract [RN-4, EVAL-4-D-8; the normative statement is
+# docs/images.md §1]: the harness writes the task prompt and arm configuration to a
+# host file (a typed TrialRequestFile, A1) and bind-mounts it READ-ONLY at this
+# path, OUTSIDE /workspace (so it never pollutes the graded workspace copy). A
+# pre-baked trial image's entrypoint reads it to learn its task and which arm it is.
 TRIAL_REQUEST_MOUNT = "/verdi/request.json"
 
-# The restricted docker network a proxied trial joins — it reaches only the
-# metering proxy, nothing else [RN-11, D001].
-METERED_NETWORK = "verdi-metered"
+# METERED_NETWORK is imported from harness.hermetic.network — the single owner of
+# the constant [refactor 04 §1]; the string never changes [refactor 04 §6]. Kept
+# re-exported here so `from ...engines.harbor import METERED_NETWORK` still works.
 
 
 def _container_name(trial_id: str) -> str:
@@ -60,21 +105,6 @@ def _with_trial_auth(proxy_url: str, trial_id: str) -> str:
     if "@" in rest:
         return proxy_url
     return f"{scheme}://{trial_id}@{rest}"
-
-
-class TelemetryCorruptError(RuntimeError):
-    """The agent's native telemetry log was present but not valid JSON [RN-17].
-
-    Distinct from an absent log (legitimately no telemetry): corruption must
-    fail the trial closed, never silently become "no telemetry"."""
-
-
-class ProxyLogMissingError(RuntimeError):
-    """A configured metering-proxy log file is absent [PRA-H4].
-
-    The proxy is dead or misconfigured; treating this as "no egress, no cost, no
-    violation" is a silent fail-open of the cost guard and the egress fence, so
-    the scan raises and the trial fails infra_failed(proxy_log_missing)."""
 
 
 @dataclass
@@ -107,31 +137,23 @@ class CommandRunner(Protocol):
 
 
 class DockerCliRunner:
-    """Default runner shelling out to the ``docker`` CLI."""
+    """Default runner: builds argv here, runs it through :class:`DockerClient`.
+
+    The ``CommandRunner`` seam's production implementation. Docker mechanics — the
+    subprocess call, the daemon/exit-code semantics, the metered network — are
+    delegated to :mod:`harness.hermetic`, so this class is just harbor's mapping of
+    a container run into a :class:`RunOutput` [refactor 04 §1]."""
+
+    def __init__(self, docker: Optional[DockerClient] = None) -> None:
+        self._docker = docker or DockerClient()
 
     def ensure_metered_network(self) -> None:
-        """Create the restricted metering network if it's absent [RN-11].
+        """Create the restricted metering network if it's absent [RN-11] — the
+        hermetic network owner does the work; harbor triggers it before a proxied
+        trial joins ``--network verdi-metered``."""
+        _ensure_metered_network(self._docker)
 
-        ``--internal`` gives the trial no direct external connectivity — only the
-        proxy (attached to this network) can reach model APIs. Best-effort: if
-        docker is unreachable the trial itself fails closed as a daemon_error, so
-        this does not mask that."""
-        try:
-            inspect = subprocess.run(
-                ["docker", "network", "inspect", METERED_NETWORK],
-                capture_output=True, timeout=30, check=False,
-            )
-            if inspect.returncode == 0:
-                return
-            subprocess.run(
-                ["docker", "network", "create", "--internal", METERED_NETWORK],
-                capture_output=True, timeout=30, check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return
-
-    @staticmethod
-    def _kill(name: Optional[str]) -> bool:
+    def _kill(self, name: Optional[str]) -> bool:
         """Kill and reap a container by name [RN-10]. Returns True iff the
         container is confirmed no longer running afterward; a False means it may
         still be live, so the caller fails the trial closed rather than redact a
@@ -149,13 +171,12 @@ class DockerCliRunner:
             return True  # no container to kill (never started)
         for args in (["docker", "kill", name], ["docker", "wait", name]):
             try:
-                subprocess.run(args, capture_output=True, timeout=30, check=False)
+                self._docker.run(args, timeout_s=30)
             except (OSError, subprocess.SubprocessError):
                 pass  # exit code is unreliable under --rm; the inspect below decides
         try:
-            probe = subprocess.run(
-                ["docker", "inspect", "-f", "{{.State.Running}}", name],
-                capture_output=True, text=True, timeout=30, check=False,
+            probe = self._docker.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", name], timeout_s=30
             )
         except (OSError, subprocess.SubprocessError):
             return False  # cannot confirm the container is dead → fail closed
@@ -185,12 +206,10 @@ class DockerCliRunner:
         idv = self._inspect_format(image, "{{.Id}}")
         return (idv, idv) if idv and idv.startswith("sha256:") else None
 
-    @staticmethod
-    def _inspect_format(image: str, fmt: str) -> Optional[str]:
+    def _inspect_format(self, image: str, fmt: str) -> Optional[str]:
         try:
-            out = subprocess.run(
-                ["docker", "inspect", "--format", fmt, image],
-                capture_output=True, text=True, timeout=30, check=False,
+            out = self._docker.run(
+                ["docker", "inspect", "--format", fmt, image], timeout_s=30
             )
         except (OSError, subprocess.SubprocessError):
             return None
@@ -199,14 +218,11 @@ class DockerCliRunner:
     def run_container(
         self, cmd: list[str], timeout_s: int, env: Optional[dict] = None
     ) -> RunOutput:
-        # Provider key VALUES are passed through the child environment (never on
-        # the argv), so `docker run --env KEY` picks them up without exposing
-        # them in the host process table.
-        child_env = {**os.environ, **(env or {})}
+        # Provider key VALUES are layered into the child environment by DockerClient
+        # (never on the argv), so `docker run --env KEY` picks them up without
+        # exposing them in the host process table [AC-8].
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout_s, env=child_env
-            )
+            proc = self._docker.run(cmd, timeout_s=timeout_s, env=env)
         except subprocess.TimeoutExpired:
             # Kill the CONTAINER, not just the docker CLI: the CLI dying on timeout
             # leaves the container running and writing into the still-mounted
@@ -215,17 +231,20 @@ class DockerCliRunner:
             # cannot be confirmed the workspace is not safe to redact, so surface
             # that as kill_failed [PRA-M7].
             killed = self._kill(_name_from_cmd(cmd))
-            return RunOutput(exit_status=124, timed_out=True, kill_failed=not killed)
+            return RunOutput(exit_status=TIMEOUT_EXIT, timed_out=True, kill_failed=not killed)
         except (OSError, FileNotFoundError):
-            return RunOutput(exit_status=125, daemon_error=True)
+            return RunOutput(exit_status=DAEMON_ERROR_EXIT, daemon_error=True)
         # docker returns 125 for daemon/config errors before the container runs
-        if proc.returncode == 125:
-            return RunOutput(exit_status=125, daemon_error=True)
+        if proc.returncode == DAEMON_ERROR_EXIT:
+            return RunOutput(exit_status=DAEMON_ERROR_EXIT, daemon_error=True)
         return RunOutput(exit_status=proc.returncode)
 
 
-class HarborEngine:
+class HarborEngine(EngineBase):
     name = "harbor"
+    # Containerizes real trials, so the managed metering proxy / OTLP collector
+    # wrap around a Harbor run [refactor 11 §G5c].
+    manages_real_infra = True
 
     def __init__(
         self, runner: Optional[CommandRunner] = None, harbor_version: str = HARBOR_VERSION
@@ -240,82 +259,99 @@ class HarborEngine:
         quotas, proxy-only egress, env-injected keys, and the read-only trial
         request mount [RN-4]. Unit-tested directly."""
         q: Quotas = request.quotas or Quotas()
-        # --pull=never: a trial must run the pre-baked, digest-pinned image; never
-        # silently pull an unpinned tag at trial time [RN-12, D005].
-        cmd = ["docker", "run", "--rm", "--pull=never"]
-        # a deterministic name so a timed-out container is killable by name [RN-10]
-        cmd += ["--name", _container_name(request.trial_id)]
-        # Run as the invoking user so files the trial writes into the bind-mounted
-        # workspace are owned by the harness — which MUST rewrite them to redact
-        # secrets at capture [RN-7]. A root container would leave root-owned files
-        # the non-root harness cannot scrub.
-        if hasattr(os, "getuid"):
-            cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
-        # container hardening [PRA-L9]: drop all capabilities, forbid privilege
-        # escalation, and cap process count so a trial cannot fork-bomb the host
-        # or gain new privileges. Applied unconditionally — a benchmark trial is
-        # untrusted agent code and needs none of these.
-        cmd += ["--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512"]
-        # pinned quotas [D003]
+        # The shared hardened recipe [refactor 04 §1]: --pull=never so a trial runs
+        # only the pre-baked, digest-pinned image [RN-12, D005]; a deterministic
+        # --name so a timed-out container is killable [RN-10]; --user so files the
+        # trial writes into the bind-mounted workspace are harness-owned and
+        # redactable [RN-7]; and the PRA-L9 cap-drop/no-new-privileges/pids-limit
+        # hardening — a benchmark trial is untrusted agent code.
+        hc = (
+            HardenedCommand()
+            .rm()
+            .pull_never()
+            .name(_container_name(request.trial_id))
+            .user()
+            .harden(pids_limit=512)
+        )
+        # pinned quotas [D003]; --memory pins swap to the same ceiling so default
+        # swap headroom cannot silently loosen the symmetric per-arm memory cap.
         if q.cpus is not None:
-            cmd += ["--cpus", str(q.cpus)]
+            hc.cpus(q.cpus)
         if q.mem is not None:
-            cmd += ["--memory", str(q.mem)]
-            # PRA-L9: pin swap to the memory limit so the quota is a hard ceiling,
-            # not softened by default swap headroom (D003 pins memory symmetrically
-            # across arms; swap headroom would silently loosen it).
-            cmd += ["--memory-swap", str(q.mem)]
+            hc.memory(q.mem)
         # network insulation: default-deny; egress only via the metering proxy
         if request.proxy is not None and request.proxy.proxy_url:
             # inject the trial id as the proxy-auth credential so the metering
             # proxy attributes every request to this trial [RN-11, D-10].
             proxy_url = _with_trial_auth(request.proxy.proxy_url, request.trial_id)
-            cmd += ["--env", f"HTTP_PROXY={proxy_url}"]
-            cmd += ["--env", f"HTTPS_PROXY={proxy_url}"]
+            hc.env_kv("HTTP_PROXY", proxy_url).env_kv("HTTPS_PROXY", proxy_url)
             # a restricted docker network that only reaches the proxy [RN-11]
-            cmd += ["--network", METERED_NETWORK]
+            hc.network(METERED_NETWORK)
         else:
-            cmd += ["--network", "none"]
+            hc.network("none")
         # provider keys injected as env — never in image layers or ledger [AC-8],
         # and never as `KEY=VALUE` on the argv (visible in `ps`/proc). Pass only
         # the NAME on the command; docker reads the value from the CLI process
         # environment, which run_container populates from request.provider_keys.
         for k in (request.provider_keys or {}):
-            cmd += ["--env", k]
-        # workspace mount
-        cmd += ["--volume", f"{Path(request.workspace).resolve()}:/workspace"]
-        # trial request (prompt + arm config) delivered READ-ONLY, outside the
-        # workspace so it never enters the graded copy [RN-4, D-8]. Added after the
-        # workspace volume so a workspace-first parser still finds /workspace.
+            hc.env(k)
+        # A3: a task's declared non-secret env vars, injected AFTER the provider-key
+        # env and NEVER overriding it — a task env must not shadow an arm's provider
+        # key. These are declared (sha-locked) and non-secret, so KEY=VALUE on the
+        # argv is fine (the env_kv spelling, like the proxy URLs) [refactor 03 §5].
+        # NO_PROXY is deferred when OTLP capture is configured — it is MERGED with
+        # the collector host in the OTLP block below, not injected twice.
+        for k, v in (request.env or {}).items():
+            if k in (request.provider_keys or {}):
+                continue
+            if request.otlp is not None and k == "NO_PROXY":
+                continue  # merged into the OTLP NO_PROXY injection below
+            hc.env_kv(k, v)
+        # In-trial OTLP trace capture [refactor 09 §4, A11]: point the arm's OTel
+        # exporter at the hermetic collector and attribute every span post to this
+        # trial via the standard header mechanism every SDK honors. NO_PROXY is
+        # load-bearing — HTTP(S)_PROXY is already injected for a metered trial, so
+        # without this the exporter would route span posts THROUGH the metering
+        # proxy, polluting the egress picture and failing the allowlist. The
+        # collector host is APPENDED to any operator-supplied NO_PROXY, never
+        # replacing it. Config rides these standard OTel env vars; the frozen
+        # request.json is untouched (the spec's invariant).
+        if request.otlp is not None:
+            hc.env_kv("OTEL_EXPORTER_OTLP_ENDPOINT", request.otlp.endpoint)
+            hc.env_kv("OTEL_EXPORTER_OTLP_HEADERS", f"x-verdi-trial={request.trial_id}")
+            collector_host = urlsplit(request.otlp.endpoint).hostname or request.otlp.endpoint
+            prior = (request.env or {}).get("NO_PROXY")
+            no_proxy = f"{prior},{collector_host}" if prior else collector_host
+            hc.env_kv("NO_PROXY", no_proxy)
+        # workspace mount; then the trial request (prompt + arm config) delivered
+        # READ-ONLY, outside the workspace so it never enters the graded copy
+        # [RN-4, D-8] — added after the workspace volume so a workspace-first parser
+        # still finds /workspace.
+        hc.volume(request.workspace, "/workspace")
         if request_file is not None:
-            cmd += ["--volume", f"{Path(request_file).resolve()}:{TRIAL_REQUEST_MOUNT}:ro"]
-        cmd += ["--workdir", "/workspace"]
-        cmd += [image]
-        return cmd
+            hc.volume(request_file, TRIAL_REQUEST_MOUNT, ro=True)
+        hc.workdir("/workspace").image(image)
+        return hc.build()
 
-    def run(self, request: TrialRequest) -> EngineResult:
-        image = request.image
-        pinned = self._runner.resolve_pinned(image)
-        artifacts = Path(request.workspace) / "artifacts"
-        artifacts.mkdir(parents=True, exist_ok=True)
+    def _resolve_image(self, req: TrialRequest) -> ResolvedImage:
+        """Pin the image to a runnable immutable ref, or refuse [D005/RN-12].
 
+        A tag-only or otherwise unresolvable image fails the trial closed
+        (``infra_failed``, reason ``unpinned_image``) rather than silently running
+        an unpinned tag."""
+        pinned = self._runner.resolve_pinned(req.image)
         if pinned is None:
-            # D005/RN-12: a trial must run a digest-pinned image. A tag-only or
-            # otherwise unresolvable image fails the trial closed (infra_failed,
-            # a real reason) rather than silently running an unpinned tag.
-            return EngineResult(
-                outcome=Outcome.infra_failed,
-                native_log={},
-                artifacts_dir=artifacts,
-                image_digest=None,
-                engine=self.name,
-                quotas=request.quotas or Quotas(),
-                executed_at=request.ts,
-                failure_reason="unpinned_image",
-            )
-        pinned_ref, digest = pinned
+            return ResolvedImage(refusal_reason="unpinned_image")
+        ref, digest = pinned
+        return ResolvedImage(ref=ref, digest=digest)
 
-        if request.proxy is not None:
+    def _execute(self, req: TrialRequest, resolved: ResolvedImage) -> ExecOutcome:
+        """Run the digest-pinned container and map its result to an
+        :class:`ExecOutcome`. Egress is left to the shared proxy-log scan (harbor
+        does not report its own); the ``kill_failed > daemon_error > timeout``
+        head of the precedence is decided here from the container result [PRA-M7,
+        RN-10]."""
+        if req.proxy is not None:
             # ensure the restricted metering network exists before a trial joins
             # it — it was referenced by --network but never created [RN-11].
             self._runner.ensure_metered_network()
@@ -326,162 +362,61 @@ class HarborEngine:
         try:
             request_file = req_dir / "request.json"
             request_file.write_text(
-                json.dumps(self._trial_request_payload(request)), encoding="utf-8"
+                json.dumps(self._trial_request_payload(req)), encoding="utf-8"
             )
             # F-M-I2: run the resolved immutable ref, never the mutable tag.
-            cmd = self.build_run_command(request, pinned_ref, request_file)
+            cmd = self.build_run_command(req, resolved.ref, request_file)
             result = self._runner.run_container(
-                cmd, request.timeout_s, env=request.provider_keys or {}
+                cmd, req.timeout_s, env=req.provider_keys or {}
             )
         finally:
             shutil.rmtree(req_dir, ignore_errors=True)
 
-        failure_reason: Optional[str] = None
         if result.kill_failed:
             # PRA-M7: the timeout kill could not be confirmed, so a live container
-            # may still be writing the workspace — do not trust redaction; fail
-            # the trial closed with a specific reason rather than reporting a plain
+            # may still be writing the workspace — do not trust redaction; fail the
+            # trial closed with a specific reason rather than reporting a plain
             # timeout whose (possibly unredacted) artifacts we would then capture.
-            outcome = Outcome.infra_failed
-            failure_reason = "kill_failed"
+            outcome, failure_reason = Outcome.infra_failed, "kill_failed"
         elif result.daemon_error:
-            outcome = Outcome.infra_failed
             # the docker daemon/config error (exit 125) — a real reason the
             # scheduler can ledger, not the fake-only placeholder [RN-14]
-            failure_reason = "daemon_error"
+            outcome, failure_reason = Outcome.infra_failed, "daemon_error"
         elif result.timed_out:
-            outcome = Outcome.timeout
+            outcome, failure_reason = Outcome.timeout, None
         else:
             # a nonzero agent exit is still a completed *trial* (the agent ran);
             # grading decides pass/fail. infra vs timeout are the only
             # non-completions, so a completed run is unconditionally `completed`.
-            outcome = Outcome.completed
+            outcome, failure_reason = Outcome.completed, None
 
-        try:
-            native_log = self._read_native_log(artifacts)
-        except TelemetryCorruptError:
-            # RN-17: corrupt telemetry fails the trial closed rather than
-            # silently becoming "no telemetry". Only a completed trial is
-            # downgraded — a daemon/timeout failure keeps its more specific reason.
-            native_log = {}
-            if outcome == Outcome.completed:
-                outcome = Outcome.infra_failed
-                failure_reason = "telemetry_corrupt"
-        try:
-            egress_attempts, egress_violation, metered_cost = self._scan_proxy_log(request)
-        except ProxyLogMissingError:
-            # PRA-H4: fail closed — a missing proxy log means we cannot vouch for
-            # egress confinement or metered cost for this trial. Only downgrade a
-            # would-be-completed trial; a daemon/timeout/kill failure keeps its
-            # more specific reason.
-            egress_attempts, egress_violation, metered_cost = [], False, None
-            if outcome == Outcome.completed:
-                outcome = Outcome.infra_failed
-                failure_reason = "proxy_log_missing"
-
-        return EngineResult(
+        return ExecOutcome(
             outcome=outcome,
-            native_log=native_log,
-            artifacts_dir=artifacts,
             exit_status=result.exit_status,
-            image_digest=digest,
-            agent_binary_version=self._agent_version(request),
-            harbor_version=self.harbor_version,
-            engine=self.name,
-            quotas=request.quotas or Quotas(),
-            egress_violation=egress_violation,
-            egress_attempts=egress_attempts,
-            executed_at=request.ts,
+            agent_binary_version=self._agent_version(req),
+            engine_version=self.harbor_version,
             failure_reason=failure_reason,
-            # cost the metering proxy attributed to this trial — feeds the cost
-            # guard when the arm can't self-report [RN-2]. None until the proxy
-            # emits per-request cost in its JSONL.
-            proxy_metered_cost=metered_cost,
+            egress=None,  # harbor derives egress from the shared proxy-log scan
         )
 
     @staticmethod
-    def _read_native_log(artifacts: Path) -> dict:
-        """Parse the agent's native telemetry log.
-
-        An **absent** log is legitimate (the arm may emit none) and reads as
-        ``{}``. A **present but corrupt** log is not — silently mapping it to
-        ``{}`` would launder corrupt telemetry into "no telemetry", so raise
-        :class:`TelemetryCorruptError` and let the caller fail the trial closed
-        [RN-17]."""
-        log = artifacts / "agent_log.json"
-        if not log.exists():
-            return {}
-        try:
-            return json.loads(log.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            raise TelemetryCorruptError(f"{log}: {e}") from e
-
-    @staticmethod
     def _trial_request_payload(request: TrialRequest) -> dict:
-        """The trial-image contract payload [RN-4, D-8] — what a pre-baked image's
-        entrypoint reads from ``/verdi/request.json``: its prompt and which arm it
-        is (name, model, config). The prompt is holdout-free by construction (the
-        seam refuses a canary in any request channel before the engine runs)."""
-        return {
-            "prompt": request.prompt,
-            "arm": request.arm.name,
-            "model": request.arm.model,
-            "payload": request.arm.payload or {},
-        }
+        """The trial-image contract payload [RN-4, D-8, A1] — what a pre-baked
+        image's entrypoint reads from ``/verdi/request.json``: its prompt and which
+        arm it is (name, model, config). Built through the typed
+        :class:`~harness.run.request.TrialRequestFile` so the file carries a
+        ``schema_version`` (A1, additive: the existing prompt/arm/model/payload keys
+        are unchanged). The prompt is holdout-free by construction (the seam refuses
+        a canary in any request channel before the engine runs)."""
+        from ..request import TrialRequestFile
+
+        return TrialRequestFile(
+            prompt=request.prompt,
+            arm=request.arm.name,
+            model=request.arm.model,
+            payload=request.arm.payload or {},
+        ).model_dump(mode="json")
 
     @staticmethod
     def _agent_version(request: TrialRequest) -> Optional[str]:
         return (request.arm.payload or {}).get("agent_binary_version")
-
-    @staticmethod
-    def _scan_proxy_log(request: TrialRequest) -> tuple[list[str], bool, Optional[float]]:
-        """Parse the metering proxy's structured JSONL, keyed on trial [RN-11].
-
-        Each line is ``{"trial","host","decision":"allow|deny"[,"cost"]}``; only
-        lines for this trial count (per-trial attribution via the injected proxy
-        credential). Any ``deny`` is an egress violation, and a per-line ``cost``
-        (when the proxy meters it) sums into the trial's metered cost so a
-        null-telemetry-cost arm is still enforceable on the real path [RN-2].
-
-        A line that is not a JSON object is skipped without crashing (a bare
-        ``42``/``null``/``[...]`` must not abort the whole run); unparseable lines
-        are skipped — the metering proxy is expected to emit valid JSONL, so a
-        malformed line is an operational fault of the proxy, not this trial's.
-
-        PRA-H4: a *configured but absent* log is NOT treated as "no egress, no
-        cost, no violation" — that silent fail-open let a null-telemetry arm spend
-        invisibly against the ceiling and shed egress-violation evidence when the
-        proxy was dead or its path was wrong. A configured proxy whose log file is
-        missing raises :class:`ProxyLogMissingError`, and the trial fails closed
-        infra_failed(proxy_log_missing)."""
-        if request.proxy is None or not request.proxy.log_path:
-            return [], False, None
-        p = Path(request.proxy.log_path)
-        if not p.exists():
-            raise ProxyLogMissingError(
-                f"proxy log {p} is configured but absent — the metering proxy is "
-                "dead or misconfigured; refusing to treat this as zero egress/cost "
-                "[PRA-H4]"
-            )
-        attempts: list[str] = []
-        violation = False
-        metered: Optional[float] = None
-        for line in p.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(rec, dict) or rec.get("trial") != request.trial_id:
-                continue
-            host = rec.get("host")
-            if host:
-                attempts.append(host)
-            if rec.get("decision") == "deny":
-                violation = True
-            cost = rec.get("cost")
-            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-                metered = (metered or 0.0) + float(cost)
-        return attempts, violation, metered

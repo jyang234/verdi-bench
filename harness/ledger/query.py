@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Iterator, Optional
 
+from ..errors import VerdiRefusal
 from .chain import (
     ChainResult,
     canonical_line,
@@ -48,7 +49,7 @@ def event_line_hash(event: dict) -> str:
     return hash_line(canonical_line(event))
 
 
-class ChainIntegrityError(RuntimeError):
+class ChainIntegrityError(VerdiRefusal, RuntimeError):
     """The ledger's hash chain failed verification — refuse to trust its content.
 
     Raised by :func:`assert_chain`, which every stage that gates on ledger

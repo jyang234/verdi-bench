@@ -32,24 +32,11 @@ import pytest
 from harness.run.engines.harbor import HarborEngine, ProxyLogMissingError
 from harness.run.types import ProxyConfig
 from tests.fixtures.docker import DOCKER_AVAILABLE
+from tests.fixtures.proxy import require_proxy_or_skip
 
 pytestmark = pytest.mark.docker
 
 _EMIT_IMAGE = "verdi-proxy-emit:e2e"
-
-
-class ProxyRequiredError(RuntimeError):
-    """VERDI_REQUIRE_PROXY is set but no proxy log is configured [PRA-H4]."""
-
-
-def _require_proxy_or_skip(reason: str):
-    if os.environ.get("VERDI_REQUIRE_PROXY"):
-        raise ProxyRequiredError(
-            f"VERDI_REQUIRE_PROXY is set but {reason}; the real-proxy egress e2e "
-            "must not green-pass by skipping. Stand up deploy/metering-proxy/ and "
-            "set VERDI_METERING_PROXY_LOG, or unset VERDI_REQUIRE_PROXY [PRA-H4]."
-        )
-    pytest.skip(reason)
 
 
 def _build_emitter(tmp_path: Path) -> bool:
@@ -114,7 +101,7 @@ def test_reference_proxy_log_attributes_allow_and_deny():
     driven through it. Fails (not skips) under VERDI_REQUIRE_PROXY [PRA-H4]."""
     proxy_log = os.environ.get("VERDI_METERING_PROXY_LOG")
     if not proxy_log:
-        _require_proxy_or_skip("VERDI_METERING_PROXY_LOG is not set")
+        require_proxy_or_skip("VERDI_METERING_PROXY_LOG is not set")
     log = Path(proxy_log)
     assert log.exists(), f"proxy log {log} not found — is the reference proxy up?"
     req = SimpleNamespace(

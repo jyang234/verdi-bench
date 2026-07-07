@@ -4,7 +4,9 @@ How any test subject — an agent CLI, a custom harness, a tool suite, a
 multi-agent workflow — plugs into verdi-bench's telemetry and trajectory
 interfaces. Companion to `docs/deep-dive.md` §7; the code seams are
 `harness/adapters/` [EVAL-4 AC-2] and `harness/run/trajectory.py`
-[EVAL-12 AC-1].
+[EVAL-12 AC-1]. For the full trial-image contract (workspace layout,
+`request.json`, egress, `verdi_agent`), see `docs/images.md` §1 — the normative
+statement; this document is the FROZEN log-format half of it.
 
 ## What an adapter is
 
@@ -250,6 +252,125 @@ is at **v3** — the current version, carrying the additive `detail` field —
 so it is accepted in any declared log; the v2 *log* version — a separate
 versioning axis from the step schema — is load-bearing for
 `telemetry_by_model`) [F-L15].
+
+## The `otlp` platform — spans instead of a log [refactor 10]
+
+An OTel-native stack need not flatten its span tree into `agent_log.json`: it
+emits OTLP inside the trial container (`docs/images.md` §"Emitting OTLP spans"),
+the harness captures the redacted, sha-ledgered `artifacts/otlp_spans.json`
+([refactor 09](design/refactor/09-otlp-trace-capture.md)), and the **registered
+`otlp` platform** (`harness/adapters/otlp.py`, `platform = "otlp"`) projects that
+artifact into the trajectory. It is a native adapter
+(`speaks_generic_format = False`): it reads `otlp_spans.json`, **not**
+`agent_log.json`, and its whole-trial `telemetry` is honestly null — spans feed
+the trajectory + flight recorder, not the authoritative telemetry stream.
+
+The projection maps **into existing fields only** — the FROZEN trajectory v3 and
+flight-recorder v3 records — so it needs **no** schema-version bump: the byte
+recipes, the closed role vocabulary, and the `kind` enum are untouched.
+
+### Selecting it
+
+- Declare `platform: otlp` on the arm in the pre-registration — **before the
+  lock**. Source selection is pre-registered, never data-dependent (**D-10-1**:
+  there is no silent fallback from an absent log to spans, and no merge of the
+  two sources in v1 — which bytes were graded must not be a runtime accident).
+- It **requires a collector**: a run whose `platform: otlp` arm has no OTLP
+  collector configured is refused at run start, before any trial executes
+  (`_assert_otlp_coherence` → `OtlpCoherenceError`), naming both settings — never
+  a trial-time missing-artifact surprise. Configure `otlp.managed: true` or an
+  explicit `otlp.endpoint` in `run.config.yaml` (`docs/usage-guide.md` §6).
+- Input artifact: the redacted on-disk `artifacts/otlp_spans.json`, honoring the
+  dual-source invariant (trajectory from redacted on-disk bytes).
+
+### The projection — the normative mapping (`OTLP_MAPPING_VERSION = 1`)
+
+The mapping is a **closed whitelist**: an attribute crosses into a trajectory or
+flight-recorder field only if a rule below names it. Everything else — most
+critically `gen_ai.request.model`, `gen_ai.system`, `service.*`, and **all
+resource attributes** — is dropped on the floor, so vendor/model/arm identity
+cannot survive into the judge-adjacent trajectory (the same design intent as the
+closed role vocabulary). OTLP-JSON wraps every value in an `AnyValue` and encodes
+int64 as a *string*; the reader unwraps that shape read-only, and an unrecognized
+shape is dropped (`null`), never guessed.
+
+**Span selection.** Only spans carrying a `gen_ai.*` **or** `verdi.*` attribute
+are considered. HTTP-client, DB, and other infrastructure spans are
+trajectory-altitude noise — ignored here, still present in the raw artifact.
+
+**Ordering (deterministic).** Selected spans sort by
+`(start_time_unix_nano, span_id)` — span id as the tie-break. `t0` is the minimum
+`start_time_unix_nano` of the selected set; `relative_ts = (start − t0) / 1e9`
+rounded to milliseconds. **All timing derives from span data; the harness
+contributes no clock** — a shuffled batch order yields byte-identical output.
+
+**`TrajectoryStep` mapping** (`kind` enum closed:
+`tool_call | file_edit | test_run | message`):
+
+| Trajectory field | Source | Rule |
+|---|---|---|
+| `kind = message` | `gen_ai.operation.name` ∈ {`chat`, `text_completion`, `generate_content`} | one step per LLM-call span |
+| `kind = tool_call` | `gen_ai.operation.name = execute_tool`, or `gen_ai.tool.name` present | the default tool classification |
+| `kind = file_edit` | a tool step whose `gen_ai.tool.name` ∈ `_FILE_EDIT_TOOLS` (below) | mechanical lookup — an unknown tool stays a generic `tool_call` |
+| `kind = test_run` | explicit only: `verdi.test_run = true`, or a `verdi.command` whose first token is a frozen test runner | **never** inferred from span names; classification precedence within the tool family is `test_run` > `file_edit` > `tool_call` |
+| `relative_ts` | span start (as above) | |
+| `tokens` | `gen_ai.usage.input_tokens` **+** `gen_ai.usage.output_tokens` | **both halves required** — a total with an unmeasured half is unmeasurable, so it is `null`, never imputed by treating the absent half as 0 |
+| `cost` | `verdi.cost_usd` only | OTel has no standard cost attribute; absent → `null` |
+| `files_touched` | `verdi.files` (string list) first; else, for a `file_edit`, a path parsed from the whitelisted `gen_ai.tool.arguments` JSON (`file_path`/`path`/`filename`) | else `null` |
+| `exit_code` | `verdi.exit_code` | `test_run`/`tool_call` steps only; absent → `null` |
+| `command` | `verdi.command` for tool-family steps; `""` for a `message` (measured — a message is not a shell command) | else `null` |
+| `detail` | completion text (`gen_ai.content.completion`) for `message`; tool name + `gen_ai.tool.arguments` for `tool_call`/`file_edit` | post-redaction, whitelisted sources only — no non-whitelisted attribute reaches `detail` |
+| `agent` | **`verdi.agent` only**, validated by the closed role vocabulary | present-but-invalid → fail closed (`spans_corrupt`); absent → `None`. **Never** derived from `service.name` or a resource attribute — that would be an identity leak by construction |
+
+**`ReasoningEntry` mapping** (flight recorder — operator-tier, never the judge
+packet):
+
+| Field | Source |
+|---|---|
+| `content` | the `gen_ai.content.reasoning` attribute, or a span **event** named `gen_ai.reasoning` / `verdi.reasoning` (its `content` attribute) |
+| `tokens` / `cost` | `gen_ai.usage.*` (both halves) / `verdi.cost_usd`, same rules as steps |
+| `agent` | `verdi.agent`, same closed-vocabulary rule as steps |
+| `relative_ts` | the carrying span's start, same clock |
+| `turn` | the trajectory-step index of the reasoning span's **nearest selected ancestor** (parent-span-id chain, cycle-guarded); no selected ancestor → `None` |
+
+**The closed `_FILE_EDIT_TOOLS` set** (byte-affecting, golden-pinned — extended
+only via an `OTLP_MAPPING_VERSION` bump): `Edit`, `Write`, `MultiEdit`,
+`NotebookEdit` (claude-code parity), plus the common OTel-emitted `write_file`,
+`edit_file`, `create_file`, `str_replace_editor`.
+
+**The `verdi.*` attribute vocabulary** a stack may set to enrich the projection
+(all optional; each drops to `null`/unattributed when absent):
+
+| Attribute | Effect |
+|---|---|
+| `verdi.agent` | the closed-vocabulary role label — the **only** source of a step's / entry's `agent` |
+| `verdi.cost_usd` | the **only** source of a step's / entry's `cost` |
+| `verdi.files` | `files_touched` (string list), taken before any tool-argument path parse |
+| `verdi.exit_code` | `exit_code` for a `test_run`/`tool_call` step |
+| `verdi.test_run` | `= true` forces the `test_run` classification |
+| `verdi.command` | the step `command` for a tool-family step, and a test-runner classification signal |
+| `verdi.reasoning` | a span-event name whose `content` becomes a `ReasoningEntry` |
+
+### Versioning and the golden discipline
+
+`OTLP_MAPPING_VERSION = 1` lives in `adapters/otlp.py`. It is **not** stored in
+the frozen trajectory/flight-recorder records (no field addition, no byte
+change); the mapping is pinned instead by **golden fixture pairs** — committed
+`otlp_spans.json` fixtures → byte-exact `trajectory.json` / `flight_recorder.json`
+outputs. Any change to a rule above breaks a golden and **must** bump the constant
+and regenerate the goldens in the same reviewed commit.
+
+### Failure semantics
+
+Consistent with the generic parser's honesty split (a declared source that lies
+fails closed; honest absence is `None`):
+
+| Condition | Result |
+|---|---|
+| `platform: otlp` declared, no collector configured for the run | run refused at start (`OtlpCoherenceError`) — before any trial |
+| `otlp_spans.json` unparseable, its wrapper invalid, or a mapping violation (e.g. `verdi.agent` outside the closed vocabulary) | `SpanMappingError` → trial fails closed `trial_infra_failed(spans_corrupt)` |
+| artifact present, **zero selected spans** (empty batches, or nothing GenAI-shaped) | honest absence: no trajectory artifact, no `trajectory_sha`; the trial completes |
+| reasoning sources absent, steps present | trajectory persists; the flight recorder is honestly absent (the two artifacts are independently optional) |
 
 ## Multi-agent workflows as a test subject
 

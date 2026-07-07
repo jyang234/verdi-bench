@@ -20,6 +20,7 @@ from typing import Optional
 from ..ledger import events
 from ..ledger.query import find_events, latest_event
 from ..schema.experiment import ExperimentSpec
+from .channels import FLAGGED, STATUS_CANT_PROBE, STATUS_COMPLETE
 from .dating import ContaminationStatus, cutoff_status, effective_cutoff
 
 
@@ -40,9 +41,9 @@ def _flagged_in_probe(probe: Optional[dict], arm_name: str, task_id: str) -> boo
     ride every event and count under ``cant_probe`` too."""
     if probe is None:
         return False
-    if probe.get("status") == "complete":
+    if probe.get("status") == STATUS_COMPLETE:
         outcomes = probe.get("arms", {}).get(arm_name, {}).get("outcomes", {})
-        if outcomes.get(task_id) == "flagged":
+        if outcomes.get(task_id) == FLAGGED:
             return True
     return bool(probe.get("overlap_flags", {}).get(arm_name, {}).get(task_id))
 
@@ -107,10 +108,10 @@ def contamination_summary(ledger_path, spec: ExperimentSpec, manifest=None) -> d
     probe = latest_probe(ledger_path)
     if probe is None:
         probe_status = "not_run"
-    elif probe["status"] == "complete":
-        probe_status = "complete"
+    elif probe["status"] == STATUS_COMPLETE:
+        probe_status = STATUS_COMPLETE
     else:
-        probe_status = f"cant_probe({probe['reason']})"
+        probe_status = f"{STATUS_CANT_PROBE}({probe['reason']})"
     created_at_by_id = (
         {t.task_id: t.created_at for t in manifest.tasks} if manifest is not None else {}
     )

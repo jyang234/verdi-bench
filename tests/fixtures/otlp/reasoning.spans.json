@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "trial_id": "fixture-reasoning",
+  "batches": [
+    {
+      "content_type": "application/json",
+      "resource_spans": [
+        {
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "verdi.fixture"
+              },
+              "spans": [
+                {
+                  "name": "planner",
+                  "spanId": "d1",
+                  "startTimeUnixNano": "1700000000000000000",
+                  "endTimeUnixNano": "1700000000001000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.operation.name",
+                      "value": {
+                        "stringValue": "chat"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.input_tokens",
+                      "value": {
+                        "intValue": "200"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.output_tokens",
+                      "value": {
+                        "intValue": "50"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "planner-reasoning",
+                  "spanId": "d2",
+                  "startTimeUnixNano": "1700000000100000000",
+                  "endTimeUnixNano": "1700000000101000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.content.reasoning",
+                      "value": {
+                        "stringValue": "Search for X first, then compute."
+                      }
+                    }
+                  ],
+                  "parentSpanId": "d1"
+                },
+                {
+                  "name": "worker",
+                  "spanId": "d3",
+                  "startTimeUnixNano": "1700000000500000000",
+                  "endTimeUnixNano": "1700000000501000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.operation.name",
+                      "value": {
+                        "stringValue": "chat"
+                      }
+                    },
+                    {
+                      "key": "verdi.agent",
+                      "value": {
+                        "stringValue": "worker-2"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.input_tokens",
+                      "value": {
+                        "intValue": "300"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.output_tokens",
+                      "value": {
+                        "intValue": "90"
+                      }
+                    }
+                  ],
+                  "parentSpanId": "d1"
+                },
+                {
+                  "name": "worker-reasoning",
+                  "spanId": "d4",
+                  "startTimeUnixNano": "1700000000600000000",
+                  "endTimeUnixNano": "1700000000601000000",
+                  "attributes": [
+                    {
+                      "key": "verdi.agent",
+                      "value": {
+                        "stringValue": "worker-2"
+                      }
+                    }
+                  ],
+                  "parentSpanId": "d3",
+                  "events": [
+                    {
+                      "name": "verdi.reasoning",
+                      "attributes": [
+                        {
+                          "key": "content",
+                          "value": {
+                            "stringValue": "Let me verify the edge case."
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "name": "unlinked-reasoning",
+                  "spanId": "d5",
+                  "startTimeUnixNano": "1700000002000000000",
+                  "endTimeUnixNano": "1700000002001000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.content.reasoning",
+                      "value": {
+                        "stringValue": "A final unlinked thought."
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from harness.grade.container import GradingContainer
+from harness.grade.container import GradeRunner, GradingContainer
 from harness.grade.deterministic import (
     REASON_CONTAINER,
     REASON_MALFORMED,
@@ -13,6 +13,7 @@ from harness.grade.types import GradeTask
 from harness.ledger.query import find_events
 from tests.fixtures.builders import fixed_ctx
 from tests.fixtures.grade_fakes import ScriptedGradeRunner, write_workspace
+from tests.fixtures.grading import write_holdout_results
 
 
 def _task(**kw):
@@ -136,11 +137,14 @@ def test_grade_loader_ignores_fake_scripting(tmp_path):
 
     tasks = _grade_tasks_from_dicts(
         [{"id": "t1", "holdouts_dir": "h", "fake_holdout_output": {"assertions": []},
-          "fake_plugin_output": {"p": 1}}]
+          "fake_plugin_output": {"p": 1}}],
+        tmp_path,
     )
     gt = tasks["t1"]
     assert gt.fake_holdout_output is None
     assert gt.fake_plugin_output == {}
+    # holdouts_dir is resolved against the experiment dir (relative-path contract)
+    assert gt.holdouts_dir == str(tmp_path / "h")
     # sha is recomputed from content, not any self-attested field
     from harness.corpus.commit import task_content_sha
 
@@ -350,15 +354,22 @@ def test_retry_terminal_stamps_override_of_on_unknown_task_reattempt(tmp_path):
     assert len(cants[1]["override_of"]) == 64  # the re-attempt is linked
 
 
-class _FreshCopyRunner:
+class _FreshCopyRunner(GradeRunner):
     """A runner that (like DockerGradeRunner) grades a fresh workspace copy and
-    writes its *own* holdout output — records what it was handed. It does not set
-    ``grades_in_place``, so it gets the safe copy path by default."""
+    writes its *own* holdout output — records what it was handed. It declares
+    ``grades_in_place = False`` so it takes the fail-safe copy path [refactor 05 §2]."""
+
+    grader_name = "scripted"
+    runs_plugins_in_container = False
+    grades_in_place = False
 
     def __init__(self, output):
         self.output = output
         self.saw_stale = None
         self.copy_path = None
+
+    def preflight(self) -> None:
+        """No daemon to probe."""
 
     def run_holdouts(self, cmd, workspace, holdouts_dir, nonce=None):
         from pathlib import Path
@@ -379,8 +390,7 @@ def test_grade_ignores_forged_results_and_protects_evidence(tmp_path):
 
     ws = write_workspace(tmp_path)
     # the subject agent forges an all-pass results file in its own workspace
-    forged = {"assertions": [{"id": "h1", "result": "pass"}]}
-    (ws / "holdout_results.json").write_text(json.dumps(forged), encoding="utf-8")
+    forged = write_holdout_results(ws, True)
 
     # the real grader output disagrees (a failure)
     runner = _FreshCopyRunner({"assertions": [{"id": "h1", "result": "fail"}]})
@@ -409,4 +419,5 @@ def test_m_i3_unknown_runner_refused_not_silently_docker(tmp_path):
     expdir.mkdir()
     r = CliRunner().invoke(app, ["grade", str(expdir), "--runner", "dcoker"])
     assert r.exit_code != 0
-    assert "docker or local" in (r.output + (r.stderr or ""))
+    # the refusal names the valid set — now including local-exec [refactor 05 §1]
+    assert "docker, local, or local-exec" in (r.output + (r.stderr or ""))

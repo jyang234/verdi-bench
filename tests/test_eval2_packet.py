@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 
 import pytest
 from hypothesis import given, settings
@@ -10,6 +11,7 @@ from hypothesis import strategies as st
 
 from harness.judge.packet import (
     IdentityLeakError,
+    Packet,
     ResponseArtifacts,
     SecretLeakError,
     build_packet,
@@ -75,6 +77,93 @@ def test_l4_clean_packet_secret_free():
     validate_secret_free(make_packet())  # no raise
 
 
+def test_secret_in_holdout_results_blocks_send():
+    """[refactor 01 §4 D5] repro: the secret scan omitted the holdout-result
+    blobs that the identity scan already covers, so a provider-key-shaped
+    secret riding in holdout results reached the judge provider unscanned."""
+    pkt = build_packet(
+        ResponseArtifacts(diff="clean", holdout_results=[
+            {"id": "h1", "result": "fail", "detail": "leaked sk-abcdefghij0123456789"}]),
+        ResponseArtifacts(diff="clean", holdout_results=[]),
+        task_prompt="task",
+        rubric="rubric",
+    )
+    with pytest.raises(SecretLeakError):
+        validate_secret_free(pkt)
+
+
+# --- meta-test: the two scans cover every text-bearing field [refactor 01 §4 D5]
+# Derived hex digests, recomputed by build_packet FROM already-scanned content;
+# they are not free-form text channels. Anything else with text in it must be
+# scanned by BOTH validators, and a future field lands in the sweep below
+# automatically — extending it (and both scans) is forced, so the
+# hand-maintained blob lists can never silently drift again.
+_HASH_FIELDS = {"rubric_sha256", "packet_sha256"}
+
+
+def _planted_packets(payload):
+    """One packet per text-bearing field of Packet/ResponseArtifacts with
+    ``payload`` planted in exactly that field, discovered by dataclass
+    introspection — not a hand-maintained field list."""
+    import dataclasses
+
+    def plant(pkt, obj, fld):
+        current = getattr(obj, fld.name)
+        if isinstance(current, str):
+            setattr(obj, fld.name, f"benign text {payload} more text")
+        elif isinstance(current, list):
+            setattr(obj, fld.name, [{"id": "h1", "detail": payload}])
+        else:
+            pytest.fail(
+                f"unhandled field type on {type(obj).__name__}.{fld.name}: "
+                "extend this meta-test AND both packet scans to cover it"
+            )
+
+    for f in dataclasses.fields(Packet):
+        if f.name in _HASH_FIELDS:
+            continue
+        if f.name in ("response_a", "response_b"):
+            for rf in dataclasses.fields(ResponseArtifacts):
+                pkt = make_packet()
+                plant(pkt, getattr(pkt, f.name), rf)
+                yield f"{f.name}.{rf.name}", pkt
+        else:
+            pkt = make_packet()
+            plant(pkt, pkt, f)
+            yield f.name, pkt
+
+
+def test_hash_field_exclusions_are_actually_digests():
+    # the exclusion set stays honest: a free-text field cannot hide in it
+    pkt = make_packet()
+    for name in _HASH_FIELDS:
+        value = getattr(pkt, name)
+        assert re.fullmatch(r"[0-9a-f]{64}", value), (
+            f"Packet.{name} is excluded from the scan sweep as a derived hex "
+            f"digest but holds {value!r} — a text channel must be scanned"
+        )
+
+
+def test_every_text_field_is_covered_by_the_secret_scan():
+    for path, pkt in _planted_packets("sk-" + "Zz0" * 8):
+        try:
+            validate_secret_free(pkt)
+        except SecretLeakError:
+            continue
+        pytest.fail(f"secret planted in Packet.{path} was not caught by validate_secret_free")
+
+
+def test_every_text_field_is_covered_by_the_identity_scan():
+    canary = "IDCANARY-XQZV-7"
+    for path, pkt in _planted_packets(canary):
+        try:
+            validate_identity_free(pkt, canaries=[canary])
+        except IdentityLeakError:
+            continue
+        pytest.fail(f"identity canary planted in Packet.{path} was not caught "
+                    "by validate_identity_free")
+
+
 def test_ac2_packet_allowlist_only():
     """The build_packet signature is the allowlist: only task/rubric/diff/holdout.
 
@@ -85,6 +174,49 @@ def test_ac2_packet_allowlist_only():
     assert params == {"response_a", "response_b", "task_prompt", "rubric"}
     fields = set(ResponseArtifacts.__dataclass_fields__)
     assert fields == {"diff", "holdout_results"}  # outcomes only, no identity
+
+
+def test_ac2_arm_map_is_verdict_event_only_never_in_packet_or_render(tmp_path):
+    """D-P4-1 / blinding-by-construction [refactor 05 §5]: arm_map is the A/B ->
+    physical-arm mapping — the identity the blind judge must never see. It rides
+    the verdict EVENT (the frame-correct calibration join) and NOTHING else: it is
+    not a Packet field, and it never reaches a rendered provider message.
+
+    Structural + behavioral pin. The behavioral half judges with sentinel arm
+    names present ONLY in arm_map (in no packet field, no canary), captures every
+    message the provider is asked to complete across BOTH orders, and asserts
+    neither sentinel surfaced — a leak of arm_map into build_packet or render
+    would carry a sentinel into the payload and fail this test."""
+    import dataclasses
+
+    from harness.judge.client import judge_pair
+    from harness.judge.providers.fake import FakeProvider
+    from harness.ledger.query import find_events
+    from tests.fixtures.builders import fixed_ctx
+    from tests.fixtures.judge_fakes import make_config, verdict_json
+
+    # structural: arm_map is not a channel the packet even carries.
+    assert "arm_map" not in {f.name for f in dataclasses.fields(Packet)}
+
+    # behavioral: the sentinels exist ONLY in arm_map — not in any packet field
+    # (make_packet's diffs/holdouts/prompt/rubric) and not in the canary set.
+    arm_map = {"A": "ARMMAP__ALPHA__SENTINEL", "B": "ARMMAP__BETA__SENTINEL"}
+    prov = FakeProvider([verdict_json("1"), verdict_json("2")])
+    ledger = tmp_path / "l.ndjson"
+    v = judge_pair(
+        make_packet(), make_config(), ledger, fixed_ctx(), ts="t0",
+        provider=prov, arm_map=arm_map,
+    )
+    assert prov.calls, "provider was never called — the pin would be vacuous"
+
+    # the map rides the verdict (object + ledgered event)...
+    assert v.arm_map == arm_map
+    assert find_events(ledger, "judge_verdict")[0]["verdict"]["arm_map"] == arm_map
+
+    # ...and reaches NO rendered provider message (system or user), either order.
+    rendered = "\n".join(m["content"] for call in prov.calls for m in call["messages"])
+    assert arm_map["A"] not in rendered
+    assert arm_map["B"] not in rendered
 
 
 def test_ac2_identity_canary_blocks_send():
@@ -156,6 +288,48 @@ def test_jd13_packet_sha_covers_framing(monkeypatch):
     sha_before = build().packet_sha256
     monkeypatch.setattr(pk, "_SYSTEM_TEMPLATE", pk._SYSTEM_TEMPLATE + " CHANGED FRAMING")
     assert build().packet_sha256 != sha_before
+
+
+# --- OI-C: the verdict-JSON response contract is harness-owned framing --------
+def test_oic_verdict_contract_present_in_framing_unconditionally():
+    """[refactor 13 OI-C §1/§5] The verdict-JSON response contract is harness-owned
+    packet framing: it appears in the assembled system message for ANY packet —
+    including a rubric that says nothing about output format — so the response
+    shape is un-omittable and rubric-independent. Both render orders carry it."""
+    pkt = build_packet(
+        ResponseArtifacts(diff="a", holdout_results=[]),
+        ResponseArtifacts(diff="b", holdout_results=[]),
+        task_prompt="do the task",
+        rubric="Judge on correctness.",  # a rubric with NO format block
+    )
+    for order in ("AB", "BA"):
+        system = pkt.render(order)[0]["content"]
+        # the winner enum, both evidence locators, the confidence field, and the
+        # output-JSON-only instruction are all present from the framing alone.
+        assert '"winner": "1" | "2" | "TIE" | "CANT_JUDGE"' in system
+        assert '"ref"' in system and '"hunk"' in system
+        assert '"confidence"' in system
+        assert "Output the JSON object only" in system
+
+
+def test_oic_verdict_contract_single_source_is_packet_py():
+    """[refactor 13 OI-C §2] A8 single-source inverts: the verdict-JSON contract
+    literal lives in exactly ONE file — harness/judge/packet.py — and the slim SDK
+    rubric template (user data) now carries only judgment criteria, never the
+    format block. This is the forcing function behind the grep-proof."""
+    import harness.judge.packet as pk
+    from harness.sdk.templates import judge_rubric_text
+
+    # the harness owns the contract literal...
+    assert '{"winner": "1" | "2" | "TIE" | "CANT_JUDGE"' in pk._VERDICT_CONTRACT
+    assert "Output the JSON object only" in pk._VERDICT_CONTRACT
+
+    # ...and the library rubric template no longer carries it.
+    rubric = judge_rubric_text()
+    assert '{"winner"' not in rubric
+    assert "Output the JSON object only" not in rubric
+    # the slim rubric IS still substantive judgment criteria (not emptied out).
+    assert "correctness" in rubric.lower()
 
 
 def test_m_j1_diff_budget_caps_oversize_workspaces_deterministically(tmp_path):

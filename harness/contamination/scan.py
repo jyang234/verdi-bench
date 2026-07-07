@@ -17,16 +17,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional
 
-from ..ledger import events
-from ..ledger.query import find_events
+from ..ledger.view import LedgerView
 from ..run.seam import HoldoutLeakError
 from ..run.workspace import VERIFIED, resolve_workspace
 from .overlap import solution_overlap
 
 # The grader writes holdout results into the workspace; scanning them would
 # compare holdout-derived content against the holdouts themselves. Same
-# exclusion the judge packet applies (judge/assemble._GRADER_OUTPUT).
-_GRADER_OUTPUT = "holdout_results.json"
+# exclusion the judge packet applies (judge/assemble imports HOLDOUT_RESULTS).
+_GRADER_OUTPUT = "holdout_results.json"  # must match grade.runners.HOLDOUT_RESULTS [refactor 13 OI-A]
 
 
 @dataclass(frozen=True)
@@ -103,25 +102,23 @@ def scan_trials(
     (arm, task) OR-merge: one leaking repetition flags the pair.
     """
     report = ScanReport()
+    view = LedgerView(ledger_path)
     # F-H3: the grade-time workspace commitment (latest grade wins). A trial
     # whose live bytes no longer match it is UNSCANNED — a post-grade edit
     # could otherwise scrub a leak and launder a "clean" probe onto the chain.
     # ABSENT commitments (legacy chains) scan with legacy semantics; the
     # forensics report carries that disclosure.
     workspace_sha_by_trial = {
-        gev["trial_id"]: gev.get("workspace_sha256")
-        for gev in find_events(ledger_path, events.GRADE)
+        trial_id: g.get("workspace_sha256")
+        for trial_id, g in view.latest_grade_by_trial().items()
     }
     # F-M-C3: a forensically-quarantined trial is excluded from ANALYSIS by a
     # ledgered human decision — the scan honors the same decision (disclosed,
     # never silent), so quarantining an intentional/false-positive leak and
     # re-running scan+probe is a real resolution path for the insulation fence.
-    quarantined = {
-        qev["forensic_quarantine"]["trial_id"]
-        for qev in find_events(ledger_path, events.FORENSIC_QUARANTINE)
-    }
-    for ev in find_events(ledger_path, events.TRIAL):
-        rec = ev["trial_record"]
+    quarantined = view.quarantined_trial_ids()
+    for tv in view.trials():
+        rec = tv.record
         task_id, arm, trial_id = rec["task_id"], rec["arm"], rec["trial_id"]
         refs = references.get(task_id)
         if refs is None or not refs.measurable():

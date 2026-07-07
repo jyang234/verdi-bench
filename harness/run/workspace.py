@@ -23,7 +23,7 @@ from typing import Optional
 
 WORKSPACE_WALK_VERSION = 1
 
-_GRADER_OUTPUT = "holdout_results.json"
+_GRADER_OUTPUT = "holdout_results.json"  # must match grade.runners.HOLDOUT_RESULTS [refactor 13 OI-A]
 
 # Closed status vocabulary — gaps are data, never exceptions [AC-6 discipline].
 VERIFIED = "verified"

@@ -24,7 +24,7 @@ make shakedown        # L1 golden path + L3 tripwire matrix (no keys, no Docker)
 
 | Layer | Proves | How |
 |---|---|---|
-| **L0** self-integrity | the instrument's own tests + structural contracts | `make verify` — 922 tests, 8 import contracts, AC coverage enforced |
+| **L0** self-integrity | the instrument's own tests + structural contracts | `make verify` — the full test suite, 10 import contracts, AC coverage enforced |
 | **L1** golden path | the full pipeline recovers a known effect | `scripts/shakedown/golden.py` (fake engine, fake judge) |
 | **L2** official + real judge | the pre-registration fence can be *earned* | `scripts/shakedown/official.py` (real Anthropic judge) |
 | **L3** tripwire matrix | every fence fires on an attack | `scripts/shakedown/tripwires.py` (18 vectors) |
@@ -34,6 +34,17 @@ make shakedown        # L1 golden path + L3 tripwire matrix (no keys, no Docker)
 
 L0, L1, L3 are hermetic. L2/L6 need provider keys (`.env`); L4/L6 need Docker;
 L5 needs a host node + Playwright + Chromium.
+
+Since the Phase-2 SDK (refactor 02/08) and the Phase-3D real-container conversion,
+every script — `golden.py`, `tripwires.py`, the real-judge `official.py`, and the
+real-agent `harbor.py` / `harbor_multiagent.py` — authors + drives experiments
+in-process through `harness.sdk`: no hand-built spec dicts, no `bench` subprocess
+for the pipeline, ledger reads through `LedgerView`. L6 builds its trial images
+through `harness.images` (the official `generic-llm` / reference multi-agent
+images) and meters egress through the managed metering proxy (`run.config`
+`proxy.managed`) — zero raw `docker` calls. The one console-script survivor is the
+pre-registration refusal matrix (L3 #1–7), whose point is the installed
+`bench plan` exit-code mapping.
 
 ## L3 — the tripwire matrix (18 vectors)
 
@@ -106,13 +117,25 @@ Each row is an adversarial input; the fence must produce the exact disposition.
   (kill-on-timeout, plugin net-isolation, the egress emitter) — unavailable on a
   macOS host. Their mechanisms are unit-tested in L0; kill-on-timeout can be
   demonstrated live via `DockerCliRunner().run_container([...], timeout_s=2)`.
-- **The reference `deploy/metering-proxy/` Squid config rejects harbor's
-  credential.** Harbor injects the trial id as a basic-auth *username with an
-  empty password* (`_with_trial_auth`), which Squid 6 refuses in core — exactly
-  the "validate against your Squid version" caveat the docs flag. `harbor.py`
-  ships a minimal stdlib CONNECT proxy (`assets/harbor/proxy.py`) that accepts
-  the username-only credential and emits the `{"trial","host","decision"}` JSONL
-  `_scan_proxy_log` parses, restoring genuine per-trial egress attribution.
+
+Separate from the caveats above, one **known defect** (a tracked harness bug
+under investigation, not a design limitation): `harbor_multiagent.py`'s
+per-trial egress check can fail intermittently. A trial container occasionally
+cannot resolve the metering proxy's container name (`EAI_AGAIN` via Docker's
+embedded DNS — `harness/hermetic/metering.py` builds `proxy_url` from the
+container *name*), so its workflow dies before any model call and the check
+truthfully reports the trial as un-metered. The multi-agent image's ~10
+sequential model calls per trial make it far more exposed than `generic-llm`'s
+single call, which is why `harbor.py` is unaffected. Delete this note when the
+metering fix lands.
+
+The former "reference Squid config rejects harbor's credential" caveat is no
+longer a shakedown caveat: the **shipped** metering path is the managed proxy
+(`run.config` `proxy.managed`, which L6 stands up and tears down around the run),
+whose stdlib CONNECT proxy accepts the username-only credential and emits the
+`{"trial","host","decision"}` JSONL `_scan_proxy_log` parses — no external Squid
+required. The Squid-version caveat lives on where the external path does, in
+[`deploy/metering-proxy/README.md`](../../deploy/metering-proxy/README.md).
 
 ## Executed baseline — 2026-07-05 (main @31b5be9)
 

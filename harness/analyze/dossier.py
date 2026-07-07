@@ -2,9 +2,10 @@
 [EVAL-12 AC-3..AC-7, D002, D003].
 
 A sibling renderer to the markdown/HTML renders behind the same fence:
-``render_dossier`` delegates validation to :func:`report.render_markdown`, so
-every current and future fence check applies identically and a refusing ledger
-raises the same ``AnalyzeError`` → the same ``cant_analyze`` reason [AC-4].
+``render_dossier`` delegates validation to :func:`findings.fence.validate_for_render`
+— the one shared check list every renderer consumes — so every current and
+future fence check applies identically and a refusing ledger raises the same
+``AnalyzeError`` → the same ``cant_analyze`` reason [AC-4].
 
 Three layers, one artifact:
 
@@ -20,6 +21,12 @@ Self-containment is a determinism *and* leakage property [AC-3]: no network
 references, no external assets, no scripts — collapse uses native
 ``<details>`` (zero JS, within D002's envelope) — and the render is a pure
 function of ``(findings, ledger)``: sorted iteration, no clock, no RNG.
+
+Size note (the master plan's Phase-5 exit gate asks any >500-line module to
+state its reason): one self-contained three-layer artifact renderer plus its
+closed :data:`VERDICT_TEMPLATES` sentence registry — the AC-5/D003 invariant
+that no verdict sentence exists outside that registry is per-file, so the
+templates and the renderer that consumes them stay in one module.
 """
 
 from __future__ import annotations
@@ -30,24 +37,24 @@ from typing import Literal, Optional
 from jinja2 import Environment, DictLoader
 from markupsafe import Markup
 
-from .report import (
+from .findings.extract import paired_task_rows
+from .findings.fence import validate_for_render
+from .findings.model import ComparisonFinding, FindingsDocument, display_mde
+from .findings.render import RenderContext, register_renderer
+from .findings.sections import (
+    Section,
     _WATERMARK,
-    ComparisonFinding,
-    FindingsDocument,
     _fmt,
     _forensics_lines,
     _integrity_line,
     _judge_calibration_lines,
     _judge_coverage_lines,
-    display_mde,
     _ledger_consistency_lines,
     _override_lines,
     _process_lines,
     _provenance_lines,
     _secondary_lines,
     _tier_lines,
-    paired_task_rows,
-    render_markdown,
 )
 from .timeline import trial_timeline
 
@@ -398,17 +405,20 @@ def _selfcheck_lines(ledger_path) -> list[str]:
     return lines
 
 
-def _disclosure_sections(findings: FindingsDocument) -> list[dict]:
-    """The disclosure blocks that carry over into EVERY layer [AC-4]."""
+def _disclosure_sections(findings: FindingsDocument) -> list[Section]:
+    """The disclosure blocks that carry over into EVERY layer [AC-4], as shared
+    :class:`Section` objects [refactor 11 §G3].
+
+    The dossier reads the SAME section model the markdown/HTML renders do rather
+    than re-deriving a parallel ``{title, body}`` list; the layer-wrapping
+    :class:`_DossierRenderer` lifts each section's lines to HTML once, so the
+    content parity is a property, not a comment [refactor 07 §1]."""
     sections = [
-        {
-            "title": "Confounds (disclosed, non-suppressing)",
-            "body": _lines_html([c["flag"] for c in findings.confounds] or ["none"]),
-        },
-        {
-            "title": "Blinding integrity",
-            "body": _lines_html([_integrity_line(findings)]),
-        },
+        Section(
+            "Confounds (disclosed, non-suppressing)",
+            [c["flag"] for c in findings.confounds] or ["none"],
+        ),
+        Section("Blinding integrity", [_integrity_line(findings)]),
     ]
     # NB: grade-tier lines are NOT a section here — they ride every layer as
     # the ADVISORY banner (render_dossier), and a second copy per layer would
@@ -419,38 +429,103 @@ def _disclosure_sections(findings: FindingsDocument) -> list[dict]:
         ("Judge coverage", _judge_coverage_lines(findings)),
     ):
         if lines:
-            sections.append({"title": title, "body": _lines_html(lines)})
+            sections.append(Section(title, lines))
     if not findings.rubric_committed:
         sections.append(
-            {
-                "title": "Rubric commitment",
-                "body": _lines_html(
-                    [
-                        "⚠ CAVEAT: this experiment was locked before rubric "
-                        "commitment (D-P7-6); the judging rubric content is not "
-                        "pinned, so a post-lock rubric change cannot be detected "
-                        "from the ledger"
-                    ]
-                ),
-            }
+            Section(
+                "Rubric commitment",
+                [
+                    "⚠ CAVEAT: this experiment was locked before rubric "
+                    "commitment (D-P7-6); the judging rubric content is not "
+                    "pinned, so a post-lock rubric change cannot be detected "
+                    "from the ledger"
+                ],
+            )
         )
     if findings.process is not None:
         sections.append(
-            {
-                "title": f"Process diagnostics — {_WATERMARK} (advisory secondary)",
-                "body": _lines_html(_process_lines(findings)),
-            }
+            Section(
+                f"Process diagnostics — {_WATERMARK} (advisory secondary)",
+                _process_lines(findings),
+            )
         )
     if findings.forensics is not None:
         # EVAL-11 AC-5: one addition here rides every layer — same wording as
         # the markdown render, disclosure-only [D004]
         sections.append(
-            {
-                "title": "Forensic flags (disclosed, non-suppressing)",
-                "body": _lines_html(_forensics_lines(findings)),
-            }
+            Section(
+                "Forensic flags (disclosed, non-suppressing)",
+                _forensics_lines(findings),
+            )
         )
     return sections
+
+
+class _DossierRenderer:
+    """The ``dossier`` renderer — the three-layer wrapping over the disclosure
+    :class:`Section` sequence [refactor 11 §G3].
+
+    ``render`` receives the disclosure sections (the blocks that ride EVERY layer
+    [AC-4]) and lifts each to HTML once; the layer-specific bodies
+    (verdict/deltas/timelines/auditor) are built from ``ctx.findings`` +
+    ``ctx.ledger_path``. Output is byte-identical to the prior ``render_dossier``
+    body (the golden dossier fixtures are the proof)."""
+
+    format_id = "dossier"
+
+    def render(self, sections: list[Section], ctx: RenderContext) -> str:
+        findings, ledger_path, mode = ctx.findings, ctx.ledger_path, ctx.mode
+        timelines = trial_timeline(ledger_path)
+        # lift the shared disclosure Section model to this format's HTML, once
+        disclosures = [{"title": s.title, "body": _lines_html(s.lines)} for s in sections]
+
+        verdict_sections = [{"title": "Verdict", "body": _verdict_body(findings)}] + disclosures
+        analyst_sections = [
+            {"title": "Per-task paired deltas (A vs B)", "body": _paired_delta_body(findings, ledger_path)},
+            {"title": "Per-trial trajectory timelines", "body": _timeline_body(timelines)},
+            {"title": "Secondary metrics (exploratory)", "body": _lines_html(_secondary_lines(findings))},
+        ]
+        if findings.judge_calibration is not None:
+            analyst_sections.append(
+                {"title": "Judge calibration (per class)", "body": _lines_html(_judge_calibration_lines(findings))}
+            )
+        analyst_sections += disclosures
+        auditor_sections = [
+            {"title": "Provenance", "body": _lines_html(_provenance_lines(findings))},
+            {
+                "title": "Chain verification",
+                "body": _lines_html(
+                    [
+                        f"ledger head: {findings.provenance.ledger_head_hash}",
+                        f"chain_ok={findings.provenance.chain_ok} (verify_chain at render time)",
+                    ]
+                ),
+            },
+            {"title": "Coverage selfcheck (D008)", "body": _lines_html(_selfcheck_lines(ledger_path))},
+            {"title": "Trajectory coverage", "body": _coverage_body(timelines)},
+            {
+                "title": "CI method selection (coverage)",
+                "body": _lines_html([f"selected method: {findings.ci_selection.get('selected_method')}"]),
+            },
+        ] + disclosures
+
+        layers = [
+            {"id": "verdict", "title": "Verdict — the pre-registered answer", "sections": verdict_sections},
+            {"id": "analyst", "title": "Analyst — how the arms behaved", "sections": analyst_sections},
+            {"id": "auditor", "title": "Auditor — verify it yourself", "sections": auditor_sections},
+        ]
+        banners = _tier_lines(findings)
+        return _PAGE_ENV.get_template("page").render(
+            experiment_id=findings.experiment_id,
+            mode=mode,
+            watermark=_WATERMARK if mode != "official" else None,
+            banners=banners,
+            layers=layers,
+        )
+
+
+_DOSSIER = _DossierRenderer()
+register_renderer(_DOSSIER)
 
 
 def render_dossier(
@@ -463,57 +538,16 @@ def render_dossier(
 ) -> str:
     """Render the three-layer dossier behind the markdown render's exact fence.
 
-    Fence parity by delegation [AC-4]: the markdown render runs first, purely
-    for its validations — provenance, process disclosure, head-hash/chain
-    verify, and (official) the five-check calibration fence — so the dossier
-    is refused precisely when the markdown is, with the same ``AnalyzeError``
-    subtype and therefore the same ``cant_analyze`` reason.
+    Fence parity by shared validation [AC-4]: the dossier runs the SAME
+    :func:`~harness.analyze.findings.fence.validate_for_render` the markdown
+    render runs — provenance, process disclosure, head-hash/chain verify, and
+    (official) the metric gate + the calibration fence — so it is refused
+    precisely when the markdown is, with the same ``AnalyzeError`` subtype and
+    therefore the same ``cant_analyze`` reason. No full markdown render is built
+    and discarded just for the side effects [refactor 07 §1]. The layer-wrapping
+    itself is the registered :class:`_DossierRenderer` over the disclosure
+    :class:`Section` sequence [refactor 11 §G3].
     """
-    render_markdown(findings, ledger_path, mode, metric=metric, corpus_manifest=corpus_manifest)
-
-    timelines = trial_timeline(ledger_path)
-    disclosures = _disclosure_sections(findings)
-
-    verdict_sections = [{"title": "Verdict", "body": _verdict_body(findings)}] + disclosures
-    analyst_sections = [
-        {"title": "Per-task paired deltas (A vs B)", "body": _paired_delta_body(findings, ledger_path)},
-        {"title": "Per-trial trajectory timelines", "body": _timeline_body(timelines)},
-        {"title": "Secondary metrics (exploratory)", "body": _lines_html(_secondary_lines(findings))},
-    ]
-    if findings.judge_calibration is not None:
-        analyst_sections.append(
-            {"title": "Judge calibration (per class)", "body": _lines_html(_judge_calibration_lines(findings))}
-        )
-    analyst_sections += disclosures
-    auditor_sections = [
-        {"title": "Provenance", "body": _lines_html(_provenance_lines(findings))},
-        {
-            "title": "Chain verification",
-            "body": _lines_html(
-                [
-                    f"ledger head: {findings.provenance.ledger_head_hash}",
-                    f"chain_ok={findings.provenance.chain_ok} (verify_chain at render time)",
-                ]
-            ),
-        },
-        {"title": "Coverage selfcheck (D008)", "body": _lines_html(_selfcheck_lines(ledger_path))},
-        {"title": "Trajectory coverage", "body": _coverage_body(timelines)},
-        {
-            "title": "CI method selection (coverage)",
-            "body": _lines_html([f"selected method: {findings.ci_selection.get('selected_method')}"]),
-        },
-    ] + disclosures
-
-    layers = [
-        {"id": "verdict", "title": "Verdict — the pre-registered answer", "sections": verdict_sections},
-        {"id": "analyst", "title": "Analyst — how the arms behaved", "sections": analyst_sections},
-        {"id": "auditor", "title": "Auditor — verify it yourself", "sections": auditor_sections},
-    ]
-    banners = _tier_lines(findings)
-    return _PAGE_ENV.get_template("page").render(
-        experiment_id=findings.experiment_id,
-        mode=mode,
-        watermark=_WATERMARK if mode != "official" else None,
-        banners=banners,
-        layers=layers,
-    )
+    validate_for_render(findings, ledger_path, mode, metric=metric, corpus_manifest=corpus_manifest)
+    ctx = RenderContext(findings, ledger_path, mode, metric, corpus_manifest)
+    return _DOSSIER.render(_disclosure_sections(findings), ctx)

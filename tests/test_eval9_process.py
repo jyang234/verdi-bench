@@ -12,6 +12,7 @@ from harness.judge.providers.fake import FakeProvider
 from harness.ledger.events import EventContext
 from harness.ledger.query import find_events
 from harness.process.calibrate import (
+    dimension_diagnostics,
     process_kappa_by_dimension,
     score_telemetry_correlation,
 )
@@ -76,9 +77,35 @@ def test_ac1_rubric_version_stamped(tmp_path):
     r = _rubric()
     fp = FakeProvider([json.dumps({"scores": {d: 3 for d in r.dimension_ids}})])
     score_trial_process("t1", "clean transcript", r, ledger_path=ledger, ctx=ctx, ts="t",
-                        scorer_id="judge", provider=fp, spec=_SPEC)
+                        scorer_id="judge", provider=fp,
+                        provider_model=_SPEC.judge.model, spec=_SPEC)
     ev = find_events(ledger, "process_score")[0]
     assert ev["process_score"]["rubric_version"] == "process-v1"
+
+
+def test_p4_rubric_sha_recorded_on_process_score(tmp_path):
+    """P4-RUBRIC: a process score records the rubric FILE's content sha for
+    provenance when the caller supplies it (the API computes it from the rubric
+    file), and omits it — old bytes unchanged — when it does not [refactor 06 §7]."""
+    from harness.process.rubric import process_rubric_sha256
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    r = _rubric()
+    sha = process_rubric_sha256()  # the committed default v1 rubric file
+    score_trial_process("t1", "clean transcript", r, ledger_path=ledger, ctx=ctx, ts="t",
+                        scorer_id="judge",
+                        provider=FakeProvider([json.dumps({"scores": {d: 3 for d in r.dimension_ids}})]),
+                        provider_model=_SPEC.judge.model, spec=_SPEC, rubric_sha256=sha)
+    ev = find_events(ledger, "process_score")[0]
+    assert ev["rubric_sha256"] == sha  # top-level, beside the process_score payload
+
+    # omitted when not provided — a pre-P4 score's bytes are unchanged
+    score_trial_process("t2", "clean transcript", r, ledger_path=ledger, ctx=ctx, ts="t",
+                        scorer_id="judge",
+                        provider=FakeProvider([json.dumps({"scores": {d: 3 for d in r.dimension_ids}})]),
+                        provider_model=_SPEC.judge.model, spec=_SPEC)
+    assert "rubric_sha256" not in find_events(ledger, "process_score")[1]
 
 
 # --- AC-2: unblinded provenance + disclosure required -----------------------
@@ -107,7 +134,8 @@ def test_ac2_disclosure_required(tmp_path):
     r = _rubric()
     fp = FakeProvider([json.dumps({"scores": {d: 4 for d in r.dimension_ids}})] * 6)
     score_trial_process("c0", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
-                        scorer_id="judge", provider=fp, spec=_SPEC)
+                        scorer_id="judge", provider=fp,
+                        provider_model=_SPEC.judge.model, spec=_SPEC)
     findings = compute_findings(ledger, spec, spec.seed, coverage_n_sim=20, n_boot=200)
     assert findings.process is not None
     assert findings.process["disclosure"]["unblinded"] is True
@@ -157,7 +185,8 @@ def test_ac4_full_or_cant_score(tmp_path):
     fp = FakeProvider([json.dumps({"scores": {d: 3 for d in r.dimension_ids}})])
     # an over-context transcript fails closed to CANT_SCORE(context_overflow) with tokens
     ps = score_trial_process("t1", "x" * 4000, r, ledger_path=ledger, ctx=ctx, ts="t",
-                             scorer_id="judge", provider=fp, max_context_tokens=10, spec=_SPEC)
+                             scorer_id="judge", provider=fp, max_context_tokens=10,
+                             provider_model=_SPEC.judge.model, spec=_SPEC)
     assert all(s.is_cant_score for s in ps.scores)
     assert all(s.cant_score_reason == "context_overflow" for s in ps.scores)
     assert all(s.tokens is not None for s in ps.scores)  # token counts recorded [AC-4]
@@ -181,7 +210,8 @@ def test_ac4_provider_error_cant_score(tmp_path):
     r = _rubric()
     fp = FakeProvider([ProviderError("boom")])
     ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
-                             scorer_id="judge", provider=fp, spec=_SPEC)
+                             scorer_id="judge", provider=fp,
+                             provider_model=_SPEC.judge.model, spec=_SPEC)
     assert all(s.cant_score_reason == "provider_error" for s in ps.scores)
 
 
@@ -193,6 +223,22 @@ def test_pr9_spec_is_required(tmp_path):
         score_trial_process(
             "t1", "clean", r, ledger_path=tmp_path / "l.ndjson", ctx=fixed_ctx(),
             ts="t", scorer_id="judge", provider=FakeProvider(["unused"]),
+            provider_model=_SPEC.judge.model,
+        )
+
+
+def test_provider_model_is_required_no_retired_default(tmp_path):
+    """[refactor 01 §4 D4] ``provider_model`` must be required: the old default
+    was the retired ``anthropic/claude-3-5-sonnet-20241022`` (a 404 against the
+    live API), so an unconfigured caller silently aimed the scorer at a dead
+    model. Omitting it now raises, mirroring the forensics D002 posture of no
+    hardcoded model default (production always passes ``spec.judge.model``)."""
+    r = _rubric()
+    fp = FakeProvider([json.dumps({"scores": {d: 3 for d in r.dimension_ids}})])
+    with pytest.raises(TypeError, match="provider_model"):
+        score_trial_process(
+            "t1", "clean transcript", r, ledger_path=tmp_path / "l.ndjson",
+            ctx=fixed_ctx(), ts="t", scorer_id="judge", provider=fp, spec=_SPEC,
         )
 
 
@@ -206,7 +252,8 @@ def test_pr9_provider_context_overflow_scored_distinctly(tmp_path):
     r = _rubric()
     fp = FakeProvider([ProviderContextOverflow("too big", prompt_tokens=999999)])
     ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
-                             scorer_id="judge", provider=fp, spec=_SPEC)
+                             scorer_id="judge", provider=fp,
+                             provider_model=_SPEC.judge.model, spec=_SPEC)
     assert all(s.cant_score_reason == "context_overflow" for s in ps.scores)
     assert all(s.tokens == 999999 for s in ps.scores)
 
@@ -220,7 +267,8 @@ def test_pr1_list_shaped_scores_fail_closed(tmp_path):
     r = _rubric()
     fp = FakeProvider([json.dumps({"scores": [3, 4, 5]})])
     ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
-                             scorer_id="judge", provider=fp, spec=_SPEC)
+                             scorer_id="judge", provider=fp,
+                             provider_model=_SPEC.judge.model, spec=_SPEC)
     assert all(s.cant_score_reason == "parse" for s in ps.scores)
     assert len(find_events(ledger, "process_score")) == 1
 
@@ -233,7 +281,8 @@ def test_pr2_redaction_leak_fails_closed(tmp_path):
     r = _rubric()
     leaky = "token AKIA" + "1234567890123456"
     ps = score_trial_process("t1", leaky, r, ledger_path=ledger, ctx=ctx, ts="t",
-                             scorer_id="judge", provider=FakeProvider(["unused"]), spec=_SPEC)
+                             scorer_id="judge", provider=FakeProvider(["unused"]),
+                             provider_model=_SPEC.judge.model, spec=_SPEC)
     assert all(s.cant_score_reason == "redaction_leak" for s in ps.scores)
     assert len(find_events(ledger, "process_score")) == 1
 
@@ -260,7 +309,8 @@ def test_pr4_judge_declared_cant_score_reason(tmp_path):
     scores[first] = "CANT_SCORE"
     fp = FakeProvider([json.dumps({"scores": scores})])
     ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
-                             scorer_id="judge", provider=fp, spec=_SPEC)
+                             scorer_id="judge", provider=fp,
+                             provider_model=_SPEC.judge.model, spec=_SPEC)
     by_id = {s.dim_id: s for s in ps.scores}
     assert by_id[first].cant_score_reason == "judge_declared"
     assert by_id[r.dimension_ids[1]].score == 3
@@ -277,7 +327,8 @@ def test_pr4_timeout_and_refusal_distinct_reasons(tmp_path):
     ]):
         ledger = tmp_path / f"l{i}.ndjson"
         ps = score_trial_process("t1", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
-                                 scorer_id="judge", provider=FakeProvider([exc]), spec=_SPEC)
+                                 scorer_id="judge", provider=FakeProvider([exc]),
+                                 provider_model=_SPEC.judge.model, spec=_SPEC)
         assert all(s.cant_score_reason == reason for s in ps.scores)
 
 
@@ -397,7 +448,8 @@ def test_ac6_exploratory_rendering(tmp_path):
     r = _rubric()
     fp = FakeProvider([json.dumps({"scores": {d: 4 for d in r.dimension_ids}})])
     score_trial_process("c0", "clean", r, ledger_path=ledger, ctx=ctx, ts="t",
-                        scorer_id="judge", provider=fp, spec=_SPEC)
+                        scorer_id="judge", provider=fp,
+                        provider_model=_SPEC.judge.model, spec=_SPEC)
     findings = compute_findings(ledger, spec, spec.seed, corpus_manifest=None,
                                 coverage_n_sim=20, n_boot=200)
     # exploratory render shows process as a labeled, disclosed secondary
@@ -487,6 +539,52 @@ def test_ac7_correlation_reported():
     assert corr2["error_recovery"].style_only is False
 
 
+def test_p4_rubric_correlation_reports_union_dim_ids():
+    """P4-RUBRIC option (a): score_telemetry_correlation reports exactly the
+    dim_ids asked for — the union of ledgered dims — so a dimension the rubric
+    lacks is included with an honest empty correlation row, not silently dropped
+    for being absent from the default rubric [refactor 06 §7]."""
+    r = _rubric()
+    rows = {
+        "planning_quality": [(1, {"tool_calls": 1, "wall_time": 5}),
+                             (2, {"tool_calls": 2, "wall_time": 5})],
+        "custom_dim": [(1, {"x": 1}), (2, {"x": 2})],
+    }
+    # default (rubric's own dims): the custom dim vanishes — the pre-fix behavior
+    default = score_telemetry_correlation(rows, r)
+    assert "custom_dim" not in default and "planning_quality" in default
+    # union: the ledgered custom dim is reported (empty, honest, correlate row)
+    union = score_telemetry_correlation(rows, r, dim_ids=["planning_quality", "custom_dim"])
+    assert set(union) == {"planning_quality", "custom_dim"}
+    assert union["custom_dim"].correlations == {}
+    assert union["custom_dim"].style_only is False
+
+
+def test_p4_rubric_diagnostics_cover_union_of_ledgered_dims(tmp_path):
+    """The analyze fold passes the union of ledgered dim_ids, so a dimension that
+    actually scored — even one the default rubric lacks — surfaces in the
+    diagnostics instead of being silently intersected away [refactor 06 §7]."""
+    from harness.ledger.events import record_process_score
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    record_process_score(ledger, ctx, process_score={
+        "trial_id": "t1", "rubric_version": "custom-v2", "comparison_id": None,
+        "scores": [
+            {"dim_id": "planning_quality", "score": 3},
+            {"dim_id": "custom_dim", "score": 4},
+        ],
+        "provenance": {"unblinded": True, "scorer": {"kind": "judge", "id": "j"},
+                       "judge_vendor_overlap": False, "ts": "t"},
+    })
+    # default (rubric-intersected): the custom dim is silently dropped
+    default = dimension_diagnostics(ledger, _SPEC, seed=1)
+    assert "custom_dim" not in default["correlations"]
+    # union (what the fold passes): the custom dim is reported
+    folded = dimension_diagnostics(ledger, _SPEC, seed=1, dim_ids=["planning_quality", "custom_dim"])
+    assert "custom_dim" in folded["correlations"]
+
+
 def test_process_score_registered():
     from harness.ledger import events
     assert "process_score" in events.REGISTERED_EVENTS
@@ -531,7 +629,8 @@ def test_m_o3_missing_transcript_is_cant_score_never_fabricated(tmp_path):
     r = _rubric()
     fp = FakeProvider([json.dumps({"scores": {d: 3 for d in r.dimension_ids}})])
     ps = score_trial_process("t1", "", r, ledger_path=ledger, ctx=ctx, ts="t",
-                             scorer_id="judge", provider=fp, spec=_SPEC)
+                             scorer_id="judge", provider=fp,
+                             provider_model=_SPEC.judge.model, spec=_SPEC)
     assert all(s.is_cant_score for s in ps.scores)
     assert all(s.cant_score_reason == "missing_transcript" for s in ps.scores)
     assert fp.calls == []  # the judge is never asked to score nothing

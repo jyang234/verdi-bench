@@ -27,13 +27,15 @@ from __future__ import annotations
 
 import hashlib
 
+from ..errors import VerdiRefusal
+
 # Versioned derivation namespace: bumping it re-keys every canary, so it is a
 # contract — a silent change would orphan every embedded marker.
 _NAMESPACE = "verdi-bench/contamination-canary/v1"
 _PREFIX = "VBCANARY-"
 
 
-class CanaryError(ValueError):
+class CanaryError(VerdiRefusal, ValueError):
     """A canary derivation/embedding precondition failed [fail-loudly]."""
 
 

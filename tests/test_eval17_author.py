@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -24,6 +24,9 @@ from harness.plan.interleave import derive_schedule, enumerate_trials
 from harness.plan.power import AssumedVariance, mde_check
 from harness.schema.experiment import ExperimentSpec
 from tests.fixtures.browser import drive
+from tests.fixtures.servers import running_server
+
+pytestmark = pytest.mark.browser
 
 _QUICK = {"n_sim": 8, "n_boot": 40, "deltas": [0.2, 0.4]}
 
@@ -42,18 +45,12 @@ TASKS = "tasks:\n  - id: t1\n    prompt: p\n"
 RUBRIC = "judge on correctness\n"
 
 
+@contextmanager
 def _serve(root: Path, **kwargs):
     srv = make_author_server(root, actor=kwargs.pop("actor", "tester"), port=0,
                              lock_kwargs=kwargs.pop("lock_kwargs", _QUICK), **kwargs)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
-    return srv, thread, f"http://127.0.0.1:{srv.server_address[1]}"
-
-
-def _stop(srv, thread):
-    srv.shutdown()
-    srv.server_close()
-    thread.join(timeout=5)
+    with running_server(srv) as base:
+        yield base
 
 
 def _get(base: str, path: str):
@@ -93,13 +90,15 @@ def _digest(root: Path) -> list:
 
 # --- AC-1: previews are pure reads over the saved bytes -----------------------------
 def test_ac1_previews_pure_reads(tmp_path):
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with _serve(tmp_path) as base:
         _save_draft(base)
         draft = tmp_path / "exp-a"
 
         v = _get(base, "/api/validate?name=exp-a")
         assert v["spec"]["ok"] and v["tasks"] == {"ok": True, "count": 1, "ids": ["t1"]}
+        # platform-capability parity [refactor 02 §4]: the preview runs the same
+        # check the lock does — both SPEC arms name registered platforms, so ok.
+        assert v["platform"] == {"ok": True}
         # the sha previewed IS the sha of the saved bytes
         assert v["spec_sha256"] == hashlib.sha256(
             (draft / "experiment.yaml").read_bytes()
@@ -108,7 +107,7 @@ def test_ac1_previews_pure_reads(tmp_path):
         # power preview equals mde_check for the same inputs [AC-1]
         spec = ExperimentSpec.from_yaml((draft / "experiment.yaml"))
         direct = mde_check(spec, AssumedVariance(), n_tasks=1,
-                           n_sim=8, n_boot=40, deltas=[0.05, 0.1, 0.2, 0.3, 0.4, 0.5])
+                           n_sim=8, n_boot=40, deltas=[0.05, 0.1, 0.2, 0.3, 0.4, 0.5]).to_event_payload()
         served = _get(base, "/api/power?name=exp-a&quick=1")
         assert served["quick"] is True and served["mde"] == json.loads(json.dumps(direct))
 
@@ -133,6 +132,8 @@ def test_ac1_previews_pure_reads(tmp_path):
         assert vb["spec"]["ok"] is False
         assert vb["spec"]["error_class"] == "MissingCostCeilingError"
         assert vb["tasks"]["ok"] is False and "t1" in vb["tasks"]["error"]
+        # a parse failure has no spec to platform-check: the key is simply absent
+        assert "platform" not in vb
 
         # purity: previews change nothing — no ledger exists, bytes identical
         before = _digest(tmp_path)
@@ -142,14 +143,11 @@ def test_ac1_previews_pure_reads(tmp_path):
             _get(base, path)
         assert _digest(tmp_path) == before
         assert not (draft / "ledger.ndjson").exists()
-    finally:
-        _stop(srv, thread)
 
 
 # --- AC-2: the ceremony — one event, typed refusals, underpowered path ---------------
 def test_ac2_lock_ceremony_one_event(tmp_path):
-    srv, thread, base = _serve(tmp_path, actor="ceremony-actor")
-    try:
+    with _serve(tmp_path, actor="ceremony-actor") as base:
         _save_draft(base)
         sha_preview = _get(base, "/api/sha?name=exp-a")["spec_sha256"]
 
@@ -183,15 +181,12 @@ def test_ac2_lock_ceremony_one_event(tmp_path):
         under = read_events(tmp_path / "exp-under" / "ledger.ndjson")
         assert len(under) == 1  # the ack rides inline — still one event [PL-14]
         assert under[0]["acknowledged_underpowered"]["hypothesized_effect"] == 0.01
-    finally:
-        _stop(srv, thread)
 
 
 def test_ac2_page_ceremony_drive(tmp_path):
     """The same ceremony, driven through the actual page: template → edit →
     save → lock, ending in the ledgered event."""
-    srv, thread, base = _serve(tmp_path, actor="page-actor")
-    try:
+    with _serve(tmp_path, actor="page-actor") as base:
         body = """
   await page.goto(BASE + '/', { waitUntil: 'networkidle' });
   await page.waitForTimeout(800);
@@ -223,14 +218,40 @@ def test_ac2_page_ceremony_drive(tmp_path):
         assert [e["event"] for e in evs] == ["experiment_locked"]
         assert evs[0]["provenance"]["actor"] == "page-actor"
         assert evs[0]["attestation"]["attested_by"] == "jyang"
-    finally:
-        _stop(srv, thread)
+
+
+def test_platform_gap_closed_in_page(tmp_path):
+    """The audited gap, closed at the UI [refactor 02 §4]: a draft naming an
+    unregistered arm platform previews a platform-bad chip and a *disabled* Lock
+    button, so the green-preview-then-lock-refusal can no longer happen."""
+    bad_spec = SPEC.replace("platform: codex", "platform: my_custom_stack")
+    with _serve(tmp_path, actor="plat-actor") as base:
+        _save_draft(base, name="exp-plat", spec=bad_spec)
+        # server-side parity: the preview refuses the platform the lock would too
+        v = _get(base, "/api/validate?name=exp-plat")
+        assert v["spec"]["ok"] is True and v["platform"]["ok"] is False
+        assert v["platform"]["error_class"] == "UnknownArmPlatformError"
+        # the page reflects it: platform-bad chip + a disabled Lock button
+        body = """
+  await page.goto(BASE + '/#/draft/exp-plat', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(1200);
+  out.chip = await page.evaluate(() => document.body.textContent.includes('UnknownArmPlatformError'));
+  out.lockDisabled = await page.evaluate(() => {
+    const b = [...document.querySelectorAll('button')].find(x => x.textContent === 'Lock pre-registration');
+    return b ? b.disabled : null;
+  });
+"""
+        out = drive(base, body, tmp_path)
+        assert out["__errors"] == []
+        assert out["chip"] is True
+        assert out["lockDisabled"] is True
+        # a pure preview: no lock was taken
+        assert not (tmp_path / "exp-plat" / "ledger.ndjson").exists()
 
 
 # --- AC-3: post-lock immutability -----------------------------------------------------
 def test_ac3_post_lock_readonly_refusals(tmp_path):
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with _serve(tmp_path) as base:
         _save_draft(base)
         _post(base, "/api/lock", {"name": "exp-a", "attested_by": "jyang"})
 
@@ -247,8 +268,6 @@ def test_ac3_post_lock_readonly_refusals(tmp_path):
         code, _ = _post(base, "/api/draft", {"name": "exp-a-v2",
                                              "files": {"experiment.yaml": SPEC}})
         assert code == 200
-    finally:
-        _stop(srv, thread)
 
 
 # --- AC-4: posture ------------------------------------------------------------------
@@ -271,8 +290,7 @@ def test_ac4_posture_actor_needles_routes(tmp_path, monkeypatch):
 
     assert DEFAULT_HOST == "127.0.0.1"  # loopback by default: mutating surface
 
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with _serve(tmp_path) as base:
         _save_draft(base)
         before = _digest(tmp_path)
         for path in ("/api/drafts", "/api/draft?name=exp-a", "/api/validate?name=exp-a",
@@ -290,16 +308,13 @@ def test_ac4_posture_actor_needles_routes(tmp_path, monkeypatch):
         code, _ = _post(base, "/api/draft", {"name": "exp-a",
                                              "files": {"../escape.yaml": "x"}})
         assert code == 409  # draft files are allowlisted, never path-joined
-    finally:
-        _stop(srv, thread)
 
 
 def test_h2_csrf_guard_refuses_cross_site_lock(tmp_path):
     """PRA-H2: a cross-site page must not be able to forge the lock ceremony.
     A POST with a foreign/absent Origin, a foreign Host, or a text/plain body is
     refused (403) and appends no experiment_locked event."""
-    srv, thread, base = _serve(tmp_path)
-    try:
+    with _serve(tmp_path) as base:
         _save_draft(base)
         # foreign Origin (the cross-site attacker's page)
         code, _ = _post(base, "/api/lock", {"name": "exp-a", "attested_by": "x"},
@@ -322,8 +337,6 @@ def test_h2_csrf_guard_refuses_cross_site_lock(tmp_path):
         # the legitimate same-origin ceremony still works
         code, locked = _post(base, "/api/lock", {"name": "exp-a", "attested_by": "jyang"})
         assert code == 200 and locked["locked"] is True
-    finally:
-        _stop(srv, thread)
 
 
 # --- AC-5: commitment parity with bench plan --------------------------------------------
@@ -339,12 +352,9 @@ def test_ac5_tasks_rubric_commitment_parity(tmp_path):
         (d / "tasks.yaml").write_text(TASKS, encoding="utf-8")
         (d / "rubrics" / "r.md").write_text(RUBRIC, encoding="utf-8")
 
-    srv, thread, base = _serve(tmp_path, actor="parity", lock_kwargs=None)  # full fidelity
-    try:
+    with _serve(tmp_path, actor="parity", lock_kwargs=None) as base:  # full fidelity
         code, _ = _post(base, "/api/lock", {"name": "via-ceremony", "attested_by": "jyang"})
         assert code == 200
-    finally:
-        _stop(srv, thread)
 
     cli = tmp_path / "via-cli"
     result = CliRunner().invoke(app, [

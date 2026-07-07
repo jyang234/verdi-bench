@@ -12,36 +12,40 @@ Every failure path returns ``CANT_REVIEW(reason)`` from the closed
 :class:`CantReviewReason` vocabulary — never a silent skip. Every narrative
 claim carries the ``[judgment]`` tag by construction (model-validated).
 
-Calibration reuses EVAL-7's kappa machinery verbatim [AC-4]: per-detector
-judge↔human agreement over binary flags is *unweighted* IPW-corrected kappa
-(the detector vocabulary is nominal, not ordinal), pairing the LLM pass's
-suspicions with ledgered human spot-checks.
+Per-detector kappa calibration — the LLM↔human spot-check join — is a distinct
+concern and lives in :mod:`harness.forensics.calibration` [refactor 06 §5]; its
+names are re-exported below so the ledgered import path
+(``harness.forensics.review.spotcheck_kappa``, reached by analyze and the AC-4
+tests) keeps resolving.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import re
-from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..blind.core import identity_pattern_list, secret_pattern_list
-from ..judge.providers.base import (
-    Provider,
-    ProviderContextOverflow,
-    ProviderError,
-    get_provider,
-    provider_failure_reason,
+from ..judge.envelope import (
+    DEFAULT_MARGIN,
+    DEFAULT_MAX_CONTEXT_TOKENS,
+    PacketRejected,
+    extract_json,
+    heuristic_token_count,
+    scored_completion,
 )
-from ..review.kappa import (
-    FLOOR_INCLUSION_PROB,
-    KappaEstimator,
-    ReviewedItem,
-    keyed_kappa_gate,
+from ..judge.providers.base import Provider
+
+# Calibration split to calibration.py [refactor 06 §5]; re-exported so the
+# ledgered import path (analyze, AC-4 tests) still resolves through review.py.
+from .calibration import (  # noqa: F401
+    DEFAULT_KAPPA_THRESHOLD,
+    DetectorCalibration,
+    detector_kappa,
+    spotcheck_kappa,
 )
 from .detectors import DETECTOR_IDS
 
@@ -58,11 +62,6 @@ FORENSIC_SYSTEM_PROMPT = (
 # content-derived fence so an injected instruction cannot escape the data
 # channel and pose as a directive to the reviewer (the JD-8 judge-packet pattern).
 FORENSIC_FENCE_FORMAT = "<<{}>>"
-DEFAULT_MAX_CONTEXT_TOKENS = 100_000
-DEFAULT_MARGIN = 1.15
-_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
-_BINARY_CATEGORIES = [0, 1]
-DEFAULT_KAPPA_THRESHOLD = 0.6
 # The secret list takes no per-experiment extras here — compile it once, not
 # once per reviewed trial.
 _SECRET_PATTERNS = secret_pattern_list()
@@ -150,20 +149,13 @@ def build_forensic_packet(transcript: str) -> list[dict]:
     ]
 
 
-def _heuristic_token_count(text: str) -> int:
-    """Conservative chars/4 estimate — the EVAL-9 seam's default counter."""
-    return len(text) // 4 + 1
-
-
 def _parse_review(text: str) -> tuple[dict, str]:
     """Extract the JSON shape only — the ForensicReview model validator is the
     single source of truth for the suspicion-key contract, so the two can
-    never drift; its ValidationError is a ValueError the caller's fail-closed
-    envelope already maps to CANT_REVIEW(parse)."""
-    m = _JSON_RE.search(text or "")
-    if not m:
-        raise ValueError("no JSON object in forensic review output")
-    raw = json.loads(m.group(0))
+    never drift; its ValidationError is one the shared envelope maps to
+    CANT_REVIEW(parse). ``extract_json`` raises ValueError on no object, mapped
+    the same way [refactor 06 §4]."""
+    raw = json.loads(extract_json(text))
     suspicions = raw.get("suspicions")
     narrative = raw.get("narrative")
     if not isinstance(suspicions, dict) or not isinstance(narrative, str) or not narrative:
@@ -181,7 +173,7 @@ def forensic_review(
     provider: Optional[Provider] = None,
     provider_model: Optional[str] = None,
     max_reasoning_bytes: Optional[int] = None,
-    token_counter: Callable[[str], int] = _heuristic_token_count,
+    token_counter: Callable[[str], int] = heuristic_token_count,
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     margin: float = DEFAULT_MARGIN,
 ) -> ForensicReview:
@@ -201,158 +193,53 @@ def forensic_review(
     a named coverage gap, never a truncated or silently-skipped review.
     """
 
-    def _cant(reason: CantReviewReason) -> ForensicReview:
-        return ForensicReview(trial_id=trial_id, cant_review_reason=reason.value)
+    # The shared fail-closed envelope runs empty → leak-scan → token-gate →
+    # provider → parse [refactor 06 §4]; the blinding, byte-budget and
+    # suspicion-key contract are this tier's own, injected as the packet builder
+    # and parser. CantReviewReason stays this tier's closed set; the envelope
+    # only routes reasons it validates against it.
+    def _on_cant(reason: str, *, tokens: Optional[int] = None) -> ForensicReview:
+        # A completed review would pollute n_reviewed and the spot-check kappa
+        # join; a CANT_REVIEW is never a silent skip. ``tokens`` is unused here.
+        return ForensicReview(trial_id=trial_id, cant_review_reason=reason)
 
-    # A trial with no transcript has nothing to review — a provider would
-    # happily narrate an empty packet, which would then pollute n_reviewed and
-    # the spot-check kappa join. Fail closed instead.
-    if not transcript.strip():
-        return _cant(CantReviewReason.no_transcript)
-    # EVAL-24-D003: a flight-recorder-fed review is byte-budgeted — an over-budget
-    # reasoning transcript is a named coverage gap, never truncated or skipped.
-    if max_reasoning_bytes is not None and len(transcript.encode("utf-8")) > max_reasoning_bytes:
-        return _cant(CantReviewReason.context_overflow)
+    def _build(text: str) -> list[dict]:
+        # EVAL-24-D003: a flight-recorder-fed review is byte-budgeted BEFORE
+        # blinding — an over-budget reasoning transcript is a named coverage gap.
+        if max_reasoning_bytes is not None and len(text.encode("utf-8")) > max_reasoning_bytes:
+            raise PacketRejected(CantReviewReason.context_overflow.value)
+        # Blinding is fail-closed [AC-4]: scrub through the shared core, then
+        # re-scan with the SAME pattern list (one compile serves both passes) —
+        # an identity canary surviving the scrub blocks the call. Redaction is
+        # upstream (EVAL-4); a surviving secret canary must never reach a
+        # provider payload — the process-packet defense in depth.
+        identity_patterns = identity_pattern_list(extra_literals=canaries)
+        blinded, _ = identity_patterns.scrub(text)
+        if identity_patterns.contains(blinded):
+            raise PacketRejected(CantReviewReason.identity_leak.value)
+        if _SECRET_PATTERNS.contains(blinded):
+            raise PacketRejected(CantReviewReason.redaction_leak.value)
+        return build_forensic_packet(blinded)
 
-    # Blinding is fail-closed [AC-4]: scrub through the shared core, then
-    # re-scan with the SAME pattern list — an identity canary surviving the
-    # scrub blocks the call (and one compile serves both passes).
-    identity_patterns = identity_pattern_list(extra_literals=canaries)
-    blinded, _ = identity_patterns.scrub(transcript)
-    if identity_patterns.contains(blinded):
-        return _cant(CantReviewReason.identity_leak)
-    # Redaction is upstream (EVAL-4); a surviving secret canary must never
-    # reach a provider payload — the process-packet defense in depth.
-    if _SECRET_PATTERNS.contains(blinded):
-        return _cant(CantReviewReason.redaction_leak)
-
-    messages = build_forensic_packet(blinded)
-    payload_text = "".join(m["content"] for m in messages)
-    if token_counter(payload_text) * margin > max_context_tokens:
-        return _cant(CantReviewReason.context_overflow)
-
-    # Resolve the provider inside the fail-closed envelope (the PR-3 posture):
-    # an unknown prefix records CANT_REVIEW(provider_error), never escapes.
-    if provider is None:
-        # EVAL-24-D002: no hardcoded model default — an unconfigured model fails
-        # closed here rather than 404ing against a retired id.
-        if provider_model is None:
-            return _cant(CantReviewReason.provider_error)
-        try:
-            provider = get_provider(provider_model)
-        except ProviderError as e:
-            return _cant(CantReviewReason(provider_failure_reason(e)))
-    try:
-        text = provider.complete(provider_model, messages, 0.0)
-    except ProviderContextOverflow:
-        return _cant(CantReviewReason.context_overflow)
-    except ProviderError as e:
-        return _cant(CantReviewReason(provider_failure_reason(e)))
-
-    try:
+    def _parse(text: str) -> ForensicReview:
         suspicions, narrative = _parse_review(text)
         # The model validator owns the suspicion-key contract; a wrong key set
-        # raises ValidationError (a ValueError) and fails closed here, not in
-        # the caller.
+        # raises ValidationError, mapped to CANT_REVIEW(parse) by the envelope.
         return ForensicReview(
-            trial_id=trial_id,
-            suspicions=suspicions,
-            narrative=f"{JUDGMENT_TAG} {narrative}",
+            trial_id=trial_id, suspicions=suspicions, narrative=f"{JUDGMENT_TAG} {narrative}"
         )
-    except (ValueError, json.JSONDecodeError, ValidationError):
-        return _cant(CantReviewReason.parse)
 
-
-# --- per-detector kappa calibration [AC-4] -----------------------------------
-@dataclass(frozen=True)
-class DetectorCalibration:
-    detector_id: str
-    n: int
-    kappa: Optional[float]
-    sufficient: bool
-    escalate: bool
-
-
-def detector_kappa(
-    items_by_detector: dict[str, Sequence[ReviewedItem]],
-    *,
-    kappa_threshold: float = DEFAULT_KAPPA_THRESHOLD,
-    min_pairs: int = 1,
-    estimator: KappaEstimator | str = KappaEstimator.ipw,
-    floor_prob: float = FLOOR_INCLUSION_PROB,
-) -> dict[str, DetectorCalibration]:
-    """Unweighted, IPW-corrected kappa per detector; gates independently — the
-    shared :func:`keyed_kappa_gate` mechanics over binary flag categories, so
-    the gate cannot drift from EVAL-9's per-dimension tier."""
-    gated = keyed_kappa_gate(
-        items_by_detector,
-        weight="unweighted",
-        categories=_BINARY_CATEGORIES,
-        kappa_threshold=kappa_threshold,
-        min_pairs=min_pairs,
-        estimator=estimator,
-        floor_prob=floor_prob,
+    return scored_completion(
+        transcript,
+        reason_enum=CantReviewReason,
+        empty_reason=CantReviewReason.no_transcript.value,
+        build_messages=_build,
+        parse=_parse,
+        on_cant=_on_cant,
+        on_scored=lambda review: review,
+        provider=provider,
+        provider_model=provider_model,
+        token_counter=token_counter,
+        max_context_tokens=max_context_tokens,
+        margin=margin,
     )
-    return {
-        detector_id: DetectorCalibration(detector_id, c.n, c.kappa, c.sufficient, c.escalate)
-        for detector_id, c in gated.items()
-    }
-
-
-def spotcheck_kappa(ledger_path, *, spec=None, report: Optional[dict] = None) -> dict:
-    """Pair the latest forensics_report's LLM suspicions with ledgered human
-    spot-checks (``forensic_spotcheck`` events) into the per-detector kappa
-    table analyze folds into findings [AC-4, D006].
-
-    Strata ride the spot-check events themselves (recorded against the EVAL-7
-    reviewed sample). When ``spec`` is provided the IPW correction uses the
-    sample's *realized* floor inclusion probability (``ceil(0.2n)/n``, the
-    RV-5 correction outcome and process kappa both use), not the nominal 0.2.
-    ``report`` short-circuits the latest-event fetch when the caller already
-    holds the forensics_report payload.
-    """
-    from collections import defaultdict
-
-    from ..ledger import events
-    from ..ledger.query import find_events, latest_event
-
-    if report is None:
-        report_ev = latest_event(ledger_path, events.FORENSICS_REPORT)
-        report = (report_ev or {}).get("forensics_report", {})
-    reviews = report.get("reviews") or {}
-    items: dict[str, list[ReviewedItem]] = defaultdict(list)
-    n_spotchecks = 0
-    for ev in find_events(ledger_path, events.FORENSIC_SPOTCHECK):
-        sc = ev["forensic_spotcheck"]
-        n_spotchecks += 1
-        review = reviews.get(sc["trial_id"])
-        if not review or review.get("suspicions") is None:
-            continue  # unreviewed or CANT_REVIEW trials cannot calibrate
-        for detector_id, human_label in sc["labels"].items():
-            llm_label = review["suspicions"].get(detector_id)
-            if llm_label is None:
-                continue
-            items[detector_id].append(
-                ReviewedItem(
-                    a=int(llm_label), b=int(bool(human_label)), stratum=sc["stratum"]
-                )
-            )
-    floor_prob = FLOOR_INCLUSION_PROB
-    if spec is not None and items:
-        from ..review.sample import comparisons_from_ledger, realized_floor_prob
-
-        records = comparisons_from_ledger(
-            ledger_path, arm_a=spec.arms[0].name, arm_b=spec.arms[1].name
-        )
-        if records:
-            floor_prob = realized_floor_prob(records)
-    calibrations = detector_kappa(items, floor_prob=floor_prob)
-    return {
-        "n_spotchecks": n_spotchecks,
-        "floor_prob": floor_prob,
-        "kappa_by_detector": {
-            d: {"kappa": c.kappa, "n": c.n, "sufficient": c.sufficient,
-                "escalate": c.escalate}
-            for d, c in sorted(calibrations.items())
-        },
-    }

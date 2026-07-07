@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "trial_id": "fixture-pydantic-ai",
+  "batches": [
+    {
+      "content_type": "application/json",
+      "resource_spans": [
+        {
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "verdi.fixture"
+              },
+              "spans": [
+                {
+                  "name": "chat",
+                  "spanId": "b3",
+                  "startTimeUnixNano": "1700000001000000000",
+                  "endTimeUnixNano": "1700000001001000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.operation.name",
+                      "value": {
+                        "stringValue": "chat"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.output_tokens",
+                      "value": {
+                        "intValue": "60"
+                      }
+                    }
+                  ],
+                  "parentSpanId": "b1"
+                },
+                {
+                  "name": "chat",
+                  "spanId": "b1",
+                  "startTimeUnixNano": "1700000000000000000",
+                  "endTimeUnixNano": "1700000000001000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.operation.name",
+                      "value": {
+                        "stringValue": "chat"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.request.model",
+                      "value": {
+                        "stringValue": "claude-3-5-sonnet-20241022"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.input_tokens",
+                      "value": {
+                        "intValue": "800"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.usage.output_tokens",
+                      "value": {
+                        "intValue": "120"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "running tool: get_weather",
+                  "spanId": "b2",
+                  "startTimeUnixNano": "1700000000250000000",
+                  "endTimeUnixNano": "1700000000251000000",
+                  "attributes": [
+                    {
+                      "key": "gen_ai.tool.name",
+                      "value": {
+                        "stringValue": "get_weather"
+                      }
+                    },
+                    {
+                      "key": "gen_ai.tool.arguments",
+                      "value": {
+                        "stringValue": "{\"city\": \"Paris\"}"
+                      }
+                    }
+                  ],
+                  "parentSpanId": "b1"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from harness.grade.container import GradingContainer
+from tests.fixtures.grading import write_holdout_results
 
 
 def test_ac1_grading_isolated(tmp_path):
@@ -184,9 +185,7 @@ def test_h1_in_run_forged_results_file_is_never_scored(tmp_path, monkeypatch):
         # file in the graded copy, while the real grader reports FAIL on stdout
         mount = next(a for a in cmd if a.endswith(":/workspace"))
         copy = Path(mount.rsplit(":", 1)[0])
-        (copy / "holdout_results.json").write_text(
-            _json.dumps({"assertions": [{"id": "h1", "result": "pass"}]}), encoding="utf-8"
-        )
+        write_holdout_results(copy, True)
         begin, end = holdout_fence(nonce)
         body = _json.dumps({"assertions": [{"id": "h1", "result": "fail"}]})
         stdout = f"grader log noise\n{begin}\n{body}\n{end}\ntail\n"
@@ -333,3 +332,60 @@ def test_ac1_grade_command_hardened(tmp_path):
     assert cmd[cmd.index("--security-opt") + 1] == "no-new-privileges"
     if hasattr(os, "getuid"):
         assert cmd[cmd.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
+
+
+# --- runner protocol formalization [refactor 05 §2] ------------------------
+def test_runner_protocol_members_are_declared_on_every_runner():
+    """Every runner DECLARES the four seam members explicitly — the silent
+    ``getattr(runner, ..., default)`` probes are gone, so a runner decides rather
+    than inheriting an accident. The value + the fact it is set on the class
+    itself (not merely annotated on the GradeRunner base) are both checked."""
+    from harness.grade.container import (
+        DockerGradeRunner,
+        LocalExecutingGradeRunner,
+        LocalGradeRunner,
+    )
+
+    # runner -> (grader_name, runs_plugins_in_container, grades_in_place)
+    expected = {
+        DockerGradeRunner: ("docker", True, False),
+        LocalGradeRunner: ("local", False, True),
+        LocalExecutingGradeRunner: ("local-exec", False, True),
+    }
+    for cls, (name, in_container, in_place) in expected.items():
+        assert cls.grader_name == name
+        assert cls.runs_plugins_in_container is in_container
+        assert cls.grades_in_place is in_place
+        for member in (
+            "grader_name", "runs_plugins_in_container", "grades_in_place", "preflight",
+        ):
+            assert member in cls.__dict__, (
+                f"{cls.__name__} must DECLARE {member}, not inherit an accident"
+            )
+
+
+def test_grade_runner_abc_rejects_an_incomplete_runner():
+    """GradeRunner is an ABC: a subclass that omits an abstract member (preflight
+    or run_holdouts) cannot be instantiated — the seam is a contract, not a set of
+    optional conventions a new runner can silently skip."""
+    from harness.grade.container import GradeRunner, HoldoutRun
+
+    class MissingPreflight(GradeRunner):
+        grader_name = "x"
+        runs_plugins_in_container = False
+        grades_in_place = True
+
+        def run_holdouts(self, cmd, workspace, holdouts_dir, nonce=None):
+            return HoldoutRun({})
+
+    with pytest.raises(TypeError):
+        MissingPreflight()  # abstract preflight unimplemented
+
+
+def test_grading_container_reads_declared_grader_name_no_unknown_default():
+    """The grade event's grader field comes straight from the runner's declared
+    ``grader_name`` — there is no silent 'unknown' fallback that would hide a
+    misdeclared runner behind an ADVISORY-looking tier."""
+    from harness.grade.container import GradingContainer, LocalExecutingGradeRunner
+
+    assert GradingContainer(runner=LocalExecutingGradeRunner()).grader_name == "local-exec"
