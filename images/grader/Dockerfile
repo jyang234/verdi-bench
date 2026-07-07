@@ -49,10 +49,13 @@ RUN set -eu; \
 # bookworm ships Python 3.11 (the harness's supported floor; it stays
 # 3.12-compatible). Only pydantic + pyyaml are needed (the run_holdouts/run_plugin
 # import chain pulls in nothing heavier).
+# Versions pinned to the EXACT resolutions in uv.lock (the single source of truth —
+# bump both here in lockstep whenever uv.lock moves) so the grader image runs the
+# same deps the harness is tested against; an unpinned float is a determinism hole.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 python3-pip \
  && rm -rf /var/lib/apt/lists/* \
- && pip3 install --no-cache-dir --break-system-packages pydantic pyyaml
+ && pip3 install --no-cache-dir --break-system-packages pydantic==2.13.4 pyyaml==6.0.3
 
 COPY harness /app/harness
 COPY images/grader/verdi-groundwork-check /usr/local/bin/verdi-groundwork-check
