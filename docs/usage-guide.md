@@ -140,30 +140,17 @@ uv run bench init scratch/quickstart
 # scaffolded scratch/quickstart: experiment.yaml, tasks.yaml, rubrics/code-task-v1.md
 ```
 
-**2. Two edits before locking.**
+Nothing to edit before locking. The scaffold's judge is already
+`fake/deterministic-2026-01-01` — the deterministic no-network judge provider,
+the judge-side analog of the fake engine (a comment beside it in
+`experiment.yaml` shows the real-provider swap; any real-provider judge needs
+that provider's API key in the CLI environment at `bench judge` time, §4). And
+`tasks.yaml` already ships two placeholder tasks: the paired bootstrap clusters
+on tasks, so a decision needs at least two (`n_tasks=1` renders "no decision
+possible").
 
-- **Point the judge at the fake provider.** In
-  `scratch/quickstart/experiment.yaml`, change the judge line
-  `model: google/gemini-1.5-pro-002` to `model: fake/deterministic-2026-01-01`.
-  The scaffold pins a real Gemini judge, and any real-provider judge needs that
-  provider's API key in the CLI environment at `bench judge` time (§4); `fake/`
-  is the deterministic no-network judge provider — the judge-side analog of the
-  fake engine. Without the key every comparison lands as a ledgered
-  `CANT_JUDGE(provider_error)` — disclosed, but empty.
-- **Give it a second task.** Replace `scratch/quickstart/tasks.yaml` with two
-  tasks: the paired bootstrap clusters on tasks, so a decision needs at least two
-  (`n_tasks=1` renders "no decision possible"), and the scaffold ships one
-  placeholder.
-
-```yaml
-tasks:
-  - id: t-add
-    prompt: Write solution.py defining add(a, b).
-  - id: t-pal
-    prompt: Write solution.py defining is_palindrome(s).
-```
-
-**3. Run the pipeline** — each command with its printed result line:
+**2. Run the pipeline** — each command with its printed result line
+(2 arms × 2 tasks × 3 repetitions = 12 trials, 6 paired comparisons):
 
 ```bash
 uv run bench plan scratch/quickstart/experiment.yaml --ledger scratch/quickstart/ledger.ndjson
@@ -171,7 +158,7 @@ uv run bench plan scratch/quickstart/experiment.yaml --ledger scratch/quickstart
 #   MDE=None  flags=assumption_based_mde, power_gate_skipped
 uv run bench run scratch/quickstart
 # ran 12 trials (infra_failures=0, stopped_cost_ceiling=False)
-uv run python -c 'from harness.sdk import ExperimentWorkspace as W; W("scratch/quickstart").inject_holdout_results(lambda arm, task: arm == "control")'
+uv run python -c 'from harness.sdk import ExperimentWorkspace as W; W("scratch/quickstart").inject_holdout_results(lambda arm, task: arm == "treatment")'
 uv run bench grade scratch/quickstart --runner local
 # graded 12 trial(s)
 uv run bench judge scratch/quickstart
@@ -198,10 +185,10 @@ Effect detected. Decision rule `delta_holdout_pass_rate > 0` ⇒ MET.
 
 > **The sign convention is the one thing people get backwards.** The paired delta
 > is **first-declared arm minus second-declared arm** (`arms[0] − arms[1]`; §2.1).
-> The starter spec declares `control` first, so injecting `arm == "control"` makes
-> control the winner precisely so the scaffold's `> 0` rule reads MET. When your
-> contender is the treatment, either declare it first or write the rule's
-> direction to match.
+> The starter spec declares your contender — `treatment` — first, so injecting
+> `arm == "treatment"` passes drives the delta to +1.0 and the scaffold's `> 0`
+> rule reads MET. In your own designs do the same: declare your contender first,
+> or aim the operator (and the rule's direction) the other way.
 
 **Where next.** §2 for what the four files mean (the locked contract); §4 for the
 full pipeline with forensics, selfcheck, and review; §6 to run real containers;
@@ -234,17 +221,20 @@ mkdir myexp && cd myexp
 ### 2.1 `experiment.yaml` — the pre-registration
 
 This is the cryptographic commitment. The schema is strict (`extra="forbid"`):
-an unknown key is a rejection, not a silent no-op. A minimal, valid spec:
+an unknown key is a rejection, not a silent no-op. A minimal, valid spec — the
+contender declared first, matching the delta sign convention below (this example
+pins a real-provider judge; the `bench init` scaffold ships the keyless `fake/`
+judge instead, §1.5):
 
 ```yaml
 arms:
-  - name: control
-    platform: claude_code
-    model: anthropic/claude-haiku-4-5-20251001
-    payload: {}
   - name: treatment
     platform: codex
     model: openai/gpt-4o-2024-08-06
+    payload: {}
+  - name: control
+    platform: claude_code
+    model: anthropic/claude-haiku-4-5-20251001
     payload: {}
 corpus: {id: public-mini, version: "1.0.0"}
 repetitions: 3
@@ -473,10 +463,11 @@ uv run bench run . --actor alice
 The fake engine is arm-blind, so on the fake path you stand in for the grader:
 write each trial's `holdout_results.json` into its workspace. One named SDK call
 does it for every trial (run from inside `myexp/`; the predicate decides pass/fail
-per `(arm, task_id)`, and the §1.5 sign-convention callout explains why `control`):
+per `(arm, task_id)`, and the §1.5 sign-convention callout explains why
+`treatment` — the first-declared arm, so its win drives the delta positive):
 
 ```bash
-uv run python -c 'from harness.sdk import ExperimentWorkspace as W; W(".").inject_holdout_results(lambda arm, task: arm == "control")'
+uv run python -c 'from harness.sdk import ExperimentWorkspace as W; W(".").inject_holdout_results(lambda arm, task: arm == "treatment")'
 ```
 
 The real grade path skips this — the container produces the results file. Each
