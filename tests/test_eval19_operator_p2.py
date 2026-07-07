@@ -93,7 +93,8 @@ def test_ac1_bundle_deterministic_selfcontained(tmp_path):
   await page.goto(FILEURL + '#/exp/exp-a/compare', { waitUntil: 'load' });
   await page.waitForTimeout(700);
   out.compare = await page.evaluate(() => ({
-    cards: document.querySelectorAll('.diff2').length,
+    // pairs are rows now (diff opens on expansion); count the rows the archive renders
+    cards: document.querySelectorAll('tr.pairjump').length,
     exploratory: document.body.textContent.includes('EXPLORATORY') }));
   await page.goto(FILEURL + '#/exp/exp-a/findings', { waitUntil: 'load' });
   await page.waitForTimeout(700);
@@ -300,26 +301,29 @@ def test_ac5_tallies_navigate(tmp_path):
         body = """
   await page.goto(BASE + '/#/exp/exp-a/compare', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
-  out.all = await page.evaluate(() => document.querySelectorAll('.diff2').length);
-  // the arm tally filters to exactly the pairs it counts, state in the URL
-  await page.evaluate(() => { [...document.querySelectorAll('.chip.click')].find(c => c.textContent.startsWith('treatment 1')).click(); });
+  // index and diff cards merged: a visible pair is a row (its diff opens on
+  // demand), so the filtered count is the row count, not the open-diff count
+  out.all = await page.evaluate(() => document.querySelectorAll('tr.pairjump').length);
+  // the arm tally is a statchip now: .l holds the label, .n the count; clicking
+  // filters to exactly the pairs it counts, state in the URL
+  await page.evaluate(() => { [...document.querySelectorAll('.statchip')].find(c => (c.querySelector('.l') || {}).textContent === 'treatment only').click(); });
   await page.waitForTimeout(600);
   out.slice = await page.evaluate(() => ({ route: location.hash,
-    cards: document.querySelectorAll('.diff2').length,
-    task: (document.querySelector('.card .toolbar b') || {}).textContent || '' }));
+    cards: document.querySelectorAll('tr.pairjump').length,
+    task: (document.querySelector('tr.pairjump b') || {}).textContent || '' }));
   await page.reload({ waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
   out.reloaded = await page.evaluate(() => ({ route: location.hash,
-    cards: document.querySelectorAll('.diff2').length }));
+    cards: document.querySelectorAll('tr.pairjump').length }));
   // a judge tally slices the advisory tier; re-clicking clears the slice
-  await page.evaluate(() => { [...document.querySelectorAll('.chip.click')].find(c => c.textContent.startsWith('unjudged 1')).click(); });
+  await page.evaluate(() => { [...document.querySelectorAll('.statchip')].find(c => (c.querySelector('.l') || {}).textContent === 'unjudged').click(); });
   await page.waitForTimeout(600);
   out.unjudged = await page.evaluate(() => ({ route: location.hash,
-    cards: document.querySelectorAll('.diff2').length }));
-  await page.evaluate(() => { [...document.querySelectorAll('.chip.on')].find(c => c.textContent.startsWith('unjudged 1')).click(); });
+    cards: document.querySelectorAll('tr.pairjump').length }));
+  await page.evaluate(() => { [...document.querySelectorAll('.statchip.on')].find(c => (c.querySelector('.l') || {}).textContent === 'unjudged').click(); });
   await page.waitForTimeout(600);
   out.cleared = await page.evaluate(() => ({ route: location.hash,
-    cards: document.querySelectorAll('.diff2').length }));
+    cards: document.querySelectorAll('tr.pairjump').length }));
   // a forensic flag chip deep-links to that trial's forensics tab
   await page.goto(BASE + '/#/exp/exp-a/trials', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1500);

@@ -8,13 +8,14 @@ const POLL_MS = 1500, FEED_MAX = 400, ETA_MIN_SAMPLE = 3;
 const VIEWS_KEY = "vb.views.v1";
 const FILTER_FIELDS = ["arm", "task", "outcome", "graded", "flagged"];
 const WILDCARD_FIELDS = ["task"];
-const SPARK_COLORS = ["var(--meter)", "var(--meter2)"];
+const SPARK_COLORS = ["var(--meter)", "var(--arm-b)"];
 const S = {
   experiments: null,          // /api/experiments rows
   exp: {},                    // per-experiment: {events, cursor, status, sel...}
   route: null,
   sel: 0,                     // selected row index on the current list screen
   paused: false, newCount: 0, // feed ergonomics
+  feedExpand: new Set(),      // which folded feed runs are expanded (transient drill-down)
   timer: null,
 };
 function expState(name) {
@@ -476,7 +477,7 @@ function homeState(e) {
 function renderHome(app) {
   const rows = S.experiments || [];
   const card = h("div", { class: "card" });
-  card.append(h("h2", { text: "Experiments" }));
+  card.append(h("div", { class: "eyebrow", style: "margin-bottom:8px", text: "Experiments" }));
   if (!rows.length) { card.append(h("div", { class: "empty", text: "No experiment directories (with a ledger.ndjson) found under this root." })); app.append(card); return; }
   const table = h("table");
   table.append(h("tr", {}, ...["experiment", "state", "arms", "cells", "", "spend", "graded", "judged", "selfcheck", "updated"].map(t => h("th", { text: t }))));
@@ -494,7 +495,15 @@ function renderHome(app) {
     } else {
       const armsTd = h("td", {});
       if (sm.arms && sm.arms.length) {
-        armsTd.append(h("div", { text: sm.arms.join(" vs ") }));
+        /* the arm identity dots ride the names here too — A is the spec's
+           first arm, matching compare and the verdict card [operator-ui §Tokens] */
+        const line = h("div", {});
+        sm.arms.forEach((a, k) => {
+          if (k) line.append(" vs ");
+          if (k < 2) line.append(h("span", { class: "armdot", style: "background: var(" + (k === 0 ? "--arm-a" : "--arm-b") + ")" }));
+          line.append(a);
+        });
+        armsTd.append(line);
         const models = (sm.arms || []).map(a => shortModel((sm.arm_models || {})[a])).filter(Boolean);
         if (models.length) armsTd.append(h("div", { class: "dim3", text: models.join(" vs ") }));
       } else armsTd.append(h("span", { class: "dim3", text: "—" }));
@@ -520,6 +529,24 @@ function renderHome(app) {
   card.append(table);
   app.append(card);
 }
+
+/* operator vocabulary for ledger event kinds [DESIGN feed humanization]: the
+   feed shows these words, the internal kind stays in each row's title, and the
+   filter logic still keys on the internal kind. Unknown kinds fall through. */
+const KIND_DISPLAY = {
+  trial: "trial finished", grade: "graded", cant_grade: "grading refused",
+  judge_verdict: "judge verdict (advisory)", human_verdict: "human verdict",
+  process_score: "process scored", trial_infra_failed: "infra failure",
+  experiment_locked: "plan locked", executed_order: "run order realized",
+  forensics_report: "forensics scan", forensic_quarantine: "quarantined",
+  forensic_spotcheck: "spot check", selfcheck: "selfcheck",
+  calibration_run: "calibration", findings_rendered: "findings rendered",
+  cant_analyze: "analysis refused", review_packet_built: "review packet",
+  reveal: "reveal", task_admitted: "task admitted",
+  contamination_probe: "contamination probe", chain_anchor: "chain anchored",
+  run_stopped_cost_ceiling: "stopped: cost ceiling",
+};
+function kindDisplay(k) { return KIND_DISPLAY[k] || k || "?"; }
 
 function summarize(ev) {
   const rec = ev.trial_record || {};
@@ -566,11 +593,42 @@ function feedTarget(ev) {
   return null;
 }
 function feedScrolled() { const el = document.getElementById("feedbox"); return !!el && el.scrollTop > 8; }
+/* one ledger event as a feed row: the operator-facing kind name shows, the
+   internal kind stays in the title, and the row deep-links where the event
+   lives [DESIGN feed humanization] */
+function feedRow(ev) {
+  const target = feedTarget(ev);
+  const li = h("li", { class: target ? "click" : "" },
+    h("span", { class: "ts", text: ((ev.provenance || {}).ts || "").replace("T", " ").slice(0, 19) }),
+    h("span", { class: "k", title: ev.event || "", text: kindDisplay(ev.event) }),
+    h("span", { text: summarize(ev) }));
+  if (target) li.addEventListener("click", () => nav(target));
+  return li;
+}
+/* a folded run of ≥3 same-kind events — "process scored × 16" with the newest
+   timestamp; clicking expands the run in place. The expansion set is transient
+   (a drill-down, fine to lose on the next poll re-render). */
+function toggleFeedRun(key) {
+  if (S.feedExpand.has(key)) S.feedExpand.delete(key); else S.feedExpand.add(key);
+  render();
+}
+function feedRunHeader(run, key, open) {
+  const newest = run[0];
+  const li = h("li", { class: "click", tabindex: "0",
+    onkeydown: (e) => { if (e.key === "Enter") toggleFeedRun(key); } },
+    h("span", { class: "ts", text: ((newest.provenance || {}).ts || "").replace("T", " ").slice(0, 19) }),
+    h("span", { class: "k", title: newest.event || "", text: (open ? "▾ " : "▸ ") + kindDisplay(newest.event) + " × " + run.length }),
+    h("span", { class: "dim3", text: open ? "newest first — click to fold" : "click to expand" }));
+  li.addEventListener("click", () => toggleFeedRun(key));
+  return li;
+}
 
-/* Client-side paired tallies for the overview strip. Mirrors compare.py's
-   summary arithmetic EXACTLY (the slicePred precedent) over the same ledger
-   events, so the strip always agrees with the compare screen. */
-function pairTallies(st) {
+/* The per-pair model behind BOTH the overview tallies and the pair tape: one
+   record per (task, repetition) pair in first-seen order, plus the aggregate
+   tally. Mirrors compare.py's summary arithmetic EXACTLY (the slicePred
+   precedent) over the same ledger events, so the tape cells and the tally
+   counts are always the same numbers — that agreement is a product invariant. */
+function pairModel(st) {
   const spec = st.status && st.status.stages && st.status.stages.spec;
   if (!spec || !spec.arms || spec.arms.length < 2) return null;
   const [armA, armB] = spec.arms;
@@ -582,27 +640,90 @@ function pairTallies(st) {
     else if (ev.event === "judge_verdict") { const v = ev.verdict || {};
       winners[v.comparison_id] = v.winner; }
   }
-  const cells = new Set();
-  for (const k of Object.keys(trials)) { const p = k.split("\u0000"); cells.add(p[0] + "\u0000" + p[1]); }
+  /* cells in first-seen order (Object.keys preserves insertion), so the tape
+     reads left→right the way the ledger filled the grid */
+  const cellKeys = [], seen = new Set();
+  for (const k of Object.keys(trials)) { const p = k.split("\u0000");
+    const cell = p[0] + "\u0000" + p[1];
+    if (!seen.has(cell)) { seen.add(cell); cellKeys.push(cell); }
+  }
   const t = { a: 0, b: 0, both: 0, neither: 0, graded_pairs: 0, pairs: 0,
               ja: 0, jb: 0, jtie: 0, jcant: 0, junjudged: 0 };
-  for (const cell of cells) {
-    const [task, rep] = cell.split("\u0000");
+  const cells = [];
+  for (const key of cellKeys) {
+    const [task, rep] = key.split("\u0000");
     const ta = trials[task + "\u0000" + rep + "\u0000" + armA], tb = trials[task + "\u0000" + rep + "\u0000" + armB];
-    if (ta === undefined || tb === undefined) continue;
+    if (ta === undefined || tb === undefined) continue;  /* not a pair: one arm has no trial */
     t.pairs += 1;
     const a = grades[ta], b = grades[tb];
+    let state = "ungraded";  /* not fully graded — dashed cell, excluded from tallies */
     if (a !== undefined && b !== undefined && a !== null && b !== null) {
       t.graded_pairs += 1;
-      if (a && b) t.both += 1; else if (a) t.a += 1; else if (b) t.b += 1; else t.neither += 1;
+      if (a && b) { t.both += 1; state = "both"; }
+      else if (a) { t.a += 1; state = "a"; }
+      else if (b) { t.b += 1; state = "b"; }
+      else { t.neither += 1; state = "neither"; }
     }
+    cells.push({ task, rep, state });
     /* "cmp-<task>-r<rep>" mirrors judge.assemble.comparison_id_for */
     const w = winners["cmp-" + task + "-r" + rep];
     if (w === "A") t.ja += 1; else if (w === "B") t.jb += 1;
     else if (w === "TIE") t.jtie += 1; else if (w === "CANT_JUDGE") t.jcant += 1;
     else t.junjudged += 1;
   }
-  return { armA, armB, t };
+  return { armA, armB, cells, t };
+}
+/* the aggregate tally alone — the verdict card's guard and its counts
+   [unchanged public shape: {armA, armB, t}] */
+function pairTallies(st) {
+  const m = pairModel(st);
+  return m ? { armA: m.armA, armB: m.armB, t: m.t } : null;
+}
+/* The pair tape [operator-ui §Signature]: the experiment's sign test drawn as a
+   strip of cells, one 14×14 cell per (task, rep) pair grouped by task. Every
+   cell's state comes from pairModel — the SAME derivation as the tallies — so
+   the tape and the counts can never disagree. A one-line legend renders beneath
+   always (relief rule: color never carries the state alone). */
+function pairTape(st, opts) {
+  opts = opts || {};
+  const model = pairModel(st);
+  if (!model || !model.cells.length) return null;
+  const { armA, armB, cells } = model;
+  const exp = encodeURIComponent(S.route.exp);
+  const stateText = { a: "only " + armA + " passed", b: "only " + armB + " passed",
+                      both: "both passed", neither: "neither passed", ungraded: "not fully graded" };
+  /* group cells by task in first-seen order; a gutter separates groups, the
+     task id is labelled beneath when there are few enough groups to read */
+  const order = [], groups = {};
+  for (const cell of cells) {
+    if (!(cell.task in groups)) { groups[cell.task] = []; order.push(cell.task); }
+    groups[cell.task].push(cell);
+  }
+  const showTids = opts.labels !== false && order.length <= 24;
+  const wrap = h("div", {});
+  const tape = h("div", { class: "tape" });
+  for (const task of order) {
+    const grp = h("div", { class: "tape-group" });
+    const row = h("div", { class: "tape-cells" });
+    for (const cell of groups[task])
+      /* one navigable cell — click/enter/space all reach its pair; a caller
+         already on the compare screen supplies onCell to open in place */
+      row.append(h("button", { type: "button", class: "tape-cell " + cell.state, tabindex: "0",
+        title: cell.task + " · rep " + cell.rep + " — " + stateText[cell.state],
+        onclick: opts.onCell ? (() => opts.onCell(cell))
+                             : (() => nav("#/exp/" + exp + "/compare")) }));
+    grp.append(row);
+    if (showTids) grp.append(h("div", { class: "tape-tid", title: task, text: task }));
+    tape.append(grp);
+  }
+  wrap.append(tape);
+  const legend = h("div", { class: "tape-legend" });
+  const item = (cls, label) => legend.append(h("span", {},
+    h("span", { class: "swatch " + cls }), label));
+  item("a", armA + " only"); item("b", armB + " only"); item("both", "both");
+  item("neither", "neither"); item("ungraded", "ungraded");
+  wrap.append(legend);
+  return wrap;
 }
 function renderExp(app) {
   const st = expState(S.route.exp), snap = st.status;
@@ -633,36 +754,58 @@ function renderExp(app) {
     if (target) { cell.setAttribute("tabindex", "0"); cell.addEventListener("click", () => nav(target)); }
     rail.append(cell);
   }
-  app.append(rail);
-
-  /* result so far: the same deterministic-first summary compare's banner
-     shows, one navigation away from the screen an operator lands on */
+  /* verdict card first [operator-ui §Overview]: the deterministic-first result made
+     the loudest thing on the screen — the same numbers compare shows, one nav
+     away. Renders only when there are pairs (same guard as the strip it
+     replaced). It is appended BEFORE the rail so the order reads verdict → rail
+     → tiles → feed. */
   const pt = pairTallies(st);
   if (pt && pt.t.pairs) {
-    const strip = h("div", { class: "card banner", style: "border-left-color: var(--meter)" });
     const { armA, armB, t } = pt;
+    const armModels = (stg.spec || {}).arm_models || {};
     const aPass = t.a + t.both, bPass = t.b + t.both;
-    const lead = aPass > bPass ? armA + " leads" : (bPass > aPass ? armB + " leads" : "tie");
-    const line1 = h("div", {});
-    line1.append(h("span", { class: "dim", text: "Result so far · holdout (deterministic): " }));
-    if (t.graded_pairs) {
-      line1.append(armA + " " + aPass + "/" + t.graded_pairs + " · " + armB + " " + bPass + "/" + t.graded_pairs + "  ");
-      line1.append(h("b", { text: "→ " + lead }));
-      if (t.pairs > t.graded_pairs) line1.append(h("span", { class: "dim3", text: "  · " + (t.pairs - t.graded_pairs) + " pair(s) not fully graded yet" }));
-    } else line1.append(h("span", { class: "dim3", text: "no fully graded pairs yet" }));
-    strip.append(line1);
+    const card = h("div", { class: "card verdict" });
+    card.append(h("div", { class: "eyebrow",
+      text: "Result so far · holdout (deterministic) · " + t.pairs + " pairs" }));
+    const nums = h("div", { class: "verdict-nums" });
+    /* each arm: an 8px identity dot, the 32px pass count over its graded
+       denominator, then the arm name + the model it ran */
+    const armBlock = (name, model, pass, dot) => {
+      const arm = h("div", { class: "verdict-arm" });
+      arm.append(h("div", { class: "verdict-top" },
+        h("span", { class: "verdict-dot", style: "background:" + dot }),
+        h("span", { class: "verdict-count", text: t.graded_pairs ? String(pass) : "—" }),
+        h("span", { class: "verdict-denom", text: "/" + t.graded_pairs })));
+      const sub = h("div", { class: "verdict-sub" }, h("b", { text: name }));
+      if (model) sub.append(h("span", { class: "dim3", text: " · " + shortModel(model) }));
+      arm.append(sub);
+      return arm;
+    };
+    nums.append(armBlock(armA, armModels[armA], aPass, "var(--arm-a)"),
+                armBlock(armB, armModels[armB], bPass, "var(--arm-b)"));
+    /* leading is identity, not virtue — weight carries it, never green/red */
+    if (!t.graded_pairs) nums.append(h("div", { class: "verdict-lead none", text: "no fully graded pairs yet" }));
+    else { const lead = aPass > bPass ? armA : (bPass > aPass ? armB : null);
+      nums.append(h("div", { class: "verdict-lead", text: lead ? "→ " + lead + " leads" : "→ tie" })); }
+    card.append(nums);
+    const tape = pairTape(st);
+    if (tape) card.append(tape);
+    /* one quiet advisory line — the judge never outranks the holdout, and the
+       ADVISORY label rides every judge readout [honesty invariant] */
     const judged = t.ja + t.jb + t.jtie + t.jcant;
-    const line2 = h("div", { style: "margin-top:3px" });
-    line2.append(h("span", { class: "dim", text: "Judge (ADVISORY): " }));
+    const judge = h("div", { class: "verdict-judge" }, h("span", { class: "eyebrow", text: "Judge" }));
     if (judged) {
       const jLean = t.jb > t.ja ? "leans " + armB : (t.ja > t.jb ? "leans " + armA : "tie/mixed");
-      line2.append(armA + " " + t.ja + " · " + armB + " " + t.jb + " · tie " + t.jtie + "  ", h("b", { text: "→ " + jLean }));
-    } else line2.append(h("span", { class: "dim3", text: "no verdicts yet" }));
-    line2.append(h("span", { class: "chip click", style: "margin-left:10px", tabindex: "0", text: "open compare →",
-      onclick: () => nav("#/exp/" + exp + "/compare") }));
-    strip.append(line2);
-    app.append(strip);
+      judge.append(armA + " " + t.ja + " · " + armB + " " + t.jb + " · tie " + t.jtie + " → " + jLean + " (ADVISORY)");
+    } else judge.append(h("span", { class: "dim3", text: "no verdicts yet (ADVISORY)" }));
+    card.append(judge);
+    /* honest denominator: pairs excluded from the tallies are named, not hidden */
+    const ungraded = t.pairs - t.graded_pairs;
+    if (ungraded > 0) card.append(h("div", { class: "verdict-excluded",
+      text: ungraded + " of " + t.pairs + " pair(s) not fully graded — excluded from tallies" }));
+    app.append(card);
   }
+  app.append(rail);
 
   const tiles = h("div", { class: "tiles" });
   const flight = snap.heartbeat && snap.heartbeat.in_flight;
@@ -731,44 +874,73 @@ function renderExp(app) {
   tiles.append(armsTile);
   app.append(tiles);
 
+  /* feed demotion [DESIGN]: the ledger feed is a drill-down now, collapsed to a
+     one-line disclosure whose open flag rides the URL — a poll re-render (every
+     POLL_MS) can never slam it shut mid-read. */
+  const feedOpen = S.route.params.get("feed") === "1";
+  const kindsPresent = [...new Set(st.events.map(e => e.event).filter(Boolean))];
   const feed = h("div", { class: "card" });
-  const bar = h("div", { class: "toolbar" });
-  bar.append(h("h2", { text: "Ledger feed (newest first)", style: "margin:0" }));
-  /* the workhorse kinds get fixed chips; any other kind actually on this
-     ledger gets one too, so no event class is only reachable via "all" */
-  const kinds = ["trial", "grade", "judge_verdict", "cant_grade", "trial_infra_failed"];
-  const extra = [...new Set(st.events.map(e => e.event))]
-    .filter(k => k && kinds.indexOf(k) < 0).sort().slice(0, 8);
-  const active = S.route.params.get("kind") || "";
-  bar.append(h("span", { class: "chip click" + (!active ? " on" : ""), tabindex: "0", text: "all", onclick: () => setParam("kind", null) }));
-  for (const k of kinds.concat(extra))
-    bar.append(h("span", { class: "chip click" + (active === k ? " on" : ""), tabindex: "0", text: k, onclick: () => setParam("kind", k) }));
-  bar.append(h("span", { class: "spacer" }));
-  if (S.newCount > 0)
-    bar.append(h("button", { class: "pill", text: S.newCount + " new ↑", onclick: () => {
-      S.newCount = 0; S.paused = false; render(); const el = document.getElementById("feedbox"); if (el) el.scrollTop = 0;
-    } }));
-  if (S.paused) bar.append(h("span", { class: "chip", text: "⏸ paused (hover)" }));
-  feed.append(bar);
-  const ul = h("ul", { id: "feedbox" });
-  const shown = st.events.filter(e => !active || e.event === active).slice(-FEED_MAX).reverse();
-  if (!shown.length) ul.append(h("li", {}, h("span", { class: "dim3", text: "no events yet" })));
-  for (const ev of shown) {
-    const target = feedTarget(ev);
-    const li = h("li", { class: target ? "click" : "" },
-      h("span", { class: "ts", text: ((ev.provenance || {}).ts || "").replace("T", " ").slice(0, 19) }),
-      h("span", { class: "k", text: ev.event || "?" }),
-      h("span", { text: summarize(ev) }));
-    if (target) li.addEventListener("click", () => nav(target));
-    ul.append(li);
+  const feedhead = h("div", { class: "feedhead", tabindex: "0",
+    onkeydown: (e) => { if (e.key === "Enter") setParam("feed", feedOpen ? null : "1"); } },
+    h("span", { class: "chev", text: feedOpen ? "▾" : "▸" }),
+    h("span", { class: "eyebrow", text: "Ledger feed" }),
+    h("span", { class: "dim3", text: "· " + st.events.length + " events · " + kindsPresent.length + " kinds" }));
+  feedhead.addEventListener("click", () => setParam("feed", feedOpen ? null : "1"));
+  feed.append(feedhead);
+  if (feedOpen) {
+    const bar = h("div", { class: "toolbar", style: "margin-top:8px" });
+    /* the workhorse kinds get fixed chips; any other kind actually on this
+       ledger gets one too, so no event class is only reachable via "all". Chip
+       labels are humanized; the filter still keys on the internal kind. */
+    const kinds = ["trial", "grade", "judge_verdict", "cant_grade", "trial_infra_failed"];
+    const extra = [...new Set(st.events.map(e => e.event))]
+      .filter(k => k && kinds.indexOf(k) < 0).sort().slice(0, 8);
+    const active = S.route.params.get("kind") || "";
+    bar.append(h("span", { class: "chip click" + (!active ? " on" : ""), tabindex: "0", text: "all", onclick: () => setParam("kind", null) }));
+    for (const k of kinds.concat(extra))
+      bar.append(h("span", { class: "chip click" + (active === k ? " on" : ""), tabindex: "0",
+        title: k, text: kindDisplay(k), onclick: () => setParam("kind", k) }));
+    bar.append(h("span", { class: "spacer" }));
+    if (S.newCount > 0)
+      bar.append(h("button", { class: "pill", text: S.newCount + " new ↑", onclick: () => {
+        S.newCount = 0; S.paused = false; render(); const el = document.getElementById("feedbox"); if (el) el.scrollTop = 0;
+      } }));
+    if (S.paused) bar.append(h("span", { class: "chip", text: "⏸ paused (hover)" }));
+    feed.append(bar);
+    const ul = h("ul", { id: "feedbox" });
+    const shown = st.events.filter(e => !active || e.event === active).slice(-FEED_MAX).reverse();
+    if (!shown.length) ul.append(h("li", {}, h("span", { class: "dim3", text: "no events yet" })));
+    else if (active) {
+      /* a kind is already isolated — show every row, do not fold the filtered
+         stream (which is one long run) behind a single collapse line */
+      for (const ev of shown) ul.append(feedRow(ev));
+    } else {
+      /* fold consecutive runs (≥3) of one kind into a single expandable row, so
+         a burst reads as "process scored × 16", not sixteen identical lines */
+      let i = 0;
+      while (i < shown.length) {
+        let j = i;
+        while (j < shown.length && shown[j].event === shown[i].event) j += 1;
+        const run = shown.slice(i, j);
+        if (run.length >= 3) {
+          const newest = run[0];
+          const key = run[0].event + " " + ((newest.provenance || {}).ts || "") + " " + run.length;
+          const open = S.feedExpand.has(key);
+          ul.append(feedRunHeader(run, key, open));
+          if (open) for (const ev of run) ul.append(feedRow(ev));
+        } else for (const ev of run) ul.append(feedRow(ev));
+        i = j;
+      }
+    }
+    feed.append(ul);
   }
-  feed.append(ul);
   app.append(feed);
 }
 
 function gradeChip(t) {
   const cls = { pass: "chip ok", fail: "chip bad", cant_grade: "chip bad", pending: "chip" }[t.graded];
-  return h("span", { class: cls, text: t.graded });
+  const word = { cant_grade: "can't grade" }[t.graded] || t.graded;
+  return h("span", { class: cls, title: t.graded, text: word });
 }
 
 /* the one ordering both the table and the j/k keyboard walk use; default is
@@ -800,7 +972,11 @@ function renderTrials(app) {
   if (gate) { app.append(gate); return; }
   const all = deriveTrials(st);
   const rows = visibleTrials(st, p);
-  const facetBar = h("div", { class: "toolbar card" });
+  /* one filter card, two rows [operator-ui §Everywhere]: the facet chips + typed
+     grammar above, saved views below — the same closed grammar and the same
+     URL state as before, with less chrome between the operator and the table */
+  const filters = h("div", { class: "card" });
+  const facetBar = h("div", { class: "toolbar" });
   const facet = (key, values) => {
     const cur = p.get(key);
     if (cur) {
@@ -841,22 +1017,11 @@ function renderTrials(app) {
   if (S.filterErr) facetBar.append(h("span", { class: "gerr", id: "gramerr", text: "parse error: " + S.filterErr }));
   facetBar.append(h("span", { class: "spacer" }),
     h("span", { class: "dim3", text: rows.length + " of " + all.length + " trials · filters live in the URL" }));
-  app.append(facetBar);
-  if (p.get("help")) {
-    const help = h("div", { class: "card", id: "gramcard" });
-    help.append(h("h2", { text: "Filter grammar (closed — anything else is a parse error)" }));
-    for (const line of [
-      "field:value — filter one facet; fields: " + FILTER_FIELDS.join(", "),
-      "-field:value — negate a field term (a literal leading '-' in a value is not expressible)",
-      "task:t1* — '*' wildcards on id-like fields (" + WILDCARD_FIELDS.join(", ") + "); wildcarded terms match the whole id",
-      "bare words — free text over trial/task ids (substring; a word with '*' matches a whole id)",
-      "terms are space-separated; one term per field — duplicates and unknown fields are parse errors",
-    ]) help.append(h("div", { class: "dim", text: line }));
-    app.append(help);
-  }
+  filters.append(facetBar);
   /* saved views: stored URL fragments, local to this browser [EVAL-19 AC-3] */
-  const viewsBar = h("div", { class: "toolbar card" });
-  viewsBar.append(h("h2", { text: "Views", style: "margin:0" }));
+  const viewsBar = h("div", { class: "toolbar",
+    style: "margin-top:8px; padding-top:8px; border-top: 1px solid var(--hairline)" });
+  viewsBar.append(h("span", { class: "eyebrow", text: "views" }));
   for (const v of loadViews()) {
     viewsBar.append(h("span", { class: "chip click", tabindex: "0", text: "view: " + v.name,
       onclick: () => { location.hash = v.hash; } }));
@@ -871,7 +1036,20 @@ function renderTrials(app) {
   if (S.viewsErr) viewsBar.append(h("span", { class: "gerr", id: "viewserr", text: S.viewsErr }));
   viewsBar.append(h("span", { class: "spacer" }),
     h("span", { class: "dim3", text: "a saved view is a stored URL — copy the link to share it" }));
-  app.append(viewsBar);
+  filters.append(viewsBar);
+  app.append(filters);
+  if (p.get("help")) {
+    const help = h("div", { class: "card", id: "gramcard" });
+    help.append(h("h2", { text: "Filter grammar (closed — anything else is a parse error)" }));
+    for (const line of [
+      "field:value — filter one facet; fields: " + FILTER_FIELDS.join(", "),
+      "-field:value — negate a field term (a literal leading '-' in a value is not expressible)",
+      "task:t1* — '*' wildcards on id-like fields (" + WILDCARD_FIELDS.join(", ") + "); wildcarded terms match the whole id",
+      "bare words — free text over trial/task ids (substring; a word with '*' matches a whole id)",
+      "terms are space-separated; one term per field — duplicates and unknown fields are parse errors",
+    ]) help.append(h("div", { class: "dim", text: line }));
+    app.append(help);
+  }
 
   const selId = p.get("sel");
   const wrap = selId ? h("div", { class: "split" }) : h("div");
@@ -883,41 +1061,77 @@ function renderTrials(app) {
     const table = h("table");
     const currency = ((st.status && st.status.stages) || {}).spend || {};
     const sortRaw = p.get("sort") || "";
+    /* visible-row aggregates ride the column headers [operator-ui §Compare
+       precedent]: the numbers describe exactly the rows below them */
+    const agg = { pass: 0, fail: 0, cant: 0, pending: 0, cost: 0, costMeasured: 0, unmeasured: 0 };
+    for (const t of rows) {
+      if (t.graded === "pass") agg.pass += 1; else if (t.graded === "fail") agg.fail += 1;
+      else if (t.graded === "cant_grade") agg.cant += 1; else agg.pending += 1;
+      if (t.cost === null || t.cost === undefined) agg.unmeasured += 1;
+      else { agg.cost += t.cost; agg.costMeasured += 1; }
+      if (t.wall === null || t.wall === undefined) agg.unmeasured += 1;
+    }
+    /* A/B identity from the spec's arm order — the same mapping the verdict
+       card and compare use, so blue/orange mean the same thing everywhere */
+    const arms = (((st.status || {}).stages || {}).spec || {}).arms || [];
+    const armDot = (arm) => {
+      const i = arms.indexOf(arm);
+      if (i !== 0 && i !== 1) return null;
+      return h("span", { class: "armdot", style: "background: var(" + (i === 0 ? "--arm-a" : "--arm-b") + ")" });
+    };
     const headRow = h("tr", {});
-    headRow.append(h("th", { text: "trial" }));
+    /* the work comes first: task/arm/outcome lead, the opaque id sits last */
     const heads = [["task", "task"], ["arm", "arm"], ["rep", "rep"], ["outcome", "outcome"],
                    ["grade", "grade"], ["cost", "cost" + (currency.currency ? " (" + currency.currency + ")" : "")],
                    ["wall", "wall (s)"]];
     for (const [field, label] of heads) {
-      const on = sortRaw === field || sortRaw === "-" + field;
       const mark = sortRaw === field ? " ▲" : (sortRaw === "-" + field ? " ▼" : "");
       const th = h("th", { class: "sortable", tabindex: "0", text: label + mark,
         title: "sort · state lives in the URL" });
       /* cycle: none -> desc -> asc -> none */
       th.addEventListener("click", () => setParam("sort",
         sortRaw === "-" + field ? field : (sortRaw === field ? null : "-" + field)));
+      if (field === "grade") {
+        const bits = [agg.pass + " pass", agg.fail + " fail"];
+        if (agg.cant) bits.push(agg.cant + " can't");
+        if (agg.pending) bits.push(agg.pending + " pending");
+        th.append(h("div", { class: "thsub", text: bits.join(" · ") }));
+      }
+      if (field === "cost" && agg.costMeasured)
+        th.append(h("div", { class: "thsub", text: fmt(agg.cost) + " total" }));
       headRow.append(th);
     }
     headRow.append(h("th", { text: "flags" }));
+    headRow.append(h("th", { text: "trial" }));
     table.append(headRow);
     rows.forEach((t, i) => {
       const tr = h("tr", { class: "row" + (i === S.sel || t.trial_id === selId ? " sel" : "") });
       tr.addEventListener("click", () => setParam("sel", t.trial_id));
+      const armTd = h("td", {});
+      const dot = armDot(t.arm);
+      if (dot) armTd.append(dot);
+      armTd.append(t.arm);
       tr.append(
-        h("td", { class: "mono", title: t.trial_id, text: t.trial_id.slice(0, 16) + "…" }),
-        h("td", { text: t.task_id }), h("td", { text: t.arm }), h("td", { class: "mono", text: String(t.repetition) }),
+        h("td", {}, h("b", { text: t.task_id })),
+        armTd,
+        h("td", { class: "mono", text: String(t.repetition) }),
         h("td", {}, h("span", { class: "chip" + (t.outcome === "completed" ? "" : " warn"), text: t.outcome })),
         h("td", {}, gradeChip(t)),
-        h("td", { class: "mono", text: t.cost === null || t.cost === undefined ? "—" : fmt(t.cost) }),
-        h("td", { class: t.wall === null || t.wall === undefined ? "dim3" : "mono", text: nm(t.wall) }),
+        h("td", { class: "mono", title: t.cost === null || t.cost === undefined ? "not measured" : "",
+          text: t.cost === null || t.cost === undefined ? "—" : fmt(t.cost) }),
+        h("td", { class: "mono", title: t.wall === null || t.wall === undefined ? "not measured" : "",
+          text: t.wall === null || t.wall === undefined ? "—" : fmt(t.wall) }),
         h("td", {}, ...(t.flagged ? [h("span", { class: "chip bad click", tabindex: "0", text: "⚑ flag",
                      onclick: (e) => { e.stopPropagation();  /* deep link, not row select [EVAL-19 AC-5] */
                        nav("#/exp/" + encodeURIComponent(S.route.exp) + "/trial/" + encodeURIComponent(t.trial_id) + "?tab=forensics"); } })] : []),
                    ...(t.quarantined ? [h("span", { class: "chip bad", text: "quarantined" })] : []),
-                   ...(t.egress ? [h("span", { class: "chip warn", text: "egress " + t.egress })] : [])));
+                   ...(t.egress ? [h("span", { class: "chip warn", text: "egress " + t.egress })] : [])),
+        h("td", { class: "mono dim3", title: t.trial_id, text: t.trial_id.slice(0, 16) + "…" }));
       table.append(tr);
     });
     card.append(table);
+    /* absence gets ONE footnote, not a phrase per cell [operator-ui §Everywhere] */
+    if (agg.unmeasured) card.append(h("div", { class: "dim3", style: "margin-top:6px", text: "— = not measured" }));
   }
   wrap.append(card);
   if (selId) {
@@ -933,7 +1147,9 @@ function renderTrials(app) {
       if (t.quarantined) marks.append(h("span", { class: "chip bad", text: "quarantined" }));
       if (t.egress) marks.append(h("span", { class: "chip warn", text: "egress " + t.egress }));
       panel.append(marks);
-      panel.append(h("div", { class: "dim", text: "cost " + (t.cost === null || t.cost === undefined ? "—" : fmt(t.cost)) + " · wall " + nm(t.wall) }));
+      panel.append(h("div", { class: "dim mono", title: "— = not measured",
+        text: "cost " + (t.cost === null || t.cost === undefined ? "—" : fmt(t.cost))
+          + " · wall " + (t.wall === null || t.wall === undefined ? "—" : fmt(t.wall)) }));
       /* the pair's advisory verdict, when the judge has spoken on this cell */
       const w = pairVerdict(st, t.task_id, t.repetition);
       if (w) panel.append(h("div", { class: "dim", style: "margin-top:4px",
@@ -958,13 +1174,66 @@ function pairVerdict(st, taskId, rep) {
   return null;
 }
 
+/* agent lanes [operator-ui §Trial process]: first-seen order over reasoning and
+   steps; six categorical slots, then muted ink. The agent NAME always rides
+   the color (relief rule) — color alone never identifies an agent. A trial
+   with no attribution anywhere gets no lane machinery at all: the page never
+   invents a "main agent" the record did not declare. */
+const LANE_VARS = ["var(--lane-1)", "var(--lane-2)", "var(--lane-3)",
+                   "var(--lane-4)", "var(--lane-5)", "var(--lane-6)"];
+function laneModel(d) {
+  const steps = ((d.trajectory || {}).steps) || [];
+  const entries = ((d.flight_recorder || {}).entries) || [];
+  const order = [], totals = {};
+  const see = (agent) => {
+    const key = agent || "unattributed";
+    if (!(key in totals)) { totals[key] = { rows: 0, tokens: 0, measured: false }; order.push(key); }
+    return totals[key];
+  };
+  const count = (t, tokens) => { t.rows += 1;
+    if (tokens !== null && tokens !== undefined) { t.tokens += tokens; t.measured = true; } };
+  for (const e of entries) count(see(e.agent), e.tokens);
+  for (const s of steps) count(see(s.agent), s.tokens);
+  const color = {};
+  order.forEach((a, i) => { color[a] = LANE_VARS[i] || "var(--ink-3)"; });
+  let maxTok = 0;
+  for (const e of entries) if (e.tokens) maxTok = Math.max(maxTok, e.tokens);
+  for (const s of steps) if (s.tokens) maxTok = Math.max(maxTok, s.tokens);
+  /* lanes are real only when the record attributes at least one agent */
+  const lanes = order.length > 1 || (order.length === 1 && order[0] !== "unattributed");
+  return { order, totals, color, maxTok, lanes };
+}
+/* the measured-usage cell: a bar scaled to the trial max plus the exact
+   count. No tokens = no bar and no number — unmeasured is never zero. */
+function tokCell(tokens, color, maxTok) {
+  const cell = h("span", { class: "tokcell" });
+  if (tokens === null || tokens === undefined) return cell;
+  if (maxTok > 0) {
+    const track = h("span", { class: "track" });
+    track.append(h("span", { class: "fill", style: "display:block; background:" + (color || "var(--ink-3)")
+      + "; width:" + Math.max(3, Math.round(100 * tokens / maxTok)) + "%" }));
+    cell.append(track);
+  }
+  cell.append(h("span", { class: "num", text: fmt(tokens, 0) + " tok" }));
+  return cell;
+}
+function laneProps(agent, ctx) {
+  const key = agent || "unattributed";
+  const cls = (ctx && ctx.lanes ? " lane" : "")
+    + (ctx && ctx.filter && key !== ctx.filter ? " dimrow" : "");
+  const style = ctx && ctx.lanes && agent ? "border-left-color:" + ctx.color[key] : "";
+  return { cls, style };
+}
+/* short operator glyphs for step kinds; unknown kinds show themselves */
+const KIND_GLYPH = { file_edit: "edit", test_run: "run", message: "msg" };
 /* one trajectory step as a timeline row — shared by the trajectory tab and
    the process view, so an action renders identically in both */
-function stepLi(s) {
+function stepLi(s, ctx) {
+  const lane = laneProps(s.agent, ctx);
   const headline = s.command ? s.command : (s.files_touched || []).join(", ");
-  const li = h("li", {},
+  const li = h("li", { class: lane.cls.trim(), style: lane.style },
     h("span", { class: "t", text: s.relative_ts === null || s.relative_ts === undefined ? "—" : fmt(s.relative_ts, 0) + "s" }),
-    h("span", { class: "ico", text: s.kind }));
+    h("span", { class: "ico", title: s.kind, text: KIND_GLYPH[s.kind] || s.kind }));
   /* multi-agent attribution [EVAL-21]: name the sub-agent when the
      record carries it; single-agent/pre-v3 records stay unlabeled */
   if (s.agent) li.append(h("span", { class: "agent", text: s.agent }));
@@ -976,21 +1245,34 @@ function stepLi(s) {
     body.append(h("pre", { class: "code", style: "margin-top:2px", text: s.detail }));
   if (!headline && (s.detail === null || s.detail === undefined))
     body.append(h("div", { class: "mono dim3", text: "(not captured in this record version)" }));
-  li.append(body,
-    h("span", { class: "dim3", text: (s.exit_code === null || s.exit_code === undefined ? "" : " exit " + s.exit_code) +
-      (s.tokens === null || s.tokens === undefined ? "" : " · " + fmt(s.tokens, 0) + " tok") }));
+  li.append(body);
+  if (s.exit_code !== null && s.exit_code !== undefined)
+    li.append(h("span", { class: "dim3", text: "exit " + s.exit_code }));
+  li.append(tokCell(s.tokens, ctx && s.agent ? ctx.color[s.agent] : null, ctx ? ctx.maxTok : 0));
   return li;
 }
-/* one reasoning span as a timeline row — visually a THOUGHT, not an action */
-function thoughtLi(e) {
-  const li = h("li", { class: "thought" },
+/* one reasoning span as a timeline row — visually a THOUGHT, not an action.
+   Long bodies clamp to six lines; "show all" expands in place and the
+   expanded set rides the URL (?th=idx,idx), surviving the poll re-render. */
+function thoughtLi(e, ctx, clampKey) {
+  const lane = laneProps(e.agent, ctx);
+  const li = h("li", { class: ("thought " + lane.cls).trim(), style: lane.style },
     h("span", { class: "t", text: e.relative_ts === null || e.relative_ts === undefined ? "—" : fmt(e.relative_ts, 0) + "s" }),
     h("span", { class: "ico think", text: "thought" }));
   if (e.agent) li.append(h("span", { class: "agent", text: e.agent }));
   const body = h("div", { style: "min-width:0; flex:1" });
-  body.append(h("div", { class: "reasonrow", text: e.content }));
-  li.append(body,
-    h("span", { class: "dim3", text: e.tokens === null || e.tokens === undefined ? "" : fmt(e.tokens, 0) + " tok" }));
+  const long = clampKey !== undefined && String(e.content || "").length > 420;
+  const thOpen = new Set((S.route.params.get("th") || "").split(",").filter(Boolean));
+  const open = long && thOpen.has(String(clampKey));
+  body.append(h("div", { class: "reasonrow" + (long && !open ? " clamp" : ""), text: e.content }));
+  if (long) body.append(h("button", { class: "showall", type: "button",
+    text: open ? "collapse" : "show all",
+    onclick: () => {
+      const set = new Set((S.route.params.get("th") || "").split(",").filter(Boolean));
+      if (open) set.delete(String(clampKey)); else set.add(String(clampKey));
+      setParam("th", [...set].join(",") || null);
+    } }));
+  li.append(body, tokCell(e.tokens, ctx && e.agent ? ctx.color[e.agent] : null, ctx ? ctx.maxTok : 0));
   return li;
 }
 /* The unified process view [flight-recorder charter]: ONE timeline tracing the
@@ -998,7 +1280,8 @@ function thoughtLi(e) {
    record DECLARES — a reasoning entry with a v3 ``turn`` renders before its
    step (thought precedes action); one with only ``relative_ts`` merges by the
    shared trial clock; one with neither is listed unlinked in capture order.
-   Nothing is inferred, reordered by guesswork, or dropped. */
+   Nothing is inferred, reordered by guesswork, or dropped. Filtering an agent
+   DIMS the other lanes, never removes them — the timeline stays whole. */
 function renderProcess(card, d) {
   const steps = d.trajectory.steps;
   const fr = d.flight_recorder || {};
@@ -1010,32 +1293,58 @@ function renderProcess(card, d) {
     card.append(h("div", { class: "empty", text: "trajectory " + d.trajectory.status + (fr.status === "absent" ? " · no reasoning captured" : "") + " — no process to show" }));
     return;
   }
+  const lanes = laneModel(d);
+  const filter = S.route.params.get("agent") || null;
+  const ctx = { color: lanes.color, maxTok: lanes.maxTok, lanes: lanes.lanes,
+                filter: lanes.lanes && lanes.order.indexOf(filter) >= 0 ? filter : null };
+  if (lanes.lanes) {
+    /* the cast of agents, first-seen order, with per-agent totals: a legend
+       that filters. Totals show only what was measured. */
+    const bar = h("div", { class: "agentbar" });
+    bar.append(h("span", { class: "eyebrow", text: "agents" }));
+    for (const a of lanes.order) {
+      const t = lanes.totals[a];
+      bar.append(h("button", { type: "button", class: "agentchip" + (ctx.filter === a ? " on" : ""),
+        title: ctx.filter === a ? "showing " + a + " at full strength — click to reset"
+                                : "dim the other agents' rows (the timeline stays whole)",
+        onclick: () => setParam("agent", ctx.filter === a ? null : a) },
+        h("span", { class: "dot", style: "background:" + lanes.color[a] }), a,
+        h("span", { class: "sub", text: t.rows + (t.measured ? " · " + fmt(t.tokens, 0) + " tok" : "") })));
+    }
+    if (filter && lanes.order.indexOf(filter) < 0)
+      bar.append(h("span", { class: "gerr", text: "unknown agent '" + filter + "' — ignored" }));
+    card.append(bar);
+  }
   card.append(h("div", { class: "dim3", style: "margin-bottom:8px",
     text: "one timeline — thought (flight recorder) interleaved with action (trajectory), both sha-verified; placement is the stack's own declared linkage, never inferred" }));
+  /* capture-order index rides each entry: it keys the clamp state and never
+     changes when the interleave regroups rows */
+  const wrapped = entries.map((e, idx) => ({ e, idx }));
   const byTurn = {}, tsOnly = [], unlinked = [];
-  for (const e of entries) {
+  for (const w of wrapped) {
+    const e = w.e;
     const hasTurn = e.turn !== null && e.turn !== undefined;
     if (hasTurn && steps !== null && e.turn < steps.length)
-      (byTurn[e.turn] = byTurn[e.turn] || []).push(e);
+      (byTurn[e.turn] = byTurn[e.turn] || []).push(w);
     else if (hasTurn)
       /* a DECLARED link whose step is unavailable is a broken link to state,
          never a license to re-place the thought by some other signal */
-      unlinked.push({ entry: e, note: "declared turn " + e.turn + " — step unavailable" });
-    else if (e.relative_ts !== null && e.relative_ts !== undefined) tsOnly.push(e);
-    else unlinked.push({ entry: e, note: null });
+      unlinked.push({ w, note: "declared turn " + e.turn + " — step unavailable" });
+    else if (e.relative_ts !== null && e.relative_ts !== undefined) tsOnly.push(w);
+    else unlinked.push({ w, note: null });
   }
-  tsOnly.sort((a, b) => a.relative_ts - b.relative_ts);  /* stable: capture order breaks ties */
+  tsOnly.sort((a, b) => a.e.relative_ts - b.e.relative_ts);  /* stable: capture order breaks ties */
   const ul = h("ul", { class: "steps" });
   let cursor = 0;
   const flushTs = (limit) => {
-    while (cursor < tsOnly.length && (limit === null || tsOnly[cursor].relative_ts <= limit)) {
-      ul.append(thoughtLi(tsOnly[cursor])); cursor += 1;
+    while (cursor < tsOnly.length && (limit === null || tsOnly[cursor].e.relative_ts <= limit)) {
+      ul.append(thoughtLi(tsOnly[cursor].e, ctx, tsOnly[cursor].idx)); cursor += 1;
     }
   };
   (steps || []).forEach((s, i) => {
     if (s.relative_ts !== null && s.relative_ts !== undefined) flushTs(s.relative_ts);
-    for (const e of byTurn[i] || []) ul.append(thoughtLi(e));  /* thought precedes its action */
-    ul.append(stepLi(s));
+    for (const w of byTurn[i] || []) ul.append(thoughtLi(w.e, ctx, w.idx));  /* thought precedes its action */
+    ul.append(stepLi(s, ctx));
   });
   flushTs(null);
   card.append(ul);
@@ -1045,7 +1354,7 @@ function renderProcess(card, d) {
       text: "spans whose position in the timeline is not declared — they belong to this trial, placement unknown (honest, not hidden)" }));
     const ul2 = h("ul", { class: "steps" });
     for (const u of unlinked) {
-      const li = thoughtLi(u.entry);
+      const li = thoughtLi(u.w.e, ctx, u.w.idx);
       if (u.note) li.append(h("span", { class: "gerr", text: " " + u.note }));
       ul2.append(li);
     }
@@ -1070,16 +1379,17 @@ function renderTrial(app) {
     h("button", { class: "btn", text: "compare →", onclick: () => nav("#/exp/" + encodeURIComponent(S.route.exp) + "/compare") }),
     h("button", { class: "btn", text: "← trials", onclick: () => nav("#/exp/" + encodeURIComponent(S.route.exp) + "/trials") }));
   /* what this trial cost and how long it ran — the record's telemetry, with
-     absence stated, never zeroed [EVAL-4-D004] */
+     absence as a compact "—" (one tooltip explains it), never zeroed and
+     never a sentence of "not measured"s [EVAL-4-D004, operator-ui §Trial process] */
   const tel = rec.telemetry || {};
-  const telBits = [
-    "cost " + (tel.cost === null || tel.cost === undefined ? "not measured" : fmt(tel.cost)),
-    "wall " + (tel.wall_time_s === null || tel.wall_time_s === undefined ? "not measured" : fmtDur(tel.wall_time_s)),
-    "tokens in " + (tel.tokens_in === null || tel.tokens_in === undefined ? "—" : fmt(tel.tokens_in, 0))
-      + " · out " + (tel.tokens_out === null || tel.tokens_out === undefined ? "—" : fmt(tel.tokens_out, 0)),
-    "tool calls " + (tel.tool_calls === null || tel.tool_calls === undefined ? "—" : fmt(tel.tool_calls, 0)),
-  ];
-  head.append(h("div", { class: "dim3", style: "flex-basis:100%", text: telBits.join("  ·  ") }));
+  const telVal = (v, f) => (v === null || v === undefined) ? "—" : f(v);
+  const telLine = "cost " + telVal(tel.cost, (x) => fmt(x))
+    + " · wall " + telVal(tel.wall_time_s, fmtDur)
+    + " · tokens in " + telVal(tel.tokens_in, (x) => fmt(x, 0))
+    + " / out " + telVal(tel.tokens_out, (x) => fmt(x, 0))
+    + " · tool calls " + telVal(tel.tool_calls, (x) => fmt(x, 0));
+  head.append(h("div", { class: "dim3 mono", style: "flex-basis:100%",
+    title: "— = not measured", text: telLine }));
   /* the advisory verdict on this trial's pair, surfaced where the operator
      is looking — the data was always in the payload */
   for (const v of d.verdicts || [])
@@ -1100,7 +1410,9 @@ function renderTrial(app) {
     else if (!steps.length) card.append(h("div", { class: "empty", text: "trajectory verified, zero steps" }));
     else {
       const ul = h("ul", { class: "steps" });
-      for (const s of steps) ul.append(stepLi(s));
+      const lanes = laneModel(d);
+      const ctx = { color: lanes.color, maxTok: lanes.maxTok, lanes: lanes.lanes, filter: null };
+      for (const s of steps) ul.append(stepLi(s, ctx));
       card.append(ul);
     }
   } else if (tab === "process") {
@@ -1152,10 +1464,13 @@ function shortModel(m) { return m ? m.split("/").pop().replace(/-\d{8}$/, "") : 
 
 function armHead(c) {
   // label the two-column layout so it's unambiguous which side is arm A vs B,
-  // and name the model each arm actually ran
+  // and name the model each arm actually ran; the identity dot rides every
+  // arm label so the color legend travels with the name [operator-ui §Tokens]
   return h("div", { class: "armhead" },
-    h("div", {}, "A · " + c.arm_a, h("span", { class: "amodel", text: shortModel(c.arm_a_model) })),
-    h("div", {}, "B · " + c.arm_b, h("span", { class: "amodel", text: shortModel(c.arm_b_model) })));
+    h("div", {}, h("span", { class: "armdot", style: "background: var(--arm-a)" }),
+      "A · " + c.arm_a, h("span", { class: "amodel", text: shortModel(c.arm_a_model) })),
+    h("div", {}, h("span", { class: "armdot", style: "background: var(--arm-b)" }),
+      "B · " + c.arm_b, h("span", { class: "amodel", text: shortModel(c.arm_b_model) })));
 }
 
 function reasoningCol(entries) {
@@ -1186,14 +1501,6 @@ function reasoningCol(entries) {
   return col;
 }
 
-/* a holdout state chip that keeps null honest: pass green, fail red,
-   ungraded PLAIN — unmeasured must never wear failure red [EVAL-4-D004] */
-function holdoutChip(armName, pass) {
-  if (pass === null || pass === undefined)
-    return h("span", { class: "chip", text: armName + " holdout: ungraded" });
-  return h("span", { class: "chip " + (pass ? "ok" : "bad"),
-    text: armName + " holdout " + (pass ? "✓" : "✕") });
-}
 function renderCompare(app) {
   const st = expState(S.route.exp);
   const gate = withheldCard(st);
@@ -1203,55 +1510,90 @@ function renderCompare(app) {
   if (c.error) { app.append(h("div", { class: "card", text: c.error })); return; }
   const only = S.route.params.get("only") === "disagreements";
   const head = h("div", { class: "toolbar card" });
-  head.append(h("b", { text: "Compare — A: " + c.arm_a + " (" + shortModel(c.arm_a_model) + ")  vs  B: " + c.arm_b + " (" + shortModel(c.arm_b_model) + ")" }),
+  const title = h("b", {});
+  title.append("Compare — ", h("span", { class: "armdot", style: "background: var(--arm-a)" }),
+    "A · " + c.arm_a, h("span", { class: "dim3", text: " " + shortModel(c.arm_a_model) + "  " }),
+    " vs  ", h("span", { class: "armdot", style: "background: var(--arm-b)" }),
+    "B · " + c.arm_b, h("span", { class: "dim3", text: " " + shortModel(c.arm_b_model) }));
+  head.append(title,
     h("span", { class: "chip" + (c.official_ready ? " ok" : ""), text: c.official_ready ? "official fence PASSES" : "EXPLORATORY — official fence not passed" }));
   head.append(h("span", { class: "spacer" }),
     h("span", { class: "chip click" + (only ? " on" : ""), tabindex: "0", text: "only disagreements (" + c.summary.disagreements + ")" + (only ? " ✕" : ""),
       onclick: () => setParam("only", only ? null : "disagreements") }));
   app.append(head);
-  { // plain-language result banner: who won on the primary metric + advisory judge
+  { // the same verdict the overview leads with, compact: counts wear the arm
+    // dots, the lead is weight not color, the judge stays one advisory line
     const H = c.summary.holdout, J = c.summary.judge;
     const pairs = H.a_only + H.b_only + H.both + H.neither;
     const ungraded = c.summary.pairs - pairs;
     const aPass = H.a_only + H.both, bPass = H.b_only + H.both;
-    const holdoutOut = aPass > bPass ? "→ " + c.arm_a : (bPass > aPass ? "→ " + c.arm_b : "→ tie");
+    const holdoutOut = aPass > bPass ? "→ " + c.arm_a + " leads" : (bPass > aPass ? "→ " + c.arm_b + " leads" : "→ tie");
     const judgeLean = J.b > J.a ? "→ leans " + c.arm_b : (J.a > J.b ? "→ leans " + c.arm_a : "→ tie/mixed");
-    const banner = h("div", { class: "card banner" });
-    const l1 = h("div", {}, h("span", { class: "dim", text: "Primary (holdout pass): " }),
-      c.arm_a + " " + aPass + "/" + pairs + " · " + c.arm_b + " " + bPass + "/" + pairs + "  ",
+    const banner = h("div", { class: "card verdict" });
+    banner.append(h("div", { class: "eyebrow", text: "Result · holdout (deterministic) · " + pairs + " graded pair(s)" }));
+    const l1 = h("div", { style: "margin-top:4px" },
+      h("span", { class: "armdot", style: "background: var(--arm-a)" }), c.arm_a + " ",
+      h("b", { class: "mono", text: String(aPass) }),
+      h("span", { class: "dim3", text: "/" + pairs + "   " }),
+      h("span", { class: "armdot", style: "background: var(--arm-b)" }), c.arm_b + " ",
+      h("b", { class: "mono", text: String(bPass) }),
+      h("span", { class: "dim3", text: "/" + pairs + "   " }),
       h("b", { text: holdoutOut }));
     /* honest denominator: pairs the tallies exclude are named, not hidden */
     if (ungraded > 0) l1.append(h("span", { class: "dim3", text: "  · " + ungraded + " of " + c.summary.pairs + " pair(s) not fully graded, excluded from these tallies" }));
     banner.append(l1,
-      h("div", { style: "margin-top:3px" }, h("span", { class: "dim", text: "Judge: " }),
-        c.arm_a + " " + J.a + " · " + c.arm_b + " " + J.b + " · tie " + J.tie + "  ",
+      h("div", { class: "verdict-judge" }, h("span", { class: "eyebrow", text: "Judge" }),
+        " " + c.arm_a + " " + J.a + " · " + c.arm_b + " " + J.b + " · tie " + J.tie + " ",
         h("b", { text: judgeLean }),
-        h("span", { class: "dim3", text: "  — advisory, not an official verdict" })));
+        h("span", { class: "dim3", text: " — advisory, not an official verdict" })));
     app.append(banner);
+  }
+  /* the signature tape, on the screen its cells open into: a click expands
+     that pair's row in place (the open set rides the URL) and scrolls to it */
+  const tapeEl = pairTape(st, { onCell: (cell) => {
+    const token = encodeURIComponent("cmp-" + cell.task + "-r" + cell.rep);
+    const set = new Set((S.route.params.get("open") || "").split(",").filter(Boolean));
+    set.add(token);
+    setParam("open", [...set].join(","));
+    /* hashchange dispatch is async — scroll once the re-render has landed */
+    setTimeout(() => {
+      const el = document.getElementById("pair-cmp-" + cell.task + "-r" + cell.rep);
+      if (el) el.scrollIntoView();
+    }, 60);
+  } });
+  if (tapeEl) {
+    const tapeCard = h("div", { class: "card" });
+    tapeCard.append(h("div", { class: "eyebrow", style: "margin-bottom:4px", text: "Pair tape — a cell opens its pair below" }), tapeEl);
+    app.append(tapeCard);
   }
   /* tallies are navigation [EVAL-19 AC-5]: every count filters to its slice,
      and the slice lives in the URL. Predicates mirror compare.py's summary
-     arithmetic exactly, so a tally always equals its filtered row count. */
+     arithmetic exactly, so a tally always equals its filtered row count. The
+     chips render as stat chips [operator-ui §Compare]: results first, filters second. */
   const slice = S.route.params.get("slice") || "";
   const knownSlice = ["holdout:a_only", "holdout:b_only", "holdout:both", "holdout:neither",
                       "judge:a", "judge:b", "judge:tie", "judge:cant", "judge:unjudged"];
-  const tally = (key, label, count, why) => h("span", {
-    class: "chip click" + (slice === key ? " on" : ""), tabindex: "0",
-    title: why || "", text: label + " " + count + (slice === key ? " ✕" : ""),
-    onclick: () => setParam("slice", slice === key ? null : key) });
+  const statchip = (key, label, count, why) => h("button", {
+    type: "button", class: "statchip" + (slice === key ? " on" : ""),
+    title: (why ? why + " — " : "") + (slice === key ? "click to clear the filter" : "click to filter to these pairs"),
+    onclick: () => setParam("slice", slice === key ? null : key) },
+    h("span", { class: "n", text: String(count) }),
+    h("span", { class: "l", text: label }));
   const sm = h("div", { class: "toolbar card" });
-  sm.append(h("span", { class: "dim", text: "holdout: " }),
-    tally("holdout:a_only", c.arm_a, c.summary.holdout.a_only, "pairs where only " + c.arm_a + " passed the holdout"),
-    tally("holdout:b_only", c.arm_b, c.summary.holdout.b_only, "pairs where only " + c.arm_b + " passed the holdout"),
-    tally("holdout:both", "both", c.summary.holdout.both, "pairs where both arms passed"),
-    tally("holdout:neither", "neither", c.summary.holdout.neither, "pairs where both arms failed"),
-    h("span", { class: "dim", text: " judge (ADVISORY): " }),
-    tally("judge:a", "A · " + c.arm_a, c.summary.judge.a),
-    tally("judge:b", "B · " + c.arm_b, c.summary.judge.b),
-    tally("judge:tie", "tie", c.summary.judge.tie),
-    tally("judge:cant", "cant", c.summary.judge.cant),
-    tally("judge:unjudged", "unjudged", c.summary.judge.unjudged),
-    h("span", { class: "spacer" }),
+  sm.append(h("div", { class: "statgroup" },
+    h("span", { class: "eyebrow statlabel", text: "holdout" }),
+    statchip("holdout:a_only", c.arm_a + " only", c.summary.holdout.a_only, "pairs where only " + c.arm_a + " passed the holdout"),
+    statchip("holdout:b_only", c.arm_b + " only", c.summary.holdout.b_only, "pairs where only " + c.arm_b + " passed the holdout"),
+    statchip("holdout:both", "both", c.summary.holdout.both, "pairs where both arms passed"),
+    statchip("holdout:neither", "neither", c.summary.holdout.neither, "pairs where both arms failed")));
+  sm.append(h("div", { class: "statgroup" },
+    h("span", { class: "eyebrow statlabel", text: "judge (advisory)" }),
+    statchip("judge:a", c.arm_a, c.summary.judge.a),
+    statchip("judge:b", c.arm_b, c.summary.judge.b),
+    statchip("judge:tie", "tie", c.summary.judge.tie),
+    statchip("judge:cant", "cant judge", c.summary.judge.cant),
+    statchip("judge:unjudged", "unjudged", c.summary.judge.unjudged)));
+  sm.append(h("span", { class: "spacer" }),
     h("span", { class: "dim3", text: "counts filter · the slice lives in the URL" }));
   if (slice && knownSlice.indexOf(slice) < 0)
     sm.append(h("span", { class: "gerr", text: "unknown slice '" + slice + "' — ignored" }));
@@ -1276,88 +1618,131 @@ function renderCompare(app) {
   if (!pairs.length) app.append(h("div", { class: "card empty",
     text: slice && knownSlice.indexOf(slice) >= 0 ? "No pairs in this slice."
       : (only ? "No disagreements — arms agree on every pair." : "No complete pairs yet (both arms must have a trial per task/rep).") }));
-  /* pair index: the scannable overview of what the full cards below say;
-     a row jumps to its card, so the wall of diffs is navigable */
-  if (pairs.length > 1) {
-    const idx = h("div", { class: "card" });
-    idx.append(h("h2", { text: "Pairs (" + pairs.length + " shown) — click a row to jump to its diff" }));
+  /* one table: each row IS its pair — the collapsed scan line — and expands
+     in place [operator-ui §Compare, index and diff cards merged]. The open set
+     rides the URL (?open=id,id — URI-encoded, comma-joined) like ?fr=, so a
+     poll re-render never slams a diff shut and a shared link reproduces it. */
+  const openSet = new Set((S.route.params.get("open") || "").split(",").filter(Boolean));
+  const frOpen = new Set((S.route.params.get("fr") || "").split(",").filter(Boolean));
+  /* a shared ?fr= link must reproduce the open recorder [AC-3]: an fr token
+     implies its pair row is open, so the deep link renders on its own */
+  for (const t of frOpen) openSet.add(t);
+  const setOpen = (set) => setParam("open", [...set].join(",") || null);
+  if (pairs.length) {
+    const card = h("div", { class: "card" });
+    const bar = h("div", { class: "toolbar" });
+    bar.append(h("h2", { style: "margin:0", text: "Pairs — " + pairs.length + " of " + c.pairs.length + " shown" }),
+      h("span", { class: "spacer" }),
+      h("button", { class: "btn", text: "expand all", onclick: () =>
+        setOpen(new Set(pairs.map(p => encodeURIComponent(p.comparison_id)))) }),
+      h("button", { class: "btn", text: "collapse all", onclick: () => {
+        setParam("fr", null);  /* fr implies open — a stale token would reopen its row */
+        setOpen(new Set());
+      } }));
+    card.append(bar);
     const table = h("table");
-    table.append(h("tr", {}, ...["task · rep", c.arm_a + " (A)", c.arm_b + " (B)", "judge (ADVISORY)", ""].map(x => h("th", { text: x }))));
+    /* aggregates live in the column headers [operator-ui §Compare]; the same
+       summary numbers the banner shows, beside the column they summarize */
+    const Ht = c.summary.holdout, J = c.summary.judge;
+    const gradedPairs = Ht.a_only + Ht.b_only + Ht.both + Ht.neither;
+    const thArm = (dotVar, name, pass) => {
+      const th = h("th", {});
+      th.append(h("span", { class: "armdot", style: "background: var(" + dotVar + ")" }), name,
+        h("div", { class: "thsub", text: pass + "/" + gradedPairs + " pass" }));
+      return th;
+    };
+    const thJudge = h("th", { text: "judge (ADVISORY)" });
+    thJudge.append(h("div", { class: "thsub", text: J.a + " · " + J.b + " · tie " + J.tie }));
+    table.append(h("tr", {}, h("th", { text: "task · rep" }),
+      thArm("--arm-a", c.arm_a + " (A)", Ht.a_only + Ht.both),
+      thArm("--arm-b", c.arm_b + " (B)", Ht.b_only + Ht.both),
+      thJudge, h("th", { text: "" }), h("th", { text: "" })));
     const holdoutMark = (v) => v === null || v === undefined
       ? h("span", { class: "dim3", text: "ungraded" })
       : h("span", { class: v ? "chip ok" : "chip bad", text: v ? "✓ pass" : "✕ fail" });
     for (const p of pairs) {
-      const tr = h("tr", { class: "row" });
+      const token = encodeURIComponent(p.comparison_id);
+      const open = openSet.has(token);
+      const a = p.a.holdout_pass, b = p.b.holdout_pass;
+      /* the row wash names the arm that alone passed; agreement stays quiet */
+      const wash = (!!a && !b) ? " washa" : ((!!b && !a) ? " washb" : "");
+      const tr = h("tr", { class: "row pairjump" + wash, id: "pair-" + p.comparison_id });
       tr.addEventListener("click", () => {
-        const el = document.getElementById("pair-" + p.comparison_id);
-        if (el) el.scrollIntoView();
+        const set = new Set(openSet);
+        if (open) {
+          set.delete(token);
+          /* closing the pair closes its recorder too: fr implies open, so a
+             stale fr token would reopen this row on the next render */
+          const fr = new Set((S.route.params.get("fr") || "").split(",").filter(Boolean));
+          if (fr.has(token)) { fr.delete(token); setParam("fr", [...fr].join(",") || null); }
+        } else set.add(token);
+        setOpen(set);
       });
       const jw = p.judge ? p.judge.winner : null;
       const jname = jw === "A" ? "A · " + c.arm_a : (jw === "B" ? "B · " + c.arm_b : jw);
       tr.append(h("td", {}, h("b", { text: p.task_id }), h("span", { class: "dim3", text: " · rep " + p.repetition })),
-        h("td", {}, holdoutMark(p.a.holdout_pass)),
-        h("td", {}, holdoutMark(p.b.holdout_pass)),
+        h("td", {}, holdoutMark(a)),
+        h("td", {}, holdoutMark(b)),
         h("td", { class: jw ? "" : "dim3", text: jw ? jname : "unjudged" }),
-        h("td", {}, ...(p.disagreement ? [h("span", { class: "chip warn", text: "disagreement" })] : [])));
+        h("td", {}, ...(p.disagreement ? [h("span", { class: "chip warn", title: "the deterministic grades and/or the advisory judge point different ways", text: "disagreement" })] : [])),
+        h("td", { class: "chevcell", text: open ? "▾" : "▸" }));
       table.append(tr);
+      if (open) table.append(pairBodyRow(c, p, frOpen));
     }
-    idx.append(table);
-    app.append(idx);
-  }
-  /* which flight recorders are open is view state and rides the URL
-     (?fr=id,id — each id URI-encoded, comma-joined); a DOM-only <details>
-     toggle would be wiped by the next poll re-render within POLL_MS */
-  const frOpen = new Set((S.route.params.get("fr") || "").split(",").filter(Boolean));
-  for (const p of pairs) {
-    const card = h("div", { class: "card pairjump", id: "pair-" + p.comparison_id });
-    const bar = h("div", { class: "toolbar" });
-    bar.append(h("b", { text: p.task_id + " · rep " + p.repetition }),
-      holdoutChip(c.arm_a, p.a.holdout_pass),
-      holdoutChip(c.arm_b, p.b.holdout_pass));
-    if (p.judge) { const w = p.judge.winner;
-      bar.append(h("span", { class: "chip", text: "judge: " + (w === "A" ? "A · " + c.arm_a : (w === "B" ? "B · " + c.arm_b : w)) + " (ADVISORY)" })); }
-    if (p.disagreement) bar.append(h("span", { class: "chip warn", title: "the deterministic grades and/or the advisory judge point different ways", text: "disagreement" }));
-    card.append(bar);
-    card.append(armHead(c));
-    card.append(h("div", { class: "dim3 difflegend", text: "diff — red: only in A/" + c.arm_a + " · green: only in B/" + c.arm_b + " · unhighlighted: identical in both" }));
-    const diff = h("div", { class: "diff2" });
-    const left = h("div", {}, h("div", { class: "code" })), right = h("div", {}, h("div", { class: "code" }));
-    for (const seg of p.segments) {
-      if (seg.op === "equal") { left.firstChild.append(seg.a); right.firstChild.append(seg.b); }
-      else {
-        if (seg.a) left.firstChild.append(h("span", { class: "del", text: seg.a }));
-        if (seg.b) right.firstChild.append(h("span", { class: "add", text: seg.b }));
-      }
-    }
-    if (!p.segments.length) { left.firstChild.textContent = "(empty workspace diff)"; right.firstChild.textContent = "(empty workspace diff)"; }
-    diff.append(left, right);
-    card.append(diff);
-    if (p.judge && p.judge.reason) card.append(h("div", { class: "dim3", style: "margin-top:6px", text: "judge reason: " + p.judge.reason }));
-    if ((p.a.reasoning && p.a.reasoning.length) || (p.b.reasoning && p.b.reasoning.length)) {
-      /* collapsed by default: the reasoning is a drill-down, not the scan
-         path; the content stays in the DOM either way. Open/closed rides the
-         URL, so the click survives the poll re-render and a shared link
-         reproduces the open panels [AC-3]. */
-      const na = (p.a.reasoning || []).length, nb = (p.b.reasoning || []).length;
-      const token = encodeURIComponent(p.comparison_id);
-      const fr = h("details", { class: "fr" });
-      if (frOpen.has(token)) fr.setAttribute("open", "");
-      fr.append(h("summary", {
-        text: "Flight recorder · reasoning — A " + na + " · B " + nb + " entr(ies) (operator-tier, unblinded)",
-        onclick: (e) => {
-          e.preventDefault();  /* no native toggle: the URL round-trip renders it */
-          const set = new Set((S.route.params.get("fr") || "").split(",").filter(Boolean));
-          if (set.has(token)) set.delete(token); else set.add(token);
-          setParam("fr", [...set].join(",") || null);
-        } }));
-      fr.append(armHead(c));
-      const rz = h("div", { class: "diff2 rz" });
-      rz.append(reasoningCol(p.a.reasoning), reasoningCol(p.b.reasoning));
-      fr.append(rz);
-      card.append(fr);
-    }
+    card.append(table);
     app.append(card);
   }
+}
+/* the expanded pair: judge verdict + quoted reason first, then the workspace
+   diff, then the flight-recorder drawer — the "why" sits one glance from the
+   verdict [operator-ui §Compare]. Rendered as a full-width row under its pair. */
+function pairBodyRow(c, p, frOpen) {
+  const body = h("div", { class: "pairbody" });
+  if (p.judge) {
+    const w = p.judge.winner;
+    body.append(h("div", {}, h("span", { class: "chip", text: "judge: " + (w === "A" ? "A · " + c.arm_a : (w === "B" ? "B · " + c.arm_b : w)) + " (ADVISORY)" })));
+    if (p.judge.reason) body.append(h("div", { class: "quote", text: p.judge.reason }));
+  }
+  body.append(armHead(c));
+  body.append(h("div", { class: "dim3 difflegend", text: "diff — red: only in A/" + c.arm_a + " · green: only in B/" + c.arm_b + " · unhighlighted: identical in both" }));
+  const diff = h("div", { class: "diff2" });
+  const left = h("div", {}, h("div", { class: "code" })), right = h("div", {}, h("div", { class: "code" }));
+  for (const seg of p.segments) {
+    if (seg.op === "equal") { left.firstChild.append(seg.a); right.firstChild.append(seg.b); }
+    else {
+      if (seg.a) left.firstChild.append(h("span", { class: "del", text: seg.a }));
+      if (seg.b) right.firstChild.append(h("span", { class: "add", text: seg.b }));
+    }
+  }
+  if (!p.segments.length) { left.firstChild.textContent = "(empty workspace diff)"; right.firstChild.textContent = "(empty workspace diff)"; }
+  diff.append(left, right);
+  body.append(diff);
+  if ((p.a.reasoning && p.a.reasoning.length) || (p.b.reasoning && p.b.reasoning.length)) {
+    /* collapsed by default: the reasoning is a drill-down, not the scan
+       path; the content stays in the DOM either way. Open/closed rides the
+       URL, so the click survives the poll re-render and a shared link
+       reproduces the open panels [AC-3]. */
+    const na = (p.a.reasoning || []).length, nb = (p.b.reasoning || []).length;
+    const token = encodeURIComponent(p.comparison_id);
+    const fr = h("details", { class: "fr" });
+    if (frOpen.has(token)) fr.setAttribute("open", "");
+    fr.append(h("summary", {
+      text: "Flight recorder · reasoning — A " + na + " · B " + nb + " entr(ies) (operator-tier, unblinded)",
+      onclick: (e) => {
+        e.preventDefault();  /* no native toggle: the URL round-trip renders it */
+        const set = new Set((S.route.params.get("fr") || "").split(",").filter(Boolean));
+        if (set.has(token)) set.delete(token); else set.add(token);
+        setParam("fr", [...set].join(",") || null);
+      } }));
+    fr.append(armHead(c));
+    const rz = h("div", { class: "diff2 rz" });
+    rz.append(reasoningCol(p.a.reasoning), reasoningCol(p.b.reasoning));
+    fr.append(rz);
+    body.append(fr);
+  }
+  const td = h("td", { colspan: "6" });
+  td.append(body);
+  return h("tr", { class: "pairbody-row" }, td);
 }
 
 function renderFindings(app) {

@@ -62,7 +62,9 @@ def test_ac3_hash_routes_round_trip(tmp_path):
   out.compare = await page.evaluate(() => ({
     route: window.__vb().route,
     exploratory: document.body.textContent.includes('EXPLORATORY'),
-    pairCards: document.querySelectorAll('.diff2').length,
+    // index and diff cards merged: each pair is a collapsed row now (the diff
+    // renders only on expansion), so the round-trip is the row that survives
+    pairRows: document.querySelectorAll('tr.pairjump').length,
   }));
 
   await page.goto(BASE + '/#/exp/exp-a/findings', { waitUntil: 'networkidle' });
@@ -79,7 +81,7 @@ def test_ac3_hash_routes_round_trip(tmp_path):
         assert out["reloaded"]["rows"] == 1  # reload restores the exact slice
         assert out["trial"]["head"] == flagged and out["trial"]["gradeTabOn"] is True
         assert out["compare"]["exploratory"] is True
-        assert out["compare"]["pairCards"] == 1  # only the disagreement pair renders
+        assert out["compare"]["pairRows"] == 1  # only the disagreement pair row renders
         assert out["findings"]["items"] == 10  # +insulation [F-M-C3] +correction (D8)
         assert out["__errors"] == []
 
@@ -153,7 +155,11 @@ def test_ac5_feed_tail_ergonomics(tmp_path):
 
     with serve_root(tmp_path) as base:
         body = """
-  await page.goto(BASE + '/#/exp/exp-a', { waitUntil: 'networkidle' });
+  // the feed is a collapsed drill-down now: feed=1 opens #feedbox, and the
+  // kind filter isolates the appended cant_grade stream so a run of ≥3 shows as
+  // individual rows (folding is suppressed under an active kind filter) — the
+  // tail/pause/resume ergonomics are what this AC pins, not the folding.
+  await page.goto(BASE + '/#/exp/exp-a?feed=1&kind=cant_grade', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2500);
   const s1 = await page.evaluate(() => window.__vb());
   out.start = { cursor: s1.cursor, events: s1.events };
@@ -214,7 +220,9 @@ def test_compare_renders_flight_recorder_reasoning_by_role(tmp_path):
     reasoning_experiment(tmp_path / "exp-r")
     with serve_root(tmp_path) as base:
         body = """
-  await page.goto(BASE + '/#/exp/exp-r/compare', { waitUntil: 'networkidle' });
+  // reasoning lives behind the pair row's expansion now; ?fr=<comparison_id>
+  // implies open, so the deep link renders the row AND its recorder drawer
+  await page.goto(BASE + '/#/exp/exp-r/compare?fr=cmp-t1-r0', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
   out.rz = await page.evaluate(() => ({
     panels: document.querySelectorAll('.rz').length,
@@ -233,6 +241,6 @@ def test_compare_renders_flight_recorder_reasoning_by_role(tmp_path):
         assert any("control" in a and "treatment" in a for a in out["rz"]["armheads"])
         # model names surfaced, plain-language result banner, and a diff legend
         assert "claude-haiku" in out["rz"]["body"]
-        assert "Primary (holdout pass)" in out["rz"]["body"]
+        assert "Result · holdout (deterministic)" in out["rz"]["body"]
         assert "red: only in A" in out["rz"]["body"]
         assert out["__errors"] == []

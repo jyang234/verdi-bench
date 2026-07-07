@@ -195,24 +195,35 @@ def test_overview_result_strip_stage_nav_and_feed_links(tmp_path):
     fx = rich_experiment(tmp_path / "exp-a")
     with serve_root(tmp_path) as base:
         body = """
-  await page.goto(BASE + '/#/exp/exp-a', { waitUntil: 'networkidle' });
+  // the feed is collapsed behind a disclosure now; feed=1 opens #feedbox
+  await page.goto(BASE + '/#/exp/exp-a?feed=1', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
   out.strip = await page.evaluate(() => {
     const app = document.getElementById('app').textContent;
+    // the literal 'Judge (ADVISORY)' is gone; the verdict card's judge line now
+    // carries the advisory marking as a '(ADVISORY)' suffix
+    const judge = document.querySelector('.card.verdict .verdict-judge');
     return { present: app.includes('Result so far'),
              lead: app.includes('treatment leads'),
-             advisory: app.includes('Judge (ADVISORY)') };
+             advisory: !!judge && judge.textContent.includes('(ADVISORY)') };
   });
   out.feed = await page.evaluate(() => {
     const items = [...document.querySelectorAll('#feedbox li')];
-    const q = items.find(li => li.textContent.includes('forensic_quarantine'));
+    // rows show the humanized kind ('quarantined'); the internal kind rides the
+    // .k span's title, so find the quarantine row by that title
+    const q = items.find(li => { const k = li.querySelector('.k');
+      return k && k.getAttribute('title') === 'forensic_quarantine'; });
     return { quarantineSummary: q ? q.textContent : '',
              clickable: items.filter(li => li.className.includes('click')).length };
   });
-  // a grade feed row deep-links to that trial's grade tab
+  // a grade feed row deep-links to that trial's grade tab; the fixture's grades
+  // are consecutive and fold into one run, so isolate the kind (folding is
+  // suppressed under an active filter) to click an individual, deep-linking row
+  await page.goto(BASE + '/#/exp/exp-a?feed=1&kind=grade', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(1500);
   await page.evaluate(() => {
     [...document.querySelectorAll('#feedbox li.click')]
-      .find(li => li.textContent.includes(' grade') || li.textContent.includes('grade'))
+      .find(li => li.textContent.includes('grade'))
       .click();
   });
   await page.waitForTimeout(700);
@@ -249,15 +260,17 @@ def test_trials_sort_units_and_panel_verdict(tmp_path):
   await page.goto(BASE + '/#/exp/exp-p/trials', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1800);
   out.headers = await page.evaluate(() => [...document.querySelectorAll('th')].map(t => t.textContent));
-  // click the cost header: desc first, nulls last, state in the URL
+  // click the cost header: desc first, nulls last, state in the URL. Column
+  // order is task(0) arm(1) rep(2) outcome(3) grade(4) cost(5) wall(6) …, so
+  // the cost cell is index 5 now.
   await page.evaluate(() => {
     [...document.querySelectorAll('th.sortable')].find(t => t.textContent.startsWith('cost')).click();
   });
   await page.waitForTimeout(600);
   out.sorted = await page.evaluate(() => ({
     route: location.hash,
-    firstCost: document.querySelectorAll('tr.row')[0].cells[6].textContent,
-    lastCost: [...document.querySelectorAll('tr.row')].pop().cells[6].textContent }));
+    firstCost: document.querySelectorAll('tr.row')[0].cells[5].textContent,
+    lastCost: [...document.querySelectorAll('tr.row')].pop().cells[5].textContent }));
   // the selected trial's panel names its pair's advisory verdict
   await page.goto(BASE + '/#/exp/exp-p/trials?sel=trial-b1', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1500);
@@ -315,7 +328,9 @@ def test_compare_flight_recorder_stays_open_across_polls(tmp_path):
     reasoning_experiment(tmp_path / "exp-r")
     with serve_root(tmp_path) as base:
         body = """
-  await page.goto(BASE + '/#/exp/exp-r/compare', { waitUntil: 'networkidle' });
+  // the recorder drawer lives inside an expanded pair row now: open the row via
+  // the URL (?open=) so details.fr exists but stays closed until its own click
+  await page.goto(BASE + '/#/exp/exp-r/compare?open=cmp-t1-r0', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
   const frState = () => ({
     open: !!document.querySelector('details.fr[open]'),
@@ -436,16 +451,25 @@ def test_compare_ungraded_pair_neutral_and_index(tmp_path):
   await page.goto(BASE + '/#/exp/exp-p/compare', { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
   out.cmp = await page.evaluate(() => {
-    const chips = [...document.querySelectorAll('.chip')];
-    const ungraded = chips.filter(c => c.textContent.includes('holdout: ungraded'));
-    const idxRows = [...document.querySelectorAll('.card table tr.row')];
+    // the 'holdout: ungraded' chip is gone; an ungraded holdout now renders as a
+    // neutral span.dim3 'ungraded' inside the pair row (no ok/bad class — the
+    // neutral-not-red honesty contract). The t2 pair is ungraded on both arms.
+    const ungraded = [...document.querySelectorAll('tr.pairjump span.dim3')]
+      .filter(c => c.textContent === 'ungraded');
+    // the judge tally is a statchip in the 'judge' statgroup; its .l names the
+    // arm (not a bare letter) and its .n carries the count
+    const judgeGroup = [...document.querySelectorAll('.statgroup')].find(g => {
+      const l = g.querySelector('.statlabel'); return l && l.textContent.includes('judge'); });
+    const judgeTallyNamed = !!judgeGroup && [...judgeGroup.querySelectorAll('.statchip')].some(c => {
+      const l = c.querySelector('.l'), n = c.querySelector('.n');
+      return l && n && l.textContent === 'treatment' && n.textContent === '1'; });
     return {
       ungradedCount: ungraded.length,
       ungradedNeutral: ungraded.every(c => !c.className.includes('bad') && !c.className.includes('ok')),
       excludedNote: document.getElementById('app').textContent.includes('not fully graded, excluded'),
-      judgeTallyNamed: chips.some(c => c.textContent.startsWith('B \\u00b7 treatment 1')),
-      indexRows: idxRows.length,
-      anchors: [...document.querySelectorAll('.card.pairjump')].map(c => c.id),
+      judgeTallyNamed: judgeTallyNamed,
+      indexRows: document.querySelectorAll('tr.pairjump').length,
+      anchors: [...document.querySelectorAll('tr.pairjump')].map(c => c.id),
     };
   });
 """
