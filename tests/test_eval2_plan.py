@@ -8,7 +8,7 @@ from harness.judge.client import judge_pair
 from harness.judge.providers.fake import FakeProvider
 from harness.schema.errors import AliasJudgeIdError
 from harness.schema.experiment import ExperimentSpec
-from tests.fixtures.builders import fixed_ctx, valid_experiment_dict
+from tests.fixtures.builders import ctx_for, valid_experiment_dict
 from tests.fixtures.judge_fakes import make_config, make_packet, verdict_json
 
 
@@ -20,8 +20,12 @@ def test_ac5_alias_model_id_rejected():
 
 
 def test_ac5_versioned_judge_accepted():
+    # the builder-default (template) judge id is fully versioned and accepted —
+    # the acceptance companion to the alias rejection above. The validator is
+    # provider-neutral [EVAL-2-D001], so the keyless fake/ id (ux-friction D1-A)
+    # exercises the same version-specificity path the google id did.
     spec = ExperimentSpec.from_dict(valid_experiment_dict())
-    assert spec.judge.model == "google/gemini-1.5-pro-002"
+    assert spec.judge.model == "fake/deterministic-2026-01-01"
 
 
 def test_ac1_multiple_judges_same_packet(tmp_path):
@@ -32,10 +36,10 @@ def test_ac1_multiple_judges_same_packet(tmp_path):
     ledger = tmp_path / "l.ndjson"
     # judge 1 prefers content A; judge 2 is position-biased (always Response 1)
     v1 = judge_pair(packet, make_config(model="google/gemini-1.5-pro-002"),
-                    ledger, fixed_ctx(), ts="t0",
+                    ledger, ctx_for(tmp_path), ts="t0",
                     provider=FakeProvider([verdict_json("1"), verdict_json("2")]))
     v2 = judge_pair(packet, make_config(model="anthropic/claude-3-5-sonnet-20241022"),
-                    ledger, fixed_ctx(), ts="t0",
+                    ledger, ctx_for(tmp_path), ts="t0",
                     provider=FakeProvider([verdict_json("1"), verdict_json("1")]))
     assert v1.winner.value == "A"
     assert v2.winner.value == "TIE"  # the delta is the measurable bias signal

@@ -10,7 +10,7 @@ from harness.run.interleave import schedule
 from harness.run.seam import run_trial
 from harness.run.types import RunConfig, Task
 from harness.schema.experiment import Arm
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 
 
 def _arm(name="A"):
@@ -59,7 +59,7 @@ def test_ac5_infra_rerun_new_trial(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=0)]
     res = schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-        ledger_path=tmp_path / "l.ndjson", ctx=fixed_ctx(),
+        ledger_path=tmp_path / "l.ndjson", ctx=ctx_for(tmp_path),
         config=RunConfig(engine=FlakyInfraEngine()), cost_ceiling=100.0,
     )
     infra = find_events(tmp_path / "l.ndjson", "trial_infra_failed")
@@ -78,7 +78,7 @@ def test_ac5_no_silent_retry(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=0)]
     schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-        ledger_path=tmp_path / "l.ndjson", ctx=fixed_ctx(),
+        ledger_path=tmp_path / "l.ndjson", ctx=ctx_for(tmp_path),
         config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
     )
     assert len(find_events(tmp_path / "l.ndjson", "trial")) == 1
@@ -91,7 +91,7 @@ def test_ac5_infra_exhaustion_no_trial_event(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=0)]
     schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws",
-        ledger_path=tmp_path / "l.ndjson", ctx=fixed_ctx(),
+        ledger_path=tmp_path / "l.ndjson", ctx=ctx_for(tmp_path),
         config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0, max_infra_retries=2,
     )
     assert len(find_events(tmp_path / "l.ndjson", "trial")) == 0
@@ -110,7 +110,7 @@ def test_ac5_infra_reason_from_engine_result(tmp_path):
     ledger = tmp_path / "l.ndjson"
     schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-        ctx=fixed_ctx(),
+        ctx=ctx_for(tmp_path),
         config=RunConfig(engine=HarborEngine(runner=FakeDockerRunner(daemon_error=True))),
         cost_ceiling=100.0, max_infra_retries=0,
     )
@@ -123,7 +123,7 @@ def _schedule_one(order, tasks, arms, tmp_path):
     ledger = tmp_path / "l.ndjson"
     schedule(
         order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-        ctx=fixed_ctx(), config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
+        ctx=ctx_for(tmp_path), config=RunConfig(engine=FakeEngine()), cost_ceiling=100.0,
     )
     return ledger
 
@@ -178,7 +178,7 @@ def test_ac5_unexpected_error_fails_cell_closed(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=0), Trial(task_id="u", arm="A", repetition=0)]
     ledger = tmp_path / "l.ndjson"
     schedule(order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-             ctx=fixed_ctx(), config=RunConfig(engine=BoomEngine()), cost_ceiling=100.0)
+             ctx=ctx_for(tmp_path), config=RunConfig(engine=BoomEngine()), cost_ceiling=100.0)
     infra = find_events(ledger, "trial_infra_failed")
     assert len(infra) == 2  # both cells failed closed, run not aborted
     assert all(e["reason"] == "trial_error:RuntimeError" for e in infra)
@@ -199,6 +199,6 @@ def test_ac5_redaction_error_fails_cell_closed(tmp_path):
     order = [Trial(task_id="t", arm="A", repetition=0)]
     ledger = tmp_path / "l.ndjson"
     schedule(order, tasks=tasks, arms=arms, workspace_root=tmp_path / "ws", ledger_path=ledger,
-             ctx=fixed_ctx(), config=RunConfig(engine=LeakyEngine()), cost_ceiling=100.0)
+             ctx=ctx_for(tmp_path), config=RunConfig(engine=LeakyEngine()), cost_ceiling=100.0)
     infra = find_events(ledger, "trial_infra_failed")
     assert len(infra) == 1 and infra[0]["reason"] == "redaction_error"

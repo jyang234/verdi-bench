@@ -22,7 +22,9 @@ _MINIMAL = valid_experiment_dict()
 # Every optional field populated at once: per-arm training_cutoff / aux_models /
 # model_hosts, spec-level infra_hosts / contamination / multi_arm_correction /
 # hypothesized_effect / fractional_scoring, and a fully-specified judge block
-# (non-default orders/temperature/escalation/panel/token_ceiling).
+# (non-default orders/temperature/escalation/token_ceiling). judge.panel is a v2
+# placeholder now refused when set [ux-friction AC-8], so it is not a round-trip
+# subject; its non-default coverage was redundant with the four fields above.
 _FULL = valid_experiment_dict(
     arms=[
         {
@@ -66,7 +68,6 @@ _FULL = valid_experiment_dict(
         "temperature": 0.5,
         "escalation": {"kappa_threshold": 0.7, "min_human_verdicts": 30},
         "token_ceiling": 100_000,
-        "panel": {"size": 3},
     },
     cost_ceiling={"amount": 50.0, "currency": "EUR"},
 )
@@ -133,7 +134,6 @@ def test_full_spec_covers_every_optional_field():
     assert spec.judge.orders == "single"
     assert spec.judge.temperature == 0.5
     assert spec.judge.token_ceiling is not None
-    assert spec.judge.panel is not None
     assert spec.judge.escalation.kappa_threshold == 0.7
 
 

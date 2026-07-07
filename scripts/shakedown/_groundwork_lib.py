@@ -355,6 +355,7 @@ def grade_localexec(ws, expt: Path, actor: str = "shakedown") -> int:
     from harness.grade.types import GradeTask
     from harness.ledger.actor import resolve_actor
     from harness.ledger.events import EventContext
+    from harness.ledger.identity import derive_experiment_id
     from harness.plan.lock import assert_lock
 
     ledger = expt / "ledger.ndjson"
@@ -368,7 +369,9 @@ def grade_localexec(ws, expt: Path, actor: str = "shakedown") -> int:
                            plugin_ids=list(d.get("plugin_ids", [])))
         for d in task_dicts
     }
-    ctx = EventContext(experiment_id=expt.name, actor=resolve_actor(actor))
+    # [ux-friction AC-1] mirror grade_experiment's provenance: derive the id
+    # through the one shared resolved-path seam, never a bare <path>.name.
+    ctx = EventContext(experiment_id=derive_experiment_id(expt), actor=resolve_actor(actor))
     container = GradingContainer(runner=_redirecting_runner())
     n = 0
     for tv in ws.view().trials():

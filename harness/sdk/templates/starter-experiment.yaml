@@ -9,21 +9,28 @@
 # A minimal, VALID spec: two arms on registered platforms, a fully date-versioned
 # judge model (aliases are refused at plan time), the required cost ceiling, and
 # a decision rule on the primary metric.
+#
+# Sign convention: the paired delta is the first-declared arm minus the second
+# (arms[0] − arms[1]) — declare your CONTENDER first. This scaffold declares
+# treatment first, so injecting treatment-passes reads `... > 0` as MET.
 arms:
-  - name: control
-    platform: claude_code
-    model: anthropic/claude-haiku-4-5-20251001
-    payload: {}
   - name: treatment
     platform: codex
     model: openai/gpt-4o-2024-08-06
+    payload: {}
+  - name: control
+    platform: claude_code
+    model: anthropic/claude-haiku-4-5-20251001
     payload: {}
 corpus: {id: public-mini, version: "1.0.0"}
 repetitions: 3
 primary_metric: holdout_pass_rate
 decision_rule: "delta_holdout_pass_rate > 0"
 judge:
-  model: google/gemini-1.5-pro-002
+  # Keyless deterministic judge — the default path runs end to end with no API key.
+  # real judge: swap in a fully-versioned real-provider id + its API key at judge
+  # time, e.g. model: google/gemini-1.5-pro-002 (needs GOOGLE_API_KEY at judge time).
+  model: fake/deterministic-2026-01-01
   rubric: rubrics/code-task-v1.md
   orders: both
   temperature: 0

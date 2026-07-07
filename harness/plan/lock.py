@@ -180,8 +180,19 @@ def run_power_gate(
     as a lock-stage ``power_gate_skipped`` flag on the report (folded into the
     event by ``to_event_payload``), so it is a ledgered decision, not a silent
     no-check — and *not* an in-place mutation of power's return.
+
+    Task-count warning [ux-friction AC-9, D4]: a paired decision clusters on
+    tasks, so a suite with fewer than two known task clusters can render findings
+    but never a *decision* (F3/F-H7). This sets a lock-stage
+    ``insufficient_tasks_for_decision`` flag on the report — a WARNING beside the
+    power flags, never a gate: the lock still succeeds. ``n_task_clusters`` is
+    ``None`` exactly when no tasks are known (an absent or empty ``tasks.yaml`` ⇒
+    ``load_task_dicts`` returns ``[]``), the honest count-of-0 case, which warrants
+    the flag as much as an explicit one-task suite does.
     """
     report = mde_check(spec, variance_source, n_tasks=n_task_clusters, **mde_kwargs)
+    insufficient_tasks = n_task_clusters is None or n_task_clusters < 2
+    report = replace(report, insufficient_tasks_for_decision=insufficient_tasks)
     ack_payload: Optional[dict] = None
     if spec.hypothesized_effect is not None:
         mde_val = report.mde
@@ -318,6 +329,15 @@ def lock_experiment(
             acknowledged_underpowered=ack_payload,
             rubric_sha256=rubric_sha256,
         )
+        # [ux-friction AC-6]: the lock event is durably appended, so every future
+        # planner is now refused by check_single_lock regardless of this flock —
+        # remove the stray guard file rather than leave it beside the ledger (F5).
+        # Safe under the held lock: a waiter that already opened this inode still
+        # acquires the flock and proceeds into that refusal; a later planner
+        # re-creating the path is refused by the OUTER check_single_lock before it
+        # ever reaches the guard. Only a SUCCESSFUL lock unlinks — a failed attempt
+        # raises out of this block and leaves cleanup unchanged.
+        guard.unlink(missing_ok=True)
     finally:
         try:
             fcntl.flock(gfd, fcntl.LOCK_UN)

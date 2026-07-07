@@ -174,11 +174,14 @@ class MdeReport:
     ``experiment_locked`` event embeds (pinned by the Phase-0 constructor-replay
     golden) — the single place that key-set lives.
 
-    ``power_gate_skipped`` is **owned by the lock stage**, not by power: power
-    never decides whether the gate applies. :func:`mde_check` always returns it
-    ``False``; the lock sets it (via :func:`dataclasses.replace`) when a spec
-    omits ``hypothesized_effect``, and :meth:`to_event_payload` folds it into the
-    ledgered ``flags`` — replacing the former in-place mutation of power's return.
+    Two flags are **owned by the lock stage**, not by power: power never decides
+    whether they apply. :func:`mde_check` always returns both ``False``; the lock
+    sets them (via :func:`dataclasses.replace`) and :meth:`to_event_payload` folds
+    them into the ledgered ``flags`` — replacing any in-place mutation of power's
+    return. ``power_gate_skipped`` fires when a spec omits ``hypothesized_effect``
+    [PL-1]; ``insufficient_tasks_for_decision`` fires when the design has fewer
+    than two known task clusters, so a paired decision is impossible [ux-friction
+    AC-9, D4] — a WARNING signal only, it never gates the lock.
     """
 
     mde: Optional[float]
@@ -192,17 +195,25 @@ class MdeReport:
     alpha: float
     power_curve: list[dict]
     power_gate_skipped: bool = False
+    insufficient_tasks_for_decision: bool = False
 
     def to_event_payload(self) -> dict:
         """The exact ``mde`` payload embedded in the lock event — today's keys.
 
-        ``power_gate_skipped`` (a lock-stage flag) is appended *after* power's own
-        flags so the ledgered order is ``[assumption_based_mde, power_gate_skipped]``
-        exactly as before.
+        The two lock-stage flags are appended *after* power's own flags, each only
+        when set, so the ledgered order is ``[assumption_based_mde,
+        power_gate_skipped, insufficient_tasks_for_decision]`` — power's flags
+        first and unchanged, so a design that trips neither is byte-identical to
+        before (the additive-vocabulary contract [ux-friction AC-9]).
         """
         flags = list(self.flags)
         if self.power_gate_skipped and "power_gate_skipped" not in flags:
             flags.append("power_gate_skipped")
+        if (
+            self.insufficient_tasks_for_decision
+            and "insufficient_tasks_for_decision" not in flags
+        ):
+            flags.append("insufficient_tasks_for_decision")
         return {
             "mde": self.mde,
             "method": self.method,

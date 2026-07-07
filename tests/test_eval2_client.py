@@ -7,7 +7,7 @@ from harness.judge.providers.base import ProviderError, ProviderRefusal, Provide
 from harness.judge.providers.fake import FakeProvider, FakeProviderExhausted
 from harness.judge.schema import Confidence, Winner
 from harness.ledger.query import find_events
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 from tests.fixtures.judge_fakes import make_config, make_packet, verdict_json
 
 
@@ -47,7 +47,7 @@ def test_fake_provider_raises_on_exhaustion():
 
 def _run(tmp_path, provider, config=None):
     ledger = tmp_path / "l.ndjson"
-    v = judge_pair(make_packet(), config or make_config(), ledger, fixed_ctx(),
+    v = judge_pair(make_packet(), config or make_config(), ledger, ctx_for(tmp_path),
                    ts="t0", provider=provider)
     return v, ledger
 
@@ -159,7 +159,7 @@ def test_ac8_every_comparison_has_one_event(tmp_path):
         FakeProvider(["garbage"]),
     ]:
         ledger = tmp_path / f"l{id(prov)}.ndjson"
-        judge_pair(make_packet(), make_config(), ledger, fixed_ctx(), ts="t0", provider=prov)
+        judge_pair(make_packet(), make_config(), ledger, ctx_for(tmp_path), ts="t0", provider=prov)
         assert len(find_events(ledger, "judge_verdict")) == 1
 
 
@@ -171,7 +171,7 @@ def test_ac7_comparison_id_propagated(tmp_path):
     from harness.judge.schema import Verdict, VerdictProvenance, Winner
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     v = judge_pair(make_packet(), make_config(), ledger, ctx, ts="t0",
                    provider=FakeProvider([verdict_json("1"), verdict_json("2")]),
                    comparison_id="cmp-9", task_class="refactor")
@@ -192,7 +192,7 @@ def test_ac8_identity_leak_records_cant_judge(tmp_path):
     # escape with none
     ledger = tmp_path / "l.ndjson"
     pkt = make_packet(diff_a="leaked arm-control identity")
-    v = judge_pair(pkt, make_config(), ledger, fixed_ctx(), ts="t0",
+    v = judge_pair(pkt, make_config(), ledger, ctx_for(tmp_path), ts="t0",
                    provider=FakeProvider([verdict_json("1"), verdict_json("2")]),
                    canaries=["arm-control"])
     assert v.winner == Winner.CANT_JUDGE and v.reason == "identity_leak"
@@ -219,7 +219,7 @@ def test_ac8_unknown_provider_records_cant_judge(tmp_path):
     ledger = tmp_path / "l.ndjson"
     # a versioned id (passes plan-time alias check) with an unknown provider prefix
     v = judge_pair(make_packet(), make_config(model="mystery/model-2024-01-01"),
-                   ledger, fixed_ctx(), ts="t0")  # provider=None -> real get_provider
+                   ledger, ctx_for(tmp_path), ts="t0")  # provider=None -> real get_provider
     assert v.winner == Winner.CANT_JUDGE and v.reason == "provider_error"
     assert len(find_events(ledger, "judge_verdict")) == 1
 
@@ -230,7 +230,7 @@ def test_ac8_provider_shape_error_is_provider_error(tmp_path):
     # CANT_JUDGE(provider_error), not let the exception escape with no event.
     for i, exc in enumerate((KeyError("choices"), IndexError("candidates"))):
         ledger = tmp_path / f"l{i}.ndjson"
-        v = judge_pair(make_packet(), make_config(), ledger, fixed_ctx(), ts="t0",
+        v = judge_pair(make_packet(), make_config(), ledger, ctx_for(tmp_path), ts="t0",
                        provider=FakeProvider([exc]))
         assert v.winner == Winner.CANT_JUDGE and v.reason == "provider_error"
         assert len(find_events(ledger, "judge_verdict")) == 1
@@ -342,7 +342,7 @@ def test_jd5_cant_judge_excluded_from_kappa(tmp_path):
     from harness.ledger.events import append_human_verdict, append_verdict
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     append_verdict(ledger, ctx, verdict=_judge_verdict("c1", "CANT_JUDGE").model_dump(mode="json"))
     append_human_verdict(ledger, ctx, verdict=_human_verdict("c1", "A").model_dump(mode="json"))
     assert pairs_from_ledger(ledger) == []
@@ -356,7 +356,7 @@ def test_jd5_null_comparison_id_not_joined(tmp_path):
     from harness.ledger.events import append_human_verdict, append_verdict
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     append_verdict(ledger, ctx, verdict=_judge_verdict(None, "A").model_dump(mode="json"))
     append_verdict(ledger, ctx, verdict=_judge_verdict(None, "B").model_dump(mode="json"))
     append_human_verdict(ledger, ctx, verdict=_human_verdict(None, "A").model_dump(mode="json"))
@@ -371,7 +371,7 @@ def test_jd5_last_judge_verdict_wins_dedup(tmp_path):
     from harness.ledger.events import append_human_verdict, append_verdict
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     append_verdict(ledger, ctx, verdict=_judge_verdict("c1", "A").model_dump(mode="json"))
     append_verdict(ledger, ctx, verdict=_judge_verdict("c1", "B").model_dump(mode="json"))
     append_human_verdict(ledger, ctx, verdict=_human_verdict("c1", "B").model_dump(mode="json"))
@@ -399,7 +399,7 @@ def test_dp4_1_arm_map_recorded_on_verdict(tmp_path):
     """D-P4-1: the judge records its A/B -> physical-arm map so the kappa join is
     frame-correct (a slice of AN-1). The map rides onto the ledgered verdict."""
     arm_map = {"A": "control", "B": "treatment"}
-    v = judge_pair(make_packet(), make_config(), tmp_path / "l.ndjson", fixed_ctx(),
+    v = judge_pair(make_packet(), make_config(), tmp_path / "l.ndjson", ctx_for(tmp_path),
                    ts="t0", provider=FakeProvider([verdict_json("1"), verdict_json("2")]),
                    arm_map=arm_map)
     assert v.arm_map == arm_map
@@ -411,6 +411,6 @@ def test_dp4_1_arm_map_recorded_on_cant_judge(tmp_path):
     """Even a fail-closed CANT_JUDGE verdict carries the arm_map (the frame is
     known before the judge call fails)."""
     arm_map = {"A": "control", "B": "treatment"}
-    v = judge_pair(make_packet(), make_config(), tmp_path / "l.ndjson", fixed_ctx(),
+    v = judge_pair(make_packet(), make_config(), tmp_path / "l.ndjson", ctx_for(tmp_path),
                    ts="t0", provider=FakeProvider([ProviderTimeout("x")]), arm_map=arm_map)
     assert v.winner == Winner.CANT_JUDGE and v.arm_map == arm_map

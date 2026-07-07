@@ -80,6 +80,21 @@ class GraderUnavailableError(GradingContainerError):
     still catch it."""
 
 
+class HoldoutResultsMissingError(GradingContainerError):
+    """The no-daemon LocalGradeRunner found no pre-placed ``holdout_results.json``
+    in the workspace → a **terminal** cant_grade(holdout_results_missing)
+    [ux-friction AC-4].
+
+    A missing grade INPUT on a path with *no container*, NOT a grader that ran
+    and failed: the ``--runner local`` case has no container to fail, so it must
+    not be misclassified as ``container_failure`` (F7). Terminal because
+    re-running without the file cannot change the outcome — ``--retry-terminal``
+    is the recovery once the operator places the results. Subclass of
+    GradingContainerError so a caller that does not distinguish still fails closed.
+    Sibling of :class:`GraderUnavailableError`, so grade_trial must catch it
+    before the bare ``GradingContainerError``."""
+
+
 @dataclass
 class HoldoutRun:
     raw_output: dict

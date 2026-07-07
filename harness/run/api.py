@@ -185,6 +185,7 @@ def run_experiment(
     from ..grade.baseline import load_quarantine
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
+    from ..ledger.identity import derive_experiment_id
     from ..plan.lock import assert_lock
     from .engines import get_engine
     from .heartbeat import HEARTBEAT_FILENAME
@@ -247,7 +248,9 @@ def run_experiment(
         exp_dir, spec=spec, task_extra_hosts=task_extra_hosts(task_dicts)
     )
     resolved_actor = resolve_actor(actor)
-    ctx = EventContext(experiment_id=exp_dir.name, actor=resolved_actor)
+    # [ux-friction AC-1] one shared seam: resolve exp_dir before naming, so
+    # `bench run .` stamps the directory's real name, not '' (F1 on trial events).
+    ctx = EventContext(experiment_id=derive_experiment_id(exp_dir), actor=resolved_actor)
 
     # Managed sidecars (opt-in): when run.config.yaml sets proxy.managed [refactor
     # 04 §1] and/or otlp.managed [refactor 09 §3], stand the metering proxy and/or

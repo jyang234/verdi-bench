@@ -65,11 +65,18 @@ def anchor(ledger, *, out, actor=None) -> AnchorOutcome:
     from .actor import resolve_actor
     from .anchors import anchor_record, write_anchor
     from .events import EventContext, record_chain_anchor
+    from .identity import derive_experiment_id
 
     ledger = Path(ledger)
     # Route the timestamp through the EventContext clock seam rather than a bare
     # wall-clock read [PL-4 / determinism].
-    ctx = EventContext(experiment_id=ledger.parent.name, actor=resolve_actor(actor))
+    # [ux-friction AC-1] one shared seam: resolve the ledger's parent directory
+    # before naming, so `bench anchor ledger.ndjson` from inside the dir stamps
+    # the experiment's real name rather than '' (unresolved `.parent` of a bare
+    # relative ledger path is `.`).
+    ctx = EventContext(
+        experiment_id=derive_experiment_id(ledger.parent), actor=resolve_actor(actor)
+    )
     # 7A-2: anchor_record chain-verifies first and refuses tampered history before
     # writing anything.
     rec = anchor_record(ledger, ts=ctx.clock())

@@ -19,19 +19,29 @@ def plan_experiment(
     """Validate, power-check, and write the genesis lock event; return the
     :class:`LockOutcome` [EVAL-3].
 
-    Raises ``ActorResolutionError`` and the lock refusals (``UnderpoweredError``,
+    Raises ``ExperimentIdResolutionError`` (an unnameable experiment directory),
+    ``ActorResolutionError``, and the lock refusals (``UnderpoweredError``,
     ``AlreadyLockedError``, ``TaskCommitmentError``, ``ChainIntegrityError``,
     ``RubricCommitmentError``) the CLI maps to exit 2."""
     from ..corpus.commit import load_task_dicts
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
+    from ..ledger.identity import derive_experiment_id
     from .lock import lock_experiment
     from .power import calibration_variance_from_runs
 
     experiment = Path(experiment)
-    # PL-8: stamp the experiment *directory* name, exactly as run/grade do — one
-    # ledger, one experiment_id.
-    ctx = EventContext(experiment_id=experiment.parent.name, actor=resolve_actor(actor))
+    # PL-8 + [ux-friction AC-1]: stamp the experiment *directory* name through the
+    # one shared seam every stage now derives it from (harness.ledger.identity) —
+    # plan, run, grade and the cli_common ledgering verbs all agree, one ledger,
+    # one experiment_id. The seam resolves the spec's parent directory first, so
+    # the cd-in form bench init itself prints (`bench plan experiment.yaml`, whose
+    # unresolved `.parent` is `.` with an empty name) stamps the real directory
+    # name instead of baking experiment_id='' into every event of the permanent
+    # chain (F1); a parent that resolves to a nameless directory (a spec at the
+    # filesystem root) refuses rather than ever ledgering an empty id.
+    experiment_id = derive_experiment_id(experiment.parent)
+    ctx = EventContext(experiment_id=experiment_id, actor=resolve_actor(actor))
     # PL-5: feed the power gate real calibration variance when a corpus manifest
     # with calibration runs is supplied; otherwise the lock falls back to
     # AssumedVariance (flagged assumption_based_mde).

@@ -77,8 +77,13 @@ class ExperimentWorkspace:
         CLI's ``typer.Exit`` mapping — an unresolvable actor raises loudly."""
         from ..ledger.actor import resolve_actor
         from ..ledger.events import EventContext
+        from ..ledger.identity import derive_experiment_id
 
-        return EventContext(experiment_id=self.dir.name, actor=resolve_actor(actor))
+        # [ux-friction AC-1] one shared seam: resolve self.dir before naming, so a
+        # Workspace(".") stamps the experiment's real name rather than ''.
+        return EventContext(
+            experiment_id=derive_experiment_id(self.dir), actor=resolve_actor(actor)
+        )
 
     # --- pre-registration + execution ----------------------------------------
     def plan(self, *, actor: Optional[str] = None, acknowledge_underpowered: bool = False,

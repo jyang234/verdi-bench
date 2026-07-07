@@ -36,7 +36,7 @@ from harness.run.trajectory import resolve_trajectory
 from harness.cli import app
 from harness.run.types import OtlpConfig, RunConfig, Task
 from harness.schema.experiment import Arm
-from tests.fixtures.builders import fixed_ctx, write_experiment_yaml
+from tests.fixtures.builders import ctx_for, write_experiment_yaml
 
 _OTLP_ARM = Arm(name="A", platform="otlp", model="anthropic/claude-haiku-4-5-20251001")
 
@@ -151,7 +151,7 @@ def test_schedule_ledgers_spans_corrupt(tmp_path):
     ``trial_infra_failed(spans_corrupt)`` — the A12 vocabulary value, wired."""
     exp = tmp_path / "exp"
     exp.mkdir()
-    ctx = fixed_ctx()
+    ctx = ctx_for(exp)
     ledger = exp / "ledger.ndjson"
     task = Task(
         id="t", prompt="p",

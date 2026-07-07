@@ -25,6 +25,7 @@ import typer
 from .errors import VerdiRefusal
 from .ledger.actor import ActorResolutionError, resolve_actor
 from .ledger.events import EventContext
+from .ledger.identity import ExperimentIdResolutionError, derive_experiment_id
 
 
 @contextmanager
@@ -59,13 +60,19 @@ def resolve_actor_or_exit(flag_value: str | None) -> str:
 
 
 def event_context(experiment_dir: Path | str, actor_flag: str | None) -> EventContext:
-    """Build the ``EventContext(experiment_id=<dir>.name, actor=<resolved>)``
-    every ledgering verb constructs [GR-12].
+    """Build the ``EventContext`` the remaining ledgering verbs construct [GR-12].
 
-    Resolves the actor (exiting 2 on an unresolvable actor) and stamps the
-    experiment id from the directory name — one ledger, one experiment id,
-    exactly as run/grade/plan do today."""
+    Resolves the actor (exiting 2 on an unresolvable actor) and derives the
+    experiment id through the one shared seam every stage uses
+    (:func:`~harness.ledger.identity.derive_experiment_id`) — the RESOLVED
+    directory name, so `bench <verb> .` stamps the experiment's real name rather
+    than the empty '' its unresolved ``.name`` used to bake into the chain
+    [ux-friction AC-1]. A path that resolves to a nameless directory refuses with
+    a clean exit 2 (like the actor refusal) rather than ever ledgering an empty
+    id."""
+    with refusal_exit(ExperimentIdResolutionError):
+        experiment_id = derive_experiment_id(experiment_dir)
     return EventContext(
-        experiment_id=Path(experiment_dir).name,
+        experiment_id=experiment_id,
         actor=resolve_actor_or_exit(actor_flag),
     )

@@ -176,7 +176,20 @@ class _RecordingProvider:
 
 
 def _experiment_with_identity_detail(tmp_path):
-    spec, _, ledger = locked_experiment(tmp_path, repetitions=1)
+    # Arms pinned EXPLICITLY control-first (the fixture's historical shape): the
+    # schedule derives from arm order, and this test reads the FIRST trial event,
+    # expecting the claude_code arm's verified, detail-bearing trajectory — a
+    # premise indifferent to the template's (now contender-first) declaration
+    # order, so it must not float on the ambient default [ux-friction AC-7].
+    arms_control_first = [
+        {"name": "control", "platform": "claude_code",
+         "model": "anthropic/claude-haiku-4-5-20251001", "payload": {}},
+        {"name": "treatment", "platform": "codex",
+         "model": "openai/gpt-4o-2024-08-06", "payload": {}},
+    ]
+    spec, _, ledger = locked_experiment(
+        tmp_path, repetitions=1, arms=arms_control_first
+    )
     (tmp_path / "tasks.yaml").write_text(
         yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "p"}]}), encoding="utf-8"
     )

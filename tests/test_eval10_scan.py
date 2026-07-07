@@ -7,7 +7,7 @@ import pytest
 from harness.adapters.base import Flags, Outcome, Provenance, Telemetry, TrialRecord
 from harness.contamination.scan import TaskReferences, read_solution, scan_trials
 from harness.ledger.events import record_trial
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 
 _ORACLE = """
 def parse_config(path):
@@ -68,7 +68,7 @@ def test_h3_tampered_workspace_is_unscanned_never_clean(tmp_path):
     from harness.run.workspace import workspace_sha256
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     refs = {"task0": TaskReferences(oracle=_ORACLE)}
     leaked = _workspace(tmp_path, "ws-leak", solution=_ORACLE)
     _seed_trial(ledger, ctx, trial_id="c-1", task_id="task0", arm="control",
@@ -109,7 +109,7 @@ def test_scan_flags_workspace_solution_not_logs(tmp_path):
     and ignores the artifacts/ log tree: a verbatim oracle in the solution
     flags; the same content appearing only in a log does not [review fix]."""
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     refs = {"task0": TaskReferences(oracle=_ORACLE)}
 
     copied = _workspace(tmp_path, "ws-copied", solution=_ORACLE)
@@ -133,7 +133,7 @@ def test_scan_holdout_leak_is_alarmed_and_flagged(tmp_path):
     """A holdout reproduced in the solution raises the EVAL-4 insulation alarm,
     preserved as evidence (flag + alarm), and the sweep continues [AC-4]."""
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     refs = {"task0": TaskReferences(holdouts=(_HOLDOUT,))}
     leaked = _workspace(tmp_path, "ws-leak", solution="# tests\n" + _HOLDOUT)
     _seed_trial(ledger, ctx, trial_id="c-1", task_id="task0", arm="control",
@@ -153,7 +153,7 @@ def test_scan_missing_artifacts_is_disclosed_not_cwd(tmp_path, monkeypatch):
     """An absent/empty artifacts_path is a disclosed UNSCANNED trial — never a
     scan of the current working directory [review fix: Path('') is cwd]."""
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     # run from a directory that CONTAINS the oracle: a cwd-slurp would flag
     trap = tmp_path / "trap"
     trap.mkdir()
@@ -179,7 +179,7 @@ def test_scan_unmeasurable_tasks_contribute_nothing(tmp_path):
     """A task with no oracle and no holdouts is unmeasurable by this channel:
     no flag entry, no skip — that is a property of the corpus, not a failure."""
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     ws = _workspace(tmp_path, "ws", solution=_INDEPENDENT)
     _seed_trial(ledger, ctx, trial_id="c-1", task_id="task0", arm="control",
                 artifacts_path=ws)
@@ -191,7 +191,7 @@ def test_scan_or_merges_repetitions(tmp_path):
     """Multiple trials of one (arm, task) OR-merge: one leaking repetition
     flags the pair even when a later repetition is clean."""
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     refs = {"task0": TaskReferences(oracle=_ORACLE)}
     _seed_trial(ledger, ctx, trial_id="c-1", task_id="task0", arm="control",
                 artifacts_path=_workspace(tmp_path, "ws1", solution=_ORACLE))
@@ -209,7 +209,7 @@ def test_m_c3_quarantined_trial_is_skipped_disclosed(tmp_path):
     from harness.ledger.events import record_forensic_quarantine
 
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     refs = {"task0": TaskReferences(holdouts=(_HOLDOUT,))}
     leaky = _workspace(tmp_path, "ws-leak", solution=_HOLDOUT)
     _seed_trial(ledger, ctx, trial_id="c-1", task_id="task0", arm="control",

@@ -27,7 +27,7 @@ from harness.plan.lock import (
     UnknownArmPlatformError,
     lock_experiment,
 )
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 from tests.fixtures.servers import running_server
 
 # Two registered platforms (claude_code, codex) — the lock accepts these.
@@ -100,7 +100,7 @@ def test_validate_surfaces_unknown_platform_that_lock_would_refuse(tmp_path):
     d = _write_dir(tmp_path, "bad-cli", _BAD_SPEC)
     try:
         lock_experiment(d / "experiment.yaml", d / "ledger.ndjson",
-                        ctx=fixed_ctx(), task_dicts=None, **_QUICK)
+                        ctx=ctx_for(d), task_dicts=None, **_QUICK)
         raise AssertionError("lock should have refused the unknown platform")
     except UnknownArmPlatformError as e:
         assert "my_custom_stack" in str(e)
@@ -162,7 +162,7 @@ def test_validate_rubric_parity_rejects_directory_rubric(tmp_path):
 
     try:
         lock_experiment(d / "experiment.yaml", d / "ledger.ndjson",
-                        ctx=fixed_ctx(), task_dicts=None, **_QUICK)
+                        ctx=ctx_for(d), task_dicts=None, **_QUICK)
         raise AssertionError("lock should have refused the directory rubric")
     except RubricCommitmentError as e:
         assert "rubrics" in str(e)

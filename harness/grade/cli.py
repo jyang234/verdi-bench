@@ -26,6 +26,28 @@ from .api import (  # noqa: F401 — re-exported for the white-box grade tests
 )
 
 
+def _grade_summary_line(outcome: GradeOutcome) -> str:
+    """The one-line ``bench grade`` summary [ux-friction AC-2].
+
+    Terse and quiet when every trial scored (``graded N trial(s)``); when any
+    trial landed cant_grade, discloses the split with per-reason counts and
+    points at ``bench status`` for the detail — so a fail-closed pass can never
+    read as N successes (F6). Reasons are rendered in sorted order (no
+    dict-ordering assumption leaks into the line). Pure, so the string is pinned
+    without spawning the CLI."""
+    base = f"graded {outcome.graded} trial(s)"
+    if outcome.cant_grade == 0:
+        return base
+    reasons = ", ".join(
+        f"{reason} ×{n}"
+        for reason, n in sorted(outcome.cant_grade_reasons.items())
+    )
+    return (
+        f"{base}: {outcome.scored} scored, {outcome.cant_grade} cant_grade "
+        f"({reasons}) — see bench status"
+    )
+
+
 def register(app: typer.Typer) -> None:
     @app.command()
     def grade(
@@ -58,4 +80,4 @@ def register(app: typer.Typer) -> None:
                     experiment_dir, runner=runner,
                     retry_terminal=retry_terminal, actor=actor,
                 )
-        typer.echo(f"graded {outcome.graded} trial(s)")
+        typer.echo(_grade_summary_line(outcome))

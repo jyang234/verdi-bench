@@ -43,7 +43,7 @@ def test_jd9_bench_judge_verb_judges_graded_comparisons(tmp_path):
     ledger = _setup(expdir)
     ctx = fixed_ctx(experiment_id="exp")
     # control passes the holdout; treatment fails -> the content-based fake judge
-    # prefers control (arm A) consistently across both orders.
+    # prefers control (arm B under the treatment-first template) across both orders.
     seed_trial_and_grade(ledger, ctx, trial_id="tr-a", task_id="t1", arm="control", passed=True)
     seed_trial_and_grade(ledger, ctx, trial_id="tr-b", task_id="t1", arm="treatment", passed=False)
 
@@ -53,9 +53,9 @@ def test_jd9_bench_judge_verb_judges_graded_comparisons(tmp_path):
     assert len(verdicts) == 1
     v = verdicts[0]["verdict"]
     assert v["comparison_id"] == "cmp-t1-r0"
-    assert v["arm_map"] == {"A": "control", "B": "treatment"}
+    assert v["arm_map"] == {"A": "treatment", "B": "control"}
     assert v["task_class"] == "refactor"
-    assert v["winner"] == "A"  # control passed, treatment failed
+    assert v["winner"] == "B"  # control (B) passed, treatment (A) failed
     assert v["single_order"] is False
     # the ledger still verifies after judging
     assert runner.invoke(app, ["verify-chain", str(ledger)]).exit_code == 0
@@ -180,7 +180,7 @@ def test_jd9_escalation_config_threaded(tmp_path):
     'sufficient' where the hardcoded default 20 would not — proving the
     EscalationConfig reaches calibration (JD-9).
 
-    The human verdict *disagrees* with the judge (judge A, human B) so the reviewed
+    The human verdict *disagrees* with the judge (judge B, human A) so the reviewed
     pair carries both categories and kappa is defined (=0) under D-5 — an all-agree
     single item would be degenerate/insufficient regardless of the threshold."""
     from harness.judge.schema import Verdict, VerdictProvenance, Winner
@@ -193,13 +193,14 @@ def test_jd9_escalation_config_threaded(tmp_path):
     ctx = fixed_ctx(experiment_id="exp")
     seed_trial_and_grade(ledger, ctx, trial_id="tr-a", task_id="t1", arm="control", passed=True)
     seed_trial_and_grade(ledger, ctx, trial_id="tr-b", task_id="t1", arm="treatment", passed=False)
-    # a human verdict DISAGREEING with the judge (judge A, human B) — a defined,
-    # non-degenerate pair (kappa = 0), so the class is sufficient at min=1. It
-    # carries an integrity block: RV-8(f) excludes integrity-less human verdicts
-    # from the reviewed-kappa set, so a reviewed verdict must have one.
+    # a human verdict DISAGREEING with the judge (judge B, human A — the judge
+    # prefers the passing control arm, B under the treatment-first template) — a
+    # defined, non-degenerate pair (kappa = 0), so the class is sufficient at
+    # min=1. It carries an integrity block: RV-8(f) excludes integrity-less human
+    # verdicts from the reviewed-kappa set, so a reviewed verdict must have one.
     hv = Verdict(
-        winner=Winner.B, reason="disagree",
-        evidence=[{"kind": "diff", "response": "B", "hunk": "h"}],
+        winner=Winner.A, reason="disagree",
+        evidence=[{"kind": "diff", "response": "A", "hunk": "h"}],
         provenance=VerdictProvenance(judge_model="human", rubric_sha256="human",
             packet_sha256="human", call_ids=["human"], orders="single",
             temperature=0.0, ts="t"),

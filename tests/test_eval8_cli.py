@@ -15,7 +15,7 @@ from harness.cli import app
 from harness.corpus.registry import CorpusManifest
 from harness.ledger.events import record_flake_baseline
 from harness.ledger.query import find_events
-from tests.fixtures.builders import fixed_ctx, seed_trial_and_grade
+from tests.fixtures.builders import ctx_for, fixed_ctx, seed_trial_and_grade
 from tests.fixtures.grading import write_holdout_results
 
 runner = CliRunner()
@@ -93,7 +93,7 @@ def test_co8_mine_approve_admit_cli_flow(tmp_path):
     assert ra.exit_code == 0, ra.output
 
     # a clean flake baseline for the sha, then admit through the CLI
-    record_flake_baseline(ledger, fixed_ctx(), task_id="cand-x", task_sha=sha, k=5,
+    record_flake_baseline(ledger, ctx_for(expdir), task_id="cand-x", task_sha=sha, k=5,
                           results=[{"run": i, "passed": True} for i in range(5)],
                           verdict="clean")
     rad = runner.invoke(app, [
@@ -337,7 +337,7 @@ def test_co7_admit_rejects_self_approval_cli(tmp_path):
         "corpus", "approve", str(expdir), "--candidate-id", "cand-y", "--task-sha", sha,
         "--signing-key", str(keyfile), "--approver", "bob",
     ]).exit_code == 0
-    record_flake_baseline(ledger, fixed_ctx(), task_id="cand-y", task_sha=sha, k=5,
+    record_flake_baseline(ledger, ctx_for(expdir), task_id="cand-y", task_sha=sha, k=5,
                           results=[{"run": i, "passed": True} for i in range(5)],
                           verdict="clean")
     rad = runner.invoke(app, [

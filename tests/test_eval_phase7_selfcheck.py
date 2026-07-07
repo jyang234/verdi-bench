@@ -19,7 +19,7 @@ from harness.analyze.selfcheck import run_selfcheck, selfcheck_passed, wilson_in
 from harness.cli import app
 from harness.ledger.events import record_selfcheck
 from harness.ledger.query import find_events
-from tests.fixtures.builders import fixed_ctx, locked_experiment, seed_trial_and_grade
+from tests.fixtures.builders import ctx_for, locked_experiment, seed_trial_and_grade
 
 runner = CliRunner()
 
@@ -63,7 +63,7 @@ def test_wilson_interval_self_scales_with_n():
 
 def test_selfcheck_is_deterministic(tmp_path):
     """Same ledger ⇒ byte-identical selfcheck payload (seed from the locked seed)."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, treatment_pass=lambda i: i % 2 == 0)
     a = run_selfcheck(ledger, spec, n_sim=100, n_boot=200)
@@ -77,7 +77,7 @@ def test_well_powered_fixture_passes(tmp_path):
     on the INDEPENDENT validation stream [F-M-S1], so the fixture must be
     genuinely calibrated, not winner's-curse-flattered (16 clusters; the old
     10-cluster fixture only passed on the shared draws, see the F-M-S1 test)."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     for i in range(16):
         for r in range(2):
@@ -93,7 +93,7 @@ def test_well_powered_fixture_passes(tmp_path):
 def test_starved_fixture_fails_insufficient(tmp_path):
     """< 2 realized clusters ⇒ insufficient_data, passed=false — an experiment
     too small to selfcheck cannot render official [D008 (b)]."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     seed_trial_and_grade(ledger, ctx, trial_id="c0", task_id="t0", arm="control", passed=True)
     seed_trial_and_grade(ledger, ctx, trial_id="x0", task_id="t0", arm="treatment", passed=False)
@@ -106,16 +106,16 @@ def test_bench_selfcheck_verb_ledgers_one_event(tmp_path):
     import yaml
 
     expdir = tmp_path / "e"
-    spec, _, ledger = locked_experiment(expdir, ctx=fixed_ctx())
+    spec, _, ledger = locked_experiment(expdir, ctx=ctx_for(expdir))
     (expdir / "tasks.yaml").write_text(yaml.safe_dump({"tasks": []}), encoding="utf-8")
-    _populate(ledger, fixed_ctx(), treatment_pass=lambda i: i % 2 == 0)
+    _populate(ledger, ctx_for(expdir), treatment_pass=lambda i: i % 2 == 0)
     r = runner.invoke(app, ["selfcheck", str(expdir)])
     assert r.exit_code == 0, r.output
     assert len(find_events(ledger, "selfcheck")) == 1
 
 
 def test_official_fence_refused_without_selfcheck(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, treatment_pass=lambda i: i % 2 == 0)
     _seed_full_calibration(ledger, ctx)  # calibration ok, but no selfcheck yet
@@ -127,7 +127,7 @@ def test_official_fence_refused_without_selfcheck(tmp_path):
 
 
 def test_official_fence_refused_with_failed_selfcheck(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, treatment_pass=lambda i: i % 2 == 0)
     _seed_full_calibration(ledger, ctx)
@@ -150,7 +150,7 @@ def _seed_matching_selfcheck(ledger, ctx, spec, *, n_sim=20, n_boot=200):
 
 
 def test_official_fence_passes_with_passed_selfcheck(tmp_path):
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, treatment_pass=lambda i: i % 2 == 0)
     _seed_full_calibration(ledger, ctx)
@@ -167,7 +167,7 @@ def test_official_fence_refuses_stale_selfcheck(tmp_path):
     the official render is refused until selfcheck is re-run on the current data.
     Scenario: selfcheck(pass) → more grades → analyze (findings recomputed on the
     new data, so the head-hash check passes, but the selfcheck is now stale)."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, treatment_pass=lambda i: i % 2 == 0)
     _seed_full_calibration(ledger, ctx)
@@ -189,7 +189,7 @@ def test_official_fence_refuses_method_mismatch(tmp_path):
     coverage of the interval shown."""
     from harness.ledger.query import ledger_head_hash  # noqa: F401 (clarity)
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, treatment_pass=lambda i: i % 2 == 0)
     _seed_full_calibration(ledger, ctx)
@@ -211,7 +211,7 @@ def test_official_fence_refuses_method_mismatch(tmp_path):
 def test_selfcheck_validates_the_deployed_method(tmp_path):
     """review #2 root: run_selfcheck seeds with spec.seed (not a sub-seed), so the
     method it validates is exactly the method compute_findings deploys."""
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     _populate(ledger, ctx, treatment_pass=lambda i: i % 2 == 0)
     res = run_selfcheck(ledger, spec, n_sim=40, n_boot=500)
@@ -228,7 +228,7 @@ def test_m_s1_selfcheck_validates_on_a_fresh_stream(tmp_path):
     estimate does not (the honest gate refuses)."""
     from harness.analyze.selfcheck import run_selfcheck, wilson_interval
 
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path / "e")
     spec, _, ledger = locked_experiment(tmp_path / "e", ctx=ctx)
     for i in range(10):
         for r in range(2):

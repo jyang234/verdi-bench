@@ -83,7 +83,7 @@ def test_workspace_row_carries_arms_models_and_heartbeat_ts(tmp_path):
     rich_experiment(tmp_path / "exp-a")
     rows = scan_workspace(tmp_path)
     (row,) = rows
-    assert row["summary"]["arms"] == ["control", "treatment"]
+    assert row["summary"]["arms"] == ["treatment", "control"]  # template lock order
     assert set(row["summary"]["arm_models"]) == {"control", "treatment"}
     # the heartbeat's own ts rides along so the HOME screen can judge a silent
     # "running" doc stale exactly like the experiment screen does
@@ -93,7 +93,7 @@ def test_workspace_row_carries_arms_models_and_heartbeat_ts(tmp_path):
 def test_status_spec_summary_names_arm_models(tmp_path):
     _paired_fixture(tmp_path)
     st = compute_status(tmp_path)["stages"]
-    assert st["spec"]["arms"] == ["control", "treatment"]
+    assert st["spec"]["arms"] == ["treatment", "control"]  # template lock order
     assert st["spec"]["arm_models"]["control"].startswith("anthropic/")
     assert st["spec"]["arm_models"]["treatment"].startswith("openai/")
 

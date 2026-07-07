@@ -18,7 +18,7 @@ from harness.review.sample import (
     reviewed_kappa_items,
     select_for_review,
 )
-from tests.fixtures.builders import fixed_ctx, seed_trial_and_grade
+from tests.fixtures.builders import ctx_for, seed_trial_and_grade
 
 
 def _prov(model="google/gemini-1.5-pro-002"):
@@ -71,7 +71,7 @@ def test_rv5_kappa_report_exposes_floor_prob():
 # --- RV-4: escalation through the IPW seam ----------------------------------
 def test_rv4_escalation_uses_ipw_not_raw_pooled(tmp_path):
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     # two disagreements of opposite direction (judge label varies, so kappa is not
     # trivially degenerate): judge A vs holdouts B, and judge B vs holdouts A ...
     _seed_comparison(ledger, ctx, "d0", control_pass=False, treatment_pass=True,
@@ -118,7 +118,7 @@ def test_dp7_4_calibration_wires_sensitivity_from_kappa_report(tmp_path):
     kappa_report computes over the items the gate saw — proving the render's
     sensitivity comes through the kappa_report seam, not a re-derivation."""
     ledger = tmp_path / "l.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     _seed_comparison(ledger, ctx, "d0", control_pass=False, treatment_pass=True,
                      judge_winner="A", human_winner="B")
     _seed_comparison(ledger, ctx, "d1", control_pass=True, treatment_pass=False,
@@ -193,7 +193,7 @@ def test_m_s4_escalation_gates_on_interval_not_point(tmp_path):
     noisy small-n class whose interval straddles the threshold is INCONCLUSIVE —
     insufficient precision, disclosed, never silently fine."""
     ledger = tmp_path / "bad.ndjson"
-    ctx = fixed_ctx()
+    ctx = ctx_for(tmp_path)
     # systematic judge-vs-human anti-agreement in both directions (and every
     # comparison a judge-vs-holdout disagreement, so all are mandatory-reviewed):
     # kappa confidently ~ -1

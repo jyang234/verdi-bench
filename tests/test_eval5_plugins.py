@@ -10,7 +10,7 @@ from harness.grade.plugins import GraderPlugin, get_plugin, register_plugin
 from harness.grade.plugins.groundwork import GroundworkGrader
 from harness.grade.types import Assertion, AssertionResult, GradeTask
 from harness.ledger.query import find_events
-from tests.fixtures.builders import fixed_ctx
+from tests.fixtures.builders import ctx_for
 from tests.fixtures.grade_fakes import ScriptedGradeRunner, write_workspace
 from tests.fixtures.grading import write_holdout_results
 
@@ -27,7 +27,7 @@ def test_ac4_plugin_contract(tmp_path):
     ledger = tmp_path / "l.ndjson"
     task = GradeTask(id="t1", task_sha="s", plugin_ids=["dummy"])
     grade_trial(
-        "trial-1", task, ws, ledger, fixed_ctx(),
+        "trial-1", task, ws, ledger, ctx_for(tmp_path),
         container=GradingContainer(runner=ScriptedGradeRunner(
             {"assertions": [{"id": "h1", "result": "pass"}]})),
     )
@@ -58,7 +58,7 @@ def test_ac4_plugin_abstain_does_not_fail_binary(tmp_path):
     task = GradeTask(id="go1", task_sha="s", plugin_ids=["groundwork"],
                      fake_plugin_output={"rules": [{"id": "R", "verdict": "NO-STRUCTURAL-SIGNAL"}]})
     grade_trial(
-        "trial-1", task, ws, ledger, fixed_ctx(),
+        "trial-1", task, ws, ledger, ctx_for(tmp_path),
         container=GradingContainer(runner=ScriptedGradeRunner(
             {"assertions": [{"id": "h1", "result": "pass"}]})),
     )
@@ -104,7 +104,7 @@ def test_ac4_unknown_plugin_fails_closed(tmp_path):
     ledger = tmp_path / "l.ndjson"
     task = GradeTask(id="t1", task_sha="s", plugin_ids=["does-not-exist"])
     out = grade_trial(
-        "trial-1", task, ws, ledger, fixed_ctx(),
+        "trial-1", task, ws, ledger, ctx_for(tmp_path),
         container=GradingContainer(runner=ScriptedGradeRunner(
             {"assertions": [{"id": "h1", "result": "pass"}]})),
     )
@@ -194,14 +194,14 @@ def test_m_o1_groundwork_without_fixture_output_fails_the_grade_closed(tmp_path)
     from harness.grade.container import GradingContainer, LocalGradeRunner
     from harness.grade.deterministic import grade_trial
     from harness.ledger.query import find_events
-    from tests.fixtures.builders import fixed_ctx
+    from tests.fixtures.builders import ctx_for
 
     ws = tmp_path / "ws"
     ws.mkdir()
     write_holdout_results(ws, True)
     ledger = tmp_path / "l.ndjson"
     task = GradeTask(id="t", task_sha="s", plugin_ids=["groundwork"])
-    out = grade_trial("t1", task, ws, ledger, fixed_ctx(),
+    out = grade_trial("t1", task, ws, ledger, ctx_for(tmp_path),
                       container=GradingContainer(runner=LocalGradeRunner()))
     assert out.graded is False
     (ev,) = find_events(ledger, "cant_grade")
