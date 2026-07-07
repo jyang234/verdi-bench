@@ -62,6 +62,8 @@ test_change_register:   # tests-are-contracts: pre-approved by the human with th
   - test: "tests/test_schema_serialize.py:69,136"
     change: "the round-trip fixture drops panel:{size:3} (which AC-8 makes invalid) and keeps its non-default coverage via token_ceiling/escalation/orders/temperature. Intent preserved: 'non-default judge fields round-trip byte-stably' — panel was a convenient non-default, not the subject."
   - note: "The 15 other test files matching gemini-1.5-pro-002 hardcode their own inline specs and are expected to be unaffected; the author-page embed tests consume the template as data and follow it mechanically. Implementation must sweep and confirm, and list any additional edit in the PR under this register."
+  - test: "tests/test_e2e_pipeline.py:99 (test_retry_terminal_override_regrades_and_discloses)"
+    change: "the pinned cant_grade reason literal on the local missing-results path updates container_failure → holdout_results_missing, mechanically tracking AC-4's spec-mandated reason change; the retry-terminal flow the test verifies (terminal → ledgered override_of re-grade) is unchanged. Added at Batch B review per this register's sweep-and-list rule."
   - test: "tests/fixtures/builders.py::fixed_ctx and its call sites (D5 ruling)"
     change: "the hardcoded 'exp-fixture' default is removed suite-wide: fixtures with a real experiment dir derive the id from the directory (via the AC-1 identity seam); dir-less unit tests pass an explicit literal at the call site. Asserted id LITERALS update mechanically ('exp-fixture' → the dir name or the explicit literal); no assertion is deleted or weakened, and every changed assertion line is listed in the landing PR."
 
@@ -89,7 +91,7 @@ acceptance:
       - "test_ac2_grade_summary_discloses_cant_grade"
       - "test_ac2_all_scored_summary_terse"
   - id: "AC-3"
-    text: "JudgeOutcome reports verdicts vs cant_judge (with the dominant reason), and the bench judge summary discloses it whenever cant_judge > 0 (e.g. 'judged 3 comparison(s): 0 verdicts, 3 cant_judge (provider_error)'). Exit code stays 0 (D2)."
+    text: "JudgeOutcome reports verdicts vs cant_judge with per-reason counts, and the bench judge summary discloses the split whenever cant_judge > 0 (e.g. 'judged 3 comparison(s): 0 verdicts, 3 cant_judge (provider_error ×3)'), shape-consistent with grade's line. Exit code stays 0 (D2). [Amended at Batch B review: per-reason ×N counts replace the draft's 'dominant reason' — strictly more informative, and the full reason map rides the outcome.]"
     vc: "The keyless real-provider reproduction fails on today's 'judged 3 comparison(s)' and passes with the split."
     touchpoints:
       - "harness/judge/api.py:27"
