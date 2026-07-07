@@ -118,6 +118,17 @@ Each row is an adversarial input; the fence must produce the exact disposition.
   macOS host. Their mechanisms are unit-tested in L0; kill-on-timeout can be
   demonstrated live via `DockerCliRunner().run_container([...], timeout_s=2)`.
 
+Separate from the caveats above, one **known defect** (a tracked harness bug
+under investigation, not a design limitation): `harbor_multiagent.py`'s
+per-trial egress check can fail intermittently. A trial container occasionally
+cannot resolve the metering proxy's container name (`EAI_AGAIN` via Docker's
+embedded DNS — `harness/hermetic/metering.py` builds `proxy_url` from the
+container *name*), so its workflow dies before any model call and the check
+truthfully reports the trial as un-metered. The multi-agent image's ~10
+sequential model calls per trial make it far more exposed than `generic-llm`'s
+single call, which is why `harbor.py` is unaffected. Delete this note when the
+metering fix lands.
+
 The former "reference Squid config rejects harbor's credential" caveat is no
 longer a shakedown caveat: the **shipped** metering path is the managed proxy
 (`run.config` `proxy.managed`, which L6 stands up and tears down around the run),

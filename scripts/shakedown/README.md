@@ -32,6 +32,11 @@ uv run --env-file .env python scripts/shakedown/official.py
 #      per trial through the harness-managed metering proxy
 uv run --env-file .env python scripts/shakedown/harbor.py
 
+# L6 — multi-turn multi-agent variant: haiku vs sonnet arms, third-vendor
+#      openai judge; proves the flight recorder captures agent-attributed
+#      multi-turn reasoning
+uv run --env-file .env python scripts/shakedown/harbor_multiagent.py
+
 # L4 — container guarantees on real Docker (builds synthetic images)
 VERDI_REQUIRE_DOCKER=1 uv run pytest -m docker -v
 
@@ -44,6 +49,14 @@ VERDI_PLAYWRIGHT_PATH=... VERDI_CHROMIUM_PATH=... VERDI_REQUIRE_BROWSER=1 \
 `.env` supplies `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` (see `.env.example`).
 Generated run state lands in `_run/` (git-ignored); committed inputs are under
 `assets/`.
+
+Known defect (tracked; delete this note when the metering fix lands):
+`harbor_multiagent.py`'s "per-trial egress attributed" check can fail
+intermittently — a trial container occasionally cannot resolve the metering
+proxy's container name (`EAI_AGAIN` via Docker's embedded DNS), so its workflow
+dies un-metered and the check truthfully reports the trial as unattributed. A
+harness metering bug, not a property of the workflow under test; see the note
+in [`docs/design/shakedown.md`](../../docs/design/shakedown.md).
 
 ## Layout
 
