@@ -48,6 +48,8 @@ import json
 from dataclasses import dataclass
 from typing import Optional
 
+from ..errors import VerdiRefusal
+
 # The per-grade nonce env name — FROZEN (grader-image compatibility contract):
 # the host injects it, the grader image reads it and stamps it into the fence.
 NONCE_ENV = "VERDI_FENCE_NONCE"
@@ -60,7 +62,7 @@ _HOLDOUT_TAG = "VERDI_HOLDOUT_RESULTS_V2"
 _PLUGIN_TAG = "VERDI_PLUGIN_RESULTS_V2"
 
 
-class GradingContainerError(RuntimeError):
+class GradingContainerError(VerdiRefusal, RuntimeError):
     """The grader ran but failed (nonzero exit, no results) → a **terminal**
     cant_grade(container_failure): re-running won't change the outcome.
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 import yaml
+from pydantic import ValidationError
 
+from harness.errors import VerdiRefusal
 from harness.schema.errors import (
     AliasJudgeIdError,
     ArmModelError,
@@ -13,6 +15,8 @@ from harness.schema.errors import (
     CompositePrimaryMetricError,
     DecisionRuleError,
     MissingCostCeilingError,
+    SpecError,
+    SpecValidationError,
 )
 from harness.schema.experiment import ExperimentSpec
 from tests.fixtures.builders import valid_experiment_dict
@@ -128,6 +132,65 @@ def test_ac1_extra_key_forbidden():
     data = valid_experiment_dict(surprise="nope")
     with pytest.raises(Exception):
         ExperimentSpec.from_dict(data)
+
+
+# --- boundary wrap: a raw pydantic ValidationError never escapes the loader ---
+# [refactor 13 OI-B]. Structural rejections (no named validator) surface as a
+# SpecError-family SpecValidationError carrying the pydantic message verbatim,
+# so the tripwire needles + every message pin keep matching.
+def test_ac1_structural_extra_key_wraps_as_specerror_verbatim():
+    data = valid_experiment_dict(surprise="nope")
+    with pytest.raises(SpecValidationError) as exc:
+        ExperimentSpec.from_dict(data)
+    assert isinstance(exc.value, SpecError)
+    assert isinstance(exc.value, VerdiRefusal)
+    assert isinstance(exc.value, ValueError)  # base preserved
+    assert "Extra inputs are not permitted" in str(exc.value)  # tripwire needle
+
+
+def test_ac1_structural_single_arm_wraps_verbatim():
+    data = valid_experiment_dict()
+    data["arms"] = [data["arms"][0]]  # collapse to one arm (min_length=2)
+    with pytest.raises(SpecValidationError) as exc:
+        ExperimentSpec.from_dict(data)
+    assert "at least 2 items" in str(exc.value)  # the single-arm tripwire needle
+
+
+def test_ac1_wrap_str_is_pydantic_message_verbatim():
+    data = valid_experiment_dict(surprise="nope")
+    try:
+        ExperimentSpec.model_validate(data)
+        raise AssertionError("expected a raw ValidationError from model_validate")
+    except ValidationError as raw:
+        with pytest.raises(SpecValidationError) as exc:
+            ExperimentSpec.from_dict(data)
+        assert str(exc.value) == str(raw)  # byte-for-byte the pydantic message
+
+
+def test_ac1_neither_loader_leaks_a_raw_validation_error():
+    data = valid_experiment_dict(surprise="nope")
+    for call in (
+        lambda: ExperimentSpec.from_dict(data),
+        lambda: ExperimentSpec.from_yaml_text(yaml.safe_dump(data)),
+    ):
+        with pytest.raises(SpecError):
+            call()
+        try:
+            call()
+        except ValidationError:  # pragma: no cover - asserts the wrap fired
+            raise AssertionError("a raw pydantic ValidationError leaked from the loader")
+        except SpecError:
+            pass
+
+
+def test_ac1_named_validator_error_is_not_wrapped():
+    # A rejection a named validator raised keeps its specific subclass; the
+    # structural wrap only catches the un-named pydantic-structural case.
+    data = valid_experiment_dict()
+    del data["cost_ceiling"]
+    with pytest.raises(MissingCostCeilingError) as exc:
+        ExperimentSpec.from_dict(data)
+    assert type(exc.value) is MissingCostCeilingError
 
 
 @pytest.mark.parametrize(

@@ -23,6 +23,7 @@ from typing import Callable, Literal, Optional
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..analyze.confounds import judge_vendor_overlap
+from ..errors import VerdiRefusal
 from ..judge.envelope import (
     DEFAULT_MARGIN,
     DEFAULT_MAX_CONTEXT_TOKENS,
@@ -313,7 +314,7 @@ def _assert_scores_cover_rubric(rubric: ProcessRubric, scores: list[DimensionSco
         raise ValueError(f"missing score(s) for dimension(s) {missing}; every rubric dimension must be scored")
 
 
-class ProcessSequencingError(RuntimeError):
+class ProcessSequencingError(VerdiRefusal, RuntimeError):
     """Human process scoring attempted before the comparison's reveal [AC-3]."""
 
 

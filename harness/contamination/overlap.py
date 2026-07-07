@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional, Sequence
 
+from ..errors import VerdiRefusal
 from ..run.seam import HoldoutLeakError
 
 #: Flag at/above this containment when the experiment pre-registers no
@@ -34,7 +35,7 @@ _WINDOW = 4   # winnowing window (guarantees matches ≥ _WINDOW+_K-1 tokens hit
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
-class OverlapError(ValueError):
+class OverlapError(VerdiRefusal, ValueError):
     """A reference that cannot be fingerprinted — refused loudly, never scored
     0.0 (a silent zero would mask a broken comparison as a clean trial)."""
 

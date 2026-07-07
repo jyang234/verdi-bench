@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..adapters import known_platforms
+from ..errors import VerdiRefusal
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import assert_chain, find_events
@@ -24,7 +25,7 @@ from ..schema.experiment import ExperimentSpec
 from .power import AssumedVariance, MdeReport, VarianceSource, mde_check
 
 
-class LockError(RuntimeError):
+class LockError(VerdiRefusal, RuntimeError):
     """Base for lock-stage failures."""
 
 

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..contamination.canary import derive_canary, embed_canary, hash_canary
+from ..errors import VerdiRefusal
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import assert_chain, find_events
@@ -222,12 +223,12 @@ def admit_task(
 
 
 # --- two-phase admission persistence [refactor 07 §3; PRA-M11, EVAL-10 AC-2] --
-class AdmitInputError(RuntimeError):
+class AdmitInputError(VerdiRefusal, RuntimeError):
     """The stored candidate content for admission is missing/malformed/inside
     the instrument repo — refused before ledgering [EVAL-10 AC-2]."""
 
 
-class AdmitDestinationError(RuntimeError):
+class AdmitDestinationError(VerdiRefusal, RuntimeError):
     """An admission write destination is not writable — refused before
     ledgering, so nothing is torn [PRA-M11]."""
 

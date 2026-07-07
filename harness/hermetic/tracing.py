@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict
 
 # Absolute imports (not ``from .docker import ...``): the AST seam sweep
 # (tests/test_eval4_seam.py) flags a bare module name ``docker`` in an import.
+from harness.errors import VerdiRefusal
 from harness.hermetic.docker import DockerClient, HardenedCommand
 from harness.hermetic.metering import PROXY_BASE_IMAGE
 from harness.hermetic.network import METERED_NETWORK, create_network, remove_network
@@ -59,7 +60,7 @@ class CollectorConfig(BaseModel):
     log_path: str
 
 
-class TraceCollectorError(RuntimeError):
+class TraceCollectorError(VerdiRefusal, RuntimeError):
     """The managed trace collector could not be stood up (no daemon, image, or it
     never became ready). Fail loudly — a run that proceeded believing capture was
     live while the collector was dead would lose spans silently [refactor 09 §3]."""

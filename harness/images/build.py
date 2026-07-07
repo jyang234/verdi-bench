@@ -15,6 +15,7 @@ from typing import Optional
 
 from harness.hermetic import DockerClient
 
+from ..errors import VerdiRefusal
 from .registry import BASE_CONTEXT, BASE_TAG
 from .spec import ImageSpec, PinnedImage
 
@@ -24,11 +25,11 @@ BUILD_TIMEOUT_S = 1800
 _INSPECT_TIMEOUT_S = 30
 
 
-class ImageBuildError(RuntimeError):
+class ImageBuildError(VerdiRefusal, RuntimeError):
     """A ``docker build`` failed — surfaced loudly with the builder's stderr."""
 
 
-class ImageResolveError(RuntimeError):
+class ImageResolveError(VerdiRefusal, RuntimeError):
     """An image ref could not be pinned to a digest (absent, or unresolvable)."""
 
 

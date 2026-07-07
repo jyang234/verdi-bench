@@ -16,8 +16,10 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..errors import VerdiRefusal
 
-class JudgeRubricError(RuntimeError):
+
+class JudgeRubricError(VerdiRefusal, RuntimeError):
     """The judge rubric is missing, or was swapped after the lock [D-P7-6]."""
 
 

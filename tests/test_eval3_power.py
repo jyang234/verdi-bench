@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from pydantic import ValidationError
 
 from harness.plan.power import (
     AssumedVariance,
@@ -13,6 +12,7 @@ from harness.plan.power import (
     mde_check,
     simulate_clustered_pair_deltas,
 )
+from harness.schema.errors import SpecError
 from harness.schema.experiment import ExperimentSpec
 from tests.fixtures.builders import valid_experiment_dict
 
@@ -28,7 +28,10 @@ def test_pl12_hypothesized_effect_bounded():
     >1 value is refused at plan (was unbounded — always underpowered / always
     passing)."""
     for bad in (-0.1, 0.0, 1.5, 2.0):
-        with pytest.raises(ValidationError):
+        # a structural pydantic bound (gt=0, le=1) now surfaces through the
+        # ExperimentSpec loader boundary as a SpecError-family SpecValidationError
+        # rather than a raw ValidationError [refactor 13 OI-B].
+        with pytest.raises(SpecError):
             _spec(hypothesized_effect=bad)
     assert _spec(hypothesized_effect=0.3).hypothesized_effect == 0.3
     assert _spec(hypothesized_effect=1.0).hypothesized_effect == 1.0

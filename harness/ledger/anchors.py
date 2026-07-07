@@ -17,6 +17,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..errors import VerdiRefusal
 from .chain import hash_line, split_ledger_lines, verify_chain
 
 
@@ -29,7 +30,7 @@ def _ledger_lines(path: Path) -> list[str]:
     return [p.decode("utf-8") for p in split_ledger_lines(data)]
 
 
-class AnchorIntegrityError(RuntimeError):
+class AnchorIntegrityError(VerdiRefusal, RuntimeError):
     """Refused to anchor a ledger whose own hash chain does not verify.
 
     Anchoring pins the current head as an authentic checkpoint; doing so over a

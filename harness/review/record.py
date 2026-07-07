@@ -16,13 +16,14 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ..errors import VerdiRefusal
 from ..judge.schema import Verdict
 from ..ledger import events
 from ..ledger.events import EventContext
 from ..ledger.query import assert_chain, read_events
 
 
-class ReviewError(RuntimeError):
+class ReviewError(VerdiRefusal, RuntimeError):
     """A review operation was refused (duplicate/post-reveal/out-of-order) [RV-1/8]."""
 
 

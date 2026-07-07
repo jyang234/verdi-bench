@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..errors import VerdiRefusal
+
 
 def _grade_tasks_from_dicts(task_dicts: list, exp_dir: Path) -> dict:
     """Map the committed task dicts to grader tasks.
@@ -48,7 +50,7 @@ def _grade_tasks_from_dicts(task_dicts: list, exp_dir: Path) -> dict:
     return tasks
 
 
-class RetryTerminalError(RuntimeError):
+class RetryTerminalError(VerdiRefusal, RuntimeError):
     """A ``--retry-terminal`` target is not an overridable terminal cant_grade."""
 
 
@@ -113,7 +115,7 @@ def _completed_trials(ledger_path) -> set:
     return done
 
 
-class GraderUnavailableRefusal(RuntimeError):
+class GraderUnavailableRefusal(VerdiRefusal, RuntimeError):
     """The grader preflight failed: every pending trial was marked a *transient*
     ``cant_grade(grader_unavailable)`` and the batch refuses (exit 1) so a down
     daemon is not misclassified as terminal container_failure [7B-1/GR-8]."""
