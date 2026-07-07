@@ -165,8 +165,9 @@ class Experiment:
         orders: str = "both", temperature: float = 0, escalation: Optional[dict] = None,
     ) -> "Experiment":
         """Configure the judge. ``rubric=None`` uses the library rubric template
-        (the single source of the verdict-JSON contract, decision A8); a ``str``
-        is literal rubric text; a ``Path`` is a rubric file to read."""
+        (judgment criteria only — the verdict-JSON response contract is harness-owned
+        packet framing [refactor 13 OI-C]); a ``str`` is literal rubric text; a
+        ``Path`` is a rubric file to read."""
         self._judge = _JudgeCfg(model, rubric, orders, temperature, escalation)
         return self
 

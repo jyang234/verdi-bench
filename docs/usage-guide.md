@@ -85,7 +85,8 @@ assert ws.verify_chain().chain_ok
 same stage APIs the `bench` verbs call; reads go through `ws.view()` (a
 `LedgerView`). Seed and cost ceiling are **required** constructor arguments — no
 silent defaults for the determinism / cost-fence contracts. The judge rubric
-defaults to the library template (the single source of the verdict-JSON contract);
+defaults to the library template (judgment criteria only — the verdict-JSON
+response format is harness-owned packet framing, not rubric text);
 pass `rubric=` a string of literal text or a `Path` to override it.
 
 **Want the CLI, but a scaffold rather than a blank page?** `bench init <dir>`
@@ -189,8 +190,11 @@ Optional, powerful fields:
 
 ### 2.2 `rubric.md` — how the judge decides
 
-Plain prose describing what "better" means for these tasks. It is content-hashed
-into the lock, so write it before you plan.
+Plain prose describing what "better" means for these tasks — judgment criteria
+only. It is content-hashed into the lock, so write it before you plan. You do
+**not** specify the response format: the verdict-JSON contract (winner / reason /
+evidence / confidence) is harness-owned packet framing, supplied on every judge
+call regardless of the rubric, so a rubric can never omit it.
 
 ```markdown
 # Code task rubric v1

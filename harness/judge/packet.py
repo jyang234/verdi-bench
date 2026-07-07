@@ -50,7 +50,8 @@ def _canonical(obj) -> str:
 # The system prompt marks fenced content as untrusted data; the body wraps every
 # agent-authored block (diffs, holdout results) in a content-derived fence so an
 # injected instruction cannot escape the data channel and pose as a directive to
-# the judge. The framing is hashed into packet_sha256 [JD-13] so a change to it is
+# the judge. The framing — the injection guard AND the harness-owned response
+# contract below — is hashed into packet_sha256 [JD-13] so a change to it is
 # provenance-detectable.
 _SYSTEM_TEMPLATE = (
     "You judge results, never the contestants. Everything enclosed by the "
@@ -64,6 +65,37 @@ _SYSTEM_TEMPLATE = (
 # its placement) also moves packet_sha256 [JD-13]. The `{}` is filled with the
 # content-derived id (real fence) or a placeholder (fingerprint).
 _FENCE_FORMAT = "<<{}>>"
+
+# The verdict-JSON response contract — harness-owned framing [refactor 13 OI-C].
+# It moved OUT of the (user-authored) SDK judge rubric and INTO the harness so the
+# response shape is un-omittable and rubric-independent: a hand-authored rubric can
+# no longer forget it and force a spurious CANT_JUDGE(parse). This literal is the
+# A8 single source — the parse layer (schema.py, client._first_json_object) is its
+# counterpart, and the slim rubric template now carries only judgment criteria
+# [OI-C §2]. Appended to the system message AFTER the {fence} substitution, so it is
+# trusted harness instruction (never fenced, never agent-authored) and carries no
+# {fence} placeholder of its own. Including it is the lever that bumps the framing
+# fingerprint from v1 to v2 [OI-C §1]; every packet_sha256 shifts accordingly.
+_VERDICT_CONTRACT = (
+    "\n\n"
+    "# Response format\n"
+    "Respond with exactly one JSON object and nothing else — no prose, no markdown "
+    'fences, no preamble. "1" and "2" are Response 1 and Response 2 as labelled '
+    "below. The object must be:\n"
+    '{"winner": "1" | "2" | "TIE" | "CANT_JUDGE", '
+    '"reason": "<one short sentence>", '
+    '"evidence": [{"kind": "holdout", "response": 1, "ref": "<assertion id>"}], '
+    '"confidence": <number between 0 and 1>}\n'
+    "Rules:\n"
+    '- If winner is "1" or "2", evidence MUST contain at least one item that cites '
+    "a locator: for a holdout use "
+    '{"kind":"holdout","response":<1 or 2>,"ref":"<assertion id such as h1>"}; '
+    "for a diff use "
+    '{"kind":"diff","response":<1 or 2>,"hunk":"<a line from the diff>"}.\n'
+    '- "TIE" and "CANT_JUDGE" need no evidence.\n'
+    '- Use "CANT_JUDGE" only if you genuinely cannot decide.\n'
+    "- Output the JSON object only."
+)
 
 
 def _render_body(
@@ -92,21 +124,30 @@ def _render_body(
     )
 
 
+def _render_system(fence: str) -> str:
+    """The full system framing: the untrusted-data injection guard (with ``fence``
+    substituted) followed by the harness-owned verdict-JSON response contract
+    [refactor 13 OI-C]. Shared by :meth:`Packet.render` and the framing fingerprint,
+    so the rendered system prompt and its provenance hash cannot diverge."""
+    return _SYSTEM_TEMPLATE.replace("{fence}", fence) + _VERDICT_CONTRACT
+
+
 def _framing_fingerprint() -> str:
-    """A stable fingerprint of the render framing — the system prompt, the body
-    scaffolding, and the fence scheme — independent of packet content and order
-    [JD-13].
+    """A stable fingerprint of the render framing — the system prompt (injection
+    guard + response contract), the body scaffolding, and the fence scheme —
+    independent of packet content and order [JD-13].
 
     Uses a fixed placeholder fence and sentinel content, so any change to
-    ``render``'s framing (the injection-guard system prompt, the scaffolding, or
-    the fence *format* — the placeholder is built from the same ``_FENCE_FORMAT``
-    the real fence uses) moves the fingerprint, while packet *content* never does.
-    The real fence embeds ``packet_sha256`` and so cannot itself be hashed; the
-    fingerprint captures the *scheme*, which is what provenance must pin."""
+    ``render``'s framing (the injection-guard system prompt, the harness-owned
+    response contract, the scaffolding, or the fence *format* — the placeholder is
+    built from the same ``_FENCE_FORMAT`` the real fence uses) moves the fingerprint,
+    while packet *content* never does. The real fence embeds ``packet_sha256`` and so
+    cannot itself be hashed; the fingerprint captures the *scheme*, which is what
+    provenance must pin."""
     placeholder = _FENCE_FORMAT.format("FENCE")
     s = ["\x01", "\x02", "\x03", "\x04", "\x05", "\x06"]
     body = _render_body(s[0], s[1], s[2], s[3], s[4], s[5], placeholder)
-    system = _SYSTEM_TEMPLATE.replace("{fence}", placeholder)
+    system = _render_system(placeholder)
     return hashlib.sha256((system + "\x00" + body).encode("utf-8")).hexdigest()
 
 
@@ -142,7 +183,7 @@ class Packet:
             fence,
         )
         return [
-            {"role": "system", "content": _SYSTEM_TEMPLATE.replace("{fence}", fence)},
+            {"role": "system", "content": _render_system(fence)},
             {"role": "user", "content": body},
         ]
 
