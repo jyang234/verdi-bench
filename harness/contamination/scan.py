@@ -25,7 +25,7 @@ from .overlap import solution_overlap
 # The grader writes holdout results into the workspace; scanning them would
 # compare holdout-derived content against the holdouts themselves. Same
 # exclusion the judge packet applies (judge/assemble._GRADER_OUTPUT).
-_GRADER_OUTPUT = "holdout_results.json"
+_GRADER_OUTPUT = "holdout_results.json"  # must match grade.runners.HOLDOUT_RESULTS [refactor 13 OI-A]
 
 
 @dataclass(frozen=True)
