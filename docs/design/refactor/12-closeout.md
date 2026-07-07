@@ -133,3 +133,20 @@ Post-pass gates: 1414 passed / 26 skipped / 10 contracts; shakedown 4/4 +
 v2). Review model for this pass: every diff reviewed directly by the
 orchestrator; two orchestrator-found nits fixed at merge (a stale
 constant-name comment; nothing in OI-B/OI-C).
+
+## Addendum 2 — test-pruning pass (2026-07-06, refactor 14)
+
+The suite passed its own audit. Against a pre-audit estimate of ~40–70
+prunable functions, the evidence bar yielded: 7 tests REWRITTEN (4 LedgerView
+oracle-equivalence tests re-aimed at direct semantics with plant-proven
+discriminators; 2 importer byte-pins re-aimed at registry derivation with a
+hardcoded key-set anchor; 1 facade-parity tautology halved), ~190 lines of
+dead oracle code deleted (verbatim ports of P1-removed production), zero
+whole-test deletions, net −4 collected items. The vacuity hunt found no
+structurally-unfailable test and no coverage gap; the duplicate-pair audit
+found the canonical engine-vs-builder argv duplicate does not exist, and a
+suite-wide plant proved the query-parity pair is the sole guard of
+``latest()`` last-wins — kept as load-bearing. Verdict: the tests are
+needed; the suite's redundancy is layered by design, not accreted.
+Post-pass gates: 1410 passed / 26 skipped / 10 contracts; shakedown 4/4 +
+18/18; docker/browser collections unchanged.
