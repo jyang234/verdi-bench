@@ -2,7 +2,7 @@
 #
 # Each entry needs a unique `id` and the agent-visible `prompt`. For the real
 # grade path, add a `holdouts_dir:` per task (a read-only tree the grader mounts)
-# and, for the fake engine, a `fake_behavior:` block. See docs/usage-guide.md §2.2.
+# and, for the fake engine, a `fake_behavior:` block. See docs/usage-guide.md §2.3.
 tasks:
   - id: task-1
     prompt: describe the work
