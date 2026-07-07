@@ -255,3 +255,148 @@ def test_shipped_violation_falls_back_to_binary_score_without_plugin(tmp_path):
     grade_pass = {"assertions": [], "binary_score": True}
     assert fm._shipped_violation_from_grade(grade_pass) is False
     assert fm._shipped_violation_from_grade(None) is None
+
+
+# --------------------------------------------------------------------------- #
+# log v2: per-rule verdict_heeded (fixtures shaped on the REAL producer emission —
+# `groundwork mcp --log` over a layeredsvc branch that trips a `layering` violation)
+# --------------------------------------------------------------------------- #
+_V2_LAYERING_ID = (
+    "layering|(*example.com/layeredsvc/internal/handler.Server).GetUserFast"
+    "|(*example.com/layeredsvc/internal/store.Store).SelectUser"
+)
+
+
+def test_v2_marker_detected_and_violations_surfaced():
+    mcp, traj = _fixture("v2_surfaced")
+    assert fm.mcp_log_version(mcp) == 2  # the "log":2 init marker
+    m = fm.compute_trial_metrics(mcp, traj, shipped_violation=None)
+    assert m["log_version"] == 2
+    assert m["verdict_violations_surfaced"] is True
+    assert m["verdict_heeded"] is None  # ship outcome unknown ⇒ nothing to heed yet
+
+
+def test_v2_verdict_heeded_false_when_surfaced_rule_shipped():
+    """The precise per-rule case: the tool surfaced a `layering` violation and the
+    gate BLOCKed `layering` — the agent shipped a rule it was shown → NOT heeded,
+    and the overlap NAMES the surfaced identity that shipped."""
+    mcp, traj = _fixture("v2_surfaced")
+    m = fm.compute_trial_metrics(mcp, traj, shipped_violation=True, shipped_rules=["layering"])
+    assert m["verdict_heeded"] is False
+    assert m["verdict_heeded_overlap"] == [_V2_LAYERING_ID]
+
+
+def test_v2_verdict_heeded_true_when_shipped_rule_was_not_surfaced():
+    """Per-rule honesty the coarse form cannot manage: the gate BLOCKed a rule kind
+    the tool never surfaced (`must_not_reach`), so the tool's `layering` warning was
+    not ignored → heeded, with an empty (computed, not null) overlap."""
+    mcp, traj = _fixture("v2_surfaced")
+    m = fm.compute_trial_metrics(mcp, traj, shipped_violation=True, shipped_rules=["must_not_reach"])
+    assert m["verdict_heeded"] is True
+    assert m["verdict_heeded_overlap"] == []
+
+
+def test_v2_verdict_heeded_true_when_gate_passed():
+    mcp, traj = _fixture("v2_surfaced")
+    m = fm.compute_trial_metrics(mcp, traj, shipped_violation=False, shipped_rules=[])
+    assert m["verdict_heeded"] is True
+    assert m["verdict_heeded_overlap"] is None  # nothing shipped ⇒ un-nameable, not []
+
+
+def test_v2_verdict_heeded_coarse_fallback_without_rule_kinds():
+    """A v2 log but no named BLOCKed kinds (a binary_score grade) ⇒ degrade to the
+    coarse 'surfaced-and-shipped' → not heeded, overlap un-nameable (None)."""
+    mcp, traj = _fixture("v2_surfaced")
+    m = fm.compute_trial_metrics(mcp, traj, shipped_violation=True, shipped_rules=None)
+    assert m["verdict_heeded"] is False
+    assert m["verdict_heeded_overlap"] is None
+
+
+def test_v2_verdict_heeded_null_when_no_violation_surfaced():
+    """A v2 `fitness` call that surfaced NO violation (violated empty) ⇒ nothing to
+    heed, even though the gate blocked — the sharpest v2 gain over v1's coarse
+    'a card was produced' surfacing."""
+    mcp, traj = _fixture("v2_clean")
+    m = fm.compute_trial_metrics(mcp, traj, shipped_violation=True, shipped_rules=["layering"])
+    assert m["verdict_violations_surfaced"] is False
+    assert m["verdict_heeded"] is None
+    assert m["verdict_heeded_overlap"] is None
+
+
+def test_v2_determinism_same_bytes_twice():
+    mcp, traj = _fixture("v2_surfaced")
+    a = fm.compute_trial_metrics(mcp, traj, shipped_violation=True, shipped_rules=["layering"])
+    b = fm.compute_trial_metrics(mcp, traj, shipped_violation=True, shipped_rules=["layering"])
+    assert a == b
+    rows = [{"trial_id": "t", "arm": "grounded", "task_id": "gw-r2", "shipped_violation": True, **a}]
+    assert fm.render_json(rows) == fm.render_json(rows)
+
+
+def test_v2_experiment_walk_per_rule_heeded(tmp_path):
+    """End-to-end v2 through the ledger walk: a v2 log surfacing `layering` + a grade
+    whose per-rule groundwork assertion BLOCKed `layering` ⇒ verdict_heeded False and
+    overlap naming the identity — via _shipped_rules_from_grade, no manual kinds."""
+    exp = tmp_path / "expt"
+    a = exp / "runs" / "t1" / "artifacts"
+    a.mkdir(parents=True)
+    shutil.copy(_FIXTURES / "v2_surfaced" / "groundwork-mcp.jsonl", a / "groundwork-mcp.jsonl")
+    shutil.copy(_FIXTURES / "v2_surfaced" / "trajectory.json", a / "trajectory.json")
+    _write_ledger(exp / "ledger.ndjson", [
+        {"event": "trial", "trial_record": {
+            "trial_id": "t1", "arm": "grounded", "task_id": "gw-r2", "artifacts_path": str(a)}},
+        {"event": "grade", "trial_id": "t1", "binary_score": False, "assertions": [
+            {"source": "plugin:groundwork", "id": "groundwork:verdict", "result": "failed"},
+            {"source": "plugin:groundwork", "id": "layering", "result": "failed"},
+        ]},
+    ])
+    rows = {r["trial_id"]: r for r in fm.iter_experiment_trials(exp)}
+    assert rows["t1"]["verdict_heeded"] is False
+    assert rows["t1"]["verdict_heeded_overlap"] == [_V2_LAYERING_ID]
+    assert rows["t1"]["shipped_violation"] is True
+
+
+def test_shipped_rules_from_grade_kinds_and_fallback():
+    """_shipped_rules_from_grade names the BLOCKed rule kinds from per-rule groundwork
+    assertions, excludes the top-line verdict, and returns None (⇒ coarse) when the
+    plugin never ran."""
+    grade = {"assertions": [
+        {"source": "plugin:groundwork", "id": "groundwork:verdict", "result": "failed"},
+        {"source": "plugin:groundwork", "id": "layering", "result": "failed"},
+        {"source": "plugin:groundwork", "id": "must_not_reach", "result": "abstain"},  # a caution, not shipped
+    ]}
+    assert fm._shipped_rules_from_grade(grade) == ["layering"]
+    # no groundwork assertions (binary_score fallback path) ⇒ None, not []
+    assert fm._shipped_rules_from_grade({"assertions": [{"source": "holdout", "id": "h", "result": "failed"}]}) is None
+    assert fm._shipped_rules_from_grade(None) is None
+
+
+# --------------------------------------------------------------------------- #
+# v1 unchanged: byte-for-byte regression pin
+# --------------------------------------------------------------------------- #
+def test_v1_log_output_unchanged_no_v2_keys():
+    """Regression pin: a v1 log (no "log":2 marker) yields the byte-identical pre-v2
+    dict — the same seven keys, no v2-only keys — so existing v1 fixtures and any
+    committed v1 artifact render exactly as before the v2 upgrade."""
+    mcp, traj = _fixture("grounded_checked")
+    assert fm.mcp_log_version(mcp) == 0  # v1: no marker
+    m = fm.compute_trial_metrics(mcp, traj, shipped_violation=False)
+    assert m == {
+        "grounded_before_edit": True,
+        "checked_after_last_edit": True,
+        "verdict_heeded": True,
+        "has_mcp_log": True,
+        "n_mcp_calls": 3,
+        "n_file_edits": 1,
+        "verdict_surfaced": True,
+    }
+    for k in ("log_version", "verdict_violations_surfaced", "verdict_heeded_overlap"):
+        assert k not in m
+
+
+def test_v1_shipped_rules_ignored_on_v1_log():
+    """The MARKER, not the argument, selects the reading: a v1 log stays coarse even
+    if per-rule kinds are supplied, and grows no v2 keys."""
+    mcp, traj = _fixture("grounded_checked")
+    m = fm.compute_trial_metrics(mcp, traj, shipped_violation=True, shipped_rules=["layering"])
+    assert m["verdict_heeded"] is False       # coarse: surfaced and shipped
+    assert "verdict_heeded_overlap" not in m  # no v2 keys leaked onto a v1 row
