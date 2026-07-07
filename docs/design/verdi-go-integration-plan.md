@@ -286,6 +286,10 @@ fake engine + `LocalGradeRunner` first, then a small harbor **calibration pilot*
   - `grounded_before_edit`: first `ground` call precedes the first `file_edit` step;
   - `checked_after_last_edit`: a `fitness`/`ground` call follows the final edit;
   - `verdict_heeded`: no trial ships a violation that the MCP log shows was surfaced.
+    As built (`scripts/funnel_metrics.py`), "surfaced" is a non-error `fitness`/`ground`
+    call and "shipped" is the gate BLOCKing — the real `--log` records calls without
+    rule ids or timestamps, so the per-rule form waits on an upstream `--log` extension
+    (see `integration-execution-report.md` §4).
 
 If budget forces staging: run grounded-vs-bare per model tier as two 2-arm
 experiments and reuse controls (`bench control-cache export` / `--reuse-control`,

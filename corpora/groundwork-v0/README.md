@@ -141,7 +141,11 @@ Per task, with the pinned binaries (`build_tasks.py --check`):
 <!-- VALIDATION_MATRIX -->
 Committed run (flowmap/groundwork built from the pinned verdi-go build —
 `groundwork version` → `v0.0.0-20260707142329-7e8df2bb315a`, built with Go 1.25.x;
-see "Provenance & determinism"). `go(w/s/e)` = build+vet+test on
+see "Provenance & determinism"). The binding pin is the **(verdi-go ref, Go
+toolchain version) pair**: graph byte-identity holds per flowmap *build*, and the
+Go compiler is part of the build (verdi-go pins Go in CI for SSA determinism) —
+the pseudo-version stamp alone does not capture it. Rebuild trusted-tier binaries
+with the same Go version the grader image bakes (1.25.11) or re-freeze. `go(w/s/e)` = build+vet+test on
 workspace/solution/exemplar; `a.fit` = base fitness rc 0; `b.sol` = solution
 verify rc 0; `c.exm` = exemplar verify rc as expected (1 for traps, 0 for
 nulls); `rule` = the family named in cell (c). Regenerate with
