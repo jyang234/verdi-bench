@@ -51,8 +51,9 @@ def main():
 
     d = empty_dir("harbor_ma")
     egress_log = d / "metering" / "verdi.jsonl"
-    # rubric=None uses the SDK judge-rubric template — the single source of the
-    # correctness-first + verdict-JSON contract the script's rubric hand-embedded (A8).
+    # rubric=None uses the slim SDK judge-rubric template (correctness-first
+    # judgment criteria); the verdict-JSON response contract is harness-owned packet
+    # framing, supplied on every judge call regardless of rubric [refactor 13 OI-C].
     exp = (Experiment("harbor_ma", seed=11, cost_ceiling_usd=25.0)
            .arm("control", model=CONTROL)
            .arm("treatment", model=TREATMENT)
