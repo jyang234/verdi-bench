@@ -33,6 +33,7 @@ from .errors import (
     MissingCostCeilingError,
     ModelHostsError,
     SpecError,
+    SpecValidationError,
 )
 from .judge_config import JudgeConfig, model_vendor
 from .metrics import PrimaryMetric
@@ -359,13 +360,17 @@ class ExperimentSpec(BaseModel):
     # --- loaders -----------------------------------------------------------
     @classmethod
     def from_dict(cls, data: dict) -> "ExperimentSpec":
-        """Validate a spec dict, surfacing the distinct named ``SpecError``.
+        """Validate a spec dict, surfacing only ``SpecError`` at this boundary.
 
         The pydantic validators are the single source of every spec rejection;
         pydantic wraps a validator's ValueError in a ``ValidationError`` but
         preserves the original in ``errors()[i]["ctx"]["error"]``. Re-raise the
         first wrapped ``SpecError`` so callers and tests still see the named type
-        (PL-9: one validation source, no parallel prevalidation to drift)."""
+        (PL-9: one validation source, no parallel prevalidation to drift). A
+        purely structural rejection (extra key, too-few arms, wrong type) that no
+        named validator wrapped becomes a ``SpecValidationError`` carrying the
+        pydantic message verbatim, so a raw ``ValidationError`` never tracebacks
+        out of the loader [refactor 13 OI-B]."""
         try:
             return cls.model_validate(data)
         except ValidationError as e:
@@ -373,7 +378,7 @@ class ExperimentSpec(BaseModel):
                 wrapped = err.get("ctx", {}).get("error")
                 if isinstance(wrapped, SpecError):
                     raise wrapped from e
-            raise
+            raise SpecValidationError(str(e)) from e
 
     @classmethod
     def from_yaml_text(cls, text: str, *, source: str = "<text>") -> "ExperimentSpec":

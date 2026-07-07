@@ -13,6 +13,15 @@ class SpecError(VerdiRefusal, ValueError):
     """Base for all experiment-spec rejections."""
 
 
+class SpecValidationError(SpecError):
+    """A purely structural pydantic rejection (an extra key, too-few arms, a
+    wrong field type) that no named validator wrapped. The ``ExperimentSpec``
+    loaders raise it in place of a raw pydantic ``ValidationError`` so the schema
+    boundary surfaces only ``SpecError`` — never a traceback. ``str`` is the
+    pydantic message verbatim, so the tripwire needles and every message-pinning
+    test keep matching [refactor 13 OI-B]."""
+
+
 class CompositePrimaryMetricError(SpecError):
     """primary_metric was a composite or unknown value [AC-1]."""
 
