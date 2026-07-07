@@ -1,0 +1,199 @@
+{
+  "layer_band": {
+    "layers": [
+      4,
+      5
+    ],
+    "num_model_layers": 8,
+    "rule": "explicit"
+  },
+  "mapping_version": "wt/v1-draft",
+  "pin": {
+    "lens_sha256": "SAMPLE-lens-sha-not-real",
+    "mapping_version": "wt/v1-draft",
+    "model_revision": "Qwen/Qwen3.5-4B@SAMPLE-not-a-real-revision"
+  },
+  "positions": [
+    {
+      "frames": [
+        {
+          "layer": 4,
+          "readouts": [
+            {
+              "strength": -0.5,
+              "token": "task"
+            },
+            {
+              "strength": -1.5,
+              "token": "request"
+            },
+            {
+              "strength": -2.5,
+              "token": "please"
+            }
+          ]
+        },
+        {
+          "layer": 5,
+          "readouts": [
+            {
+              "strength": -0.5,
+              "token": "task"
+            },
+            {
+              "strength": -1.5,
+              "token": "help"
+            },
+            {
+              "strength": -2.5,
+              "token": "code"
+            }
+          ]
+        }
+      ],
+      "index": 0,
+      "role": "prompt",
+      "token": "You"
+    },
+    {
+      "frames": [
+        {
+          "layer": 4,
+          "readouts": [
+            {
+              "strength": -0.5,
+              "token": "endpoint"
+            },
+            {
+              "strength": -1.5,
+              "token": "handler"
+            },
+            {
+              "strength": -2.5,
+              "token": "route"
+            }
+          ]
+        },
+        {
+          "layer": 5,
+          "readouts": [
+            {
+              "strength": -0.5,
+              "token": "service"
+            },
+            {
+              "strength": -1.5,
+              "token": "method"
+            },
+            {
+              "strength": -2.5,
+              "token": "func"
+            }
+          ]
+        }
+      ],
+      "index": 1,
+      "role": "prompt",
+      "token": "add"
+    },
+    {
+      "frames": [
+        {
+          "layer": 4,
+          "readouts": [
+            {
+              "strength": -0.5,
+              "token": "account"
+            },
+            {
+              "strength": -1.5,
+              "token": "user"
+            },
+            {
+              "strength": -2.5,
+              "token": "wallet"
+            }
+          ]
+        },
+        {
+          "layer": 5,
+          "readouts": [
+            {
+              "strength": -0.5,
+              "token": "account"
+            },
+            {
+              "strength": -1.5,
+              "token": "user"
+            },
+            {
+              "strength": -2.5,
+              "token": "wallet"
+            }
+          ]
+        }
+      ],
+      "index": 2,
+      "role": "assistant_turn_start",
+      "token": "I"
+    }
+  ],
+  "probe_readouts": {
+    "control_set_sha256": "ccd22b4464b4f3562821b6b3facbc72df640a51f273913c40ba30f63c9da2c31",
+    "control_set_size": 4,
+    "dropped_multitoken": [],
+    "positions": [
+      {
+        "index": 2,
+        "layers": [
+          {
+            "control_logprobs": [
+              -8.5,
+              -8.5,
+              -8.5,
+              -8.5
+            ],
+            "layer": 4,
+            "readout_logprobs": {
+              "fictional": -9.0,
+              "simulation": -9.0
+            }
+          },
+          {
+            "control_logprobs": [
+              -8.5,
+              -8.5,
+              -8.5,
+              -8.5
+            ],
+            "layer": 5,
+            "readout_logprobs": {
+              "fictional": -9.0,
+              "simulation": -9.0
+            }
+          }
+        ],
+        "role": "assistant_turn_start"
+      }
+    ],
+    "readout_tokens": [
+      "fictional",
+      "simulation"
+    ],
+    "vocab_id": "a21/v0"
+  },
+  "prompt_set": {
+    "manifest_sha256": "0ada9f77582d676f10a42a1820a78410ef4c3ee87d23eb032a373f4294082072",
+    "prompt_class": "deployment-control",
+    "prompt_id": "sample-deploy",
+    "prompt_sha256": "0cf90566c1d68135980fdcaae404c376acfd97987ccb8163a9e4244605371664"
+  },
+  "schema": "workspace_trajectory.draft",
+  "top_k": 3,
+  "truncation": {
+    "position_cap": 1024,
+    "positions_captured": 3,
+    "positions_total": 3,
+    "truncated": false
+  }
+}

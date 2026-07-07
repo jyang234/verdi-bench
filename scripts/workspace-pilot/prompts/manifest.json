@@ -1,0 +1,112 @@
+{
+  "mapping_version": "wt/v1-draft",
+  "note": "Pilot prompt set (workspace-observability-plan.md P0). corpus-task prompts are verbatim copies (see PROVENANCE.md); realism-* pairs and deployment-control prompts are authored fresh for A.21 calibration.",
+  "prompts": [
+    {
+      "class": "deployment-control",
+      "id": "deploy1",
+      "path": "controls/deploy1.md",
+      "sha256": "7ffd8016cdc980889d6f0dba2f5801d9c067866bb0843cdb7117a9a785811be5"
+    },
+    {
+      "class": "deployment-control",
+      "id": "deploy2",
+      "path": "controls/deploy2.md",
+      "sha256": "8bf556d9d579202e1713fc53d43092912cf313f27821ff921bff2dfb174e026e"
+    },
+    {
+      "class": "deployment-control",
+      "id": "deploy3",
+      "path": "controls/deploy3.md",
+      "sha256": "6d558435ebb10ae3681f567575d0c8d04d66d6539095fd2aa7f7e99224e8ea54"
+    },
+    {
+      "class": "corpus-task",
+      "corpus_class": "multi-impl",
+      "id": "gw-m1",
+      "path": "corpus/gw-m1.md",
+      "sha256": "7a5a63f5b67f8f7fd5a313621314f0d036594cc859eb153f09b69e0e01ecf48d",
+      "source": "verdi-bench-corpus:corpora/groundwork-v0/tasks/gw-m1/prompt.md"
+    },
+    {
+      "class": "corpus-task",
+      "corpus_class": "null",
+      "id": "gw-n1",
+      "path": "corpus/gw-n1.md",
+      "sha256": "0264eec0a35da82cf3e64e21f80854e2e88b3a63e6bed7393839777bd7ca35c4",
+      "source": "verdi-bench-corpus:corpora/groundwork-v0/tasks/gw-n1/prompt.md"
+    },
+    {
+      "class": "corpus-task",
+      "corpus_class": "obligation-trap",
+      "id": "gw-o1",
+      "path": "corpus/gw-o1.md",
+      "sha256": "8a63c5e160c11144ba32a527378dfa5513c439e49ff42f4a1c19b5ecf1039d26",
+      "source": "verdi-bench-corpus:corpora/groundwork-v0/tasks/gw-o1/prompt.md"
+    },
+    {
+      "class": "corpus-task",
+      "corpus_class": "reach-trap",
+      "id": "gw-r1",
+      "path": "corpus/gw-r1.md",
+      "sha256": "a6d97165020b87186c23b3d973951f978beea257203dcdb3b72cd183680dee09",
+      "source": "verdi-bench-corpus:corpora/groundwork-v0/tasks/gw-r1/prompt.md"
+    },
+    {
+      "class": "realism-eval",
+      "id": "pair1_eval",
+      "pair": "pair1",
+      "path": "realism_pairs/pair1_eval.md",
+      "sha256": "c66305bb23155462a2101902ff60387bfc09df5bc1395f5fe4d6c198ef310b14"
+    },
+    {
+      "class": "realism-real",
+      "id": "pair1_real",
+      "pair": "pair1",
+      "path": "realism_pairs/pair1_real.md",
+      "sha256": "dd11c9c02ff719ddefb4e737034f3dbaf464463180a2c96eecb6bf851662eb57"
+    },
+    {
+      "class": "realism-eval",
+      "id": "pair2_eval",
+      "pair": "pair2",
+      "path": "realism_pairs/pair2_eval.md",
+      "sha256": "d5dc150fb59784c67c575cf7f5915561ed78cd74a97c9a378808989ac825453a"
+    },
+    {
+      "class": "realism-real",
+      "id": "pair2_real",
+      "pair": "pair2",
+      "path": "realism_pairs/pair2_real.md",
+      "sha256": "12452ebc45c00e9e6ec14866af18c7ae791920a0fb93d0f65323df4c5fe7a6e6"
+    },
+    {
+      "class": "realism-eval",
+      "id": "pair3_eval",
+      "pair": "pair3",
+      "path": "realism_pairs/pair3_eval.md",
+      "sha256": "0506f666149404207262892ad17e119bfada2e42196f88ef1f00307358ec833b"
+    },
+    {
+      "class": "realism-real",
+      "id": "pair3_real",
+      "pair": "pair3",
+      "path": "realism_pairs/pair3_real.md",
+      "sha256": "7bfd1726a0316030f6f086689afec12bc3be15d7459c7da39a37d819e1e4b591"
+    },
+    {
+      "class": "realism-eval",
+      "id": "pair4_eval",
+      "pair": "pair4",
+      "path": "realism_pairs/pair4_eval.md",
+      "sha256": "cbefdac19d78c9a7524e9fac2828242c52cb69de2bfae3eb57a5379decad7c00"
+    },
+    {
+      "class": "realism-real",
+      "id": "pair4_real",
+      "pair": "pair4",
+      "path": "realism_pairs/pair4_real.md",
+      "sha256": "bb425f8d9523f7753e7e43ef4274c88ece8232d798ccac1166b66f8b5293dab1"
+    }
+  ]
+}

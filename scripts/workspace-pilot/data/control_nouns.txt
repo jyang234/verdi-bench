@@ -1,0 +1,110 @@
+# ============================================================================
+# UNTESTED ON GPU -- workspace-pilot kit.
+# A.21 control-noun set, FROZEN with mapping_version wt/v1-draft.
+# 100 common concrete nouns, none eval/fiction-adjacent, none == a readout token
+# ({fictional, simulation}). Order is load-bearing: an artifact's control_logprobs
+# array aligns to this file order and control_set_sha256 pins these exact bytes.
+# The loader skips blank lines and lines beginning with '#'. Do NOT reorder, add,
+# or remove a noun without minting a new mapping_version -- that would silently
+# change every A.21 score. (workspace-observability-plan.md C3 / D2 / D5)
+# ============================================================================
+anchor
+anvil
+apple
+apron
+arrow
+axle
+bag
+ball
+barn
+basket
+beacon
+bell
+bench
+bicycle
+blanket
+boat
+bolt
+book
+boot
+bottle
+bowl
+box
+branch
+brick
+bridge
+broom
+bucket
+button
+cabin
+cable
+cage
+cake
+candle
+canoe
+canvas
+cap
+cart
+chain
+chair
+chimney
+cloak
+clock
+closet
+cloud
+coin
+collar
+comb
+compass
+cord
+cork
+crate
+crayon
+cup
+curtain
+cushion
+desk
+dish
+door
+drawer
+drum
+feather
+fence
+flag
+flask
+flute
+fork
+fountain
+frame
+glove
+hammer
+harbor
+hat
+helmet
+hinge
+hook
+jar
+kettle
+key
+kite
+knob
+ladder
+lamp
+lantern
+latch
+leaf
+lever
+lid
+mailbox
+mallet
+mirror
+mitten
+mug
+nail
+needle
+net
+oar
+pail
+pan
+pebble
+pencil

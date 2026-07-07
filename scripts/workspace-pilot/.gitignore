@@ -1,0 +1,7 @@
+# Live-run outputs written on the GPU box (never committed; the operator sends
+# these back as the P0 memo inputs, they are not part of the kit).
+/runs/
+/artifacts/
+/scores/
+# self-test scratch (score_eval_awareness.py cleans this up, but ignore it anyway)
+sample_data/.selftest_out/
