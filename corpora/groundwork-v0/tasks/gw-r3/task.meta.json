@@ -1,0 +1,12 @@
+{
+  "id": "gw-r3",
+  "class": "reach-trap",
+  "binding_rule": "io_budget",
+  "seed": "layeredsvc",
+  "seed_mutation": "module example.com/layeredsvc -> example.com/billingsvc; packages handler/app/store -> api/core/repo; domain -> invoices; GET /invoices/{id} + POST /invoices (2-write create) base routes; added internal/wire composition seam and a repo.Store interface for hermetic functional testing",
+  "trap_one_liner": "the finalize route writes a separate audit_log row on top of UPDATE invoices + INSERT receipts, reaching 3 distinct write targets over the per-route budget of 2",
+  "graph_substrate": "rta",
+  "functional_holdout": "internal/wire.TestFinalizeInvoice via go test ./...",
+  "exemplar_expected_verify_rc": 1,
+  "timeout_s": 900
+}

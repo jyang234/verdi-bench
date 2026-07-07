@@ -1,0 +1,8 @@
+{
+  "service": "billingsvc",
+  "version": 1,
+  "substrate": "rta",
+  "io_budget": {
+    "max_writes_per_route": 2
+  }
+}

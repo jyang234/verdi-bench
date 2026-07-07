@@ -1,0 +1,9 @@
+version: 1
+service: ordersvc
+
+# ordersvc is a strict api -> core -> repo service. The read route GET
+# /orders/{id} performs no DB write in the base graph, so a mutate effect
+# introduced on that route on a branch is genuinely novel. database/sql is the
+# built-in DB boundary hint the effect labeler keys on.
+classify:
+  db: ["database/sql"]

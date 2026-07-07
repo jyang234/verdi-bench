@@ -1,0 +1,12 @@
+{
+  "service": "ordersvc",
+  "version": 1,
+  "substrate": "rta",
+  "must_not_reach": [
+    {
+      "name": "read-route-stays-read-only",
+      "from": ["(*example.com/ordersvc/internal/api.Server).GetOrder"],
+      "to": ["boundary:db INSERT", "boundary:db UPDATE", "boundary:db DELETE"]
+    }
+  ]
+}

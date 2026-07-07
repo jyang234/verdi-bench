@@ -1,0 +1,163 @@
+{
+  "tool": "v0.0.0-20260707120445-827ad9a0d237",
+  "algo": "rta",
+  "caveats": [
+    "rta from 2 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/mailsvc/internal/api.Server).Send",
+      "sig": "func (*api.Server).Send(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/mailsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 22,
+      "end_line": 33
+    },
+    {
+      "fqn": "(*example.com/mailsvc/internal/core.Service).Send",
+      "sig": "func (*core.Service).Send(ctx context.Context, msg repo.Message) error",
+      "tier": 2,
+      "package": "example.com/mailsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 20,
+      "end_line": 22
+    },
+    {
+      "fqn": "(*example.com/mailsvc/internal/repo.SQLStore).InsertAudit",
+      "sig": "func (*repo.SQLStore).InsertAudit(ctx context.Context, id string, action string) error",
+      "tier": 1,
+      "package": "example.com/mailsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 41,
+      "end_line": 45
+    },
+    {
+      "fqn": "(*example.com/mailsvc/internal/repo.SQLStore).InsertMessage",
+      "sig": "func (*repo.SQLStore).InsertMessage(ctx context.Context, id string, recipient string, body string) error",
+      "tier": 1,
+      "package": "example.com/mailsvc/internal/repo",
+      "fallible": true,
+      "file": "internal/repo/repo.go",
+      "line": 34,
+      "end_line": 38
+    },
+    {
+      "fqn": "example.com/mailsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/mailsvc",
+      "file": "main.go",
+      "line": 15,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/mailsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/mailsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 21,
+      "end_line": 26
+    },
+    {
+      "fqn": "example.com/mailsvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/mailsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 19,
+      "end_line": 19
+    },
+    {
+      "fqn": "example.com/mailsvc/internal/core.New",
+      "sig": "func core.New(store repo.Store) *core.Service",
+      "tier": 3,
+      "package": "example.com/mailsvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 17,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/mailsvc/internal/repo.New",
+      "sig": "func repo.New(db *sql.DB) *repo.SQLStore",
+      "tier": 3,
+      "package": "example.com/mailsvc/internal/repo",
+      "file": "internal/repo/repo.go",
+      "line": 31,
+      "end_line": 31
+    },
+    {
+      "fqn": "example.com/mailsvc/internal/wire.Handler",
+      "sig": "func wire.Handler(store repo.Store) http.Handler",
+      "tier": 3,
+      "package": "example.com/mailsvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 15,
+      "end_line": 22
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/mailsvc/internal/api.Server).Send",
+      "to": "(*example.com/mailsvc/internal/core.Service).Send",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/mailsvc/internal/core.Service).Send",
+      "to": "(*example.com/mailsvc/internal/repo.SQLStore).InsertMessage",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/mailsvc/internal/repo.SQLStore).InsertAudit",
+      "to": "boundary:db INSERT message_audit",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/mailsvc/internal/repo.SQLStore).InsertMessage",
+      "to": "boundary:db INSERT messages",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "example.com/mailsvc.main",
+      "to": "example.com/mailsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/mailsvc.run",
+      "to": "example.com/mailsvc/internal/repo.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/mailsvc.run",
+      "to": "example.com/mailsvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/mailsvc/internal/wire.Handler",
+      "to": "example.com/mailsvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/mailsvc/internal/wire.Handler",
+      "to": "example.com/mailsvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "POST /send",
+      "fn": "(*example.com/mailsvc/internal/api.Server).Send"
+    }
+  ],
+  "composition_roots": [
+    "example.com/mailsvc"
+  ]
+}

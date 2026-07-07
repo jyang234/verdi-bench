@@ -1,0 +1,13 @@
+{
+  "service": "docsvc",
+  "version": 1,
+  "substrate": "rta",
+  "must_pass_through": [
+    {
+      "name": "writes-through-authorize",
+      "from": ["entrypoint:*"],
+      "to": ["boundary:db INSERT", "boundary:db UPDATE", "boundary:db DELETE"],
+      "through": ["(*example.com/docsvc/internal/core.Service).Authorize"]
+    }
+  ]
+}
