@@ -13,51 +13,24 @@ detection is then in-process. Nothing here imports ``tests.*``.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _harness import Tally, bench, dump_yaml, empty_dir  # noqa: E402
+from _harness import Tally, banner, bench, dump_yaml, empty_dir  # noqa: E402
+from _scenario import (  # noqa: E402
+    CONTROL_PASS, TREATMENT_PASS, advance_to_judged, cost_tasks, fake_experiment,
+    golden_arms, golden_experiment, make_manifest,
+)
 
-from harness.corpus.manifest import build_manifest  # noqa: E402
 from harness.ledger.anchors import AnchorIntegrityError  # noqa: E402
 from harness.schema import spec_to_yaml, tasks_to_yaml  # noqa: E402
-from harness.sdk import Experiment, LedgerView, Task, write_holdout_results  # noqa: E402
-
-FAKE_JUDGE = dict(escalation={"kappa_threshold": 0.6, "min_human_verdicts": 1})
-TREATMENT_PASS = {"t1", "t2", "t3", "t4", "t5", "t6"}
-CONTROL_PASS = {"t1", "t2"}
-
-
-def fake_experiment(name="tw", *, seed=1234, ceiling=25.0) -> Experiment:
-    """A base experiment on the fake judge — vectors add arms/tasks/config."""
-    return Experiment(name, seed=seed, cost_ceiling_usd=ceiling).judge(
-        "fake/deterministic-2026-01-01", **FAKE_JUDGE
-    )
-
-
-def golden_arms(exp: Experiment) -> Experiment:
-    return (exp.arm("treatment", model="openai/gpt-4o-2024-08-06", platform="codex")
-               .arm("control", model="anthropic/claude-haiku-4-5-20251001", platform="claude_code"))
-
-
-def cost_tasks(exp: Experiment, cost: float, *, task_class=None) -> Experiment:
-    for i in range(1, 9):
-        exp.task(Task(f"t{i}", prompt="solve", task_class=task_class,
-                      fake_behavior={"native_log": {"total_cost_usd": cost}}))
-    return exp
-
-
-def make_manifest(path, *, corpus_id="shakedown-mini", semver="1.0.0", task_ids=None) -> None:
-    ids = task_ids or [f"t{i}" for i in range(1, 9)]
-    build_manifest(corpus_id=corpus_id, semver=semver, kind="public",
-                   tasks=[{"task_id": tid, "sha": hashlib.sha256(tid.encode()).hexdigest()}
-                          for tid in ids]).save(path)
+from harness.sdk import LedgerView, Task, write_holdout_results  # noqa: E402
 
 
 def cant_reason(ws):
@@ -70,8 +43,7 @@ def plan_tripwires(t):
     # One valid base, serialized through spec_to_yaml (single validation source),
     # then each vector mutates the dict to inject a p-hack the console script must
     # refuse. Driven through the installed `bench plan` (exit-code + reason).
-    spec, tasks, rubric = cost_tasks(golden_arms(
-        fake_experiment("tw").corpus("shakedown-mini", "1.0.0").repetitions(3)), 0.02).build()
+    spec, tasks, rubric = golden_experiment("tw").build()
     base, tasks_yaml = yaml.safe_load(spec_to_yaml(spec)), tasks_to_yaml(tasks)
 
     def run(name, mutate, expect):
@@ -103,8 +75,7 @@ def plan_tripwires(t):
 # ---------------------------------------------------------------- ledger integrity
 def ledger_tripwires(t):
     d = empty_dir("tw/ledger_tamper")
-    ws = cost_tasks(golden_arms(
-        fake_experiment("tw").corpus("shakedown-mini", "1.0.0").repetitions(3)), 0.02).write(d)
+    ws = golden_experiment("tw").write(d)
     ws.plan(actor="shakedown")
     ws.run(engine="fake")
     clean_ok = ws.verify_chain().chain_ok
@@ -131,15 +102,9 @@ def ledger_tripwires(t):
 # ---------------------------------------------------------------- analyze fence
 def build_ready(name, selfcheck=True):
     d = empty_dir(f"tw/{name}")
-    ws = cost_tasks(golden_arms(
-        fake_experiment("tw").corpus("shakedown-mini", "1.0.0").repetitions(3)), 0.02).write(d)
+    ws = golden_experiment("tw").write(d)
     m = d / "manifest.json"; make_manifest(m)
-    ws.plan(actor="shakedown")
-    ws.run(engine="fake")
-    ws.inject_holdout_results(
-        lambda arm, task: task in (TREATMENT_PASS if arm == "treatment" else CONTROL_PASS))
-    ws.grade(runner="local")
-    ws.judge()
+    advance_to_judged(ws)
     ws.calibrate(manifest_path=m, kind="full")
     if selfcheck:
         ws.selfcheck()
@@ -179,7 +144,6 @@ def runtime_tripwires(t):
     ws = cost_tasks(exp, 0.40).write(d)
     ws.plan(actor="shakedown")
     ws.run(engine="fake")
-    from collections import Counter
     c = Counter(e.get("event") for e in ws.view().events)
     t.check("cost_ceiling_stops_run", c.get("run_stopped_cost_ceiling", 0) >= 1 and c.get("trial", 0) < 48,
             f"run_stopped_cost_ceiling, {c.get('trial', 0)}/48 trials")
@@ -288,7 +252,7 @@ def contamination_tripwire(t):
 
 
 def main():
-    print("=" * 72, "\nL3 — tripwire matrix (18 vectors)\n" + "=" * 72)
+    banner("L3 — tripwire matrix (18 vectors)")
     t = Tally("L3 tripwires")
     plan_tripwires(t)
     ledger_tripwires(t)

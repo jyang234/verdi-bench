@@ -14,6 +14,11 @@ exercise the CLI's refusal→exit-code mapping).
 ``dump_yaml`` stays load-bearing for the hermetic suite (``tripwires.py`` emits
 deliberately-invalid specs the validating SDK builder would refuse). Scripts
 import ``harness.*`` freely but never ``tests.*``.
+
+This module is script-local *plumbing* — the ``Tally``, ``_run/`` staging, the
+``bench`` console-script driver, ANSI stripping, key gating, and layer banners.
+The shared known-answer scenario *content* (the golden experiment shape and the
+harbor helpers) lives in ``_scenario.py``.
 """
 from __future__ import annotations
 
@@ -24,6 +29,8 @@ import sys
 from pathlib import Path
 
 import yaml
+
+from harness.sdk import MissingEnvKeysError, require_env_keys
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -79,6 +86,20 @@ def empty_dir(name: str) -> Path:
 
 def dump_yaml(path, data):
     Path(path).write_text(yaml.safe_dump(data), encoding="utf-8")
+
+
+def banner(title: str) -> None:
+    """Print a layer header: a rule, the title on its own line, then a rule."""
+    rule = "=" * 72
+    print(f"{rule}\n{title}\n{rule}")
+
+
+def require_keys_or_exit(*keys: str, script: str) -> None:
+    """Gate on required env keys; on a miss, exit with the ``--env-file .env`` hint."""
+    try:
+        require_env_keys(*keys)
+    except MissingEnvKeysError as e:
+        raise SystemExit(f"{e}\nrun: uv run --env-file .env python scripts/shakedown/{script}")
 
 
 class Tally:

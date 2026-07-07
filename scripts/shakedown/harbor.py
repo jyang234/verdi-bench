@@ -13,16 +13,22 @@ here.
 """
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _harness import Tally, empty_dir  # noqa: E402
+from _harness import Tally, banner, empty_dir, require_keys_or_exit  # noqa: E402
+from _scenario import (  # noqa: E402
+    ESCALATION, FAKE_JUDGE, check_egress_attribution, check_harbor_provenance,
+    harbor_run_config, holdout_task, print_holdout_grades,
+)
 
-from harness.grade.holdouts import AssertionHoldout  # noqa: E402
 from harness.images import build, resolve  # noqa: E402
-from harness.sdk import Experiment, MissingEnvKeysError, Task, require_env_keys  # noqa: E402
+from harness.sdk import Experiment  # noqa: E402
+
+# Allowed egress hosts — one list feeds BOTH the run config and the egress check,
+# so "allowed" and "checked" cannot drift.
+ALLOWLIST = ["api.openai.com", "api.anthropic.com"]
 
 # The declared holdouts — the same assertions the hand-rolled HOLDOUTS dict ran,
 # now first-class AssertionHoldouts executed against each trial's real solution.py.
@@ -38,11 +44,8 @@ PROMPTS = {
 
 
 def main():
-    try:
-        require_env_keys("ANTHROPIC_API_KEY", "OPENAI_API_KEY")   # L6 needs both
-    except MissingEnvKeysError as e:
-        raise SystemExit(f"{e}\nrun: uv run --env-file .env python scripts/shakedown/harbor.py")
-    print("=" * 72, "\nL6 — real-agent harbor run (real LLMs in real containers)\n" + "=" * 72)
+    require_keys_or_exit("ANTHROPIC_API_KEY", "OPENAI_API_KEY", script="harbor.py")
+    banner("L6 — real-agent harbor run (real LLMs in real containers)")
 
     print("building images/official/generic-llm (single-turn) ...")
     image = build(resolve("generic-llm")).pinned_ref   # digest-pinned via harness.images
@@ -52,17 +55,13 @@ def main():
     exp = (Experiment("harbor", seed=1234, cost_ceiling_usd=10.0)
            .arm("treatment", model="openai/gpt-4.1-mini-2025-04-14")
            .arm("control", model="anthropic/claude-haiku-4-5-20251001")
-           .judge("fake/deterministic-2026-01-01", rubric="Judge on correctness.\n",
-                  escalation={"kappa_threshold": 0.6, "min_human_verdicts": 1})
+           .judge(FAKE_JUDGE, rubric="Judge on correctness.\n", escalation=ESCALATION)
            .corpus("harbor-mini", "1.0.0").repetitions(1)
-           .run_config({  # the harness stands up + tears down the metering proxy
-               "proxy": {"managed": True, "allowlist": ["api.openai.com", "api.anthropic.com"],
-                         "log_path": str(egress_log)},
-               "provider_key_names_by_arm": {"treatment": ["OPENAI_API_KEY"],
-                                             "control": ["ANTHROPIC_API_KEY"]}}))
-    for tid, prompt in PROMPTS.items():
-        exp.task(Task(tid, prompt=prompt, image=image, task_class="feature",
-                      holdout=AssertionHoldout(expression=HOLDOUTS[tid])))
+           .run_config(harbor_run_config(  # the harness stands up + tears down the metering proxy
+               egress_log, allowlist=ALLOWLIST,
+               keys_by_arm={"treatment": ["OPENAI_API_KEY"], "control": ["ANTHROPIC_API_KEY"]})))
+    for tid in PROMPTS:
+        exp.task(holdout_task(tid, PROMPTS[tid], HOLDOUTS[tid], image))
     ws = exp.write(d)
 
     ws.plan(actor="shakedown")
@@ -70,31 +69,14 @@ def main():
     ws.run(engine="harbor")
     ws.grade(runner="local-exec")            # EXECUTES the declared holdouts on the real output
     view = ws.view()
-    grades = view.latest_grade_by_trial()
-    for tv in view.trials():
-        rec = tv.record
-        passed = bool(grades.get(rec["trial_id"], {}).get("binary_score"))
-        print(f"    {rec['arm']:9s} {rec['task_id']:6s} -> {'PASS' if passed else 'FAIL'}")
+    print_holdout_grades(view)
     ws.judge()
     ws.analyze(exploratory=True)
     chain = ws.verify_chain()
 
-    trials = [tv.record for tv in view.trials()]
-    egress: dict = {}
-    for line in egress_log.read_text(encoding="utf-8").splitlines():
-        try:
-            r = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        egress.setdefault(r["trial"], set()).add(f"{r['host']}:{r['decision']}")
-    digests = {str(rec.get("provenance", {}).get("image_digest", "")).startswith("sha256:") for rec in trials}
     t = Tally("L6 real-agent harbor")
-    t.check("real trials completed", len(trials) == 4 and all(
-        rec.get("provenance", {}).get("engine") == "harbor" for rec in trials), f"{len(trials)} harbor trials")
-    t.check("images digest-pinned", digests == {True}, "provenance image_digest is sha256:")
-    t.check("per-trial egress attributed", len(egress) == len(trials)
-            and all(any("allow" in h for h in hs) for hs in egress.values()),
-            f"{len(egress)} trials attributed through the metering proxy")
+    check_harbor_provenance(t, view, expected_trials=4)
+    check_egress_attribution(t, egress_log, view, ALLOWLIST)
     t.check("chain verifies", chain.chain_ok, "chain OK")
     t.finish()
 

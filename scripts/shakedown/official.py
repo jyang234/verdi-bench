@@ -9,48 +9,27 @@ operator bundle.
 """
 from __future__ import annotations
 
-import hashlib
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _harness import Tally, empty_dir  # noqa: E402
+from _harness import Tally, banner, empty_dir, require_keys_or_exit  # noqa: E402
+from _scenario import advance_to_judged, golden_experiment, make_manifest  # noqa: E402
 
-from harness.corpus.manifest import build_manifest  # noqa: E402
-from harness.sdk import Experiment, MissingEnvKeysError, Task, require_env_keys  # noqa: E402
 from harness.serve.bundle import write_bundle  # noqa: E402
 
 JUDGE_MODEL = "anthropic/claude-haiku-4-5-20251001"  # date-versioned (non-alias); see memory
-TREATMENT_PASS = {"t1", "t2", "t3", "t4", "t5", "t6"}
-CONTROL_PASS = {"t1", "t2"}
 
 
 def main():
-    try:
-        require_env_keys("ANTHROPIC_API_KEY")           # L2 uses a real judge
-    except MissingEnvKeysError as e:
-        raise SystemExit(f"{e}\nrun: uv run --env-file .env python scripts/shakedown/official.py")
-    print("=" * 72, "\nL2 — passing official render + REAL Anthropic judge\n" + "=" * 72)
-    exp = (Experiment("official", seed=1234, cost_ceiling_usd=25.0)
-           .arm("treatment", model="openai/gpt-4o-2024-08-06", platform="codex")
-           .arm("control", model="anthropic/claude-haiku-4-5-20251001", platform="claude_code")
-           .judge(JUDGE_MODEL, escalation={"kappa_threshold": 0.6, "min_human_verdicts": 1})
-           .corpus("shakedown-mini", "1.0.0").repetitions(3))
-    for i in range(1, 9):
-        exp.task(Task(f"t{i}", prompt="solve",
-                      fake_behavior={"native_log": {"total_cost_usd": 0.02}}))
+    require_keys_or_exit("ANTHROPIC_API_KEY", script="official.py")  # L2 uses a real judge
+    banner("L2 — passing official render + REAL Anthropic judge")
+    exp = golden_experiment("official", judge=JUDGE_MODEL)
     ws = exp.write(empty_dir("official"))
     m = ws.dir / "manifest.json"
-    build_manifest(corpus_id="shakedown-mini", semver="1.0.0", kind="public",
-                   tasks=[{"task_id": f"t{i}", "sha": hashlib.sha256(f"t{i}".encode()).hexdigest()}
-                          for i in range(1, 9)]).save(m)
+    make_manifest(m)
 
-    ws.plan(actor="shakedown")
-    ws.run(engine="fake")
-    ws.inject_holdout_results(
-        lambda arm, task: task in (TREATMENT_PASS if arm == "treatment" else CONTROL_PASS))
-    ws.grade(runner="local")
-    ws.judge()                                          # REAL Anthropic calls
+    advance_to_judged(ws)                               # REAL Anthropic calls in ws.judge()
     ws.calibrate(manifest_path=m, kind="full")
     sc = ws.selfcheck()
     off = ws.analyze(official_corpus=m)                 # fenced official render

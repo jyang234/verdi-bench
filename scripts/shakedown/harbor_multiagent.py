@@ -19,16 +19,20 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _harness import REPO, Tally, empty_dir  # noqa: E402
+from _harness import REPO, Tally, banner, empty_dir, require_keys_or_exit  # noqa: E402
+from _scenario import (  # noqa: E402
+    ESCALATION, check_egress_attribution, check_harbor_provenance,
+    harbor_run_config, holdout_task, print_holdout_grades,
+)
 
-from harness.grade.holdouts import AssertionHoldout  # noqa: E402
 from harness.images import build, resolve  # noqa: E402
 from harness.run.flight_recorder import resolve_flight_recorder, slice_reasoning_by_agent  # noqa: E402
-from harness.sdk import Experiment, MissingEnvKeysError, Task, require_env_keys  # noqa: E402
+from harness.sdk import Experiment  # noqa: E402
 
 REF_DIR = REPO / "images" / "reference" / "multi-agent"
 CONTROL, TREATMENT = "anthropic/claude-haiku-4-5-20251001", "anthropic/claude-sonnet-4-5-20250929"
 JUDGE = "openai/gpt-4.1-mini-2025-04-14"  # third vendor — no judge/arm overlap
+ALLOWLIST = ["api.anthropic.com"]
 TASKS = {
     "t_math": {"prompt": "Write solution.py defining add(a, b) returning a + b, and is_palindrome(s) "
                          "returning True iff s reads the same forwards and backwards.",
@@ -40,11 +44,8 @@ TASKS = {
 
 
 def main():
-    try:
-        require_env_keys("ANTHROPIC_API_KEY", "OPENAI_API_KEY")   # arms anthropic, judge/forensics openai
-    except MissingEnvKeysError as e:
-        raise SystemExit(f"{e}\nrun: uv run --env-file .env python scripts/shakedown/harbor_multiagent.py")
-    print("=" * 74, "\nMULTI-TURN A/B — haiku (control) vs sonnet (treatment), openai judge\n" + "=" * 74)
+    require_keys_or_exit("ANTHROPIC_API_KEY", "OPENAI_API_KEY", script="harbor_multiagent.py")
+    banner("MULTI-TURN A/B — haiku (control) vs sonnet (treatment), openai judge")
 
     print("building images/reference/multi-agent (multi-turn) ...")
     image = build(resolve(str(REF_DIR))).pinned_ref   # digest-pinned via harness.images
@@ -57,14 +58,13 @@ def main():
     exp = (Experiment("harbor_ma", seed=11, cost_ceiling_usd=25.0)
            .arm("control", model=CONTROL)
            .arm("treatment", model=TREATMENT)
-           .judge(JUDGE, escalation={"kappa_threshold": 0.6, "min_human_verdicts": 1})
+           .judge(JUDGE, escalation=ESCALATION)
            .corpus("ma-multiturn", "1.0.0").repetitions(1)
-           .run_config({  # both arms anthropic → single-host allowlist
-               "proxy": {"managed": True, "allowlist": ["api.anthropic.com"], "log_path": str(egress_log)},
-               "provider_key_names_by_arm": {"control": ["ANTHROPIC_API_KEY"], "treatment": ["ANTHROPIC_API_KEY"]}}))
+           .run_config(harbor_run_config(  # both arms anthropic → single-host allowlist
+               egress_log, allowlist=ALLOWLIST,
+               keys_by_arm={"control": ["ANTHROPIC_API_KEY"], "treatment": ["ANTHROPIC_API_KEY"]})))
     for tid, t in TASKS.items():
-        exp.task(Task(tid, prompt=t["prompt"], image=image, task_class="feature",
-                      holdout=AssertionHoldout(expression=t["holdout"])))
+        exp.task(holdout_task(tid, t["prompt"], t["holdout"], image))
     ws = exp.write(d)
 
     ws.plan(actor="shakedown")
@@ -72,11 +72,7 @@ def main():
     ws.run(engine="harbor")
     ws.grade(runner="local-exec")                     # EXECUTES the declared holdouts on the real output
     gview = ws.view()
-    grades = gview.latest_grade_by_trial()
-    for tv in gview.trials():
-        rec = tv.record
-        passed = bool(grades.get(rec["trial_id"], {}).get("binary_score"))
-        print(f"    {rec['arm']:9s} {rec['task_id']:7s} holdout -> {'PASS' if passed else 'FAIL'}")
+    print_holdout_grades(gview)
 
     # full pipeline so the operator UI shows grades + forensics + judge
     ws.forensics(model=JUDGE)                         # real openai advisory review over the reasoning
@@ -102,17 +98,14 @@ def main():
             for j, e in enumerate(groups.get(role, [])):
                 print(f"    [{role}:{j}] {e.content.replace(chr(10),' ')[:80]}")
 
-    digests = {str(tv.record.get("provenance", {}).get("image_digest", "")).startswith("sha256:") for tv in view.trials()}
-    n = len(view.trials())
     t = Tally("multi-turn haiku-vs-sonnet harbor")
-    t.check("real harbor trials completed", n == 4 and all(
-        tv.record.get("provenance", {}).get("engine") == "harbor" for tv in view.trials()))
-    t.check("images digest-pinned", digests == {True})
+    check_harbor_provenance(t, view, expected_trials=4)
     t.check("both arms captured reasoning (both anthropic)",
             all(tv.flight_recorder_sha for tv in view.trials()))
     t.check("reasoning is MULTI-TURN (worker draft+revise)", multi_turn_ok)
     t.check("forensics + judge ledgered (real openai)",
             bool(view.by_kind("forensics_report")) and bool(view.by_kind("judge_verdict")))
+    check_egress_attribution(t, egress_log, view, ALLOWLIST)
     t.finish()
 
 

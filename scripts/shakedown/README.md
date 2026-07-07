@@ -49,7 +49,8 @@ Generated run state lands in `_run/` (git-ignored); committed inputs are under
 
 | Path | Role |
 |---|---|
-| `_harness.py` | script-local helpers — `Tally`, `_run/` staging, the one `bench` console-script driver (pre-registration vectors) + ANSI strip; `dump_yaml` stays for tripwires' deliberately-invalid specs |
+| `_harness.py` | script-local plumbing — `Tally`, `_run/` staging, the one `bench` console-script driver (pre-registration vectors), ANSI strip, key gating + banners; `dump_yaml` stays for tripwires' deliberately-invalid specs |
+| `_scenario.py` | shared known-answer scenario content — the canonical golden experiment shape (single-sourced so L1/L2/L3 cannot drift), manifest/pipeline helpers, and the harbor-shared config/checks (the egress check reads the raw proxy log as independent evidence) |
 | `golden.py` · `tripwires.py` | hermetic acceptance (L1, L3), authored + driven through `harness.sdk` |
 | `official.py` | opt-in real-judge layer (L2), on `harness.sdk` |
 | `harbor.py` · `harbor_multiagent.py` | opt-in real-container layers (L6), on `harness.sdk` + `harness.images` (the official `generic-llm` / reference multi-agent images) + the managed metering proxy |

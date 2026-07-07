@@ -12,38 +12,23 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _harness import Tally, empty_dir  # noqa: E402
+from _harness import Tally, banner, empty_dir  # noqa: E402
+from _scenario import golden_experiment, golden_passes  # noqa: E402
 
 from harness.process.rubric import default_rubric  # noqa: E402
 from harness.review.record import RevealError  # noqa: E402
-from harness.sdk import Experiment, Task  # noqa: E402
-
-TREATMENT_PASS = {"t1", "t2", "t3", "t4", "t5", "t6"}
-CONTROL_PASS = {"t1", "t2"}
-
-
-def passes(arm, task):
-    return task in (TREATMENT_PASS if arm == "treatment" else CONTROL_PASS)
 
 
 def main():
-    print("=" * 72, "\nL1 — golden path (fake engine + fake judge)\n" + "=" * 72)
+    banner("L1 — golden path (fake engine + fake judge)")
     # arm_a is treatment (paired delta = treatment - control), so the pre-registered
     # `delta_holdout_pass_rate > 0` reads "treatment improves over control".
-    exp = (Experiment("golden", seed=1234, cost_ceiling_usd=25.0)
-           .arm("treatment", model="openai/gpt-4o-2024-08-06", platform="codex")
-           .arm("control", model="anthropic/claude-haiku-4-5-20251001", platform="claude_code")
-           .judge("fake/deterministic-2026-01-01",
-                  escalation={"kappa_threshold": 0.6, "min_human_verdicts": 1})
-           .corpus("shakedown-mini", "1.0.0").repetitions(3))
-    for i in range(1, 9):
-        exp.task(Task(f"t{i}", prompt="solve",
-                      fake_behavior={"native_log": {"total_cost_usd": 0.02}}))
+    exp = golden_experiment("golden")
 
     ws = exp.write(empty_dir("golden"))
     ws.plan(actor="shakedown")
     ws.run(engine="fake")
-    ws.inject_holdout_results(passes)          # operator per-arm grades (arm-blind engine)
+    ws.inject_holdout_results(golden_passes)   # operator per-arm grades (arm-blind engine)
     ws.grade(runner="local")
     ws.judge()
 
