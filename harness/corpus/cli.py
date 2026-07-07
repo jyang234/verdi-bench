@@ -300,7 +300,10 @@ def register(app: typer.Typer) -> None:
         k: int = typer.Option(None, "--k", help="Zero-tolerance runs (default 5); "
                               "raise for stronger flake detection — miss rate is (1-p)^k"),
         runner: str = typer.Option(
-            "docker", "--runner", help="docker (real container) | local (no-daemon fake/test)"
+            "docker", "--runner",
+            help="docker (trusted container) | local (no-daemon, reads a pre-placed "
+            "holdout_results.json — fake/test) | local-exec (no-daemon, EXECUTES the "
+            "declared holdout on the host — ADVISORY)",
         ),
         actor: str = typer.Option(None, "--actor", help="Actor recorded on the baseline [GR-12]"),
     ) -> None:
@@ -313,8 +316,8 @@ def register(app: typer.Typer) -> None:
         from ..grade.container import GraderUnavailableError
         from ..ledger.actor import ActorResolutionError
 
-        if runner not in ("docker", "local"):
-            raise typer.BadParameter("--runner must be docker or local")
+        if runner not in ("docker", "local", "local-exec"):
+            raise typer.BadParameter("--runner must be docker, local, or local-exec")
         try:
             outcome = corpus_baseline(
                 experiment_dir, task_id=task_id, task_sha=task_sha,

@@ -377,17 +377,31 @@ def corpus_baseline(
     from ..grade.container import (
         DockerGradeRunner,
         GradingContainer,
+        LocalExecutingGradeRunner,
         LocalGradeRunner,
     )
     from ..grade.types import GradeTask
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
 
+    # Runner tiers. Only "docker" is TRUSTED (network-less container, the real
+    # grader image). "local" reads a pre-placed holdout_results.json (fake/e2e);
+    # "local-exec" EXECUTES the declared holdout in a host subprocess with no
+    # daemon [refactor 05 §1] — the no-Docker admission tier for a declared
+    # command/pytest/assertion holdout (e.g. the groundwork-v0 command holdout).
+    # Both no-daemon tiers stamp grader_name != "docker", so every baseline event
+    # they ledger is ADVISORY (analyze banners it). Neither weakens the docker path.
+    runners = {
+        "docker": DockerGradeRunner,
+        "local": LocalGradeRunner,
+        "local-exec": LocalExecutingGradeRunner,
+    }
+    runner_cls = runners.get(runner)
+    if runner_cls is None:
+        raise ValueError(f"unknown --runner {runner!r}; expected one of {sorted(runners)}")
     ledger_path = experiment_dir / "ledger.ndjson"
     ctx = EventContext(experiment_id=experiment_dir.name, actor=resolve_actor(actor))
-    container = GradingContainer(
-        runner=LocalGradeRunner() if runner == "local" else DockerGradeRunner()
-    )
+    container = GradingContainer(runner=runner_cls())
     task = GradeTask(id=task_id, task_sha=task_sha, holdouts_dir=str(holdouts_dir))
     outcome = flake_baseline(
         task, ledger_path, ctx,
