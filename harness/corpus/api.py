@@ -22,7 +22,12 @@ from ..errors import VerdiRefusal
 # The admission refusal types + two-phase outcome live beside admit_task
 # [refactor 07 §3]; re-exported here because this stage API is the seam the
 # CLI and SDK import them through.
-from .admit import AdmitDestinationError, AdmitInputError, AdmitOutcome
+from .admit import (
+    AdmitDestinationError,
+    AdmitInputError,
+    AdmitOutcome,
+    baseline_grader_label,
+)
 
 # Known tasks.yaml drift traps — singular/plural keys the lenient run/grade reader
 # would silently ignore (decision A9). validate-tasks names them explicitly.
@@ -101,6 +106,10 @@ class CalibrateOutcome:
 class BaselineOutcome:
     verdict: str
     k: int
+    # The grader tier stamped on the ledgered event, from the runner actually
+    # used (never None on a real run) — surfaced so the echo names the tier
+    # [human-approved 2026-07-07].
+    grader: str | None = None
 
 
 def corpus_import(
@@ -409,4 +418,7 @@ def corpus_baseline(
         k=k if k is not None else DEFAULT_K,
         workspace_basis="reference_solution",
     )
-    return BaselineOutcome(verdict=outcome.verdict, k=outcome.event["k"])
+    return BaselineOutcome(
+        verdict=outcome.verdict, k=outcome.event["k"],
+        grader=outcome.event.get("grader"),
+    )

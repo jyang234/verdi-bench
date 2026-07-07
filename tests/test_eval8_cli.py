@@ -228,6 +228,30 @@ def test_h2_baseline_verb_rejects_unknown_runner(tmp_path):
     assert "docker, local, or local-exec" in (r.output + (r.stderr or ""))
 
 
+def test_h2_baseline_verb_echoes_grader_tier(tmp_path):
+    """The `bench corpus baseline` echo names the grader tier stamped on the event
+    [human-approved 2026-07-07]: the no-daemon `local` tier reads as ADVISORY, so
+    an operator sees the baseline did not run in the trusted docker container."""
+    from tests.fixtures.grading import write_holdout_results
+
+    expdir = tmp_path / "exp"
+    expdir.mkdir()
+    ws = tmp_path / "ref-solution"
+    ws.mkdir()
+    write_holdout_results(ws, True)  # holdouts pass on the reference tree
+    holdouts = tmp_path / "holdouts"
+    holdouts.mkdir()
+    r = runner.invoke(app, [
+        "corpus", "baseline", str(expdir), "--task-id", "t", "--task-sha", "s" * 64,
+        "--workspace", str(ws), "--holdouts-dir", str(holdouts), "--runner", "local",
+        "--actor", "alice",
+    ])
+    assert r.exit_code == 0, r.output
+    assert "grader: local (ADVISORY)" in r.output  # ADVISORY, never silently trusted
+    (ev,) = find_events(expdir / "ledger.ndjson", "flake_baseline")
+    assert ev["grader"] == "local"
+
+
 def test_h2_baseline_verb_local_exec_executes_declared_holdout(tmp_path):
     """The no-daemon local-exec tier EXECUTES the declared holdout (vs. `local`
     which reads a pre-placed file), so `corpus baseline --runner local-exec` runs

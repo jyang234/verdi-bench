@@ -78,9 +78,14 @@ records the contracts verdi-bench leans on.
 - **D5 — judge vendor**: third-vendor recommended (blinding holds regardless).
 - **Upstream (verdi-go)**: (a) add rule ids / a response summary to the MCP `--log`
   emission (versioned, since the JSONL is a stated contract) — would upgrade
-  `verdict_heeded` to the plan's per-rule form; (b) record grader tier on the
-  `flake_baseline` ledger event — a versioned-contract change requiring explicit
-  approval. Both flagged, neither implemented.
+  `verdict_heeded` to the plan's per-rule form. Approved 2026-07-07; **not yet
+  implemented** — it lives in verdi-go, not this repo.
+- **verdi-bench ledger contract**: (b) record the grader tier on the `flake_baseline`
+  ledger event — a versioned-contract change to verdi-bench's OWN hash-chained event
+  (not an upstream item; the earlier grouping under "Upstream (verdi-go)" was an
+  attribution error). Approved 2026-07-07 and **implemented by this change**: the event
+  now carries an optional `grader` stamped from the runner actually used; absence =
+  `unrecorded` (never defaulted to docker), and old chains stay valid.
 
 ## 5. Documentation alignments applied in this commit (orchestrator edits)
 

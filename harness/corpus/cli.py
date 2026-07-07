@@ -23,6 +23,7 @@ from .api import (
     CandidateStagingError,
     UnknownBenchmarkError,
     ValidateTasksFileError,
+    baseline_grader_label,
     corpus_admit,
     corpus_approve,
     corpus_baseline,
@@ -283,7 +284,13 @@ def register(app: typer.Typer) -> None:
         if outcome.persist_error is not None:
             typer.echo(outcome.persist_error, err=True)
             raise typer.Exit(code=1)
-        typer.echo(f"admitted {candidate_id} (sha={task_sha[:12]}…)")
+        # Surface the grader tier of the clean baseline this admission relied on:
+        # "docker" is trusted, a no-daemon tier is ADVISORY, and a pre-2026-07-07
+        # event that never recorded a tier renders "unrecorded" — never docker.
+        typer.echo(
+            f"admitted {candidate_id} (sha={task_sha[:12]}…); "
+            f"baseline grader: {baseline_grader_label(outcome.baseline_grader)}"
+        )
 
     @corpus_app.command("baseline")
     def baseline_cmd(
@@ -335,7 +342,7 @@ def register(app: typer.Typer) -> None:
             raise typer.Exit(code=2)
         typer.echo(
             f"baseline {outcome.verdict}: {task_id} (sha={task_sha[:12]}…) "
-            f"over k={outcome.k} run(s)"
+            f"over k={outcome.k} run(s); grader: {baseline_grader_label(outcome.grader)}"
         )
         if outcome.verdict != "clean":
             raise typer.Exit(code=1)

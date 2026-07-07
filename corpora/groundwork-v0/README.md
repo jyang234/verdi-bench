@@ -297,9 +297,14 @@ JSON, no timestamps).
   through the real grade seam (`bench corpus baseline --runner local-exec` against
   the `--solutions` trees). The `gw-r2` exemplar-violation QUARANTINES and a null
   task's alternative implementation stays CLEAN through that same seam — so the gate
-  bites in the harness path, not only in the builder's `--check`. (The
-  `flake_baseline` ledger event records `workspace_basis` but NOT the grader tier, so
-  the ADVISORY provenance is operational, not self-recorded on the event.)
+  bites in the harness path, not only in the builder's `--check`. The `flake_baseline`
+  ledger event now records the **grader tier** (here `grader="local-exec"`) alongside
+  `workspace_basis`, so the ADVISORY provenance is **self-recorded on the event** — an
+  admission reader distinguishes a host-runner baseline from a trusted docker one from
+  the event alone, no external note required [additive ledger-contract field, approved
+  by the repo owner 2026-07-07]. Absence is only for events that predate the field
+  (pre-2026-07-07): a reader renders those `unrecorded`, never defaulted to `docker`,
+  and old chains stay valid and chain-verify unchanged.
 - **`bench corpus validate-tasks` — CLEAN** on the emitted `tasks.yaml` (16/16 OK;
   the write-side `TaskSpec` round-trips under `extra=forbid`).
 - **Holdout-leak checks — GREEN.** Feature tests live ONLY under `holdouts/<id>/`;

@@ -57,6 +57,12 @@ def flake_baseline(
     ``workspace_basis`` rides onto the ledgered event [F-H2] so a baseline that
     actually ran against the contracted tree is distinguishable from a
     fabricated event — ``bench corpus baseline`` stamps ``reference_solution``.
+
+    The grader TIER also rides the event, taken from the ``container`` actually
+    used (``container.grader_name``) [human-approved 2026-07-07] — ``"docker"``
+    is the only TRUSTED tier; a no-daemon runner stamps its own ADVISORY name
+    (``"local-exec"``/``"local"``). It is read from the runner, never a caller
+    argument, so an ADVISORY baseline cannot be laundered as ``docker``.
     """
     if k < 1:
         raise ValueError(
@@ -107,6 +113,10 @@ def flake_baseline(
         results=results,
         verdict=verdict,
         workspace_basis=workspace_basis,
+        # The grader tier comes from the runner actually used, never a caller
+        # argument, so an ADVISORY (non-"docker") baseline cannot be recorded
+        # as trusted [human-approved 2026-07-07]. Mirrors record_grade's stamp.
+        grader=container.grader_name,
     )
     return BaselineOutcome(verdict=verdict, results=results, event=ev)
 

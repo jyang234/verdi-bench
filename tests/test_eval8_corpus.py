@@ -717,3 +717,80 @@ def test_admit_with_persistence_reports_post_ledger_persist_failure(tmp_path):
     assert outcome.persist_error is not None
     assert "The admission is on the chain" in outcome.persist_error
     assert str(manifest_path) in outcome.persist_error  # names the reconcile target
+
+
+# --- grader tier on the admission-gating baseline [human-approved 2026-07-07] -
+def test_baseline_grader_label_distinguishes_trusted_advisory_unrecorded():
+    """The render helper names the trusted tier, annotates a no-daemon tier
+    ADVISORY, and renders an absent tier (a pre-2026-07-07 event) as UNRECORDED —
+    visually distinct from docker, NEVER defaulted to the trusted value."""
+    from harness.corpus.admit import baseline_grader_label
+
+    assert baseline_grader_label("docker") == "docker"
+    assert baseline_grader_label("local-exec") == "local-exec (ADVISORY)"
+    assert baseline_grader_label("local") == "local (ADVISORY)"
+    assert baseline_grader_label(None) == "unrecorded"
+    assert baseline_grader_label(None) != baseline_grader_label("docker")
+
+
+def test_pre_grader_flake_baseline_parses_chain_verifies_and_reads_unrecorded(tmp_path):
+    """Back-compat [human-approved 2026-07-07]: a flake_baseline written WITHOUT
+    the additive grader field (a pre-2026-07-07 chain) parses, chain-verifies, and
+    every reader treats the absence as UNRECORDED — never the trusted docker tier."""
+    from harness.corpus.admit import (
+        baseline_grader_label,
+        has_clean_baseline,
+        latest_clean_baseline,
+    )
+    from harness.grade.baseline import load_quarantine
+    from harness.ledger.chain import verify_chain
+    from harness.ledger.query import find_events
+
+    ledger = tmp_path / "l.ndjson"
+    ctx = fixed_ctx()
+    ev = record_flake_baseline(ledger, ctx, task_id="t1", task_sha="sha1", k=5,
+                               results=[{"run": i, "passed": True} for i in range(5)],
+                               verdict="clean")
+    assert "grader" not in ev  # omit-if-none ⇒ the key is absent, not null
+    # a legacy chain parses + chain-verifies unchanged
+    assert verify_chain(ledger).ok
+    (parsed,) = find_events(ledger, "flake_baseline")
+    assert "grader" not in parsed
+    # the admission gate still passes on it, but the tier reads UNRECORDED
+    assert has_clean_baseline(ledger, "sha1") is True
+    gating = latest_clean_baseline(ledger, "sha1")
+    assert gating is not None and gating.get("grader") is None
+    assert baseline_grader_label(gating.get("grader")) == "unrecorded"
+    assert load_quarantine(ledger) == set()
+
+
+def test_admit_outcome_surfaces_baseline_grader_tier(tmp_path):
+    """The admit path surfaces the grader tier of the clean baseline it relied on:
+    a docker-tier baseline ⇒ 'docker'; a legacy grader-less baseline ⇒ None,
+    rendered 'unrecorded' — the admission never silently reads as trusted."""
+    from harness.corpus.admit import admit_with_persistence, baseline_grader_label
+
+    ctx = fixed_ctx()
+    # (a) a baseline that recorded the TRUSTED docker tier
+    ledger = tmp_path / "l.ndjson"
+    manifest = _pending_manifest()
+    _approve(ledger, ctx, "cand-1", "s" * 64)
+    record_flake_baseline(ledger, ctx, task_id="cand-1", task_sha="s" * 64, k=5,
+                          results=[{"run": i, "passed": True} for i in range(5)],
+                          verdict="clean", grader="docker")
+    out = admit_with_persistence(manifest, ledger, ctx, candidate_id="cand-1",
+                                 task_sha="s" * 64, baseline_ref="b1", keyring=_KEYRING,
+                                 manifest_path=tmp_path / "m.json")
+    assert out.persist_error is None
+    assert out.baseline_grader == "docker"
+    assert baseline_grader_label(out.baseline_grader) == "docker"
+
+    # (b) a legacy grader-less baseline ⇒ unrecorded, NOT docker
+    ledger2 = tmp_path / "l2.ndjson"
+    manifest2 = _approved_baselined(ledger2, ctx)  # seeds a grader-less baseline
+    out2 = admit_with_persistence(manifest2, ledger2, ctx, candidate_id="cand-1",
+                                  task_sha="s" * 64, baseline_ref="b1", keyring=_KEYRING,
+                                  manifest_path=tmp_path / "m2.json")
+    assert out2.persist_error is None
+    assert out2.baseline_grader is None
+    assert baseline_grader_label(out2.baseline_grader) == "unrecorded"
