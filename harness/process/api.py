@@ -31,6 +31,7 @@ def process_score(exp_dir, *, rubric_path=None, actor=None) -> ProcessScoreOutco
     from ..ledger import events
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
+    from ..ledger.identity import derive_experiment_id
     from ..ledger.query import find_events
     from ..plan.lock import assert_lock
     from ..run.artifacts import read_transcript
@@ -53,7 +54,8 @@ def process_score(exp_dir, *, rubric_path=None, actor=None) -> ProcessScoreOutco
     # provenance (the default v1 file when no --rubric was given) [refactor 06 §7].
     rubric_sha = process_rubric_sha256(rubric_path)
     resolved_actor = resolve_actor(actor)
-    ctx = EventContext(experiment_id=exp_dir.name, actor=resolved_actor)
+    # [ux-friction AC-1] one shared seam: resolve exp_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(exp_dir), actor=resolved_actor)
 
     # PRA-M13: a process score whose every dimension failed *transiently* (the
     # scorer could not run — timeout / provider_error) is not counted as done, so
@@ -105,6 +107,7 @@ def process_record(
     ``ProcessSequencingError`` (pre-reveal) — all mapped to exit 2 by the CLI."""
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
+    from ..ledger.identity import derive_experiment_id
     from .score import human_scores_from_mapping, record_human_process_score
 
     # PR-7: a typoed/unknown or missing dimension is a loud error, not a silent
@@ -112,7 +115,8 @@ def process_record(
     dimension_scores = human_scores_from_mapping(scores, rubric)
     who = resolve_actor(actor)
     ledger_path = Path(exp_dir) / "ledger.ndjson"
-    ctx = EventContext(experiment_id=Path(exp_dir).name, actor=who)
+    # [ux-friction AC-1] one shared seam: resolve exp_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(exp_dir), actor=who)
     record_human_process_score(
         trial_id, rubric, dimension_scores, ledger_path=ledger_path, ctx=ctx,
         ts=ctx.clock(), scorer_id=who, comparison_id=comparison_id,

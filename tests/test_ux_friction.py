@@ -61,13 +61,16 @@ def test_plan_refuses_empty_resolved_experiment_name(tmp_path):
     filesystem root) refuses with a typed error naming the offending path, rather
     than ever ledgering experiment_id=''. The refusal fires before any file read,
     so nothing is written."""
-    from harness.plan.api import ExperimentIdResolutionError
+    from harness.ledger.identity import ExperimentIdResolutionError
 
     ledger = tmp_path / "ledger.ndjson"
     root_spec = Path("/experiment.yaml")  # resolves to root; parent has no name
     with pytest.raises(ExperimentIdResolutionError) as exc:
         plan_experiment(root_spec, ledger, actor="tester")
-    assert str(root_spec) in str(exc.value)  # names the offending path
+    # plan now derives the id through the shared seam from the spec's PARENT
+    # directory, so the refusal names that resolved directory (the filesystem
+    # root here — the thing that actually has no name), not the spec file.
+    assert str(root_spec.parent.resolve()) in str(exc.value)  # names the offending dir
     assert not ledger.exists()  # refused before genesis: zero events appended
 
 
@@ -127,3 +130,106 @@ def test_status_header_prefers_ledger_experiment_id(tmp_path, monkeypatch):
     assert abs_snap["experiment_id"] == "ledger-name"  # the ledger id, not "my-experiment"
     assert dot_snap["experiment_id"] == "ledger-name"  # blank ('') today
     assert dot_snap["experiment_id"] == abs_snap["experiment_id"]  # same header both ways
+
+
+# --- AC-1 broadening: one shared resolved-path seam for experiment_id ----------
+def test_derive_experiment_id_resolves_relative_paths_to_directory_name(
+    tmp_path, monkeypatch
+):
+    """[ux-friction AC-1] The shared seam resolves before naming, so `.`, a bare
+    relative name, and the absolute path to the same directory all yield the
+    identical non-empty id — the experiment directory's real name — regardless of
+    cwd. This is the one derivation every ledgering stage now routes through."""
+    from harness.ledger.identity import derive_experiment_id
+
+    expdir = tmp_path / "my-experiment"
+    expdir.mkdir()
+    monkeypatch.chdir(expdir)
+    assert derive_experiment_id(Path(".")) == "my-experiment"   # the cd-in form
+    assert derive_experiment_id(Path("./")) == "my-experiment"  # ./-relative
+    assert derive_experiment_id(expdir) == "my-experiment"      # absolute
+
+
+def test_derive_experiment_id_refuses_empty_resolved_name():
+    """[ux-friction AC-1] A path that resolves to a nameless directory (the
+    filesystem root) refuses with a typed error naming the offending path, rather
+    than ever returning '' for a ledger to stamp."""
+    from harness.ledger.identity import ExperimentIdResolutionError, derive_experiment_id
+
+    root = Path("/")
+    with pytest.raises(ExperimentIdResolutionError) as exc:
+        derive_experiment_id(root)
+    assert str(root.resolve()) in str(exc.value)  # names the offending path
+
+
+def test_event_context_experiment_id_is_resolved(tmp_path, monkeypatch):
+    """[ux-friction AC-1] cli_common.event_context — the shared ctx builder the
+    forensics/contamination verbs use — stamps the RESOLVED directory name, so
+    `bench <verb> .` no longer ledgers experiment_id='' (today Path('.').name)."""
+    from harness.cli_common import event_context
+
+    expdir = tmp_path / "my-experiment"
+    expdir.mkdir()
+    monkeypatch.chdir(expdir)
+    ctx = event_context(Path("."), "tester")
+    assert ctx.experiment_id == "my-experiment"  # '' today (unresolved Path('.').name)
+    assert ctx.actor == "tester"
+
+
+def _built_planned_experiment(dirpath: Path, name: str):
+    """Build + lock a 2-task fake-engine experiment; return its ExperimentWorkspace."""
+    from harness.sdk import Experiment, Task
+
+    exp = (
+        Experiment(name, seed=1234, cost_ceiling_usd=10.0)
+        .arm("treatment", model="openai/gpt-4o-2024-08-06", platform="codex")
+        .arm("control", model="anthropic/claude-haiku-4-5-20251001", platform="claude_code")
+        .judge("fake/deterministic-2026-01-01")
+        .task(Task("t_add", prompt="Write solution.py defining add(a, b).",
+                   fake_behavior={"native_log": {"total_cost_usd": 0.01}}))
+        .task(Task("t_pal", prompt="Write solution.py defining is_palindrome(s).",
+                   fake_behavior={"native_log": {"total_cost_usd": 0.01}}))
+    )
+    ws = exp.write(dirpath)
+    ws.plan(actor="tester")
+    return ws
+
+
+def test_run_trial_events_carry_resolved_experiment_id(tmp_path, monkeypatch):
+    """[ux-friction AC-1, broadening] From inside a locked experiment dir, a
+    fake-engine run invoked the way the CLI invokes it — with the bare-relative
+    Path('.') — stamps every trial event with the directory's real name. Today
+    run/api.py derives exp_dir.name on the UNRESOLVED '.', baking
+    experiment_id='' into the permanent chain: the F1 defect, now on trial
+    events (RED today: '' != 'run-exp')."""
+    from harness.run.api import run_experiment
+
+    ws = _built_planned_experiment(tmp_path / "run-exp", "run-exp")
+    ledger = ws.ledger  # absolute: chdir never moves it
+    monkeypatch.chdir(ws.dir)
+    run_experiment(Path("."), engine="fake", actor="tester")
+
+    trials = find_events(ledger, events.TRIAL)
+    assert trials  # the run produced trial events
+    assert all(ev["provenance"]["experiment_id"] == "run-exp" for ev in trials)
+
+
+def test_grade_events_carry_resolved_experiment_id(tmp_path, monkeypatch):
+    """[ux-friction AC-1, broadening] A grade pass invoked the way the CLI
+    invokes it (Path('.')) stamps its events with the directory's real name. No
+    holdout injection is needed: with --runner local and no holdout_results.json
+    every trial lands a terminal cant_grade, whose provenance carries
+    experiment_id — so the honest assertion is on the cant_grade events' id.
+    Today grade/api.py derives exp_dir.name on the UNRESOLVED '.' (RED: '')."""
+    from harness.grade.api import grade_experiment
+    from harness.run.api import run_experiment
+
+    ws = _built_planned_experiment(tmp_path / "grade-exp", "grade-exp")
+    run_experiment(ws.dir, engine="fake", actor="tester")  # absolute: correct trials
+    ledger = ws.ledger
+    monkeypatch.chdir(ws.dir)
+    grade_experiment(Path("."), runner="local", actor="tester")  # no injection
+
+    cant = find_events(ledger, events.CANT_GRADE)
+    assert cant  # every trial → terminal cant_grade (no holdout_results.json)
+    assert all(ev["provenance"]["experiment_id"] == "grade-exp" for ev in cant)

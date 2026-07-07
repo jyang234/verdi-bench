@@ -32,6 +32,7 @@ from typing import Optional
 from ..blind.core import arm_canaries
 from ..judge.schema import Evidence, Verdict, VerdictProvenance, Winner
 from ..ledger.events import EventContext
+from ..ledger.identity import derive_experiment_id
 from ..ledger.query import find_events
 from ..schema.experiment import ExperimentSpec
 from ..webkit.http import (
@@ -205,7 +206,9 @@ class ReviewerHandler(JsonRouteHandler):
             evidence = [Evidence(kind="diff", response=letter, hunk="reviewer-cited")]
         else:
             letter = winner
-        ctx = EventContext(experiment_id=self.experiment_dir.name, actor=self.reviewer)
+        ctx = EventContext(
+            experiment_id=derive_experiment_id(self.experiment_dir), actor=self.reviewer
+        )
         prov = VerdictProvenance(
             judge_model="human", rubric_sha256="human", packet_sha256="human",
             call_ids=["human"], orders="single", temperature=0.0, ts=ctx.clock(),
@@ -232,7 +235,9 @@ class ReviewerHandler(JsonRouteHandler):
         cid = body.get("comparison_id")
         if not cid:
             raise _NotFound("pass comparison_id")
-        ctx = EventContext(experiment_id=self.experiment_dir.name, actor=self.reviewer)
+        ctx = EventContext(
+            experiment_id=derive_experiment_id(self.experiment_dir), actor=self.reviewer
+        )
         rec = reveal_comparison(self._ledger(), ctx, comparison_id=cid)
         # post-verdict unblinding IS the payload — the ledgered reveal happened
         return {"revealed": rec["revealed"], "comparison_id": cid}

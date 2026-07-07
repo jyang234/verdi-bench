@@ -54,6 +54,7 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
     from ..ledger import events
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
+    from ..ledger.identity import derive_experiment_id
     from ..plan.lock import assert_lock
     from ..review.calibrate import calibration_from_spec
     from .assemble import native_comparisons_from_ledger
@@ -100,7 +101,8 @@ def judge_experiment(exp_dir: Path, *, actor: str | None = None) -> JudgeOutcome
     # F-L1/GR-12: the ledgered actor is resolved (flag, else OS user) and REFUSED
     # when unresolvable — never silently defaulted to "local".
     resolved_actor = resolve_actor(actor)
-    ctx = EventContext(experiment_id=exp_dir.name, actor=resolved_actor)
+    # [ux-friction AC-1] one shared seam: resolve exp_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(exp_dir), actor=resolved_actor)
 
     comparisons = native_comparisons_from_ledger(ledger_path, spec, task_classes=task_classes)
 

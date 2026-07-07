@@ -11,18 +11,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..errors import VerdiRefusal
-
-
-class ExperimentIdResolutionError(VerdiRefusal, RuntimeError):
-    """The experiment path has no directory to name an ``experiment_id`` from
-    [ux-friction AC-1].
-
-    plan stamps ``provenance.experiment_id`` from the experiment *directory* —
-    the resolved spec file's parent. A spec at the filesystem root leaves that
-    name empty; rather than ledger ``experiment_id=''`` into the permanent
-    hash-chained ledger (the F1 friction), refuse and name the offending path."""
-
 
 def plan_experiment(
     experiment, ledger, *, acknowledge_underpowered: bool = False,
@@ -38,27 +26,21 @@ def plan_experiment(
     from ..corpus.commit import load_task_dicts
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
+    from ..ledger.identity import derive_experiment_id
     from .lock import lock_experiment
     from .power import calibration_variance_from_runs
 
     experiment = Path(experiment)
-    # PL-8 + [ux-friction AC-1]: stamp the experiment *directory* name, exactly as
-    # run/grade do — one ledger, one experiment_id. Derive it from the RESOLVED
-    # spec path so the cd-in form bench init itself prints
-    # (`bench plan experiment.yaml`, whose unresolved `.parent` is `.` with an
-    # empty name) stamps the real directory name instead of baking
-    # experiment_id='' into every event of the permanent chain (F1). A resolved
-    # parent with no name (a spec at the filesystem root) refuses rather than
-    # ever ledgering an empty id.
-    resolved = experiment.resolve()
-    experiment_id = resolved.parent.name
-    if not experiment_id:
-        raise ExperimentIdResolutionError(
-            f"cannot derive an experiment_id: the resolved experiment path "
-            f"{resolved} has no parent directory to name (a spec at the "
-            "filesystem root has no experiment directory). Place experiment.yaml "
-            "inside a named experiment directory."
-        )
+    # PL-8 + [ux-friction AC-1]: stamp the experiment *directory* name through the
+    # one shared seam every stage now derives it from (harness.ledger.identity) —
+    # plan, run, grade and the cli_common ledgering verbs all agree, one ledger,
+    # one experiment_id. The seam resolves the spec's parent directory first, so
+    # the cd-in form bench init itself prints (`bench plan experiment.yaml`, whose
+    # unresolved `.parent` is `.` with an empty name) stamps the real directory
+    # name instead of baking experiment_id='' into every event of the permanent
+    # chain (F1); a parent that resolves to a nameless directory (a spec at the
+    # filesystem root) refuses rather than ever ledgering an empty id.
+    experiment_id = derive_experiment_id(experiment.parent)
     ctx = EventContext(experiment_id=experiment_id, actor=resolve_actor(actor))
     # PL-5: feed the power gate real calibration variance when a corpus manifest
     # with calibration runs is supplied; otherwise the lock falls back to

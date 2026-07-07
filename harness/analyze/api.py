@@ -31,6 +31,7 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False,
         record_cant_analyze,
         record_findings_rendered,
     )
+    from ..ledger.identity import derive_experiment_id
     from ..plan.lock import assert_lock
     from .dossier import render_dossier
     from .findings.extract import compute_findings
@@ -41,7 +42,8 @@ def run_analyze(experiment_dir, *, mode: str, corpus=None, html: bool = False,
     spec_path = experiment_dir / "experiment.yaml"
     ledger_path = experiment_dir / "ledger.ndjson"
     spec = assert_lock(spec_path, ledger_path).spec  # PRA-M1: no second spec read
-    ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
+    # [ux-friction AC-1] one shared seam: resolve experiment_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(experiment_dir), actor=actor)
 
     # AN-3: a refused render lands exactly one cant_analyze event, never escapes.
     # The corpus-manifest load is inside the envelope too, so a malformed --corpus
@@ -111,6 +113,7 @@ def run_selfcheck_cli(experiment_dir, *, actor: str = "unknown", n_sim: int = 20
     Appends exactly one additive ``selfcheck`` event. The seed derives from the
     locked spec seed, so the check is deterministic and cannot be re-rolled."""
     from ..ledger.events import EventContext, record_selfcheck
+    from ..ledger.identity import derive_experiment_id
     from ..plan.lock import assert_lock
     from .selfcheck import run_selfcheck
 
@@ -118,7 +121,8 @@ def run_selfcheck_cli(experiment_dir, *, actor: str = "unknown", n_sim: int = 20
     spec_path = experiment_dir / "experiment.yaml"
     ledger_path = experiment_dir / "ledger.ndjson"
     spec = assert_lock(spec_path, ledger_path).spec  # PRA-M1: no second spec read
-    ctx = EventContext(experiment_id=experiment_dir.name, actor=actor)
+    # [ux-friction AC-1] one shared seam: resolve experiment_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(experiment_dir), actor=actor)
     result = run_selfcheck(ledger_path, spec, n_sim=n_sim, n_boot=n_boot)
     record_selfcheck(ledger_path, ctx, **result)
     return result

@@ -279,13 +279,15 @@ def corpus_approve(
     D-P7-7: approver identity is security-relevant (D-P7-3 binds it to a key), so
     it is given explicitly, never resolved from the environment."""
     from ..ledger.events import EventContext, record_curation_approval
+    from ..ledger.identity import derive_experiment_id
     from .attestation import sign_approval
 
     who = approver
     priv = signing_key.read_text(encoding="utf-8").strip()
     sig, pk = sign_approval(priv, candidate_id=candidate_id, task_sha=task_sha, approver=who)
     ledger_path = experiment_dir / "ledger.ndjson"
-    ctx = EventContext(experiment_id=experiment_dir.name, actor=who)
+    # [ux-friction AC-1] one shared seam: resolve experiment_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(experiment_dir), actor=who)
     record_curation_approval(
         ledger_path, ctx, candidate_id=candidate_id, task_sha=task_sha,
         approver=who, signature=sig, signer_public_key=pk, notes=notes,
@@ -302,6 +304,7 @@ def corpus_calibrate(
     Phase 5)."""
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
+    from ..ledger.identity import derive_experiment_id
     from .ledger_ops import ledger_calibration_run, realized_calibration_run
     from .registry import CorpusManifest
 
@@ -312,7 +315,8 @@ def corpus_calibrate(
     # The realized-variance statistics moved into a corpus function [07 §3];
     # this stays argument handling + refusal mapping + the ledger orchestration.
     run = realized_calibration_run(ledger_path, rho=rho, kind=kind)
-    ctx = EventContext(experiment_id=experiment_dir.name, actor=resolve_actor(actor))
+    # [ux-friction AC-1] one shared seam: resolve experiment_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(experiment_dir), actor=resolve_actor(actor))
     ledger_calibration_run(ledger_path, ctx, manifest, run, kind=kind)
     manifest.save(manifest_path)
     return CalibrateOutcome(
@@ -336,6 +340,7 @@ def corpus_admit(
     this verb keeps argument handling + refusal mapping [refactor 07 §3]."""
     from ..ledger.events import EventContext
     from ..ledger.actor import resolve_actor
+    from ..ledger.identity import derive_experiment_id
     from .admit import admit_with_persistence
     from .attestation import load_keyring
     from .registry import CorpusError, CorpusManifest, assert_outside_instrument
@@ -351,7 +356,8 @@ def corpus_admit(
             raise AdmitInputError(str(e)) from e
 
     ledger_path = experiment_dir / "ledger.ndjson"
-    ctx = EventContext(experiment_id=experiment_dir.name, actor=resolve_actor(actor))
+    # [ux-friction AC-1] one shared seam: resolve experiment_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(experiment_dir), actor=resolve_actor(actor))
     manifest = CorpusManifest.load(manifest_path)
     # Load the keyring before the admit envelope: a legacy list-format keyring
     # raises KeyringFormatError (a ValueError) the CLI maps to a clean exit-2
@@ -382,9 +388,11 @@ def corpus_baseline(
     from ..grade.types import GradeTask
     from ..ledger.actor import resolve_actor
     from ..ledger.events import EventContext
+    from ..ledger.identity import derive_experiment_id
 
     ledger_path = experiment_dir / "ledger.ndjson"
-    ctx = EventContext(experiment_id=experiment_dir.name, actor=resolve_actor(actor))
+    # [ux-friction AC-1] one shared seam: resolve experiment_dir before naming.
+    ctx = EventContext(experiment_id=derive_experiment_id(experiment_dir), actor=resolve_actor(actor))
     container = GradingContainer(
         runner=LocalGradeRunner() if runner == "local" else DockerGradeRunner()
     )
