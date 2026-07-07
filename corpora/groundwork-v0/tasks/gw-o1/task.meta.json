@@ -1,0 +1,12 @@
+{
+  "id": "gw-o1",
+  "class": "obligation-trap",
+  "binding_rule": "obligation:tx-must-close",
+  "seed": "obligsvc",
+  "seed_mutation": "module example.com/obligsvc -> example.com/walletsvc; abstract Transfer/Tx shapes -> a concrete in-memory ledger with Debit/Credit; obligation tx-must-close carried over into .flowmap.yaml",
+  "trap_one_liner": "Transfer returns on the debit-error branch without releasing the transaction (tx leak on one path)",
+  "graph_substrate": "rta",
+  "functional_holdout": "internal/core.TestTransferHappy + TestTransferInsufficient via go test ./...",
+  "exemplar_expected_verify_rc": 1,
+  "timeout_s": 900
+}

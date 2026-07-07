@@ -1,0 +1,11 @@
+version: 1
+service: limitsvc
+
+# limitsvc's limiter slots must be released on every control-flow path. The
+# obligation rides .flowmap.yaml (CODEOWNERS-gated); flowmap emits per-site
+# verdicts into the graph and groundwork gates on them.
+obligations:
+  - name: slot-must-release
+    acquire: "example.com/limitsvc/internal/store#Acquire"
+    release:
+      - "example.com/limitsvc/internal/store#Release"

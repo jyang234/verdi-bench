@@ -1,0 +1,5 @@
+{
+  "service": "limitsvc",
+  "version": 1,
+  "substrate": "rta"
+}

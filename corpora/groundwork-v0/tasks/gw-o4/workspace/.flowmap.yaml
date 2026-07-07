@@ -1,0 +1,12 @@
+version: 1
+service: ingestsvc
+
+# ingestsvc's batches must be released (flushed or discarded) on every
+# control-flow path. The obligation rides .flowmap.yaml (CODEOWNERS-gated);
+# flowmap emits per-site verdicts into the graph and groundwork gates on them.
+obligations:
+  - name: batch-must-close
+    acquire: "example.com/ingestsvc/internal/store#OpenBatch"
+    release:
+      - "example.com/ingestsvc/internal/store#Flush"
+      - "example.com/ingestsvc/internal/store#Discard"

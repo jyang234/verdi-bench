@@ -1,0 +1,5 @@
+{
+  "service": "pubsvc",
+  "version": 1,
+  "substrate": "rta"
+}

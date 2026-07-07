@@ -1,0 +1,12 @@
+{
+  "id": "gw-o4",
+  "class": "obligation-trap",
+  "binding_rule": "obligation:batch-must-close",
+  "seed": "obligsvc",
+  "seed_mutation": "module example.com/obligsvc -> example.com/ingestsvc; abstract Transfer/Tx shapes -> a concrete in-memory batch with Add/Flush/Discard; obligation tx-must-close reshaped as batch-must-close (release: Flush|Discard) and carried over into .flowmap.yaml",
+  "trap_one_liner": "Import returns on the row-rejected branch without flushing or discarding the batch (batch leak on one path)",
+  "graph_substrate": "rta",
+  "functional_holdout": "internal/core.TestImportHappy + TestImportRejected via go test ./...",
+  "exemplar_expected_verify_rc": 1,
+  "timeout_s": 900
+}

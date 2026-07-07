@@ -1,0 +1,12 @@
+{
+  "id": "gw-o3",
+  "class": "obligation-trap",
+  "binding_rule": "obligation:audit-before-publish",
+  "seed": "obligsvc",
+  "seed_mutation": "module example.com/obligsvc -> example.com/pubsvc; abstract Disburse/DisburseRacy shapes -> a concrete approvals flow with audit.Write and bus.Publish; obligation audit-before-publish carried over into .flowmap.yaml",
+  "trap_one_liner": "Approve publishes the event before writing the audit entry (publish not dominated by the audit)",
+  "graph_substrate": "rta",
+  "functional_holdout": "internal/core.TestApprove via go test ./...",
+  "exemplar_expected_verify_rc": 1,
+  "timeout_s": 900
+}

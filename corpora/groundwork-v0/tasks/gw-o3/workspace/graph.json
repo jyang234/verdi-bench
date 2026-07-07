@@ -1,0 +1,152 @@
+{
+  "tool": "v0.0.0-20260707120445-827ad9a0d237",
+  "algo": "rta",
+  "caveats": [
+    "rta from 2 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/pubsvc/internal/api.Server).Notify",
+      "sig": "func (*api.Server).Notify(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/pubsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 20,
+      "end_line": 30
+    },
+    {
+      "fqn": "(*example.com/pubsvc/internal/core.Service).Notify",
+      "sig": "func (*core.Service).Notify(event string)",
+      "tier": 3,
+      "package": "example.com/pubsvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 16,
+      "end_line": 19
+    },
+    {
+      "fqn": "example.com/pubsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/pubsvc",
+      "file": "main.go",
+      "line": 12,
+      "end_line": 14
+    },
+    {
+      "fqn": "example.com/pubsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/pubsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 16,
+      "end_line": 20
+    },
+    {
+      "fqn": "example.com/pubsvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/pubsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 17,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/pubsvc/internal/audit.Write",
+      "sig": "func audit.Write(event string)",
+      "tier": 3,
+      "package": "example.com/pubsvc/internal/audit",
+      "file": "internal/audit/audit.go",
+      "line": 8,
+      "end_line": 8
+    },
+    {
+      "fqn": "example.com/pubsvc/internal/bus.Publish",
+      "sig": "func bus.Publish(event string)",
+      "tier": 3,
+      "package": "example.com/pubsvc/internal/bus",
+      "file": "internal/bus/bus.go",
+      "line": 8,
+      "end_line": 8
+    },
+    {
+      "fqn": "example.com/pubsvc/internal/core.New",
+      "sig": "func core.New() *core.Service",
+      "tier": 3,
+      "package": "example.com/pubsvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 13,
+      "end_line": 13
+    },
+    {
+      "fqn": "example.com/pubsvc/internal/wire.Handler",
+      "sig": "func wire.Handler() http.Handler",
+      "tier": 3,
+      "package": "example.com/pubsvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 12,
+      "end_line": 19
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/pubsvc/internal/api.Server).Notify",
+      "to": "(*example.com/pubsvc/internal/core.Service).Notify",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/pubsvc/internal/core.Service).Notify",
+      "to": "example.com/pubsvc/internal/audit.Write",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/pubsvc/internal/core.Service).Notify",
+      "to": "example.com/pubsvc/internal/bus.Publish",
+      "tier": 3
+    },
+    {
+      "from": "example.com/pubsvc.main",
+      "to": "example.com/pubsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/pubsvc.run",
+      "to": "example.com/pubsvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/pubsvc/internal/wire.Handler",
+      "to": "example.com/pubsvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/pubsvc/internal/wire.Handler",
+      "to": "example.com/pubsvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "obligations": [
+    {
+      "rule": "audit-before-publish",
+      "kind": "must-precede",
+      "fn": "(*example.com/pubsvc/internal/core.Service).Notify",
+      "site": "internal/core/core.go:18",
+      "status": "SATISFIED"
+    }
+  ],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "POST /notify",
+      "fn": "(*example.com/pubsvc/internal/api.Server).Notify"
+    }
+  ],
+  "composition_roots": [
+    "example.com/pubsvc"
+  ],
+  "frontier": {
+    "unconfirmed_routes": 1,
+    "coverage": "starvation confirmed for the oapi strict-server shape only; unconfirmed routes reach no effect for an unverified reason (a no-op, or an unrecognized dispatch seam) — attribution_loss is a LOWER BOUND, not a proof of no severance"
+  }
+}

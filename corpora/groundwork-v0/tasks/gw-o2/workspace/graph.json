@@ -1,0 +1,168 @@
+{
+  "tool": "v0.0.0-20260707120445-827ad9a0d237",
+  "algo": "rta",
+  "caveats": [
+    "rta from 2 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/limitsvc/internal/api.Server).Run",
+      "sig": "func (*api.Server).Run(w http.ResponseWriter, r *http.Request)",
+      "tier": 1,
+      "package": "example.com/limitsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 20,
+      "end_line": 33
+    },
+    {
+      "fqn": "(*example.com/limitsvc/internal/core.Service).Run",
+      "sig": "func (*core.Service).Run(job string) error",
+      "tier": 2,
+      "package": "example.com/limitsvc/internal/core",
+      "fallible": true,
+      "file": "internal/core/core.go",
+      "line": 26,
+      "end_line": 33
+    },
+    {
+      "fqn": "(*example.com/limitsvc/internal/store.Limiter).Acquire",
+      "sig": "func (*store.Limiter).Acquire() error",
+      "tier": 3,
+      "package": "example.com/limitsvc/internal/store",
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 18,
+      "end_line": 24
+    },
+    {
+      "fqn": "(*example.com/limitsvc/internal/store.Limiter).Release",
+      "sig": "func (*store.Limiter).Release()",
+      "tier": 3,
+      "package": "example.com/limitsvc/internal/store",
+      "file": "internal/store/store.go",
+      "line": 27,
+      "end_line": 27
+    },
+    {
+      "fqn": "example.com/limitsvc.main",
+      "sig": "func main.main()",
+      "tier": 1,
+      "package": "example.com/limitsvc",
+      "file": "main.go",
+      "line": 13,
+      "end_line": 15
+    },
+    {
+      "fqn": "example.com/limitsvc.run",
+      "sig": "func main.run() error",
+      "tier": 3,
+      "package": "example.com/limitsvc",
+      "fallible": true,
+      "file": "main.go",
+      "line": 17,
+      "end_line": 21
+    },
+    {
+      "fqn": "example.com/limitsvc/internal/api.New",
+      "sig": "func api.New(svc *core.Service) *api.Server",
+      "tier": 3,
+      "package": "example.com/limitsvc/internal/api",
+      "file": "internal/api/api.go",
+      "line": 17,
+      "end_line": 17
+    },
+    {
+      "fqn": "example.com/limitsvc/internal/core.New",
+      "sig": "func core.New(lim *store.Limiter) *core.Service",
+      "tier": 3,
+      "package": "example.com/limitsvc/internal/core",
+      "file": "internal/core/core.go",
+      "line": 20,
+      "end_line": 20
+    },
+    {
+      "fqn": "example.com/limitsvc/internal/store.New",
+      "sig": "func store.New() *store.Limiter",
+      "tier": 3,
+      "package": "example.com/limitsvc/internal/store",
+      "file": "internal/store/store.go",
+      "line": 14,
+      "end_line": 14
+    },
+    {
+      "fqn": "example.com/limitsvc/internal/wire.Handler",
+      "sig": "func wire.Handler(lim *store.Limiter) http.Handler",
+      "tier": 3,
+      "package": "example.com/limitsvc/internal/wire",
+      "file": "internal/wire/wire.go",
+      "line": 13,
+      "end_line": 20
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/limitsvc/internal/api.Server).Run",
+      "to": "(*example.com/limitsvc/internal/core.Service).Run",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/limitsvc/internal/core.Service).Run",
+      "to": "(*example.com/limitsvc/internal/store.Limiter).Acquire",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/limitsvc/internal/core.Service).Run",
+      "to": "(*example.com/limitsvc/internal/store.Limiter).Release",
+      "tier": 3
+    },
+    {
+      "from": "example.com/limitsvc.main",
+      "to": "example.com/limitsvc.run",
+      "tier": 3
+    },
+    {
+      "from": "example.com/limitsvc.run",
+      "to": "example.com/limitsvc/internal/store.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/limitsvc.run",
+      "to": "example.com/limitsvc/internal/wire.Handler",
+      "tier": 3
+    },
+    {
+      "from": "example.com/limitsvc/internal/wire.Handler",
+      "to": "example.com/limitsvc/internal/api.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/limitsvc/internal/wire.Handler",
+      "to": "example.com/limitsvc/internal/core.New",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "obligations": [
+    {
+      "rule": "slot-must-release",
+      "kind": "must-release",
+      "fn": "(*example.com/limitsvc/internal/core.Service).Run",
+      "site": "internal/core/core.go:27",
+      "status": "SATISFIED"
+    }
+  ],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "POST /run",
+      "fn": "(*example.com/limitsvc/internal/api.Server).Run"
+    }
+  ],
+  "composition_roots": [
+    "example.com/limitsvc"
+  ],
+  "frontier": {
+    "unconfirmed_routes": 1,
+    "coverage": "starvation confirmed for the oapi strict-server shape only; unconfirmed routes reach no effect for an unverified reason (a no-op, or an unrecognized dispatch seam) — attribution_loss is a LOWER BOUND, not a proof of no severance"
+  }
+}
