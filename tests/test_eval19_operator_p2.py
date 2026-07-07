@@ -335,7 +335,9 @@ def test_ac5_tallies_navigate(tmp_path):
 """
         out = drive(base, body, tmp_path)
         assert out["all"] == 2
-        assert "slice=holdout%3Ab_only" in out["slice"]["route"]
+        # treatment declares first under the template lock order [ux-friction
+        # AC-7], so the 'treatment only' chip slices the positional a_only key
+        assert "slice=holdout%3Aa_only" in out["slice"]["route"]
         assert out["slice"]["cards"] == 1 and out["slice"]["task"].startswith("t1")
         assert out["reloaded"]["route"] == out["slice"]["route"]  # shareable slice
         assert out["reloaded"]["cards"] == 1

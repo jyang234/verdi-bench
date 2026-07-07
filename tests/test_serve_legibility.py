@@ -49,7 +49,9 @@ def _record_trial(ledger, ctx, *, trial_id, task_id, arm, repetition=0, telemetr
 
 def _paired_fixture(dirpath):
     """t1 graded on both arms (control fail 0.9, treatment pass 0.3) with an
-    advisory B verdict; t2 has both trials but NO grades — an ungraded pair."""
+    advisory A verdict (the winner letter is positional; under the template's
+    treatment-first lock order A = treatment, keeping the judge in agreement
+    with the grades); t2 has both trials but NO grades — an ungraded pair."""
     spec, _sp, ledger = locked_experiment(dirpath, repetitions=1)
     (dirpath / "tasks.yaml").write_text(
         yaml.safe_dump({"tasks": [{"id": "t1", "prompt": "p"}, {"id": "t2", "prompt": "p"}]}),
@@ -63,7 +65,7 @@ def _paired_fixture(dirpath):
     _record_trial(ledger, ctx, trial_id="trial-a2", task_id="t2", arm="control")
     _record_trial(ledger, ctx, trial_id="trial-b2", task_id="t2", arm="treatment")
     ledger_events.append_verdict(ledger, ctx, verdict={
-        "comparison_id": comparison_id_for("t1", 0), "winner": "B", "reason": "r",
+        "comparison_id": comparison_id_for("t1", 0), "winner": "A", "reason": "r",
         "provenance": {"judge_model": "google/gemini-1.5-pro-002", "rubric_sha256": "0" * 64},
     })
     return spec, ledger, ctx
@@ -171,7 +173,7 @@ def test_home_rows_surface_arms_states_and_denominators(tmp_path):
     const rows = [...document.querySelectorAll('tr.row')];
     return {
       headers: [...document.querySelectorAll('th')].map(t => t.textContent),
-      arms: app.includes('control vs treatment'),
+      arms: app.includes('treatment vs control'),  // template lock order [ux-friction AC-7]
       models: app.includes('claude-haiku-4-5'),
       states: rows.map(r => r.cells[1].textContent),
       gradedCell: rows[0].cells[6].textContent,
@@ -282,7 +284,7 @@ def test_trials_sort_units_and_panel_verdict(tmp_path):
         assert "sort=-cost" in out["sorted"]["route"]
         assert out["sorted"]["firstCost"] == "0.9"
         assert out["sorted"]["lastCost"] == "—"  # unmeasured sorts last
-        assert "judge on this pair: B (ADVISORY)" in out["panel"]
+        assert "judge on this pair: A (ADVISORY)" in out["panel"]  # follows _paired_fixture's winner
         assert out["__errors"] == []
 
 
@@ -314,7 +316,7 @@ def test_trial_detail_surfaces_telemetry_verdict_and_forensics_state(tmp_path):
         assert out["noScan"] is True
         # measured telemetry renders; the pair's advisory verdict is named
         assert "cost 0.9" in out["telemetry"]
-        assert "judge on this pair (ADVISORY): B" in out["telemetry"]
+        assert "judge on this pair (ADVISORY): A" in out["telemetry"]  # follows _paired_fixture's winner
         assert out["__errors"] == []
 
 
