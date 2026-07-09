@@ -342,24 +342,34 @@ A holdout is an assertion your grader runs against the trial's final workspace.
 On the real (`--runner docker`) path, `holdouts_dir` is bind-mounted **read-only**
 at `/holdouts` inside a fresh, **network-less**, capability-dropped, non-root
 container that runs over a copy of the workspace and prints its results on
-**stdout** inside a one-per-run fence (the V1 transport [F-H1]):
+**stdout** inside a one-per-run, **nonce-authenticated** fence (the V2 transport
+[F-H1]). The host mints a fresh, unpredictable per-grade nonce, injects it into
+the container as `VERDI_FENCE_NONCE`, and recognizes only a fence whose markers
+carry exactly that nonce:
 
 ```
------VERDI_HOLDOUT_RESULTS_V1_BEGIN-----
+-----VERDI_HOLDOUT_RESULTS_V2_BEGIN:<nonce>-----
 {"assertions": [{"id": "h1", "result": "pass"},
                 {"id": "h2", "result": "fail"}]}
------VERDI_HOLDOUT_RESULTS_V1_END-----
+-----VERDI_HOLDOUT_RESULTS_V2_END:<nonce>-----
 ```
+
+(The bare, un-nonced V2 markers are used only on the no-container `local` /
+`local-exec` ADVISORY paths, which never run an untrusted container.)
 
 The host scores nothing from `/workspace`: holdout tests import and execute
 agent code, so a workspace results file is forgeable by an `atexit` hook in
-the code under test — the fence is not. Your image's entrypoint should run
-the holdout tests in a **subprocess** (ideally under a separate non-privileged
-uid), collect their outcomes, and print exactly one fenced block itself; zero
-fences fail the grade closed as a container failure, and two or more (agent
-code printing its own forged block from the test subprocess) are refused as
-malformed, never scored. Images built for the pre-V1 workspace-file transport
-must be rebuilt. One honest residual boundary: `/holdouts` is readable by the
+the code under test — the fence is not, and a forged fence printed by agent
+code does not match either, because that code cannot read the nonce. Your
+image's entrypoint should run the holdout tests in a **subprocess** (ideally
+under a separate non-privileged uid) **whose environment scrubs
+`VERDI_FENCE_NONCE`**, collect their outcomes, and print exactly one fenced
+block itself; zero fences fail the grade closed as a container failure, and
+two or more (agent code printing its own forged block from the test
+subprocess) are refused as malformed, never scored. Grader images built for
+the earlier un-nonced or workspace-file transports must be rebuilt (the deep
+dive §2.4 states the full shared-responsibility contract with the grader
+image). One honest residual boundary: `/holdouts` is readable by the
 process that executes the tests (the tests *are* the holdouts), so agent code
 running at grade time can read expected values — grade-time adaptation is
 mitigated by subprocess isolation, not eliminated.
@@ -643,7 +653,9 @@ Notes that will save you a failed run:
   written to disk or the ledger.
 - Per-arm keys (`provider_key_names_by_arm`) hand each arm only its own
   credentials, so one arm's key never enters another arm's container.
-- **The metering proxy is harness-managed by default.** `proxy.managed: true`
+- **The metering proxy is opt-in; harness-managed is the recommended mode.**
+  With no `proxy` block at all, trials run with no egress route — hermetic, but
+  no provider APIs. `proxy.managed: true`
   stands the proxy up on an internal docker network and tears it down around the
   run — no hand-rolled docker steps. You can also run it out of band for a longer
   session (`bench proxy up --allow api.anthropic.com --allow api.openai.com`, then
@@ -701,7 +713,7 @@ Plan-time validation refuses to lock an arm whose `platform` has no registered
 adapter, so a typo fails **before any spend**, not mid-run. The registered
 platforms today are `claude_code`, `codex`, `generic`, and `otlp` (the last
 projects a trial's captured OTLP spans into the trajectory instead of reading a
-log — see refactor spec 10; its full section lands with the Phase 6 docs).
+log — the normative mapping is `docs/adapters.md` §"The `otlp` platform").
 
 ### Tier 1 — zero code: emit the normalized format (`platform: generic`)
 
@@ -1249,9 +1261,8 @@ explained.
 - **[adapters.md](adapters.md)** — the complete normalized-log contract (v1 and
   v2), field tables, and failure semantics.
 - **`deploy/metering-proxy/`** — the reference proxy for the harbor egress path.
-- **`README.md`** — the command reference and the provisional-decisions register.
-- **`README.md`'s Usage block** — the complete, test-enforced verb list: a
-  registered verb missing from it fails the suite.
+- **`README.md`'s Usage block** — the complete, test-enforced command
+  reference: a registered verb missing from it fails the suite.
 - **Corpus curation** (`bench corpus subset/mine/review/approve/baseline/admit/calibrate`)
   — building and calibrating a task set from a raw pool is its own deep-dive
   territory.

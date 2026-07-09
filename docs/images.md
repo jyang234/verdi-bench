@@ -80,12 +80,15 @@ lock, written pre-lock only. The canonical model is
 ```
 images/
   base/            verdi-base + verdi_agent.py + README (the contract, per-image)
+  grader/          the grading-container image (nonce-fenced holdout transport)
   official/
     generic-llm/            single-turn chat (anthropic/openai/google), generic
     anthropic-claude-code/  drives the pinned Claude Code CLI
     openai-codex/           drives the pinned OpenAI Codex CLI
   reference/
     multi-agent/            a worked multi-agent workflow (v2 log)
+    claude-code-groundwork/ Claude Code + the verdi-go structural toolchain,
+                            payload-gated treatments (bare vs grounded arms)
 ```
 
 ## `bench images`
