@@ -136,7 +136,7 @@ def test_m6_plugin_command_is_network_less_and_hardened():
     assert cmd[:5] == ["docker", "run", "--rm", "--network", "none"]
     assert "--cap-drop" in cmd and cmd[cmd.index("--cap-drop") + 1] == "ALL"
     assert "no-new-privileges" in cmd
-    assert cmd[-4:] == ["python", "-m", "harness.grade.run_plugin", "groundwork"]
+    assert cmd[-4:] == ["python3", "-m", "harness.grade.run_plugin", "groundwork"]
 
 
 def test_m6_docker_runner_routes_plugins_to_container():

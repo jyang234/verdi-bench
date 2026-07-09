@@ -524,7 +524,7 @@ def test_plugin_command_mounts_holdouts_readonly_when_set():
     cmd = build_plugin_command("img", Path("/ws"), ["groundwork"], holdouts_dir="/host/hd")
     assert "/host/hd:/holdouts:ro" in " ".join(cmd)
     # the argv-identity tail is preserved (the mount rides the flags, not the cmd)
-    assert cmd[-4:] == ["python", "-m", "harness.grade.run_plugin", "groundwork"]
+    assert cmd[-4:] == ["python3", "-m", "harness.grade.run_plugin", "groundwork"]
 
 
 def test_plugin_command_has_no_holdouts_mount_when_unset():
