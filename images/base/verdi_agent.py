@@ -21,6 +21,9 @@ so writing a trial image means writing *agent logic only*:
 * :func:`run_visible` — the fail-visible wrapper: any error still leaves a
   scorable ``agent_log.json`` and exits nonzero (a nonzero agent exit is still a
   *completed*, gradeable trial for verdi; the runner reserves 124/125).
+* :func:`capture_claude_session_transcripts` — flight-recorder capture of the
+  claude CLI's on-disk session store (``$HOME/.claude/projects/**/*.jsonl``) into
+  ``artifacts/claude-session/``, for the ``claude_code``-platform images.
 
 **Hard constraint: standard library only.** The base image installs no pip
 packages and has no network at build time, so this module must import nothing
@@ -35,12 +38,13 @@ import http.client
 import json
 import os
 import pathlib
+import shutil
 import sys
 import urllib.parse
 from typing import Any, Callable, Optional
 
 # Bump on any behavior change to this file; the image bakes a known vintage in.
-VERDI_AGENT_VERSION = "verdi-agent-1.0.0"
+VERDI_AGENT_VERSION = "verdi-agent-1.2.0"
 
 # The fixed workspace layout of the harbor contract [docs/images.md §1]:
 #   /workspace              — the graded workspace (bind-mounted rw by harbor)
@@ -170,6 +174,49 @@ def read_request(path: pathlib.Path = REQUEST_PATH) -> Request:
     return Request(data)
 
 
+# Where the pinned claude CLI keeps its per-project session transcripts, and the
+# artifacts subdir a trial preserves them under.
+CLAUDE_PROJECTS_SUBPATH = pathlib.Path(".claude") / "projects"
+SESSION_CAPTURE_DIRNAME = "claude-session"
+
+
+def capture_claude_session_transcripts() -> None:
+    """Copy the claude CLI's session transcripts into ``artifacts/claude-session/``.
+
+    The pinned ``claude`` CLI (the ``claude_code``-platform images) writes its full
+    session transcript — every message and tool call — as JSONL under
+    ``$HOME/.claude/projects/<slug>/<session-id>.jsonl``; uncaptured, that evidence
+    dies with the trial container. Each file is copied to
+    ``artifacts/claude-session/<path relative to projects/>`` so distinct project
+    slugs cannot collide. Two load-bearing constraints:
+
+    * ``artifacts/`` is excluded from the judged diff (the groundwork-mcp.jsonl
+      precedent), so a captured transcript can never surface as a judged
+      treatment-arm asymmetry;
+    * the capture is UNCONDITIONAL and symmetric across arms — every arm carries
+      the identical evidence surface.
+
+    Supplementary flight-recorder evidence only: the native ``agent_log.json``
+    stays authoritative. No transcripts → nothing written, no directory created
+    (the absence is visible downstream, not a failure). An unreadable file is a
+    one-line stderr warning naming it — never a trial failure.
+    """
+    home = os.environ.get("HOME") or "/tmp"
+    projects = pathlib.Path(home) / CLAUDE_PROJECTS_SUBPATH
+    if not projects.is_dir():
+        return
+    for src in sorted(projects.rglob("*.jsonl")):
+        dst = ARTIFACTS / SESSION_CAPTURE_DIRNAME / src.relative_to(projects)
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        except OSError as e:
+            print(
+                f"verdi-agent: warning: could not capture session transcript {src}: {e}",
+                file=sys.stderr,
+            )
+
+
 def post_json(
     host: str,
     path: str,
@@ -248,6 +295,7 @@ class AgentLog:
         self._by_model: dict[str, dict] = {}
         self._used_agent = False
         self._finished = False
+        self._finished_native = False
 
     # --- trajectory steps -----------------------------------------------------
     def _step(self, kind: str, *, agent: Optional[str], **fields: Any) -> None:
@@ -384,7 +432,17 @@ class AgentLog:
         DECLARED model id to a telemetry-shaped dict (v2 ``telemetry_by_model``);
         the whole-trial block stays the sole authoritative stream. Returns the log
         dict that was written.
+
+        Refuses (``RuntimeError``) after :meth:`finish_native`: the two terminals
+        write ONE file in incompatible formats, so a generic rewrite would clobber
+        the native evidence — a programming error, not a runtime condition.
         """
+        if self._finished_native:
+            raise RuntimeError(
+                "finish() called after finish_native(): a native-format log was "
+                "already written verbatim; a generic rewrite would clobber the "
+                "native evidence (one file, one format) [docs/adapters.md]"
+            )
         for field, value in (
             ("cost", cost),
             ("tokens_in", tokens_in),
@@ -405,6 +463,35 @@ class AgentLog:
         ARTIFACTS.mkdir(parents=True, exist_ok=True)
         AGENT_LOG_PATH.write_text(json.dumps(log), encoding="utf-8")
         return log
+
+    def finish_native(self, raw: str) -> dict:
+        """Persist a NATIVE-format result log VERBATIM and terminate [docs/adapters.md, EVAL-4 AC-2].
+
+        The sanctioned terminal for a ``platform: claude_code``-style arm, whose
+        adapter (``speaks_generic_format=False``) parses the underlying stack's OWN
+        result JSON rather than the verdi generic format this class otherwise writes.
+        ``raw`` is that result object's text (e.g. the CLI's ``--output-format json``
+        stdout); it is written to ``artifacts/agent_log.json`` byte-for-byte — evidence
+        is read, never reconstructed, so NO re-serialization touches it.
+
+        Fails loudly (``ValueError``) if ``raw`` is not a JSON object: a native log
+        that is not an object would corrupt the harness read as ``telemetry_corrupt``
+        [RN-17] instead of yielding honest telemetry. Returns the parsed dict.
+        :meth:`finish` is forbidden thereafter — one file, one format.
+        """
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"native log is not valid JSON: {e}") from e
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                f"native log must be a JSON object, got {type(parsed).__name__}"
+            )
+        ARTIFACTS.mkdir(parents=True, exist_ok=True)
+        AGENT_LOG_PATH.write_text(raw, encoding="utf-8")
+        self._finished = True
+        self._finished_native = True
+        return parsed
 
     def _build(self) -> dict:
         """The generic-format log dict (pure — no I/O), for reuse in tests."""
@@ -430,14 +517,21 @@ def run_visible(main: Callable[[AgentLog], Any]) -> None:
     stderr, and exits 1 — a nonzero agent exit is still a COMPLETED, gradeable
     trial for verdi (the runner reserves 124/125). On success it guarantees the
     log was written even if ``main`` forgot to call :meth:`AgentLog.finish`.
+
+    Native terminal: when ``main`` already terminated via
+    :meth:`AgentLog.finish_native`, the error path does NOT append/rewrite a generic
+    log — the native file IS the evidence, and a generic rewrite would clobber it.
+    The failure still stays visible via the stderr print, exit 1, and the native
+    log's own ``is_error`` flag.
     """
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     log = AgentLog()
     try:
         main(log)
     except BaseException as e:  # fail VISIBLY, but still leave a scorable log
-        log.message(f"agent error: {type(e).__name__}: {e}")
-        log.finish()
+        if not log._finished_native:
+            log.message(f"agent error: {type(e).__name__}: {e}")
+            log.finish()
         print(f"verdi_agent: agent FAILED: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)
     if not log._finished:
