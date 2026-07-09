@@ -154,17 +154,23 @@ def test_builder_reproduces_harbor_trial_shape(tmp_path):
 
 # --- network helpers -------------------------------------------------------
 class _RecordingDocker:
-    """A DockerClient stand-in that records argv and returns scripted results."""
+    """A DockerClient stand-in that records argv and returns scripted results.
 
-    def __init__(self, script=None):
+    A ``docker inspect`` call (the reverse-endpoint IP resolution [RN-11]) returns
+    ``inspect_ip`` as stdout so the managed proxy's ``_config`` can build its
+    reverse_endpoints; pass ``inspect_ip=""`` to script the empty-inspect failure."""
+
+    def __init__(self, script=None, inspect_ip="10.88.0.7"):
         self.calls: list[list[str]] = []
         self._script = script or {}
+        self._inspect_ip = inspect_ip
         self.available = True
 
     def run(self, argv, **kw):
         self.calls.append(list(argv))
         rc = self._script.get(tuple(argv[:3]), 0)
-        return subprocess.CompletedProcess(argv, rc, "", "")
+        stdout = self._inspect_ip if argv[:2] == ["docker", "inspect"] else ""
+        return subprocess.CompletedProcess(argv, rc, stdout, "")
 
     def daemon_available(self):
         return self.available
@@ -220,6 +226,49 @@ def test_metering_proxy_injects_allowlist_and_yields_config(tmp_path):
     assert cfg.allowlist == ["api.anthropic.com", "api.openai.com"]
     # readiness is a probe, not a fixed wait
     assert any(c[:3] == ["docker", "exec", "verdi-metering-proxy"] for c in d.calls)
+
+
+# --- MeteringProxy reverse listeners [RN-11] -------------------------------
+def test_metering_proxy_injects_reverse_ports(tmp_path):
+    """_stand_up injects VERDI_REVERSE_PORTS mapping port 3129+i to allowlist host i
+    (bare hosts, no :port), so the proxy binds a reverse listener per allowed host."""
+    d = _RecordingDocker(script={("docker", "network", "inspect"): 1})
+    MeteringProxy(["api.anthropic.com", "api.openai.com"],
+                  log_path=tmp_path / "p.jsonl", docker=d).start()
+    run_cmd = next(c for c in d.calls if c[:2] == ["docker", "run"])
+    assert "VERDI_REVERSE_PORTS=3129=api.anthropic.com,3130=api.openai.com" in run_cmd
+
+
+def test_metering_proxy_config_yields_reverse_endpoints(tmp_path):
+    """_config resolves the proxy's metered-network IP (docker inspect) and yields a
+    reverse_endpoints map {host: http://<ip>:<3129+i>} (no /t suffix — harbor adds it)."""
+    d = _RecordingDocker(script={("docker", "network", "inspect"): 0}, inspect_ip="10.88.0.7")
+    cfg = MeteringProxy(["api.anthropic.com", "api.openai.com"],
+                        log_path=tmp_path / "p.jsonl", docker=d).start()
+    assert cfg.reverse_endpoints == {
+        "api.anthropic.com": "http://10.88.0.7:3129",
+        "api.openai.com": "http://10.88.0.7:3130",
+    }
+    # the IP came from an inspect over the METERED_NETWORK, not the container name
+    assert any(c[:2] == ["docker", "inspect"] and "verdi-metered" in " ".join(c) for c in d.calls)
+
+
+def test_metering_proxy_config_raises_on_empty_inspect(tmp_path):
+    """An empty/failed inspect must fail loudly — a ProxyConfig with unusable reverse
+    endpoints would strand every claude trial with no signal [RN-11]."""
+    d = _RecordingDocker(script={("docker", "network", "inspect"): 0}, inspect_ip="")
+    with pytest.raises(MeteringProxyError):
+        MeteringProxy(["api.anthropic.com"], log_path=tmp_path / "p.jsonl", docker=d).start()
+
+
+def test_metering_proxy_no_reverse_ports_when_allowlist_empty(tmp_path):
+    """An empty allowlist injects no VERDI_REVERSE_PORTS and yields no reverse
+    endpoints (nothing to front) — no inspect needed."""
+    d = _RecordingDocker(script={("docker", "network", "inspect"): 1})
+    cfg = MeteringProxy([], log_path=tmp_path / "p.jsonl", docker=d).start()
+    run_cmd = next(c for c in d.calls if c[:2] == ["docker", "run"])
+    assert not any(t.startswith("VERDI_REVERSE_PORTS=") for t in run_cmd)
+    assert cfg.reverse_endpoints == {}
 
 
 def test_metering_proxy_teardown_removes_container_and_networks(tmp_path):

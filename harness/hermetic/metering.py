@@ -15,11 +15,22 @@ the dual metered+egress network stand-up and the CONNECT allowlist injection.
 The proxy is the stdlib ``_proxy_container.py``, mounted read-only into a pinned
 ``python:3.12-alpine`` and run in place — no image build. Its JSONL contract and
 trial-id-as-userinfo auth are frozen [refactor 04 §1, §6].
+
+Reverse listeners [RN-11]: additionally, for each allowlisted host the proxy binds
+a plain-HTTP reverse listener (``VERDI_REVERSE_PORTS``) that terminates a
+proxy-defiant client (the pinned claude CLI ignores HTTP(S)_PROXY,
+claude-code#14165) and originates verified TLS upstream. ``_config`` resolves the
+proxy's METERED_NETWORK IP (not its name — the bun binary's resolver bypasses
+/etc/hosts and container-name DNS is unproven on this network) and yields
+``reverse_endpoints`` so the engine can steer that client's base URL at the
+listener. Purely additive: the CONNECT ``proxy_url`` keeps the name (frozen), and
+squid-based external deployments simply do not set ``reverse_endpoints``.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -50,6 +61,10 @@ PROXY_BASE_IMAGE = os.environ.get(
 # it. Matches deploy/metering-proxy/docker-compose.yml's ``container_name``.
 MANAGED_PROXY_NAME = "verdi-metering-proxy"
 PROXY_PORT = 3128
+# Reverse-listener ports [RN-11]: allowlist entry i (deterministic order — a
+# spec-derived allowlist arrives sorted) is fronted by the reverse listener on
+# REVERSE_PORT_BASE + i.
+REVERSE_PORT_BASE = 3129
 _CONTAINER_LOG = "/var/log/verdi/verdi.jsonl"
 
 
@@ -108,7 +123,7 @@ class MeteringProxy(ManagedSidecar):
         egress to reach the model APIs [refactor 04 §1]."""
         create_network(self._docker, METERED_NETWORK, internal=True)
         create_network(self._docker, EGRESS_NETWORK, internal=False)
-        cmd = (
+        hc = (
             HardenedCommand()
             .detach()
             .name(self._name)
@@ -117,7 +132,14 @@ class MeteringProxy(ManagedSidecar):
             .user()
             .env_kv("VERDI_PROXY_ALLOW", ",".join(self._allow))
             .env_kv("PROXY_LOG", f"{os.path.dirname(_CONTAINER_LOG)}/{self._logfile.name}")
-            .volume(self._proxy_src, "/verdi/proxy.py", ro=True)
+        )
+        # Reverse listeners [RN-11]: one plain-HTTP terminator per allowlisted host,
+        # so a proxy-defiant client (the pinned claude CLI, claude-code#14165) still
+        # egresses metered. Only when there is an allowlist — an empty one binds none.
+        if self._allow:
+            hc.env_kv("VERDI_REVERSE_PORTS", self._reverse_ports_env())
+        cmd = (
+            hc.volume(self._proxy_src, "/verdi/proxy.py", ro=True)
             .volume(self._logdir, os.path.dirname(_CONTAINER_LOG))
             .image(self._image)
             .arg("python3", "/verdi/proxy.py")
@@ -136,7 +158,48 @@ class MeteringProxy(ManagedSidecar):
             allowlist=list(self._allow),
             proxy_url=f"http://{self._name}:{PROXY_PORT}",
             log_path=str(self._logfile),
+            reverse_endpoints=self._reverse_endpoints(),
         )
+
+    def _reverse_ports_env(self) -> str:
+        """The ``VERDI_REVERSE_PORTS`` value: allowlist host i fronted by
+        ``REVERSE_PORT_BASE + i`` (bare hosts — the proxy defaults each upstream to
+        :443) [RN-11]."""
+        return ",".join(
+            f"{REVERSE_PORT_BASE + i}={host}" for i, host in enumerate(self._allow)
+        )
+
+    def _reverse_endpoints(self) -> dict[str, str]:
+        """Map each allowlisted host to its in-network reverse listener
+        ``http://<ip>:<port>`` (no ``/t`` suffix — the engine appends it per trial) [RN-11].
+
+        The IP is the proxy's METERED_NETWORK address, NOT its name: the pinned bun
+        binary bypasses /etc/hosts and container-name DNS is unproven on this network
+        (a known intermittent flake), so a name here could strand every claude trial.
+        An empty/failed inspect raises loudly — a ProxyConfig with unusable reverse
+        endpoints would strand trials with no signal."""
+        if not self._allow:
+            return {}
+        fmt = '{{(index .NetworkSettings.Networks "%s").IPAddress}}' % METERED_NETWORK
+        try:
+            proc = self._docker.run(
+                ["docker", "inspect", "-f", fmt, self._name], timeout_s=30
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            raise MeteringProxyError(
+                f"could not inspect the metering proxy's {METERED_NETWORK} IP: {e} [RN-11]"
+            ) from e
+        ip = proc.stdout.strip() if proc.returncode == 0 else ""
+        if not ip:
+            raise MeteringProxyError(
+                f"the metering proxy has no {METERED_NETWORK} IP (docker inspect "
+                f"returned {proc.stdout!r} / {proc.stderr!r}); its reverse listeners "
+                "would be unreachable and every claude trial would strand [RN-11]"
+            )
+        return {
+            host: f"http://{ip}:{REVERSE_PORT_BASE + i}"
+            for i, host in enumerate(self._allow)
+        }
 
     def _teardown_networks(self) -> None:
         remove_network(self._docker, EGRESS_NETWORK)

@@ -34,8 +34,31 @@ pytestmark = pytest.mark.docker
 _TRIAL = "e2e-managed-trial"
 _UPSTREAM = "verdi-e2e-upstream"
 _CLIENT = "verdi-e2e-client"
+_REV_CLIENT = "verdi-e2e-rev-client"
 _ALLOWED_HOST = "allowed.internal"  # a docker network alias on the egress net
 _UPSTREAM_PORT = 8443
+
+# A metered-network client that drives the proxy's REVERSE listener [RN-11]: a
+# ``HEAD /`` preflight (answered locally, 200) and an unprefixed GET (403 — no
+# /t/<trial> prefix, so it cannot be attributed). Neither dials the upstream.
+_REVERSE_CLIENT_SRC = textwrap.dedent(
+    """
+    import socket
+    def req(raw):
+        s = socket.create_connection(("%s", 3129), timeout=10)
+        s.sendall(raw); s.settimeout(5); resp = b""
+        try:
+            while True:
+                d = s.recv(4096)
+                if not d: break
+                resp += d
+        except Exception: pass
+        s.close(); return resp
+    assert b"200" in req(b"HEAD / HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n"), "preflight not 200"
+    assert b"403" in req(b"GET /v1/messages HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n"), "unprefixed not 403"
+    print("REVERSE-OK")
+    """
+)
 
 # A container on egress that just accepts TCP — enough for the proxy's CONNECT to
 # succeed and log ``allow``.
@@ -75,6 +98,18 @@ _CLIENT_SRC = textwrap.dedent(
 def _rm(*names: str) -> None:
     for n in names:
         subprocess.run(["docker", "rm", "-f", n], capture_output=True)
+
+
+def _metered_ip(container: str) -> str:
+    """The container's IP on the metered network — the address the reverse
+    endpoints must use (a name would be unresolvable to the bun binary)."""
+    out = subprocess.run(
+        ["docker", "inspect", "-f",
+         '{{(index .NetworkSettings.Networks "%s").IPAddress}}' % METERED_NETWORK,
+         container],
+        capture_output=True, text=True,
+    )
+    return out.stdout.strip()
 
 
 def _network_exists(name: str) -> bool:
@@ -147,5 +182,47 @@ def test_managed_proxy_stands_up_meters_and_tears_down(tmp_path):
         assert not _network_exists(EGRESS_NETWORK)
     finally:
         _rm(_UPSTREAM, _CLIENT, MANAGED_PROXY_NAME)
+        subprocess.run(["docker", "network", "rm", EGRESS_NETWORK], capture_output=True)
+        subprocess.run(["docker", "network", "rm", METERED_NETWORK], capture_output=True)
+
+
+@pytest.mark.skipif(not DOCKER_AVAILABLE, reason="no docker daemon available")
+def test_managed_proxy_exposes_reverse_listeners(tmp_path):
+    """[RN-11] The managed proxy binds a reverse listener per allowlisted host and
+    the yielded ProxyConfig points at it by the proxy's METERED-NETWORK IP. A metered
+    client's ``HEAD /`` preflight is answered 200 and an unprefixed request is denied
+    (403 + a deny line attributed to trial ``-`` in the host-side JSONL)."""
+    log = tmp_path / "metering" / "verdi.jsonl"
+    _rm(_REV_CLIENT, MANAGED_PROXY_NAME)
+    try:
+        with MeteringProxy.managed([_ALLOWED_HOST], log_path=log) as cfg:
+            # the reverse endpoint uses the proxy's real metered-network IP, not name
+            ip = _metered_ip(MANAGED_PROXY_NAME)
+            assert ip, "proxy has no metered-network IP"
+            assert cfg.reverse_endpoints == {_ALLOWED_HOST: f"http://{ip}:3129"}
+
+            proc = subprocess.run(
+                ["docker", "run", "--rm", "--name", _REV_CLIENT, "--network", METERED_NETWORK,
+                 PROXY_BASE_IMAGE, "python3", "-c", _REVERSE_CLIENT_SRC % ip],
+                capture_output=True, text=True, timeout=60,
+            )
+            assert proc.returncode == 0, f"reverse client failed: {proc.stdout}\n{proc.stderr}"
+            assert "REVERSE-OK" in proc.stdout
+
+            records = [
+                json.loads(line)
+                for line in Path(log).read_text(encoding="utf-8").splitlines() if line.strip()
+            ]
+            # the unprefixed request is a deny attributed to trial "-" and the upstream
+            deny = [r for r in records if r.get("decision") == "deny"]
+            assert {"trial": "-", "host": _ALLOWED_HOST, "decision": "deny"} in deny
+            # the preflight NEVER left the proxy — no line names it
+            assert all(r.get("host") == _ALLOWED_HOST for r in records), records
+
+        assert not _container_exists(MANAGED_PROXY_NAME)
+        assert not _network_exists(METERED_NETWORK)
+        assert not _network_exists(EGRESS_NETWORK)
+    finally:
+        _rm(_REV_CLIENT, MANAGED_PROXY_NAME)
         subprocess.run(["docker", "network", "rm", EGRESS_NETWORK], capture_output=True)
         subprocess.run(["docker", "network", "rm", METERED_NETWORK], capture_output=True)
