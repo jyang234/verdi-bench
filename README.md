@@ -1,21 +1,18 @@
 # verdi-bench
 
 A benchmark-grade A/B evaluation instrument for agent stacks, models, and
-configurations: pre-registered experiments, repeated paired trials in hermetic
-containers, insulated arms, deterministic-first grading, and an **identity-blind**
-advisory LLM judge. *Identity-blind* (not outcome-blind): the judge never sees
-arm identities, but it does see per-response holdout outcomes by design, so
-`judge_preference` is deliberately not independent of `holdout_pass_rate`
-(disclosed in every render, EVAL-2 D002). Every operation is a hash-chained
-ledger event; every local record is stamped `ADVISORY`.
+configurations. You pre-register a question — *is stack A better than stack B
+on these tasks?* — then run repeated paired trials in hermetic containers,
+grade them deterministically against holdouts the agents never see, and end
+with a finding you can hand to a skeptic: every operation on a hash-chained
+ledger, every trust claim backed by an enforcing test or structural contract
+in this repo, not by convention.
 
 ## Why this instrument exists
 
 Most evaluation harnesses answer *"what does this model score?"* — verdi-bench
 answers a harder question: *"is stack A actually better than stack B, and can
 you defend that finding?"* The difference is not features, it is posture:
-every trust claim below is backed by an enforcing test or structural contract
-in this repo, not by convention.
 
 - **You cannot p-hack it.** The experiment spec (primary metric, decision
   rule, seed) is sha-locked *before* any trial runs; the official render
@@ -30,8 +27,9 @@ in this repo, not by convention.
   import-linter, not by review vigilance.
 - **The judge earns its weight.** The LLM judge is blinded to arm identity
   (canary-verified), order-debiased, advisory-only, and calibrated against
-  blinded human review with an IPW-corrected kappa; the one designed
-  dependence it has is disclosed in every render.
+  blinded human review with an IPW-corrected kappa. *Identity-blind* is not
+  *outcome-blind*: the judge sees per-response holdout outcomes by design —
+  the one designed dependence it has, disclosed in every render.
 - **Gaming is looked for, not assumed away.** Every trial gets a trajectory
   profile and a gaming scan (holdout tampering, hardcoded expected outputs,
   test-skip insertion, suspicious single-step completion); each detector is
@@ -39,118 +37,83 @@ in this repo, not by convention.
   that must not. Flags are evidence, never verdicts — exclusion is a
   ledgered human decision.
 
-What it is *not*: a benchmark library (bring or import your corpus), a
-leaderboard, or a managed fleet. Trials run serially in local containers,
-adapters cover two agent platforms today, and every local result is stamped
-`ADVISORY` — the trusted tier arrives as a CI-tier config cutover. For the
-full architecture, threat model, and the test that owns each guarantee, read
-the [deep dive](docs/deep-dive.md).
+What it is *not*: a benchmark library (bring your corpus, or import a
+standardized one), a leaderboard, or a managed fleet. Trials run serially in
+local containers, and every local result is stamped `ADVISORY` — the trusted
+tier arrives as a CI-tier config cutover. For the full architecture, threat
+model, and the test that owns each guarantee, read the
+[deep dive](docs/deep-dive.md).
 
-## Status
+## Key features
 
-Implemented stories (following the `00-EVAL-1` master-plan build order):
-
-| Story | Scope | State |
-|---|---|---|
-| **M0** | Repo scaffolding, provenance helper, import-linter contracts, AC hook | ✅ |
-| **EVAL-3** | Experiment schema, hash-chained ledger, plan lock, power/MDE, interleave | ✅ |
-| **EVAL-4** | Run seam, adapters, hermetic Harbor engine, cost guard, insulation | ✅ |
-| **EVAL-5** | Deterministic grading, flake baseline, grader plugins | ✅ |
-| **EVAL-2** | Identity-blind configurable LLM judge, calibration | ✅ |
-| **EVAL-8** | Corpus import (idempotent), stratified calibration, mining, curation gate, boundary | ✅ |
-| **EVAL-6** | Analyze: paired bootstrap, effect sizes, confound flags, pre-registration fence | ✅ |
-| **EVAL-7** | Human review packet (offline, blinded), capture-then-reveal, kappa estimator seam | ✅ |
-| **EVAL-9** | Process rubric: isolated judge scoring, firewalls, weighted-kappa calibration | ✅ |
-| **EVAL-12** | Trajectory capture (versioned per-trial record, sha-ledgered) + three-layer comparison dossier | ✅ |
-| **EVAL-11** | Transcript forensics: trajectory metrics, gaming detectors, blinded advisory review, quarantine path | ✅ |
-| **EVAL-10** | Contamination sentinel: cutoff dating, canaries, memory probes, overlap detector, asymmetry fence | ✅ |
-| **EVAL-13** | Read-only operator observability: status/serve seams, live view, LLM-free contract | ✅ |
-| **EVAL-14** | Operator UI v2: workspace home, drill-down, compare, per-agent attribution | ✅ |
-| **EVAL-15** | Trajectory v3: additive per-step `detail` for step-content forensics | ✅ |
-| **EVAL-16** | Step-content forensics: the moment of tampering, disclosed coverage | ✅ |
-| **EVAL-17** | Authoring surface: draft/validate/preview as pure reads, the lock as a ceremony | ✅ |
-| **EVAL-18** | Reviewer surface: blinded capture-then-reveal, isolated by construction | ✅ |
-| **EVAL-19** | Operator UI P2: static bundle, typed grammar, saved views | ✅ |
-| **EVAL-20** | Pre-registered multi-model arms (declared hosts, aux-model canaries) | ✅ |
-| **EVAL-21** | Per-agent attribution + per-model telemetry | ✅ |
-
-All EVAL-1 child stories plus the Phase-7 roadmap stories (EVAL-10/11/12) and
-the operator/authoring/reviewer stories EVAL-13 through EVAL-21 are built. The
-fast suite (`uv run pytest -m "not docker"`) is green — over 700 tests — and
-`make verify` runs it plus the 10 import-linter contracts. Two more CI jobs cover
-what the fast suite cannot: a `docker`-marked suite of real-container tests (the
-grade container, a Harbor trial, redaction, digest-pinning, kill-on-timeout,
-network-less plugin isolation, metering-proxy egress attribution, and a
-real-container grade of a SWE-bench-materialized task) run with
-`-m docker` under `VERDI_REQUIRE_DOCKER=1`; and a `browser` job that provisions
-node + Playwright + Chromium and runs the operator/reviewer/author UI
-acceptance tests under `VERDI_REQUIRE_BROWSER=1` — both fail-closed switches so a
-job cannot green-pass by skipping. AC-mapped tests are **enforced per story**:
-collection fails if any story's pre-registered acceptance criteria (from its
-`eval<N>.spec.md`) lack a `test_ac<N>_*` test, if an AC test is duplicated or
-names an AC its story does not declare, or if an AC test is disabled with an
-unconditional `@pytest.mark.skip`. `--ac-report` additionally prints the
-exercised AC numbers.
-
-An **instrument-to-product refactor program** (`docs/design/refactor/`) then built
-the write path and hermetic infrastructure the shakedown had proved were
-hand-rolled. It added a Python **SDK** (`harness.sdk` — the fluent `Experiment`
-builder and the stage-driving `ExperimentWorkspace`) plus a `bench init` scaffold,
-so an experiment can be authored, locked, run, graded, judged, and analyzed from
-Python with no subprocess and no hand-written YAML; maintained **trial images**
-(`harness/images`, a `verdi-base` + `verdi_agent`, checked by
-`bench images build` and `bench images verify`); a **hermetic** Docker layer that
-owns the networks, a **managed metering proxy**, and a **trace collector**
-(`bench proxy up`, `bench otlp up`); a holdout hierarchy with an executing local
-runner; and **in-trial OTLP trace capture** projected into the trajectory
-(`platform: otlp`). The measurement core is unchanged — the refactor
-composed the existing subsystems around it, proven by byte-identical contract
-goldens. See `docs/design/refactor/` for the master plan and per-domain plans.
-
-## Provisional decisions
-
-Per the master-plan decision-gate dashboard, these are implemented to the
-recommended option behind a seam (a resolution is a config-sized diff):
-
-- **D007** (power variance source) — `AssumedVariance` flags results
-  `assumption_based_mde`; `CalibrationVariance` seam ready for EVAL-8 data.
-- **D008** (lock hardening) — external `anchors` subsystem, on by default,
-  cleanly severable.
-- **D006** (kappa threshold / min sample) — `0.6 / 20` as config defaults in the
-  judge `escalation` block.
-- **EVAL-6 D004** (CI method by coverage) — `percentile`/`bca`/`cluster_robust_t`
-  behind a `CIMethod` seam; selected by empirical coverage under `nullsim.py`.
-- **EVAL-7 D003** (kappa estimator) — IPW default (floor reweighted `1/0.2`) with
-  floor-only sensitivity, behind the `KappaEstimator` seam; EVAL-9 inherits it.
-- **EVAL-9 D001–D004** — per-trial absolute scoring, judge+human scorers, the
-  five v1 dimensions, and full-or-`CANT_SCORE` transcript policy, each
-  parameterized so a decision flip is contained.
-- **EVAL-11 D004** (fence coupling) — forensics is disclosure-only in v1; a
-  detector must prove its precision through spot-check calibration before any
-  flag can block an official finding.
+- **Pre-registered experiments** — arms, metric, decision rule, seed, and cost
+  ceiling sha-locked before any trial; a power/MDE check at lock time; official
+  findings pass a pre-registration fence or refuse with a named reason.
+- **Hermetic execution** — a deterministic no-Docker `fake` engine for
+  development, and a `harbor` engine for real trials: digest-pinned images,
+  read-only task delivery outside the graded workspace, per-arm credential
+  isolation, metered egress with per-trial attribution, confirmed
+  kill-on-timeout.
+- **Deterministic-first grading** — holdout assertions run in a fresh,
+  network-less grading container and report over a nonce-authenticated stdout
+  fence; the grading tier imports no LLM client, structurally.
+- **An identity-blind advisory judge, calibrated** — order-debiased verdicts,
+  a blinded capture-then-reveal human-review queue, and judge↔human agreement
+  measured rather than assumed.
+- **Integrity forensics** — per-trial trajectory metrics and gaming detectors,
+  plus a contamination sentinel (training-cutoff dating, canaries, overlap
+  scanning) whose *asymmetric* flags refuse the official render.
+- **A tamper-evident record** — an append-only, hash-chained ledger with
+  external anchors; findings and their self-contained HTML dossiers are
+  byte-identical re-renders of it.
+- **A Python SDK and a scaffold** — the fluent `Experiment` builder writes the
+  same lockable files and drives the whole pipeline in-process; `bench init`
+  scaffolds a keyless quickstart; `bench author` is the browser authoring
+  surface.
+- **Operator observability** — `bench status` and `bench serve` (live view,
+  workspace home, static self-contained bundle), heartbeats, and full
+  per-trial artifacts including trajectories and flight-recorder transcripts.
+- **Corpus tooling** — idempotent imports, including standardized batteries
+  (`bench corpus import --benchmark swebench`); a signed curation/admission
+  gate with flake baselines; calibration subsets; canary insulation enforced
+  before spend.
+- **Comparable, citable results** — result cards via `bench card emit` and
+  `bench card compare` set two runs side by side only when their task
+  sets actually match, and refuse loudly otherwise.
+- **Honest telemetry** — native adapters for two agent CLIs (claude-code,
+  codex), a zero-code generic log format any stack can emit, multi-agent
+  attribution, and opt-in OTLP span capture; what a platform cannot measure
+  is `null`, never imputed.
+- **Cost discipline** — pre-registered spend ceilings enforced mid-run,
+  telemetry-measured cost, and exploratory-only control reuse for cheaper
+  iteration.
 
 ## Quickstart
 
-A complete experiment on the no-Docker fake engine, end to end:
+End to end on the deterministic fake engine and the keyless deterministic
+judge — no Docker, no API keys, under a minute (the
+[usage guide](docs/usage-guide.md) §1.5 walks the same flow with expected
+output):
 
 ```bash
 uv sync
-mkdir demo && cd demo
-# write experiment.yaml (arms, corpus, repetitions, primary_metric,
-# decision_rule, judge, seed, cost_ceiling — see docs/deep-dive.md §2)
-uv run bench plan    experiment.yaml --ledger ledger.ndjson   # pre-register + lock
-uv run bench run     .                                        # paired trials
-uv run bench grade   .                                        # deterministic grades
-uv run bench judge   .                                        # blinded advisory verdicts
-uv run bench forensics scan .                                 # trajectory metrics + gaming scan
-uv run bench selfcheck .                                      # A/A coverage gate
-uv run bench analyze . --exploratory                          # findings + dossier
-uv run bench verify-chain ledger.ndjson                       # audit the ledger
+uv run bench init scratch/quickstart               # scaffold experiment.yaml / tasks.yaml / rubric
+uv run bench plan scratch/quickstart/experiment.yaml --ledger scratch/quickstart/ledger.ndjson
+uv run bench run scratch/quickstart                # 12 paired trials, seeded interleave
+# the fake engine is arm-blind — script the effect you want to observe:
+uv run python -c 'from harness.sdk import ExperimentWorkspace as W; W("scratch/quickstart").inject_holdout_results(lambda arm, task: arm == "treatment")'
+uv run bench grade scratch/quickstart --runner local   # deterministic grades
+uv run bench judge scratch/quickstart              # blinded advisory verdicts
+uv run bench forensics scan scratch/quickstart     # trajectory metrics + gaming scan
+uv run bench selfcheck scratch/quickstart          # A/A coverage gate
+uv run bench analyze scratch/quickstart --exploratory
+uv run bench verify-chain scratch/quickstart/ledger.ndjson
 ```
 
 Everything the run produced — who did what, in what order, under which
-instrument version — is on the ledger, and `findings.exploratory.dossier.html`
-is a single self-contained file you can archive or hand to a reviewer.
+instrument version — is on the ledger, and
+`findings.exploratory.dossier.html` is a single self-contained file you can
+archive or hand to a reviewer.
 
 Or drive the same experiment from **Python** with the SDK — the builder writes
 those same files (they remain the source of truth for what gets locked) and runs
@@ -233,7 +196,6 @@ uv run bench process record <experiment-dir> --trial-id t1 --comparison-id c1 --
 uv run bench forensics scan <experiment-dir> [--no-review]   # trajectory metrics + gaming detectors (+ blinded advisory review)
 uv run bench forensics record <experiment-dir> --trial-id t1 --labels labels.json --stratum mandatory|floor
 uv run bench forensics quarantine <experiment-dir> --trial-id t1 --reason "confirmed holdout tamper"   # ledgered operator exclusion, disclosed
-
 uv run bench contamination probe <experiment-dir> --manifest m.json   # membership probes + overlap scan (one ledgered event)
 ```
 
@@ -243,19 +205,22 @@ uv run bench contamination probe <experiment-dir> --manifest m.json   # membersh
 `/verdi/request.json` (outside the graded workspace), provider keys env-injected
 and redacted at capture, egress confined to a metering proxy on an internal
 docker network with per-trial JSONL attribution, and containers killed on
-timeout. **The metering proxy is an external operational component** you supply
-(a reference config ships in `deploy/metering-proxy/`); egress confinement,
-per-trial attribution, and cost enforcement for non-self-reporting arms depend
-on it — a configured-but-missing proxy log now fails loud rather than silently
-allowing spend. Operational wiring (proxy, quotas, provider-key names) comes
-from an optional `run.config.yaml` + the environment — never the sha-locked
-`experiment.yaml` or the ledger. Provider keys may be declared flat
+timeout. **The metering proxy can be harness-managed** (`proxy.managed: true`
+in `run.config.yaml`, or `bench proxy up` out of band) **or an external
+component you operate** (a reference config ships in `deploy/metering-proxy/`);
+egress confinement, per-trial attribution, and cost enforcement for
+non-self-reporting arms depend on it — a configured-but-missing proxy log fails
+loud rather than silently allowing spend, and with no proxy configured trials
+get no egress route at all. Operational wiring (proxy, quotas, provider-key
+names) comes from an optional `run.config.yaml` + the environment — never the
+sha-locked `experiment.yaml` or the ledger. Provider keys may be declared flat
 (`provider_key_names`, injected into every arm) or per-arm
 (`provider_key_names_by_arm`), so a multi-model experiment can hand each arm
-only its own credentials and never leak one arm's key into another's container. The digest-pin, request-mount, and key
-redaction paths are covered by `docker`-marked real-container tests in CI
-(`uv run pytest -m docker`); the proxy-egress end-to-end path has a
-real-proxy docker test under `deploy/metering-proxy/`.
+only its own credentials and never leak one arm's key into another's container.
+The digest-pin, request-mount, and key redaction paths are covered by
+`docker`-marked real-container tests in CI (`uv run pytest -m docker`); the
+proxy-egress end-to-end path has a real-proxy docker test under
+`deploy/metering-proxy/`.
 
 `bench grade` defaults to `--runner docker` (the real network-less grading
 container), with `--runner local` for the no-daemon fake/test path.
@@ -264,8 +229,8 @@ container), with `--runner local` for the no-daemon fake/test path.
 liveness (state, in-flight cell, progress, spend) for `bench status` /
 `bench serve`, written atomically and never ledgered. Watching the live view
 shows arm identities: it is the openly-unblinded operator tier, and anyone who
-watches is disqualified from serving as that experiment's blinded (EVAL-7)
-reviewer — the page banner says exactly this.
+watches is disqualified from serving as that experiment's blinded reviewer —
+the page banner says exactly this.
 
 ## Learn more
 
@@ -274,24 +239,55 @@ reviewer — the page banner says exactly this.
   full `plan → run → grade → judge → forensics → selfcheck → analyze` pipeline,
   the harbor real-container path, extending the base adapter for a custom stack,
   and how multi-agent workflows plug in (with their limits).
-- **[Adapters](docs/adapters.md)** — the normalized telemetry/trajectory log
-  contract (v1 and v2) any test subject integrates through.
 - **[Deep dive](docs/deep-dive.md)** — the full architecture walkthrough:
   what each stage writes to the ledger, the trust mechanism behind every
   claim above (and the test that owns it), design principles, honest
   limitations, and how to extend the instrument.
+- **[Adapters](docs/adapters.md)** — the normalized telemetry/trajectory log
+  contract (v1 and v2) any test subject integrates through, and the OTLP
+  span projection.
+- **[Engines](docs/engines.md)** — the normative engine contract: what `fake`
+  and `harbor` (and any engine you add) must guarantee.
+- **[Trial images](docs/images.md)** — the trial-image compatibility contract,
+  the maintained image tree, and the offline `bench images verify` check.
 - **Design record** — `docs/design/specs/` (machine-checked per-story
   acceptance criteria), `docs/design/implementation_plans/` (per-story build
-  plans), and `docs/design/review/` (audit and phase reviews). Decisions are
-  ledgered per story in `eval<N>.decisions.ndjson`.
+  plans), `docs/design/review/` (audit and phase reviews), and per-story
+  decision ledgers (`eval<N>.decisions.ndjson`) recording every resolved and
+  still-open design question.
+
+## How it was built
+
+The instrument was built the way it expects its users to run experiments:
+story by story from a pre-registered master plan, with each story's
+acceptance criteria machine-checked at test collection
+(`docs/design/specs/`; `uv run pytest --ac-report` recomputes the coverage)
+and every design decision recorded in a per-story decisions ledger. An
+instrument-to-product refactor then composed the Python SDK, the maintained
+trial images, the managed hermetic layer (metering proxy, OTLP trace
+capture), and the authoring scaffold around the unchanged measurement core —
+proven by byte-identical contract goldens. Open design questions are
+implemented behind named seams (CI method, kappa estimator, …) so resolving
+one is a config-sized diff, not a rewrite. The full record — specs, build
+plans, phase reviews, decisions — lives under `docs/design/`.
 
 ## Development
 
 ```bash
-uv run pytest -m "not docker" -q     # fast suite
-uv run lint-imports                  # structural contracts
+make verify                          # full gate: all tests + import contracts
+uv run pytest -m "not docker" -q     # fast suite (1,600+ tests)
+uv run lint-imports                  # structural contracts only
 uv run pytest --ac-report            # recompute AC coverage
 ```
+
+`make verify` runs the fast suite plus the 10 import-linter contracts. Two
+further CI tiers cover what the fast suite cannot: `docker`-marked
+real-container tests (the grade container, a Harbor trial, redaction,
+digest-pinning, kill-on-timeout, metering-proxy egress attribution — run with
+`-m docker` under `VERDI_REQUIRE_DOCKER=1`) and a `browser` job for the
+operator/reviewer/author UI acceptance tests (under
+`VERDI_REQUIRE_BROWSER=1`) — both fail-closed switches, so a job cannot
+green-pass by skipping.
 
 > **Python:** the spec binds 3.12+. This checkout's `requires-python` is relaxed
 > to `>=3.11` because the 3.12 standalone build is unreachable in the current

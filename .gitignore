@@ -10,6 +10,11 @@ build/
 htmlcov/
 # experiment notebooks / ledgers written during local runs
 /scratch/
+# experiment run outputs — ephemeral tool artifacts (workspaces, native logs,
+# transcripts, hash-chained ledgers, metering egress logs). Regenerable from
+# author/plan/run/grade; never committed.
+/runs/
+/metering/
 *.ndjson.local
 # provider API keys — never commit real secrets (load via `uv run --env-file .env`)
 .env

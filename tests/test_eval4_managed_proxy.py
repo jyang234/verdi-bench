@@ -91,6 +91,28 @@ def test_managed_proxy_stands_up_and_merges(tmp_path, monkeypatch):
     assert stood["allow"] == ["api.anthropic.com"]  # injected into the proxy
 
 
+def test_managed_proxy_carries_reverse_endpoints(tmp_path, monkeypatch):
+    """THE wiring bug: the managed proxy's reverse_endpoints must ride onto the
+    spec-derived ProxyConfig through replace() — otherwise a claude trial gets no
+    ANTHROPIC_BASE_URL and strands on the metered network with no egress."""
+    from harness.hermetic import metering
+
+    @contextlib.contextmanager
+    def fake_managed(allow, *, log_path=None, image=metering.PROXY_BASE_IMAGE):
+        yield ProxyConfig(
+            allowlist=list(allow),
+            proxy_url="http://verdi-metering-proxy:3128",
+            log_path=str(log_path),
+            reverse_endpoints={"api.anthropic.com": "http://10.0.0.9:3129"},
+        )
+
+    monkeypatch.setattr(metering.MeteringProxy, "managed", staticmethod(fake_managed))
+    s = RunSettings(proxy=ProxyConfig(allowlist=["api.anthropic.com"]), proxy_managed=True)
+    with _managed_proxy(s, "harbor", tmp_path) as p:
+        assert p.reverse_endpoints == {"api.anthropic.com": "http://10.0.0.9:3129"}
+        assert p.allowlist == ["api.anthropic.com"]  # base fields still kept
+
+
 # --- SDK passthrough --------------------------------------------------------
 def test_sdk_run_config_writes_managed(tmp_path):
     """Experiment.run_config(...) writes proxy.managed into run.config.yaml, so the

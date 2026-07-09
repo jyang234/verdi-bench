@@ -21,8 +21,9 @@ pinned verdi-go toolchain (`flowmap` + `groundwork`) and the vendored
 
 | arm | `payload` | what the entrypoint does |
 |---|---|---|
-| control | `{}`, or `tools` without `groundwork` | nothing — shipped official agent; argv `claude --print --permission-mode acceptEdits <prompt>` |
-| treatment | `{tools: [groundwork], workflow: ground_verify}` | arms the toolchain (below); argv gains **only** `--mcp-config <path>` |
+| control | `{}`, or `tools` without `groundwork` | nothing — shipped official agent; argv `claude --print --permission-mode bypassPermissions --output-format json --model=<model> <prompt>` |
+| treatment rung 1 (availability) | `{tools: [groundwork]}` | arms the toolchain (below); argv gains **only** `--mcp-config=<path>` |
+| treatment rung 2 (instructed) | `{tools: [groundwork], workflow: ground_verify}` | rung 1, plus argv gains `--append-system-prompt=<text>` — the byte-stable `WORKFLOW_SYSTEM_PROMPTS["ground_verify"]` instruction (part of the pre-registered treatment definition); an unknown `workflow`, or one without the tool, is refused loudly |
 
 When armed, the entrypoint (and nothing else):
 
@@ -106,10 +107,11 @@ it is a reference image resolved by path.
   `groundwork` payload); the treatment arming is proven by
   `tests/test_image_claude_code_groundwork.py` (pure gating, no docker) and the
   docker-marked smoke test.
-- **Telemetry is null by design**, identical across arms, so the `claude_code`
-  adapter parses both the same way. The treatment's tool usage is recorded in
-  `artifacts/groundwork-mcp.jsonl` (persisted, judge-excluded, D7), never in
-  `agent_log.json`.
+- **Telemetry comes from the CLI's own `--output-format json` result**, persisted
+  verbatim as the native `agent_log.json`. The base CLI is identical across arms, so
+  the `claude_code` adapter parses both the same way; the treatment's tool usage is
+  recorded in `artifacts/groundwork-mcp.jsonl` (persisted, judge-excluded, D7), never
+  in `agent_log.json`.
 - **Add `groundwork` / `flowmap` to the experiment's arm canaries** (D6) so a
   treatment diff that mentions the tool in a comment cannot leak the arm to the
   judge unnoticed.

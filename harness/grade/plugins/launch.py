@@ -50,7 +50,8 @@ def build_plugin_command(
     The same ``--network none`` + ``--cap-drop ALL`` + no-new-privileges recipe as
     the holdout grader (no ``--user``: the plugin entrypoint keeps its prior
     identity), built through the hermetic layer [refactor 04 §1]. The grader
-    image's plugin entrypoint (``python -m harness.grade.run_plugin``) reads the
+    image's plugin entrypoint (``python3 -m harness.grade.run_plugin`` — the
+    reference grader image ships ``python3`` only, no ``python`` alias) reads the
     ids and the read-only task mount, and writes :data:`PLUGIN_RESULTS`.
 
     ``nonce`` (present on the production path) is injected as ``VERDI_FENCE_NONCE``
@@ -72,7 +73,7 @@ def build_plugin_command(
     if holdouts_dir:
         hc.volume(holdouts_dir, "/holdouts", ro=True)
     hc.workdir("/workspace").image(image)
-    hc.arg("python", "-m", "harness.grade.run_plugin", *[str(p) for p in plugin_ids])
+    hc.arg("python3", "-m", "harness.grade.run_plugin", *[str(p) for p in plugin_ids])
     return hc.build()
 
 

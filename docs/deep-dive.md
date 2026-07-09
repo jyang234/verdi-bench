@@ -448,7 +448,8 @@ Reading any module goes faster once you know the house rules:
 
 ## 5. How the test suite keeps the instrument honest
 
-The suite (700+ fast tests, plus Docker-marked container tests) is not just
+The suite (1,600+ fast tests, plus `docker`-marked real-container tests and
+`browser`-marked UI acceptance tests) is not just
 regression cover — parts of it are the instrument's *own* integrity
 mechanism:
 

@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import json
 import subprocess as sp
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from harness.adapters.base import Quotas
 from harness.run.engines.harbor import DockerCliRunner, HarborEngine
 from harness.run.seam import run_trial
-from harness.run.types import ProxyConfig, RunConfig, Task
+from harness.run.types import OtlpConfig, ProxyConfig, RunConfig, Task, TrialRequest
 from harness.schema.experiment import Arm
 from tests.fixtures.run_fakes import FakeDockerRunner
 
@@ -239,3 +241,94 @@ def test_docker_runner_creates_metered_network_if_absent(monkeypatch):
     monkeypatch.setattr(sp, "run", fake_run)
     DockerCliRunner().ensure_metered_network()
     assert any(c[:3] == ["docker", "network", "create"] for c in calls)
+
+
+# --- RN-11 reverse listeners: ANTHROPIC_BASE_URL steering + NO_PROXY ----------
+def _env_kv(argv: list[str]) -> dict[str, str]:
+    """Extract every ``--env KEY=VALUE`` pair from a docker run argv."""
+    kv: dict[str, str] = {}
+    for i, tok in enumerate(argv):
+        if tok == "--env" and "=" in argv[i + 1]:
+            k, v = argv[i + 1].split("=", 1)
+            kv[k] = v
+    return kv
+
+
+def _reverse_request(reverse_endpoints, *, otlp=None, env=None, trial_id="trial-x") -> TrialRequest:
+    return TrialRequest(
+        trial_id=trial_id, task_id="t", prompt="p", image="img@sha256:" + "a" * 64,
+        arm=_arm(), repetition=0, workspace=Path("/tmp/ws"), quotas=Quotas(), timeout_s=60,
+        ts="2026-01-01T00:00:00+00:00",
+        proxy=ProxyConfig(
+            allowlist=list(reverse_endpoints), proxy_url="http://verdi-metering-proxy:3128",
+            log_path="/x/p.jsonl", reverse_endpoints=dict(reverse_endpoints),
+        ),
+        otlp=otlp, env=env or {},
+    )
+
+
+def test_harbor_injects_reverse_base_url_and_keeps_proxy():
+    """A reverse endpoint for api.anthropic.com steers the pinned claude CLI via
+    ANTHROPIC_BASE_URL (base + /t/<trial>), while HTTP(S)_PROXY stay injected so a
+    well-behaved client keeps using the CONNECT tunnel [RN-11]."""
+    eng = HarborEngine(runner=FakeDockerRunner())
+    req = _reverse_request({"api.anthropic.com": "http://10.0.0.5:3129"}, trial_id="trial-rev")
+    kv = _env_kv(eng.build_run_command(req, "img@sha256:x"))
+    assert kv["ANTHROPIC_BASE_URL"] == "http://10.0.0.5:3129/t/trial-rev"
+    assert kv["HTTP_PROXY"] == "http://trial-rev@verdi-metering-proxy:3128"
+    assert kv["HTTPS_PROXY"] == "http://trial-rev@verdi-metering-proxy:3128"
+
+
+def test_harbor_skips_reverse_host_with_no_base_url_env():
+    """A reverse endpoint whose host is not in the engine's base-URL map (e.g.
+    api.openai.com) injects no env var and no NO_PROXY entry — the map has no
+    consumer for it [RN-11]."""
+    eng = HarborEngine(runner=FakeDockerRunner())
+    kv = _env_kv(eng.build_run_command(
+        _reverse_request({"api.openai.com": "http://10.0.0.6:3129"}), "img@sha256:x"
+    ))
+    assert not any(k.endswith("_BASE_URL") for k in kv)
+    assert "NO_PROXY" not in kv
+
+
+def test_no_proxy_reverse_only_names_the_reverse_ip():
+    """A reverse-steered trial names the reverse listener's IP in NO_PROXY so a
+    proxy-honoring client does not CONNECT-tunnel to the raw IP (the allowlist would
+    deny it and poison the trial) [RN-11]."""
+    eng = HarborEngine(runner=FakeDockerRunner())
+    kv = _env_kv(eng.build_run_command(
+        _reverse_request({"api.anthropic.com": "http://10.0.0.5:3129"}), "img@sha256:x"
+    ))
+    assert kv["NO_PROXY"] == "10.0.0.5"
+
+
+def test_no_proxy_otlp_plus_reverse_orders_collector_then_reverse():
+    """otlp + reverse: the merged NO_PROXY keeps the operator value in front, then
+    the collector host, then each injected reverse IP — one injection [RN-11]."""
+    eng = HarborEngine(runner=FakeDockerRunner())
+    otlp = OtlpConfig(endpoint="http://verdi-trace-collector:4318", log_path="/x/o.jsonl")
+    argv = eng.build_run_command(
+        _reverse_request(
+            {"api.anthropic.com": "http://10.0.0.5:3129"}, otlp=otlp, env={"NO_PROXY": "localhost"}
+        ),
+        "img@sha256:x",
+    )
+    kv = _env_kv(argv)
+    assert kv["NO_PROXY"] == "localhost,verdi-trace-collector,10.0.0.5"
+    injections = [
+        argv[i + 1] for i, t in enumerate(argv)
+        if t == "--env" and argv[i + 1].startswith("NO_PROXY=")
+    ]
+    assert injections == ["NO_PROXY=localhost,verdi-trace-collector,10.0.0.5"]  # exactly once
+
+
+def test_no_shim_flags_in_metered_argv():
+    """Regression pin for the egress-shim removal: a metered trial's argv carries
+    no --add-host / --sysctl / VERDI_EGRESS_SHIM (superseded by the reverse path)."""
+    eng = HarborEngine(runner=FakeDockerRunner())
+    joined = " ".join(eng.build_run_command(
+        _reverse_request({"api.anthropic.com": "http://10.0.0.5:3129"}), "img@sha256:x"
+    ))
+    assert "--add-host" not in joined
+    assert "--sysctl" not in joined
+    assert "VERDI_EGRESS_SHIM" not in joined

@@ -154,6 +154,19 @@
   #feedbox li.click:hover { background: var(--soft); }
   details.fr > summary { cursor: pointer; color: var(--ink-2); font-size: 12px; margin: 10px 0 4px; }
   details.fr > summary:hover { color: var(--ink-1); }
+  details.sr > summary { cursor: pointer; color: var(--ink-2); font-size: 12px; margin: 10px 0 4px; }
+  details.sr > summary:hover { color: var(--ink-1); }
+  /* captured claude_code CLI session [flight-recorder charter]: rendered where
+     verdi reasoning renders; every transcript body lands via textContent (it is
+     arbitrary code/markup, escaped, never interpreted) */
+  .sessrec { margin-top: 4px; }
+  .sfile { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; color: var(--ink-2);
+           font-weight: 600; margin: 10px 0 4px; word-break: break-all; }
+  .sesshead { font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3);
+              font-weight: 600; margin: 6px 0 2px; }
+  .sessentry { border-left: 3px solid var(--hairline); padding-left: 8px; margin-bottom: 4px; }
+  .sessentry.tool_use { border-left-color: var(--meter); }
+  .sessentry.tool_result { border-left-color: var(--add); }
   .steps .agent { color: var(--ink-3); font-size: 11px; flex: none; }
   .steps li.thought { background: var(--soft); border-radius: 4px; padding-left: 6px; padding-right: 6px; }
   .steps .ico.think { color: var(--meter); }

@@ -131,7 +131,15 @@ def _managed_proxy(settings, engine: str, exp_dir: Path) -> Iterator[Optional[Pr
         if base is None:
             yield managed_cfg
         else:
-            yield replace(base, proxy_url=managed_cfg.proxy_url, log_path=managed_cfg.log_path)
+            # reverse_endpoints MUST ride along [RN-11]: dropping it here would
+            # silently strand every claude trial (no ANTHROPIC_BASE_URL steering)
+            # whenever a spec-derived ProxyConfig exists — THE wiring bug.
+            yield replace(
+                base,
+                proxy_url=managed_cfg.proxy_url,
+                log_path=managed_cfg.log_path,
+                reverse_endpoints=managed_cfg.reverse_endpoints,
+            )
 
 
 @contextmanager

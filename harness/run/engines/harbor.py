@@ -21,7 +21,11 @@ Hermetic posture [D001, D005]:
 * Pinned CPU/mem quotas [D003].
 * No ambient network — egress only through the metering proxy (default-deny
   network + ``HTTP(S)_PROXY`` pointing at the allowlisted proxy). Every other
-  attempt is a proxy log line + ``egress_violation`` on the record [AC-3].
+  attempt is a proxy log line + ``egress_violation`` on the record [AC-3]. For a
+  proxy-defiant client (the pinned claude CLI ignores HTTP(S)_PROXY,
+  claude-code#14165), the proxy also exposes plain-HTTP reverse listeners and the
+  engine steers that client's SDK base URL (``ANTHROPIC_BASE_URL``) at one, carrying
+  a ``/t/<trial-id>`` prefix so it is still metered per trial [RN-11].
 * Provider keys injected as env at trial start — never baked into image layers
   or written to the ledger [AC-8].
 
@@ -83,6 +87,12 @@ HARBOR_VERSION = "harbor-pinned-0.1.0"  # version-pinned in images [D005]
 # path, OUTSIDE /workspace (so it never pollutes the graded workspace copy). A
 # pre-baked trial image's entrypoint reads it to learn its task and which arm it is.
 TRIAL_REQUEST_MOUNT = "/verdi/request.json"
+
+# The engine-owned map from an upstream host to the SDK base-URL env var that steers
+# it at the metering proxy's plain-HTTP reverse listener [RN-11]. Extend per provider
+# when a proxy-defiant client needs it (the pinned claude CLI ignores HTTP(S)_PROXY —
+# claude-code#14165); never add an entry with no consumer.
+_REVERSE_BASE_URL_ENV = {"api.anthropic.com": "ANTHROPIC_BASE_URL"}
 
 # METERED_NETWORK is imported from harness.hermetic.network — the single owner of
 # the constant [refactor 04 §1]; the string never changes [refactor 04 §6]. Kept
@@ -257,7 +267,14 @@ class HarborEngine(EngineBase):
     ) -> list[str]:
         """Pure construction of the ``docker run`` argv — hermetic flags,
         quotas, proxy-only egress, env-injected keys, and the read-only trial
-        request mount [RN-4]. Unit-tested directly."""
+        request mount [RN-4]. Unit-tested directly.
+
+        For a metered trial it injects HTTP(S)_PROXY (CONNECT tunnel) and, for each
+        reverse endpoint whose host has a base-URL env mapping, an SDK base URL
+        pointed at the proxy's reverse listener with this trial's ``/t/<id>`` prefix —
+        steering a proxy-defiant client (the pinned claude CLI, claude-code#14165)
+        while keeping per-trial attribution; the injected reverse hosts join NO_PROXY
+        so a proxy-honoring client never tunnels to the raw IP [RN-11]."""
         q: Quotas = request.quotas or Quotas()
         # The shared hardened recipe [refactor 04 §1]: --pull=never so a trial runs
         # only the pre-baked, digest-pinned image [RN-12, D005]; a deterministic
@@ -280,6 +297,7 @@ class HarborEngine(EngineBase):
         if q.mem is not None:
             hc.memory(q.mem)
         # network insulation: default-deny; egress only via the metering proxy
+        reverse_no_proxy: list[str] = []
         if request.proxy is not None and request.proxy.proxy_url:
             # inject the trial id as the proxy-auth credential so the metering
             # proxy attributes every request to this trial [RN-11, D-10].
@@ -287,6 +305,22 @@ class HarborEngine(EngineBase):
             hc.env_kv("HTTP_PROXY", proxy_url).env_kv("HTTPS_PROXY", proxy_url)
             # a restricted docker network that only reaches the proxy [RN-11]
             hc.network(METERED_NETWORK)
+            # Reverse-listener steering [RN-11]: the pinned claude CLI ignores
+            # HTTP(S)_PROXY (claude-code#14165), so point its SDK base URL at the
+            # proxy's plain-HTTP reverse listener, carrying THIS trial's /t/<id>
+            # prefix for per-trial attribution. HTTP(S)_PROXY stay injected too — a
+            # well-behaved client keeps using the CONNECT tunnel. Each injected
+            # reverse host must also bypass the proxy (NO_PROXY below), or a
+            # proxy-honoring client would CONNECT-tunnel to the raw IP and the
+            # CONNECT allowlist would deny it (poisoning the trial with a violation).
+            for host, base in sorted(request.proxy.reverse_endpoints.items()):
+                var = _REVERSE_BASE_URL_ENV.get(host)
+                if var is None:
+                    continue
+                hc.env_kv(var, f"{base}/t/{request.trial_id}")
+                hostname = urlsplit(base).hostname
+                if hostname:
+                    reverse_no_proxy.append(hostname)
         else:
             hc.network("none")
         # provider keys injected as env — never in image layers or ledger [AC-8],
@@ -295,34 +329,45 @@ class HarborEngine(EngineBase):
         # environment, which run_container populates from request.provider_keys.
         for k in (request.provider_keys or {}):
             hc.env(k)
+        # Hosts that must BYPASS HTTP(S)_PROXY, in injection order: the OTLP collector
+        # (its plaintext span POST must not tunnel through the metering proxy — it is
+        # not on the allowlist), then each injected reverse-listener IP (a
+        # proxy-honoring client must not CONNECT-tunnel to the raw reverse IP). The
+        # collector stays first among the extras, preserving the OTLP-only NO_PROXY
+        # string byte-for-byte [refactor 09 §4, RN-11].
+        collector_host = (
+            (urlsplit(request.otlp.endpoint).hostname or request.otlp.endpoint)
+            if request.otlp is not None
+            else None
+        )
+        extra_no_proxy = ([collector_host] if collector_host else []) + reverse_no_proxy
         # A3: a task's declared non-secret env vars, injected AFTER the provider-key
         # env and NEVER overriding it — a task env must not shadow an arm's provider
         # key. These are declared (sha-locked) and non-secret, so KEY=VALUE on the
         # argv is fine (the env_kv spelling, like the proxy URLs) [refactor 03 §5].
-        # NO_PROXY is deferred when OTLP capture is configured — it is MERGED with
-        # the collector host in the OTLP block below, not injected twice.
+        # NO_PROXY is deferred whenever there are extras to merge — it is injected
+        # ONCE below, never twice.
         for k, v in (request.env or {}).items():
             if k in (request.provider_keys or {}):
                 continue
-            if request.otlp is not None and k == "NO_PROXY":
-                continue  # merged into the OTLP NO_PROXY injection below
+            if extra_no_proxy and k == "NO_PROXY":
+                continue  # merged into the single NO_PROXY injection below
             hc.env_kv(k, v)
         # In-trial OTLP trace capture [refactor 09 §4, A11]: point the arm's OTel
         # exporter at the hermetic collector and attribute every span post to this
-        # trial via the standard header mechanism every SDK honors. NO_PROXY is
-        # load-bearing — HTTP(S)_PROXY is already injected for a metered trial, so
-        # without this the exporter would route span posts THROUGH the metering
-        # proxy, polluting the egress picture and failing the allowlist. The
-        # collector host is APPENDED to any operator-supplied NO_PROXY, never
-        # replacing it. Config rides these standard OTel env vars; the frozen
-        # request.json is untouched (the spec's invariant).
+        # trial via the standard header mechanism every SDK honors. Config rides these
+        # standard OTel env vars; the frozen request.json is untouched.
         if request.otlp is not None:
             hc.env_kv("OTEL_EXPORTER_OTLP_ENDPOINT", request.otlp.endpoint)
             hc.env_kv("OTEL_EXPORTER_OTLP_HEADERS", f"x-verdi-trial={request.trial_id}")
-            collector_host = urlsplit(request.otlp.endpoint).hostname or request.otlp.endpoint
+        # NO_PROXY is load-bearing and injected ONCE: the operator value first, then
+        # the extras (collector, reverse IPs). Without it the OTel exporter would
+        # route span posts through the metering proxy (polluting egress + failing the
+        # allowlist) and a proxy-honoring client would tunnel to the raw reverse IP.
+        if extra_no_proxy:
             prior = (request.env or {}).get("NO_PROXY")
-            no_proxy = f"{prior},{collector_host}" if prior else collector_host
-            hc.env_kv("NO_PROXY", no_proxy)
+            merged = ",".join(([prior] if prior else []) + extra_no_proxy)
+            hc.env_kv("NO_PROXY", merged)
         # workspace mount; then the trial request (prompt + arm config) delivered
         # READ-ONLY, outside the workspace so it never enters the graded copy
         # [RN-4, D-8] — added after the workspace volume so a workspace-first parser

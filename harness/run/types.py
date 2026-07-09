@@ -57,12 +57,21 @@ class ProxyConfig:
     non-model subset of the allowlist (package registries, mirrors), carried
     separately so per-trial egress attestation can tell "declared
     infrastructure" from "should be attributable to a declared model".
+
+    ``reverse_endpoints`` [RN-11] maps an upstream host to the metering proxy's
+    in-network plain-HTTP reverse listener for it (``http://<ip>:<port>``, WITHOUT
+    the ``/t/<trial>`` suffix — the engine appends that per trial). It steers a
+    proxy-defiant client (the pinned claude CLI ignores HTTP(S)_PROXY,
+    claude-code#14165) at a terminator that meters it per trial. Additive and
+    default-empty: only the managed metering proxy populates it; the runtime-config
+    (settings.py) path leaves it empty, as do external squid-based deployments.
     """
 
     allowlist: list[str] = field(default_factory=list)
     proxy_url: Optional[str] = None
     log_path: Optional[str] = None
     infra_hosts: list[str] = field(default_factory=list)
+    reverse_endpoints: dict[str, str] = field(default_factory=dict)
 
     @staticmethod
     def host_matches(host: str, declared: list[str]) -> bool:

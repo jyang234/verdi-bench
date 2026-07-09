@@ -1,9 +1,11 @@
 # anthropic-claude-code (official image)
 
 Drives the version-pinned **Claude Code** CLI as a verdi trial agent. Extends
-`verdi-base`; `agent.py` reads `/verdi/request.json`, invokes `claude` over the
-task inside `/workspace`, and emits `artifacts/agent_log.json` in the verdi
-**generic** format via `verdi_agent`. See `docs/images.md` §1 for the contract.
+`verdi-base`; `agent.py` reads `/verdi/request.json`, invokes `claude
+--output-format json` over the task inside `/workspace`, and persists the CLI's
+own result object verbatim as the native `artifacts/agent_log.json`. The arm runs
+as `platform: claude_code`, so the adapter reads tokens/cost/wall-time from that
+report. See `docs/images.md` §1 for the contract.
 
 ```bash
 bench images build anthropic-claude-code --pin
@@ -30,9 +32,11 @@ and the image tag; never `latest`.
   still writes a scorable `agent_log.json` and exits nonzero. That is exactly what
   verify checks (request in → scorable log out). The real coding behavior is
   exercised only WITH keys + network.
-- **Telemetry is null by design here.** The print-mode CLI does not self-report
-  tokens/cost in a stable machine form, and verdi never guesses [D004]. For
-  per-trial telemetry, run the arm as `platform: claude_code` (the native adapter)
-  or parse the CLI's JSON output — the documented native-emission alternative. This
-  agent deliberately emits the honest generic minimum rather than a fabricated
-  native session.
+- **Telemetry comes from the CLI's own report.** With `--output-format json` the
+  CLI emits a native result object (tokens/cost/duration); the agent persists it
+  verbatim and the `claude_code` adapter reads it — nothing translated, nothing
+  guessed [D004]. Fields the report omits (e.g. per-step tokens) stay null. The
+  generic log is the FALLBACK for the plumbing-failure path only: a CLI that dies
+  before emitting JSON (absent/unauthenticated/offline) leaves a scorable generic
+  error log; a CLI that exits 0 without its JSON contract gets no log rather than a
+  fabricated one.
