@@ -27,6 +27,7 @@ from ..ledger.query import find_events
 from ..run.flight_recorder import resolve_flight_recorder
 from ..schema.errors import SpecError
 from ..schema.experiment import ExperimentSpec
+from .session_recording import load_session_recording
 
 
 def _segments(a_text: str, b_text: str) -> list[dict]:
@@ -90,6 +91,24 @@ def paired_comparisons(experiment_dir, *, corpus_manifest=None) -> dict:
             for e in record.entries
         ]
 
+    def _arm(trial_id, holdout_pass, holdout_results) -> dict:
+        """One arm's compare cell. A ``claude_code`` arm exposes no verdi
+        reasoning but a captured CLI session on disk; surface it beside the
+        reasoning column, operator-tier and unblinded, keyed off the ledgered
+        artifacts_path. Present only when captured — an arm without one is
+        untouched [flight-recorder charter]."""
+        cell = {
+            "trial_id": trial_id,
+            "holdout_pass": holdout_pass,
+            "holdout_results": holdout_results,
+            "reasoning": _reasoning(trial_id),  # operator-tier, unblinded [AC-5]
+        }
+        meta = trial_meta.get(trial_id)
+        recording = load_session_recording(meta[0]) if meta is not None else None
+        if recording is not None:
+            cell["session_recording"] = recording
+        return cell
+
     pairs: list[dict] = []
     for cmp_ in native_comparisons_from_ledger(ledger_path, spec):
         tid_a = trial_ids.get((cmp_.task_id, cmp_.repetition, arm_a))
@@ -106,18 +125,8 @@ def paired_comparisons(experiment_dir, *, corpus_manifest=None) -> dict:
                 "comparison_id": cmp_.comparison_id,
                 "task_id": cmp_.task_id,
                 "repetition": cmp_.repetition,
-                "a": {
-                    "trial_id": tid_a,
-                    "holdout_pass": pass_a,
-                    "holdout_results": cmp_.response_a.holdout_results,
-                    "reasoning": _reasoning(tid_a),  # operator-tier, unblinded [AC-5]
-                },
-                "b": {
-                    "trial_id": tid_b,
-                    "holdout_pass": pass_b,
-                    "holdout_results": cmp_.response_b.holdout_results,
-                    "reasoning": _reasoning(tid_b),  # operator-tier, unblinded [AC-5]
-                },
+                "a": _arm(tid_a, pass_a, cmp_.response_a.holdout_results),
+                "b": _arm(tid_b, pass_b, cmp_.response_b.holdout_results),
                 "judge": verdict,  # advisory tier, shown as its own line, never blended
                 "disagreement": holdout_differs or (judge_pick and not holdout_differs),
                 "segments": _segments(cmp_.response_a.diff, cmp_.response_b.diff),

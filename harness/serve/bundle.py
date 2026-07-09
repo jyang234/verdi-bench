@@ -31,6 +31,7 @@ from ..status.aggregate import compute_status
 from ..status.trial import trial_detail
 from .compare import paired_comparisons
 from .page import OPERATOR_PAGE
+from .session_recording import attach_session_recording
 from .workspace import _summary_row
 
 # The one-line seam the live page reserves for the archive [page.py docstring].
@@ -89,7 +90,12 @@ def collect_bundle_data(experiment_dir, *, corpus_manifest=None) -> dict:
         "events": tail,
         "next_offset": next_offset,
         "timeline": trial_timeline(ledger_path),
-        "trials": {tid: trial_detail(experiment_dir, tid, view=view) for tid in trial_ids},
+        # route parity: the offline snapshot carries the same session_recording
+        # the live /api/trial serves for a claude_code trial [flight-recorder charter].
+        "trials": {
+            tid: attach_session_recording(trial_detail(experiment_dir, tid, view=view))
+            for tid in trial_ids
+        },
         "compare": paired_comparisons(experiment_dir, corpus_manifest=corpus_manifest),
         "fence": official_fence_report(experiment_dir, corpus_manifest=corpus_manifest),
     }

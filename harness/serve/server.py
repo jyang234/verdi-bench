@@ -42,6 +42,7 @@ from ..status.trial import trial_detail
 from ..webkit.http import ChainBroken, JsonRouteHandler, NotFound, bind_handler, default_error
 from .compare import paired_comparisons
 from .page import OPERATOR_PAGE
+from .session_recording import attach_session_recording
 from .workspace import scan_workspace
 
 DEFAULT_HOST = "127.0.0.1"  # loopback by default: an operator tool, not a service
@@ -206,7 +207,10 @@ class ObserverHandler(JsonRouteHandler):
         if detail is None:
             self._json(404, {"error": f"no trial {trial_id!r} on this ledger"})
             return
-        self._json(200, detail)
+        # A claude_code trial has no verdi trajectory/reasoning but a captured
+        # CLI session on disk; surface it from the ledgered artifacts_path — the
+        # path is chain-derived, client input stays trial-id-only [PRA-M10].
+        self._json(200, attach_session_recording(detail))
 
     def _artifact(self, q: dict) -> None:
         name = q.get("name", [None])[0] or ""

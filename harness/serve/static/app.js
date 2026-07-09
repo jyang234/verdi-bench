@@ -1275,22 +1275,62 @@ function thoughtLi(e, ctx, clampKey) {
   li.append(body, tokCell(e.tokens, ctx && e.agent ? ctx.color[e.agent] : null, ctx ? ctx.maxTok : 0));
   return li;
 }
+/* One captured-transcript event as a compact feed row [flight-recorder charter].
+   A claude_code arm has no verdi trajectory/reasoning, but its CLI session was
+   captured verbatim; this renders one normalized entry. ALL transcript text
+   lands via textContent (the `text:` prop) — it is arbitrary code/markup and is
+   escaped, never interpreted. Shared by the trial process view and the compare
+   drawer, so an entry renders identically in both. */
+function sessionEntry(e) {
+  const tag = e.kind === "tool_use" ? ("tool · " + (e.name || "?"))
+            : e.kind === "tool_result" ? "tool result"
+            : (e.role || "message");
+  const row = h("div", { class: "sessentry " + e.kind });
+  row.append(h("div", { class: "sesshead", text: tag }));
+  row.append(h("pre", { class: "code", text: e.detail }));
+  return row;
+}
+/* The captured session, labeled per file, with the caps the normalizer applied
+   surfaced (unparseable lines skipped, entries elided) — honest bounds, never a
+   silent drop. Rendered where verdi reasoning renders; the two sources coexist,
+   each trial shows whichever it has. */
+function renderSessionRecording(container, sr) {
+  const box = h("div", { class: "sessrec" });
+  box.append(h("div", { class: "eyebrow", text: "session flight recording (captured transcript)" }));
+  box.append(h("div", { class: "dim3", style: "margin:2px 0 6px",
+    text: "the claude_code CLI's own session, verbatim and unblinded (operator tier) — captured, not verdi-graded" }));
+  for (const f of sr.files || []) {
+    box.append(h("div", { class: "sfile", text: f.label }));
+    if (f.skipped_lines) box.append(h("div", { class: "gerr", text: f.skipped_lines + " unparseable line(s) skipped" }));
+    if (!f.entries.length && !f.skipped_lines) box.append(h("div", { class: "dim3", text: "(no renderable events in this file)" }));
+    for (const e of f.entries) box.append(sessionEntry(e));
+  }
+  if (sr.more_entries) box.append(h("div", { class: "dim3", style: "margin-top:6px", text: "… " + sr.more_entries + " more entries (capped)" }));
+  container.append(box);
+}
 /* The unified process view [flight-recorder charter]: ONE timeline tracing the
    stack's thought AND action to the solution. Interleaving uses only what the
    record DECLARES — a reasoning entry with a v3 ``turn`` renders before its
    step (thought precedes action); one with only ``relative_ts`` merges by the
    shared trial clock; one with neither is listed unlinked in capture order.
    Nothing is inferred, reordered by guesswork, or dropped. Filtering an agent
-   DIMS the other lanes, never removes them — the timeline stays whole. */
+   DIMS the other lanes, never removes them — the timeline stays whole. A
+   claude_code trial carries no verdi process but a captured CLI session; it
+   renders at the top and coexists with any verdi timeline below. */
 function renderProcess(card, d) {
   const steps = d.trajectory.steps;
   const fr = d.flight_recorder || {};
   const entries = fr.entries || [];
+  const sr = d.session_recording;
+  if (sr) renderSessionRecording(card, sr);
   if (fr.status && fr.status !== "verified" && fr.status !== "absent")
     card.append(h("div", { class: "gerr", style: "margin-bottom:8px",
       text: "flight recorder " + fr.status + " — reasoning withheld (its bytes must match the ledgered sha)" }));
   if (steps === null && !entries.length) {
-    card.append(h("div", { class: "empty", text: "trajectory " + d.trajectory.status + (fr.status === "absent" ? " · no reasoning captured" : "") + " — no process to show" }));
+    // a captured session IS the process for a claude_code trial — don't also
+    // claim "no process to show" once it has been rendered above
+    if (!sr)
+      card.append(h("div", { class: "empty", text: "trajectory " + d.trajectory.status + (fr.status === "absent" ? " · no reasoning captured" : "") + " — no process to show" }));
     return;
   }
   const lanes = laneModel(d);
@@ -1501,6 +1541,20 @@ function reasoningCol(entries) {
   return col;
 }
 
+/* One arm's captured claude_code session for the compare drawer — the mirror of
+   reasoningCol for the transcript source. Absence is stated, never blank. */
+function sessionCol(sr) {
+  const col = h("div", {});
+  if (!sr || !sr.entry_count) { col.append(h("div", { class: "none", text: "no captured session" })); return col; }
+  for (const f of sr.files || []) {
+    col.append(h("div", { class: "sfile", text: f.label }));
+    if (f.skipped_lines) col.append(h("div", { class: "gerr", text: f.skipped_lines + " unparseable line(s) skipped" }));
+    for (const e of f.entries) col.append(sessionEntry(e));
+  }
+  if (sr.more_entries) col.append(h("div", { class: "dim3", text: "… " + sr.more_entries + " more entries (capped)" }));
+  return col;
+}
+
 function renderCompare(app) {
   const st = expState(S.route.exp);
   const gate = withheldCard(st);
@@ -1624,9 +1678,11 @@ function renderCompare(app) {
      poll re-render never slams a diff shut and a shared link reproduces it. */
   const openSet = new Set((S.route.params.get("open") || "").split(",").filter(Boolean));
   const frOpen = new Set((S.route.params.get("fr") || "").split(",").filter(Boolean));
-  /* a shared ?fr= link must reproduce the open recorder [AC-3]: an fr token
+  const srOpen = new Set((S.route.params.get("sr") || "").split(",").filter(Boolean));
+  /* a shared ?fr=/?sr= link must reproduce the open drawer [AC-3]: the token
      implies its pair row is open, so the deep link renders on its own */
   for (const t of frOpen) openSet.add(t);
+  for (const t of srOpen) openSet.add(t);
   const setOpen = (set) => setParam("open", [...set].join(",") || null);
   if (pairs.length) {
     const card = h("div", { class: "card" });
@@ -1636,7 +1692,8 @@ function renderCompare(app) {
       h("button", { class: "btn", text: "expand all", onclick: () =>
         setOpen(new Set(pairs.map(p => encodeURIComponent(p.comparison_id)))) }),
       h("button", { class: "btn", text: "collapse all", onclick: () => {
-        setParam("fr", null);  /* fr implies open — a stale token would reopen its row */
+        setParam("fr", null);  /* fr/sr imply open — a stale token would reopen its row */
+        setParam("sr", null);
         setOpen(new Set());
       } }));
     card.append(bar);
@@ -1671,10 +1728,12 @@ function renderCompare(app) {
         const set = new Set(openSet);
         if (open) {
           set.delete(token);
-          /* closing the pair closes its recorder too: fr implies open, so a
-             stale fr token would reopen this row on the next render */
+          /* closing the pair closes its drawers too: fr/sr imply open, so a
+             stale token would reopen this row on the next render */
           const fr = new Set((S.route.params.get("fr") || "").split(",").filter(Boolean));
           if (fr.has(token)) { fr.delete(token); setParam("fr", [...fr].join(",") || null); }
+          const srp = new Set((S.route.params.get("sr") || "").split(",").filter(Boolean));
+          if (srp.has(token)) { srp.delete(token); setParam("sr", [...srp].join(",") || null); }
         } else set.add(token);
         setOpen(set);
       });
@@ -1687,7 +1746,7 @@ function renderCompare(app) {
         h("td", {}, ...(p.disagreement ? [h("span", { class: "chip warn", title: "the deterministic grades and/or the advisory judge point different ways", text: "disagreement" })] : [])),
         h("td", { class: "chevcell", text: open ? "▾" : "▸" }));
       table.append(tr);
-      if (open) table.append(pairBodyRow(c, p, frOpen));
+      if (open) table.append(pairBodyRow(c, p, frOpen, srOpen));
     }
     card.append(table);
     app.append(card);
@@ -1696,7 +1755,7 @@ function renderCompare(app) {
 /* the expanded pair: judge verdict + quoted reason first, then the workspace
    diff, then the flight-recorder drawer — the "why" sits one glance from the
    verdict [operator-ui §Compare]. Rendered as a full-width row under its pair. */
-function pairBodyRow(c, p, frOpen) {
+function pairBodyRow(c, p, frOpen, srOpen) {
   const body = h("div", { class: "pairbody" });
   if (p.judge) {
     const w = p.judge.winner;
@@ -1739,6 +1798,29 @@ function pairBodyRow(c, p, frOpen) {
     rz.append(reasoningCol(p.a.reasoning), reasoningCol(p.b.reasoning));
     fr.append(rz);
     body.append(fr);
+  }
+  /* the captured claude_code session, a parallel collapsible drawer keyed by
+     ?sr= — the transcript source alongside verdi reasoning; shown when either
+     arm captured one [flight-recorder charter] */
+  if (p.a.session_recording || p.b.session_recording) {
+    const token = encodeURIComponent(p.comparison_id);
+    const nA = p.a.session_recording ? p.a.session_recording.entry_count : 0;
+    const nB = p.b.session_recording ? p.b.session_recording.entry_count : 0;
+    const sr = h("details", { class: "sr" });
+    if (srOpen && srOpen.has(token)) sr.setAttribute("open", "");
+    sr.append(h("summary", {
+      text: "session flight recording (captured transcript) — A " + nA + " · B " + nB + " entr(ies) (operator-tier, unblinded)",
+      onclick: (e) => {
+        e.preventDefault();  /* no native toggle: the URL round-trip renders it */
+        const set = new Set((S.route.params.get("sr") || "").split(",").filter(Boolean));
+        if (set.has(token)) set.delete(token); else set.add(token);
+        setParam("sr", [...set].join(",") || null);
+      } }));
+    sr.append(armHead(c));
+    const rz = h("div", { class: "diff2 rz" });
+    rz.append(sessionCol(p.a.session_recording), sessionCol(p.b.session_recording));
+    sr.append(rz);
+    body.append(sr);
   }
   const td = h("td", { colspan: "6" });
   td.append(body);
