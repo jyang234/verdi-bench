@@ -699,6 +699,31 @@ def test_main_exit3_valid_json_persists_native_and_raises(gw_env, monkeypatch):
     assert json.loads(log_path.read_text(encoding="utf-8"))["is_error"] is True
 
 
+def test_main_exit0_is_error_true_persists_native_and_raises(gw_env, monkeypatch):
+    """The pinned CLI can exit 0 while reporting ``is_error: true`` — an API error
+    surfaced IN-BAND (observed live: ConnectionRefused, empty modelUsage, cost 0).
+    Such a session ENDED IN ERROR and must not flow to grading as a success: main
+    persists the native log verbatim (evidence first) THEN raises, so the engine
+    fails the cell closed (trial_infra_failed, RN-15)."""
+    va, log_path = gw_env
+    err = {**_RESULT_JSON, "is_error": True,
+           "result": "API Error: Unable to connect to API (ConnectionRefused)"}
+    raw = json.dumps(err)
+    _mock_run(monkeypatch, stdout=raw, returncode=0)
+
+    with pytest.raises(RuntimeError, match="is_error"):
+        agent.main(va.AgentLog())
+    # the native evidence is persisted intact despite the refusal
+    assert log_path.read_text(encoding="utf-8") == raw
+    assert json.loads(log_path.read_text(encoding="utf-8"))["is_error"] is True
+
+    # guard the happy path: is_error absent (or falsey) must NOT raise. _RESULT_JSON
+    # ships is_error: False; a result dict OMITTING the key must also pass cleanly.
+    ok = {k: v for k, v in _RESULT_JSON.items() if k != "is_error"}
+    _mock_run(monkeypatch, stdout=json.dumps(ok), returncode=0)
+    agent.main(va.AgentLog())  # absent is_error → clean success, no raise
+
+
 def test_main_exit0_non_json_refuses_to_fabricate(gw_env, monkeypatch):
     va, log_path = gw_env
     _mock_run(monkeypatch, stdout="hello, not json at all", returncode=0)

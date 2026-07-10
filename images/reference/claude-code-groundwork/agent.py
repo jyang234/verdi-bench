@@ -66,7 +66,10 @@ proven without a container (``tests/test_image_claude_code_groundwork.py``).
 
 Honesty note: like the official image, the real CLI is exercised only WITH keys
 and network; ``bench images verify`` proves plumbing (request in -> scorable log
-out), never intelligence. The pinned CLI version MUST support user-scope skills
+out), never intelligence. Exit code is NOT the whole contract: the CLI can exit 0
+while its result carries ``is_error: true`` (an in-band API error), so :func:`main`
+refuses that case too — an errored session must never flow to grading as a success.
+The pinned CLI version MUST support user-scope skills
 and ``--mcp-config`` (README "honesty notes") — the treatment arm's whole value
 depends on it, and it is NOT re-verified by the offline check.
 """
@@ -753,6 +756,16 @@ def main(log: AgentLog) -> None:
             result = parsed.get("result")
             tail = (result if isinstance(result, str) else (proc.stderr or "")).strip()[-400:]
             raise RuntimeError(f"claude-code CLI exited {proc.returncode}: {tail!r}")
+        if parsed.get("is_error"):
+            # The pinned CLI can exit 0 while reporting is_error: true (an API
+            # error surfaced in-band — observed live: ConnectionRefused with
+            # empty modelUsage). A trial whose session ENDED IN ERROR must not
+            # flow to grading as a success: raise so the engine fails the cell
+            # closed (trial_infra_failed, RN-15). The native log is already
+            # persisted above — forensics and telemetry survive the refusal.
+            result = parsed.get("result")
+            tail = (result if isinstance(result, str) else "").strip()[-400:]
+            raise RuntimeError(f"claude-code CLI reported is_error=true: {tail!r}")
         return
     if proc.returncode == 0:
         # Exited 0 without the JSON result contract: refuse to fabricate a log.
