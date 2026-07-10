@@ -24,7 +24,11 @@ trapping (see :data:`ENFORCEMENT_HOOK_PY`). When the payload declares
 (``docs/design/mechanism-decomposition-program.md``, piece 1): rung 3's exact
 Stop-hook machinery and byte-identical argv, but the hook runs NO gate and blocks
 with one static content-free reason (see :data:`PLACEBO_HOOK_PY`), isolating the
-gate's findings content from the forcing function. With any other
+gate's findings content from the forcing function. A payload that instead declares
+``system_prompt_extra: <key>`` is the PROMPT-ONLY treatment (``docs/design/mechanism-decomposition-program.md``,
+piece 2): a DISABLED plan carrying exactly one ``--append-system-prompt=<pre-registered text>``
+token — no tools, no MCP config, no hook, no filesystem writes — so the arm is otherwise
+byte-for-byte the control. With any other
 payload it does none of that and behaves byte-for-byte like the shipped official
 agent — **one image, both arms**, the asymmetry realized only here
 (``docs/usage-guide.md`` §9).
@@ -162,6 +166,22 @@ WORKFLOW_PROMPT_KEY = {
     "ground_verify": "ground_verify",
     ENFORCED_WORKFLOW: "ground_verify",
     PLACEBO_WORKFLOW: "ground_verify",
+}
+
+# Prompt-only treatments, keyed by ``payload.system_prompt_extra`` [design:
+# docs/design/mechanism-decomposition-program.md, piece 2]. Delivered as one
+# ``--append-system-prompt=<text>`` token with NO tools, NO MCP config, NO hook,
+# NO filesystem writes — the arm is otherwise byte-for-byte the control. These
+# texts are PRE-REGISTERED TREATMENT DEFINITIONS: byte-stable, process-only
+# (they may point at an agent-visible file; they never name a tool, a workflow
+# step, a trap, or an expected answer). Registry membership is the known set —
+# an unknown value is refused loudly, and combining a prompt-only treatment
+# with tools/workflow is refused (it would blur which treatment ran).
+SYSTEM_PROMPT_EXTRAS = {
+    "policy_pointer": (
+        "This repository declares structural policy in `policy.json`; "
+        "your change must honor it."
+    ),
 }
 
 # The rung-3 enforcement Stop-hook script — a BYTE-STABLE, python3 stdlib-only module,
@@ -431,7 +451,10 @@ class GroundworkPlan:
     that touches the filesystem. Keeping the plan declarative lets a test assert —
     without a container — that NO write lands under ``/workspace`` except the
     ``artifacts/`` mkdir (the rung-3 enforced arm's extra writes are ALL under
-    ``$HOME``), and that the argv delta is exactly ``--mcp-config`` (rung 1).
+    ``$HOME``), and that the argv delta is exactly ``--mcp-config`` (rung 1). A
+    disabled plan carries no argv delta EXCEPT a registered ``system_prompt_extra``,
+    which is a disabled plan carrying exactly one ``--append-system-prompt`` token
+    (``docs/design/mechanism-decomposition-program.md``, piece 2).
 
     * ``symlinks`` — ``(target, link)`` pairs exposing the staged binaries on PATH.
     * ``path_bin_dir`` — the writable dir holding those links, prepended to PATH.
@@ -473,7 +496,10 @@ def plan_groundwork(
     Control (``groundwork`` not in ``payload.tools``) returns the empty, disabled
     plan: no symlinks, no config, no skill, no extra CLI args — so :func:`apply_plan`
     is a no-op and :func:`cli_argv`/:func:`cli_env` reproduce the shipped agent
-    exactly. Treatment computes every path from ``home``/``workspace``/staging so a
+    exactly, EXCEPT a payload declaring a registered ``system_prompt_extra``, which is
+    a disabled plan carrying exactly one ``--append-system-prompt`` token — the
+    prompt-only treatment, exclusive of tools/workflow (``docs/design/mechanism-decomposition-program.md``,
+    piece 2). Treatment computes every path from ``home``/``workspace``/staging so a
     test can redirect them at tmp dirs and assert the /workspace rule. A treatment
     payload WITHOUT a ``workflow`` key is rung-1 availability (one
     ``--mcp-config`` token, byte-identical to the pre-rung-2 plan); with
@@ -512,6 +538,26 @@ def plan_groundwork(
                 f"unknown workflow {workflow!r}; known workflows: "
                 f"{sorted(WORKFLOW_PROMPT_KEY)}"
             )
+    extra = payload.get("system_prompt_extra")
+    if extra is not None:
+        if enabled or has_workflow:
+            raise ValueError(
+                f"payload declares system_prompt_extra {extra!r} alongside "
+                "groundwork tools/workflow — prompt-only treatments are "
+                "exclusive by definition; a combined arm would blur which "
+                "treatment ran"
+            )
+        if extra not in SYSTEM_PROMPT_EXTRAS:
+            raise ValueError(
+                f"unknown system_prompt_extra {extra!r}; known extras: "
+                f"{sorted(SYSTEM_PROMPT_EXTRAS)}"
+            )
+        return GroundworkPlan(
+            enabled=False,
+            cli_extra_args=(
+                f"--append-system-prompt={SYSTEM_PROMPT_EXTRAS[extra]}",
+            ),
+        )
     if not enabled:
         return GroundworkPlan(enabled=False)
 

@@ -57,6 +57,7 @@ _AVAILABILITY = {"tools": ["groundwork"]}
 _TREATMENT = {"tools": ["groundwork"], "workflow": "ground_verify"}
 _ENFORCED = {"tools": ["groundwork"], "workflow": "ground_verify_enforced"}
 _PLACEBO = {"tools": ["groundwork"], "workflow": "placebo_gate"}
+_POINTER = {"system_prompt_extra": "policy_pointer"}
 
 
 def _load(module_name: str, path: Path):
@@ -543,6 +544,67 @@ def test_placebo_block_reason_is_static_and_content_free():
 def test_placebo_without_groundwork_tool_raises():
     with pytest.raises(ValueError, match="workflow"):
         agent.plan_groundwork({"workflow": "placebo_gate"})
+
+
+# --- policy_pointer: the cheapest-possible treatment -------------------------
+# [design: docs/design/mechanism-decomposition-program.md, piece 2] Prompt-only:
+# one appended system-prompt line pointing at policy.json — no tools, no MCP
+# config, no hook, no filesystem writes. A rung below availability on the
+# integration ladder ("rung 1.5" if it works, a null that strengthens the
+# forcing-function story if it doesn't).
+
+
+def test_pointer_argv_is_control_plus_exactly_one_prompt_token():
+    plan = agent.plan_groundwork(_POINTER, home="/h", workspace="/w")
+    control = agent.plan_groundwork({}, home="/h", workspace="/w")
+    argv = agent.cli_argv("do the task", plan, "m1")
+    control_argv = agent.cli_argv("do the task", control, "m1")
+    delta = [t for t in argv if t not in control_argv]
+    assert delta == [
+        "--append-system-prompt=" + agent.SYSTEM_PROMPT_EXTRAS["policy_pointer"]
+    ]
+    assert not any(t.startswith("--mcp-config") for t in argv)
+
+
+def test_pointer_plan_is_otherwise_disabled_and_writes_nothing(tmp_path):
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+    workspace.mkdir()
+    plan = agent.plan_groundwork(_POINTER, home=str(home), workspace=str(workspace))
+    assert plan.enabled is False
+    assert plan.files == () and plan.copies == () and plan.file_copies == ()
+    assert plan.symlinks == () and plan.mkdirs == ()
+    agent.apply_plan(plan)  # must be a no-op
+    assert not home.exists()
+    assert list(workspace.iterdir()) == []
+    # env untouched: no bin dir prepended
+    assert agent.cli_env({"PATH": "/usr/bin"}, plan) == {"PATH": "/usr/bin"}
+
+
+def test_pointer_text_is_pinned_and_process_only():
+    text = agent.SYSTEM_PROMPT_EXTRAS["policy_pointer"]
+    assert text == (
+        "This repository declares structural policy in `policy.json`; "
+        "your change must honor it."
+    )
+    # names no tool, no workflow step, no task property
+    for token in ("mcp__", "groundwork", "flowmap", "verify"):
+        assert token not in text
+
+
+def test_pointer_combined_with_tools_or_workflow_raises():
+    with pytest.raises(ValueError, match="system_prompt_extra"):
+        agent.plan_groundwork(
+            {"system_prompt_extra": "policy_pointer", "tools": ["groundwork"]}
+        )
+    with pytest.raises(ValueError):
+        agent.plan_groundwork(
+            {"system_prompt_extra": "policy_pointer", "workflow": "ground_verify"}
+        )
+
+
+def test_unknown_system_prompt_extra_raises():
+    with pytest.raises(ValueError, match="unknown system_prompt_extra"):
+        agent.plan_groundwork({"system_prompt_extra": "not-a-registered-extra"})
 
 
 # --- main(): the CLI runs in JSON mode and persists the native result --------
