@@ -178,11 +178,13 @@ ALL CELLS GREEN
 
 `gw-r5b`'s `workspace/`, `solution/`, and `exemplar-violation/` trees (and their
 committed graphs + policy) are **byte-identical** to `gw-r5`'s — only the neutral
-`prompt.md`, the task id, and the authoring note differ, none of which `--check`
-exercises — so its row mirrors `gw-r5`'s. The operator `--check`/`--out` rerun that
-would regenerate this block over all 17 tasks is pending (docker was in use by a
-live run when `gw-r5b` was added); the `gw-r5b` row is inherited from `gw-r5`'s
-validated result, not a fresh execution.
+`prompt.md`, the task id, and the authoring note differ. The 17-task
+`--check` matrix above is a real execution (2026-07-10, pinned binaries
+`GROUNDWORK_REF=v0.0.0-20260707142329-7e8df2bb315a`): all cells green,
+`validate-tasks` 17 OK. `gw-r5b` was additionally admitted through the full
+curation cycle — k=5 docker flake baseline (clean) → signed curation approval
+→ chain-anchored `bench corpus admit` — recorded in the mechanism-decomposition
+program's corpus ledger and manifest (corpus semver 0.1.0).
 
 Specific rule ids named in cell (c): `gw-o1` `tx-must-close` · `gw-o2`
 `slot-must-release` · `gw-o3` `audit-before-publish` · `gw-o4` `batch-must-close`
@@ -306,8 +308,9 @@ JSON, no timestamps).
 
 - **k=5 flake baseline — GREEN (ADVISORY).** All 16 reference solutions pass k=5/5
   through the real grade seam (`bench corpus baseline --runner local-exec` against
-  the `--solutions` trees; this committed run predates `gw-r5b`, whose byte-identical
-  `gw-r5` trees await their own baseline in the mechanism-decomposition program). The
+  the `--solutions` trees; this committed run predates `gw-r5b`, which was baselined
+  separately on the trusted Docker tier — k=5 clean, then admitted — in the
+  mechanism-decomposition program, 2026-07-10). The
   `gw-r2` exemplar-violation QUARANTINES and a null
   task's alternative implementation stays CLEAN through that same seam — so the gate
   bites in the harness path, not only in the builder's `--check`. The `flake_baseline`
