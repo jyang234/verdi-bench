@@ -56,6 +56,7 @@ _SHIPPED_CLI = ["claude", "--print", "--permission-mode", "bypassPermissions", "
 _AVAILABILITY = {"tools": ["groundwork"]}
 _TREATMENT = {"tools": ["groundwork"], "workflow": "ground_verify"}
 _ENFORCED = {"tools": ["groundwork"], "workflow": "ground_verify_enforced"}
+_PLACEBO = {"tools": ["groundwork"], "workflow": "placebo_gate"}
 
 
 def _load(module_name: str, path: Path):
@@ -490,6 +491,58 @@ def test_enforcement_hook_is_valid_python():
     by ``python3`` in the trial container, so a syntax error would silently disable
     enforcement on every enforced trial."""
     compile(agent.ENFORCEMENT_HOOK_PY, "<enforcement_hook>", "exec")
+
+
+# --- placebo_gate: the mechanism-decomposition control ----------------------
+# [design: docs/design/mechanism-decomposition-program.md, piece 1] The placebo
+# arm is byte-identical to rung 3 EXCEPT the hook: same tools, same rung-2
+# prompt token, same rounds/settings machinery — but the hook runs NO gate and
+# blocks with ONE static, content-free reason. Any rescue it produces is
+# attributable to forced re-review alone.
+
+
+def test_placebo_plan_arms_static_hook_without_gate_inputs():
+    plan = agent.plan_groundwork(_PLACEBO, home="/h", workspace="/w")
+    files = dict(plan.files)
+    assert files["/h/verdi-enforce/rounds"] == "0"
+    assert files["/h/verdi-enforce/stop_hook.py"] == agent.PLACEBO_HOOK_PY
+    assert "/h/.claude/settings.json" in files
+    # the placebo reads no gate inputs: no tamper-proof base graph/policy copies
+    assert plan.file_copies == ()
+
+
+def test_placebo_argv_is_byte_identical_to_rung2_and_rung3():
+    args = {
+        wf: agent.plan_groundwork(p, home="/h", workspace="/w").cli_extra_args
+        for wf, p in (("r2", _TREATMENT), ("r3", _ENFORCED), ("placebo", _PLACEBO))
+    }
+    assert args["placebo"] == args["r2"] == args["r3"]
+
+
+def test_placebo_hook_is_valid_python_and_runs_no_gate():
+    compile(agent.PLACEBO_HOOK_PY, "stop_hook.py", "exec")
+    # structurally incapable of consulting the gate or the map
+    assert "subprocess" not in agent.PLACEBO_HOOK_PY
+    assert "/opt/groundwork/bin" not in agent.PLACEBO_HOOK_PY
+    assert "flowmap" not in agent.PLACEBO_HOOK_PY
+    assert "policy.json" not in agent.PLACEBO_HOOK_PY
+    assert "graph" not in agent.PLACEBO_HOOK_PY
+
+
+def test_placebo_block_reason_is_static_and_content_free():
+    assert (
+        "Review your changes for policy compliance before finishing."
+        in agent.PLACEBO_HOOK_PY
+    )
+    # never leaks rule names, findings vocabulary, or verdict strings
+    for token in ("must_not_reach", "no_concurrent_reach", "must_pass_through",
+                  "io_budget", "STRUCTURALLY", "new_violations"):
+        assert token not in agent.PLACEBO_HOOK_PY
+
+
+def test_placebo_without_groundwork_tool_raises():
+    with pytest.raises(ValueError, match="workflow"):
+        agent.plan_groundwork({"workflow": "placebo_gate"})
 
 
 # --- main(): the CLI runs in JSON mode and persists the native result --------
