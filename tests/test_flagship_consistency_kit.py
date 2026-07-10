@@ -223,6 +223,50 @@ def test_workflow_enforced_writes_enforced_payload(corpus_out: Path, tmp_path: P
 
 
 # --------------------------------------------------------------------------- #
+# mechanism-decomposition workflows [design: docs/design/
+# mechanism-decomposition-program.md]: placebo_gate + policy_pointer
+# --------------------------------------------------------------------------- #
+
+def test_mechanism_decomposition_payloads_exact():
+    assert ac.GROUNDED_PAYLOADS_BY_WORKFLOW["placebo_gate"] == {
+        "tools": ["groundwork"], "workflow": "placebo_gate"}
+    assert ac.GROUNDED_PAYLOADS_BY_WORKFLOW["policy_pointer"] == {
+        "system_prompt_extra": "policy_pointer"}
+
+
+def test_treatment_arm_suffix_per_workflow(corpus_out: Path, tmp_path: Path):
+    # historical rungs keep <tier>-grounded byte-identically; the new
+    # treatments get honest names — an arm labeled "grounded" that stages no
+    # tool (pointer) would be a mislabeled condition.
+    cases = {"ground_verify": "haiku-grounded", "placebo_gate": "haiku-placebo",
+             "policy_pointer": "haiku-pointer"}
+    for wf, arm in cases.items():
+        r = ac.author_consistency(
+            corpus_out, tmp_path / f"exp-{wf}", trial_image="sha256:t",
+            workflow=wf, reps=1, ceiling=35.0, quiet=True, tasks=["gw-r5"])
+        assert r.grounded_arm == arm, wf
+        assert r.bare_arm == "haiku-bare", wf
+
+
+def test_kit_payloads_are_armable_by_the_trial_agent():
+    """Parity fence: every payload the kit can author must be a payload the
+    trial image's plan_groundwork accepts — a kit entry the agent refuses
+    would fail every treated trial mid-run, after real spend on the bare arm."""
+    import importlib.util
+
+    img = _REPO / "images" / "reference" / "claude-code-groundwork" / "agent.py"
+    base = _REPO / "images" / "base"
+    if str(base) not in sys.path:
+        sys.path.insert(0, str(base))
+    spec = importlib.util.spec_from_file_location("_kit_parity_agent", img)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["_kit_parity_agent"] = mod
+    spec.loader.exec_module(mod)
+    for wf, payload in ac.GROUNDED_PAYLOADS_BY_WORKFLOW.items():
+        mod.plan_groundwork(dict(payload), home="/h", workspace="/w")  # must not raise
+
+
+# --------------------------------------------------------------------------- #
 # author_consistency: cross-model baseline (--model)
 # --------------------------------------------------------------------------- #
 def test_tier_derivation_and_refusal():

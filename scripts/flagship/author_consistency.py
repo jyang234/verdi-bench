@@ -42,6 +42,16 @@ enforcement Stop hook armed in arm-time filesystem. The grounded payload is buil
 HERE (not from ``_groundwork_lib.GROUNDED_PAYLOAD`` — ``author_pilot``'s §6
 semantics stay untouched). Everything else is identical per rung+model.
 
+MECHANISM-DECOMPOSITION treatments (design:
+``docs/design/mechanism-decomposition-program.md``) isolate WHICH part of the
+enforced rung earns the effect: ``placebo_gate`` carries rung 3's payload shape but
+the placebo workflow, arming a static-reason Stop hook (all mechanics of enforcement,
+none of the grounding signal). ``policy_pointer`` is PROMPT-ONLY — it stages no tool
+at all, only a ``system_prompt_extra`` pointer the trial agent maps to a pre-registered
+prompt. Their treatment arms carry HONEST names — ``<tier>-placebo`` / ``<tier>-pointer``
+— because an arm labeled ``grounded`` that stages no tool would be a mislabeled
+condition; the three historical rungs keep ``<tier>-grounded`` byte-identically.
+
 An OPTIONAL ``--tasks`` authors an EXPLICIT task-id subset (each validated against
 the corpus; unknown/empty refused loudly, no partial write); omitted, it authors all
 16 byte-identically. The corpus is still verified to be the full 16 either way.
@@ -118,6 +128,26 @@ GROUNDED_PAYLOADS_BY_WORKFLOW: dict[str, dict] = {
     "availability": {"tools": ["groundwork"]},
     "ground_verify": {"tools": ["groundwork"], "workflow": "ground_verify"},
     "ground_verify_enforced": {"tools": ["groundwork"], "workflow": "ground_verify_enforced"},
+    # mechanism-decomposition treatments [design:
+    # docs/design/mechanism-decomposition-program.md]: the placebo carries
+    # rung 3's payload shape with the placebo workflow (the trial image swaps
+    # the hook); the pointer is PROMPT-ONLY — no tools key at all (the image's
+    # system_prompt_extra arming path; combining would be refused by the agent).
+    "placebo_gate": {"tools": ["groundwork"], "workflow": "placebo_gate"},
+    "policy_pointer": {"system_prompt_extra": "policy_pointer"},
+}
+
+# The treatment arm's name suffix per workflow. The three historical rungs stay
+# "<tier>-grounded" BYTE-IDENTICALLY (re-authoring a historical experiment must
+# reproduce it); the new treatments get honest names — an arm labeled
+# "grounded" that stages no tool would be a mislabeled condition in every
+# ledger event and report.
+ARM_SUFFIX_BY_WORKFLOW: dict[str, str] = {
+    "availability": "grounded",
+    "ground_verify": "grounded",
+    "ground_verify_enforced": "grounded",
+    "placebo_gate": "placebo",
+    "policy_pointer": "pointer",
 }
 
 
@@ -294,7 +324,8 @@ def author_consistency(corpus_out, out, *, trial_image: str, workflow: str,
     corpus_out, out = Path(corpus_out), Path(out)
     payload = grounded_payload_for(workflow)  # refuses an unknown rung before any write
     tier = derive_tier(model)  # refuses an underivable id before any write
-    grounded_arm, bare_arm = f"{tier}-grounded", f"{tier}-bare"
+    grounded_arm = f"{tier}-{ARM_SUFFIX_BY_WORKFLOW[workflow]}"
+    bare_arm = f"{tier}-bare"
     # Price by costmodel's matching constant when one exists (haiku, opus); an
     # unpriced tier projects UNKNOWN and demands an explicitly-chosen ceiling.
     cost = (costmodel.est_cost_per_trial(tier)
@@ -399,7 +430,11 @@ def main() -> int:
                     choices=sorted(GROUNDED_PAYLOADS_BY_WORKFLOW),
                     help="the treatment rung — REQUIRED, never defaulted: availability "
                          "(tool armed, no instruction) or ground_verify (adds the "
-                         "pre-registered instructed system prompt)")
+                         "pre-registered instructed system prompt). The mechanism "
+                         "decomposition adds placebo_gate (a static-reason Stop hook — "
+                         "enforcement mechanics, no grounding — authored as <tier>-placebo) "
+                         "and policy_pointer (a PROMPT-ONLY system_prompt_extra, no tool, "
+                         "authored as <tier>-pointer)")
     ap.add_argument("--trial-image", required=True,
                     help="digest-pinned claude-code-groundwork image ref for the harbor run")
     ap.add_argument("--tasks", default=None,
