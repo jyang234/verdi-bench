@@ -27,7 +27,7 @@ import pytest
 from harness.adapters.otlp import OtlpAdapter
 from harness.hermetic.network import METERED_NETWORK
 from harness.hermetic.otlp_decode import SPANS_FILENAME, decode_envelope_lines, persist_spans
-from harness.hermetic.tracing import MANAGED_COLLECTOR_NAME, TraceCollector
+from harness.hermetic.tracing import TraceCollector
 from harness.run.trajectory import TrajectoryRecord, persist_trajectory, resolve_trajectory
 from tests.fixtures.docker import DOCKER_AVAILABLE
 
@@ -111,9 +111,10 @@ def test_live_spans_normalize_to_a_verified_trajectory(emitter_image, tmp_path):
     """real OTel SDK → collector → decode → persist_spans → normalize →
     persist_trajectory → resolve_trajectory == verified."""
     log = tmp_path / "otlp" / "otlp.jsonl"
-    _rm(_EMITTER, MANAGED_COLLECTOR_NAME)
+    collector = TraceCollector.managed(log_path=log, keep_raw=True)
+    _rm(_EMITTER, collector.name)
     try:
-        with TraceCollector.managed(log_path=log, keep_raw=True) as cfg:
+        with collector as cfg:
             proc = subprocess.run(
                 [
                     "docker", "run", "--rm", "--name", _EMITTER,
@@ -156,5 +157,5 @@ def test_live_spans_normalize_to_a_verified_trajectory(emitter_image, tmp_path):
             assert [s.kind for s in resolved.steps] == ["message"]
             assert spans_sha and traj_sha  # both artifacts are chain-bound
     finally:
-        _rm(_EMITTER, MANAGED_COLLECTOR_NAME)
+        _rm(_EMITTER, collector.name)
         subprocess.run(["docker", "network", "rm", METERED_NETWORK], capture_output=True)

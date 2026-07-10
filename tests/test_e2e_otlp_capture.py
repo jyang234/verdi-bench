@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.hermetic.metering import MANAGED_PROXY_NAME, MeteringProxy
+from harness.hermetic.metering import MeteringProxy
 from harness.hermetic.network import EGRESS_NETWORK, METERED_NETWORK
 from harness.hermetic.otlp_decode import (
     SPANS_FILENAME,
@@ -37,7 +37,7 @@ from harness.hermetic.otlp_decode import (
     resolve_spans,
     spans_sha256,
 )
-from harness.hermetic.tracing import MANAGED_COLLECTOR_NAME, TraceCollector
+from harness.hermetic.tracing import TraceCollector
 from tests.fixtures.docker import DOCKER_AVAILABLE
 
 pytestmark = pytest.mark.docker
@@ -123,12 +123,13 @@ def _await_trial_lines(log_path: str) -> list[dict]:
 @pytest.mark.skipif(not DOCKER_AVAILABLE, reason="no docker daemon available")
 def test_otlp_capture_round_trips_through_the_managed_collector(emitter_image, tmp_path):
     log = tmp_path / "otlp" / "otlp.jsonl"
-    _rm(_EMITTER, MANAGED_COLLECTOR_NAME)
+    collector = TraceCollector.managed(log_path=log, keep_raw=True)
+    _rm(_EMITTER, collector.name)
     try:
         # keep_raw so the assertions can read the envelope log; the D-09-1 default
         # delete-on-teardown is unit-tested in test_otlp_tracing.py.
-        with TraceCollector.managed(log_path=log, keep_raw=True) as cfg:
-            assert cfg.endpoint == f"http://{MANAGED_COLLECTOR_NAME}:4318"
+        with collector as cfg:
+            assert cfg.endpoint == f"http://{collector.name}:4318"
             proc = subprocess.run(
                 [
                     "docker", "run", "--rm", "--name", _EMITTER,
@@ -162,7 +163,7 @@ def test_otlp_capture_round_trips_through_the_managed_collector(emitter_image, t
             assert status == "verified"
             assert resolved.batches[0].resource_spans  # OTLP resourceSpans passed through
     finally:
-        _rm(_EMITTER, MANAGED_COLLECTOR_NAME)
+        _rm(_EMITTER, collector.name)
         subprocess.run(["docker", "network", "rm", METERED_NETWORK], capture_output=True)
 
 
@@ -175,13 +176,14 @@ def test_no_proxy_lets_the_collector_bypass_the_metering_proxy(emitter_image, tm
     and the collector produces ZERO lines in the proxy log."""
     proxy_log = tmp_path / "metering" / "verdi.jsonl"
     otlp_log = tmp_path / "otlp" / "otlp.jsonl"
-    _rm(_EMITTER, MANAGED_COLLECTOR_NAME, MANAGED_PROXY_NAME)
+    proxy = MeteringProxy.managed(["api.anthropic.com"], log_path=proxy_log)
+    collector = TraceCollector.managed(log_path=otlp_log, keep_raw=True)
+    _rm(_EMITTER, collector.name, proxy.name)
     try:
         # allowlist deliberately EXCLUDES the collector: if a span post ever routed
         # through the proxy it would be refused, so a success proves the bypass.
-        with MeteringProxy.managed(["api.anthropic.com"], log_path=proxy_log), \
-                TraceCollector.managed(log_path=otlp_log, keep_raw=True) as cfg:
-            proxy_url = f"http://{_TRIAL}@{MANAGED_PROXY_NAME}:3128"
+        with proxy, collector as cfg:
+            proxy_url = f"http://{_TRIAL}@{proxy.name}:3128"
             proc = subprocess.run(
                 [
                     "docker", "run", "--rm", "--name", _EMITTER,
@@ -192,7 +194,7 @@ def test_no_proxy_lets_the_collector_bypass_the_metering_proxy(emitter_image, tm
                     # ...plus the OTLP env, with the collector pinned OUT of the proxy
                     "--env", f"OTEL_EXPORTER_OTLP_ENDPOINT={cfg.endpoint}",
                     "--env", f"OTEL_EXPORTER_OTLP_HEADERS=x-verdi-trial={_TRIAL}",
-                    "--env", f"NO_PROXY={MANAGED_COLLECTOR_NAME}",
+                    "--env", f"NO_PROXY={collector.name}",
                     emitter_image,
                 ],
                 capture_output=True, text=True, timeout=120,
@@ -212,12 +214,12 @@ def test_no_proxy_lets_the_collector_bypass_the_metering_proxy(emitter_image, tm
             ]
             collector_lines = [
                 r for r in proxy_lines
-                if MANAGED_COLLECTOR_NAME in str(r.get("host", ""))
+                if collector.name in str(r.get("host", ""))
             ]
             assert collector_lines == [], (
                 f"collector traffic polluted the proxy log: {collector_lines}"
             )
     finally:
-        _rm(_EMITTER, MANAGED_COLLECTOR_NAME, MANAGED_PROXY_NAME)
+        _rm(_EMITTER, collector.name, proxy.name)
         for net in (EGRESS_NETWORK, METERED_NETWORK):
             subprocess.run(["docker", "network", "rm", net], capture_output=True)

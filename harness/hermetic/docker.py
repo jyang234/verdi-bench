@@ -151,6 +151,13 @@ class HardenedCommand:
         self._argv += ["--env", f"{key}={value}"]
         return self
 
+    def label(self, key: str, value: str) -> "HardenedCommand":
+        """``--label KEY=VALUE``: an ownership tag a lifecycle op can filter on, so a
+        teardown removes only the containers it owns instead of a shared name
+        (the managed-sidecar ownership sweep — incident 2026-07-10)."""
+        self._argv += ["--label", f"{key}={value}"]
+        return self
+
     def e_env(self, key: str, value: str) -> "HardenedCommand":
         """``-e KEY=VALUE`` — grade's spelling for the per-grade fence nonce."""
         self._argv += ["-e", f"{key}={value}"]

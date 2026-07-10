@@ -127,6 +127,14 @@ def test_env_spellings_distinct():
     ]
 
 
+def test_label_builder_emits_key_value():
+    """``--label KEY=VALUE`` — the ownership tag a label-scoped teardown filters on,
+    so a lifecycle op removes only containers it owns (incident 2026-07-10)."""
+    assert HardenedCommand().label("verdi.managed-sidecar", "metering-proxy").build()[2:] == [
+        "--label", "verdi.managed-sidecar=metering-proxy",
+    ]
+
+
 def test_builder_reproduces_harbor_trial_shape(tmp_path):
     """The full harbor trial argv (proxy + quotas + key + request mount) built
     through the shared recipe matches the hand-pinned byte sequence."""
@@ -209,8 +217,8 @@ def test_metering_proxy_injects_allowlist_and_yields_config(tmp_path):
     (never a hardcoded set), connects egress, and yields a wired ProxyConfig."""
     d = _RecordingDocker(script={("docker", "network", "inspect"): 1})  # networks absent
     log = tmp_path / "metering" / "verdi.jsonl"
-    cfg = MeteringProxy(["api.anthropic.com", "api.openai.com"],
-                        log_path=log, docker=d).start()
+    mp = MeteringProxy(["api.anthropic.com", "api.openai.com"], log_path=log, docker=d)
+    cfg = mp.start()
     flat = [" ".join(c) for c in d.calls]
     # both networks created, internal on the metered side
     assert any("network create --internal verdi-metered" in f for f in flat)
@@ -219,13 +227,15 @@ def test_metering_proxy_injects_allowlist_and_yields_config(tmp_path):
     run_cmd = next(c for c in d.calls if c[:2] == ["docker", "run"])
     assert "VERDI_PROXY_ALLOW=api.anthropic.com,api.openai.com" in run_cmd
     assert any(t.startswith("PROXY_LOG=") for t in run_cmd)
-    # the proxy is attached to egress and the config points trials at it
+    # the proxy is attached to egress and the config points trials at THIS instance's
+    # unique name (never a shared bare name — incident 2026-07-10)
     assert any(c[:3] == ["docker", "network", "connect"] and "verdi-egress" in c for c in d.calls)
-    assert cfg.proxy_url == "http://verdi-metering-proxy:3128"
+    assert cfg.proxy_url == f"http://{mp.name}:3128"
+    assert mp.name.startswith("verdi-metering-proxy-")
     assert cfg.log_path == str(log)
     assert cfg.allowlist == ["api.anthropic.com", "api.openai.com"]
     # readiness is a probe, not a fixed wait
-    assert any(c[:3] == ["docker", "exec", "verdi-metering-proxy"] for c in d.calls)
+    assert any(c[:3] == ["docker", "exec", mp.name] for c in d.calls)
 
 
 # --- MeteringProxy reverse listeners [RN-11] -------------------------------
@@ -276,7 +286,7 @@ def test_metering_proxy_teardown_removes_container_and_networks(tmp_path):
     mp = MeteringProxy(["h"], log_path=tmp_path / "p.jsonl", docker=d)
     mp.stop()
     flat = [" ".join(c) for c in d.calls]
-    assert any("rm -f verdi-metering-proxy" in f for f in flat)
+    assert any(f"rm -f {mp.name}" in f for f in flat)  # this instance's own name
     assert any("network rm verdi-egress" in f for f in flat)
     assert any("network rm verdi-metered" in f for f in flat)
 
@@ -306,3 +316,76 @@ def test_metering_proxy_honors_custom_log_basename(tmp_path):
     run_call = next(c for c in d.calls if c[:2] == ["docker", "run"] and "-d" in c)
     env_tokens = [run_call[i + 1] for i, t in enumerate(run_call) if t in ("--env", "-e")]
     assert "PROXY_LOG=/var/log/verdi/custom-egress.jsonl" in env_tokens, env_tokens
+
+
+# --- instance-unique names + label-scoped teardown (incident 2026-07-10) ----
+# A fixed global container name let any lifecycle actor operate on a name it did
+# not own: a concurrent e2e cleanup removed a LIVE harbor run's proxy and
+# invalidated 21/24 trials, and two concurrent ``bench run``s would kill each
+# other's proxy via ``start()``'s stale-sweep. The fix: instance-unique default
+# names + an ownership label the teardown sweeps on.
+class _SweepDocker:
+    """A DockerClient stand-in whose label-filtered ``docker ps`` returns scripted
+    container ids, so the label-scoped teardown's discover-then-remove is checkable."""
+
+    def __init__(self, ids):
+        self.calls: list[list[str]] = []
+        self._ids = list(ids)
+
+    def run(self, argv, **kw):
+        self.calls.append(list(argv))
+        stdout = "\n".join(self._ids) + "\n" if argv[:2] == ["docker", "ps"] else ""
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    def daemon_available(self):
+        return True
+
+
+def test_two_default_proxies_get_distinct_names(tmp_path):
+    """Two default proxies must NOT share a container name — a shared name lets one
+    lifecycle op remove the other's live container. Both carry the constant as a
+    prefix; a deterministic per-instance suffix (pid+counter, no randomness) diverges
+    them. Pure constructor — no docker."""
+    a = MeteringProxy([], log_path=tmp_path / "a.jsonl")
+    b = MeteringProxy([], log_path=tmp_path / "b.jsonl")
+    assert a.name != b.name, "default proxies collided on a global name"
+    assert a.name.startswith("verdi-metering-proxy-")
+    assert b.name.startswith("verdi-metering-proxy-")
+
+
+def test_metering_proxy_stand_up_carries_ownership_label(tmp_path):
+    """Every managed proxy container is tagged ``verdi.managed-sidecar=metering-proxy``
+    so teardown can sweep by ownership rather than by a shared name."""
+    d = _RecordingDocker(script={("docker", "network", "inspect"): 1})
+    MeteringProxy([], log_path=tmp_path / "p.jsonl", docker=d).start()
+    run_cmd = next(c for c in d.calls if c[:2] == ["docker", "run"])
+    assert "--label" in run_cmd, run_cmd
+    assert run_cmd[run_cmd.index("--label") + 1] == "verdi.managed-sidecar=metering-proxy"
+
+
+def test_teardown_managed_sweeps_by_label_when_no_name():
+    """Default ``teardown_managed`` removes EVERY container this kind owns (label
+    filter), never a bare shared name — so it cannot miss a suffixed live proxy nor
+    remove an unrelated bare-name container."""
+    from harness.hermetic.metering import teardown_managed
+
+    d = _SweepDocker(["cid1", "cid2"])
+    teardown_managed(docker=d)
+    flat = [" ".join(c) for c in d.calls]
+    assert any(
+        "ps -aq --filter label=verdi.managed-sidecar=metering-proxy" in f for f in flat
+    ), flat
+    assert any("rm -f cid1" in f for f in flat)
+    assert any("rm -f cid2" in f for f in flat)
+
+
+def test_teardown_managed_removes_exact_name_when_given():
+    """An explicit ``name=`` removes exactly that container (operator escape hatch),
+    with no label sweep."""
+    from harness.hermetic.metering import teardown_managed
+
+    d = _SweepDocker([])
+    teardown_managed(docker=d, name="verdi-metering-proxy-42-1")
+    flat = [" ".join(c) for c in d.calls]
+    assert any("rm -f verdi-metering-proxy-42-1" in f for f in flat)
+    assert not any("--filter" in c for c in d.calls), "exact name must not sweep by label"

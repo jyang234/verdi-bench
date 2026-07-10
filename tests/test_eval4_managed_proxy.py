@@ -161,7 +161,8 @@ def test_bench_proxy_up_and_down(monkeypatch, tmp_path):
 
     r2 = CliRunner().invoke(app, ["proxy", "down"])
     assert r2.exit_code == 0, r2.output
-    assert torn.get("name") == "verdi-metering-proxy"
+    # default `bench proxy down` sweeps by ownership label, not a bare shared name
+    assert torn.get("name") is None
 
 
 def test_bench_run_aborts_on_managed_proxy_failure(monkeypatch, tmp_path):

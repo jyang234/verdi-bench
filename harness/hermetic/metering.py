@@ -45,7 +45,13 @@ from harness.hermetic.network import (
     create_network,
     remove_network,
 )
-from harness.hermetic.sidecar import ManagedSidecar, remove_managed_container
+from harness.hermetic.sidecar import (
+    SIDECAR_LABEL,
+    ManagedSidecar,
+    _instance_suffix,
+    remove_labeled_sidecars,
+    remove_managed_container,
+)
 from harness.run.types import ProxyConfig
 
 # The pinned base image the packaged proxy runs in — a multi-arch manifest-list
@@ -56,9 +62,13 @@ PROXY_BASE_IMAGE = os.environ.get(
     "python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df",
 )
 
-# The managed proxy's container name — resolvable by name on the metered network,
-# so a trial's ``HTTP(S)_PROXY=http://<trial-id>@verdi-metering-proxy:3128`` finds
-# it. Matches deploy/metering-proxy/docker-compose.yml's ``container_name``.
+# The managed proxy's container-name PREFIX — a managed instance appends a unique
+# suffix (``verdi-metering-proxy-<pid>-<n>``) so concurrent lifecycle ops never
+# collide on one shared name (incident 2026-07-10); a trial reaches it by the exact
+# name carried in its ``ProxyConfig.proxy_url`` (resolvable on the metered network),
+# never a hardcoded bare name. The external docker-compose deployment keeps the bare
+# ``container_name`` (deploy/metering-proxy/docker-compose.yml); a caller that wants
+# that parity passes ``name=MANAGED_PROXY_NAME`` explicitly (honored verbatim).
 MANAGED_PROXY_NAME = "verdi-metering-proxy"
 PROXY_PORT = 3128
 # Reverse-listener ports [RN-11]: allowlist entry i (deterministic order — a
@@ -85,6 +95,7 @@ class MeteringProxy(ManagedSidecar):
     port = PROXY_PORT
     _ERROR_CLS = MeteringProxyError
     _NOUN = "metering proxy"
+    _LABEL_VALUE = "metering-proxy"
     _DAEMON_UNAVAILABLE_MESSAGE = (
         "docker daemon is unavailable — cannot stand up the managed "
         "metering proxy; run without proxy.managed or start docker"
@@ -99,8 +110,13 @@ class MeteringProxy(ManagedSidecar):
         log_path: Optional[Path] = None,
         image: str = PROXY_BASE_IMAGE,
         docker: Optional[DockerClient] = None,
-        name: str = MANAGED_PROXY_NAME,
+        name: Optional[str] = None,
     ) -> None:
+        # An absent name gets an instance-unique default (prefix + pid/counter) so two
+        # managed proxies never share a name; an explicit name is honored verbatim (the
+        # operator escape hatch / docker-compose bare-name parity).
+        if name is None:
+            name = f"{MANAGED_PROXY_NAME}-{_instance_suffix()}"
         self._allow = list(allow)
         self._proxy_src = Path(__file__).resolve().parent / "_proxy_container.py"
         # log-dir/basename resolution: an explicit path is honored as-is (its
@@ -127,6 +143,7 @@ class MeteringProxy(ManagedSidecar):
             HardenedCommand()
             .detach()
             .name(self._name)
+            .label(SIDECAR_LABEL, self._LABEL_VALUE)
             .network(METERED_NETWORK)
             .harden()
             .user()
@@ -206,13 +223,20 @@ class MeteringProxy(ManagedSidecar):
         remove_network(self._docker, METERED_NETWORK)
 
 
-def teardown_managed(docker: Optional[DockerClient] = None, *, name: str = MANAGED_PROXY_NAME) -> None:
-    """Remove the managed proxy container + its networks by their known names.
+def teardown_managed(docker: Optional[DockerClient] = None, *, name: Optional[str] = None) -> None:
+    """Remove managed metering-proxy container(s) + the proxy networks.
 
-    The ``bench proxy down`` verb's worker — a standalone teardown that does not
-    need the originating :class:`MeteringProxy` object (the names are constants).
+    The ``bench proxy down`` verb's worker — a standalone teardown needing no
+    originating :class:`MeteringProxy` object. Default (``name=None``): sweep by
+    ownership label, removing EVERY container this kind owns — so a suffixed live
+    proxy is found and a bare-name container that is not ours is left alone (incident
+    2026-07-10). An explicit ``name`` removes exactly that container (the operator
+    escape hatch, e.g. the docker-compose bare-name deployment).
     """
     docker = docker or DockerClient()
-    remove_managed_container(name, docker)
+    if name is not None:
+        remove_managed_container(name, docker)
+    else:
+        remove_labeled_sidecars(MeteringProxy._LABEL_VALUE, docker)
     remove_network(docker, EGRESS_NETWORK)
     remove_network(docker, METERED_NETWORK)

@@ -36,16 +36,24 @@ from harness.errors import VerdiRefusal
 from harness.hermetic.docker import DockerClient, HardenedCommand
 from harness.hermetic.metering import PROXY_BASE_IMAGE
 from harness.hermetic.network import METERED_NETWORK, create_network, remove_network
-from harness.hermetic.sidecar import ManagedSidecar, remove_managed_container
+from harness.hermetic.sidecar import (
+    SIDECAR_LABEL,
+    ManagedSidecar,
+    _instance_suffix,
+    remove_labeled_sidecars,
+    remove_managed_container,
+)
 
 # The collector shares the proxy's pinned base image (the same ``python3`` runs
 # both stdlib sidecars) so the digest lives in exactly one place [refactor 04 §1].
 # Overridable so a CI/other-platform runner can re-pin without a code change.
 COLLECTOR_BASE_IMAGE = os.environ.get("VERDI_COLLECTOR_IMAGE", PROXY_BASE_IMAGE)
 
-# The managed collector's container name — resolvable by name on the metered
-# network, so a trial's ``OTEL_EXPORTER_OTLP_ENDPOINT=http://verdi-trace-collector:4318``
-# finds it. Single-constant discipline, like ``MANAGED_PROXY_NAME``/``METERED_NETWORK``.
+# The managed collector's container-name PREFIX — a managed instance appends a unique
+# suffix (``verdi-trace-collector-<pid>-<n>``) so concurrent lifecycle ops never
+# collide on one shared name (incident 2026-07-10); a trial reaches it by the exact
+# name carried in its ``CollectorConfig.endpoint``, never a hardcoded bare name. An
+# explicit ``name`` is honored verbatim (the operator escape hatch).
 MANAGED_COLLECTOR_NAME = "verdi-trace-collector"
 COLLECTOR_PORT = 4318
 _CONTAINER_LOG = "/var/log/verdi/otlp.jsonl"
@@ -77,6 +85,7 @@ class TraceCollector(ManagedSidecar):
     port = COLLECTOR_PORT
     _ERROR_CLS = TraceCollectorError
     _NOUN = "trace collector"
+    _LABEL_VALUE = "otlp-collector"
     _DAEMON_UNAVAILABLE_MESSAGE = (
         "docker daemon is unavailable — cannot stand up the managed trace "
         "collector; run without otlp.managed or start docker"
@@ -91,8 +100,12 @@ class TraceCollector(ManagedSidecar):
         keep_raw: bool = False,
         image: str = COLLECTOR_BASE_IMAGE,
         docker: Optional[DockerClient] = None,
-        name: str = MANAGED_COLLECTOR_NAME,
+        name: Optional[str] = None,
     ) -> None:
+        # An absent name gets an instance-unique default (prefix + pid/counter) so two
+        # managed collectors never share a name; an explicit name is honored verbatim.
+        if name is None:
+            name = f"{MANAGED_COLLECTOR_NAME}-{_instance_suffix()}"
         self._keep_raw = keep_raw
         self._collector_src = Path(__file__).resolve().parent / "_collector_container.py"
         # log-dir/basename resolution: an explicit path is honored as-is (its
@@ -123,6 +136,7 @@ class TraceCollector(ManagedSidecar):
             HardenedCommand()
             .detach()
             .name(self._name)
+            .label(SIDECAR_LABEL, self._LABEL_VALUE)
             .network(METERED_NETWORK)
             .harden()
             .user()
@@ -168,20 +182,26 @@ class TraceCollector(ManagedSidecar):
 def teardown_managed(
     docker: Optional[DockerClient] = None,
     *,
-    name: str = MANAGED_COLLECTOR_NAME,
+    name: Optional[str] = None,
     log_path: Optional[Path] = None,
     keep_raw: bool = False,
 ) -> None:
-    """Remove the managed collector container + its metered network by their known
-    names — the ``bench otlp down`` worker.
+    """Remove managed collector container(s) + the metered network — the ``bench otlp
+    down`` worker.
 
-    A standalone teardown (the names are constants), so it does not need the
-    originating :class:`TraceCollector`. It removes the metered network best-effort
-    (a live metering proxy still holding it makes the rm a no-op), and applies the
-    D-09-1 default: delete ``log_path`` unless ``keep_raw`` [refactor 09 §3, §6].
+    A standalone teardown needing no originating :class:`TraceCollector`. Default
+    (``name=None``): sweep by ownership label, removing EVERY collector this kind owns
+    — so a suffixed live collector is found and a container that is not ours is left
+    alone (incident 2026-07-10); an explicit ``name`` removes exactly that container.
+    It removes the metered network best-effort (a live metering proxy still holding it
+    makes the rm a no-op), and applies the D-09-1 default: delete ``log_path`` unless
+    ``keep_raw`` [refactor 09 §3, §6].
     """
     docker = docker or DockerClient()
-    remove_managed_container(name, docker)
+    if name is not None:
+        remove_managed_container(name, docker)
+    else:
+        remove_labeled_sidecars(TraceCollector._LABEL_VALUE, docker)
     remove_network(docker, METERED_NETWORK)
     if log_path is not None and not keep_raw:
         p = Path(log_path)

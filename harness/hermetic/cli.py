@@ -15,13 +15,11 @@ from typing import Optional
 import typer
 
 from harness.hermetic.metering import (
-    MANAGED_PROXY_NAME,
     MeteringProxy,
     MeteringProxyError,
     teardown_managed,
 )
 from harness.hermetic.tracing import (
-    MANAGED_COLLECTOR_NAME,
     TraceCollector,
     TraceCollectorError,
 )
@@ -65,13 +63,21 @@ def register(app: typer.Typer) -> None:
 
     @proxy_app.command("down")
     def proxy_down(
-        name: str = typer.Option(
-            MANAGED_PROXY_NAME, "--name", help="Proxy container name to remove"
+        name: Optional[str] = typer.Option(
+            None,
+            "--name",
+            help="Exact proxy container name to remove; omit to sweep every "
+            "managed metering proxy by its ownership label (the default)",
         ),
     ) -> None:
-        """Remove the managed proxy container and its metered + egress networks."""
+        """Remove the managed proxy container(s) and their metered + egress networks.
+
+        Default: sweep by ownership label (every managed metering proxy). ``--name``
+        removes exactly that container — a lifecycle op can no longer remove a proxy
+        it does not own (incident 2026-07-10)."""
         teardown_managed(name=name)
-        typer.echo(f"metering proxy {name!r} and its networks removed")
+        scope = f"{name!r}" if name is not None else "all managed metering proxies"
+        typer.echo(f"metering proxy {scope} and networks removed")
 
     otlp_app = typer.Typer(
         help="Managed OTLP trace-collector lifecycle [refactor 09 §3].", no_args_is_help=True
@@ -116,8 +122,11 @@ def register(app: typer.Typer) -> None:
 
     @otlp_app.command("down")
     def otlp_down(
-        name: str = typer.Option(
-            MANAGED_COLLECTOR_NAME, "--name", help="Collector container name to remove"
+        name: Optional[str] = typer.Option(
+            None,
+            "--name",
+            help="Exact collector container name to remove; omit to sweep every "
+            "managed collector by its ownership label (the default)",
         ),
         log_path: Path = typer.Option(
             Path("verdi-otlp.jsonl"),
@@ -128,8 +137,13 @@ def register(app: typer.Typer) -> None:
             False, "--keep-raw", help="Retain the raw envelope log (D-09-1 opt-in)"
         ),
     ) -> None:
-        """Remove the managed collector container + its metered network, and delete
-        the raw envelope log unless ``--keep-raw`` (the D-09-1 default) [refactor 09 §6]."""
+        """Remove the managed collector container(s) + the metered network, and delete
+        the raw envelope log unless ``--keep-raw`` (the D-09-1 default) [refactor 09 §6].
+
+        Default: sweep by ownership label (every managed collector). ``--name`` removes
+        exactly that container — a lifecycle op can no longer remove a collector it does
+        not own (incident 2026-07-10)."""
         teardown_collector(name=name, log_path=log_path, keep_raw=keep_raw)
+        scope = f"{name!r}" if name is not None else "all managed collectors"
         kept = "retained" if keep_raw else "removed"
-        typer.echo(f"trace collector {name!r} and its network removed; raw log {kept}")
+        typer.echo(f"trace collector {scope} and network removed; raw log {kept}")

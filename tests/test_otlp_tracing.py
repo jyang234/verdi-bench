@@ -52,7 +52,8 @@ def test_collector_stands_up_metered_only_and_yields_config(tmp_path):
     collector with COLLECTOR_LOG injected, probes readiness, and yields the endpoint."""
     d = _RecordingDocker(script={("docker", "network", "inspect"): 1})  # network absent
     log = tmp_path / "otlp" / "otlp.jsonl"
-    cfg = TraceCollector(log_path=log, docker=d).start()
+    tc = TraceCollector(log_path=log, docker=d)
+    cfg = tc.start()
     assert isinstance(cfg, CollectorConfig)
     flat = [" ".join(c) for c in d.calls]
     # the metered network is created --internal; the egress network is NEVER touched
@@ -63,17 +64,19 @@ def test_collector_stands_up_metered_only_and_yields_config(tmp_path):
     run_cmd = next(c for c in d.calls if c[:2] == ["docker", "run"])
     assert "/verdi/collector.py" in run_cmd
     assert any(t.startswith("COLLECTOR_LOG=") for t in run_cmd)
-    # readiness is a probe on the collector, not a fixed wait
-    assert any(c[:3] == ["docker", "exec", MANAGED_COLLECTOR_NAME] for c in d.calls)
-    assert cfg.endpoint == f"http://{MANAGED_COLLECTOR_NAME}:{COLLECTOR_PORT}"
+    # readiness is a probe on THIS instance's unique name, not a fixed wait
+    assert any(c[:3] == ["docker", "exec", tc.name] for c in d.calls)
+    assert tc.name.startswith("verdi-trace-collector-")
+    assert cfg.endpoint == f"http://{tc.name}:{COLLECTOR_PORT}"
     assert cfg.log_path == str(log)
 
 
 def test_collector_teardown_removes_container_and_metered_network(tmp_path):
     d = _RecordingDocker()
-    TraceCollector(log_path=tmp_path / "otlp.jsonl", docker=d).stop()
+    tc = TraceCollector(log_path=tmp_path / "otlp.jsonl", docker=d)
+    tc.stop()
     flat = [" ".join(c) for c in d.calls]
-    assert any(f"rm -f {MANAGED_COLLECTOR_NAME}" in f for f in flat)
+    assert any(f"rm -f {tc.name}" in f for f in flat)  # this instance's own name
     assert any("network rm verdi-metered" in f for f in flat)
     assert not any("verdi-egress" in f for f in flat)  # it never owned egress
 
@@ -144,6 +147,66 @@ def test_managed_owns_temp_logdir_removed_on_teardown():
     assert not logdir.exists()
 
 
+# --- instance-unique names + label-scoped teardown (incident 2026-07-10) ----
+class _SweepDocker:
+    """Records argv; a label-filtered ``docker ps`` returns scripted container ids."""
+
+    def __init__(self, ids):
+        self.calls: list[list[str]] = []
+        self._ids = list(ids)
+
+    def run(self, argv, **kw):
+        self.calls.append(list(argv))
+        stdout = "\n".join(self._ids) + "\n" if argv[:2] == ["docker", "ps"] else ""
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    def daemon_available(self):
+        return True
+
+
+def test_two_default_collectors_get_distinct_names(tmp_path):
+    """Two default collectors must NOT share a container name — a shared name lets a
+    concurrent lifecycle op remove the other's live container. Both carry the constant
+    as a prefix; a deterministic per-instance suffix diverges them. Pure constructor."""
+    a = TraceCollector(log_path=tmp_path / "a.jsonl")
+    b = TraceCollector(log_path=tmp_path / "b.jsonl")
+    assert a.name != b.name, "default collectors collided on a global name"
+    assert a.name.startswith("verdi-trace-collector-")
+    assert b.name.startswith("verdi-trace-collector-")
+
+
+def test_collector_stand_up_carries_ownership_label(tmp_path):
+    """Every managed collector container is tagged ``verdi.managed-sidecar=otlp-collector``
+    so teardown can sweep by ownership rather than by a shared name."""
+    d = _RecordingDocker(script={("docker", "network", "inspect"): 1})
+    TraceCollector(log_path=tmp_path / "otlp.jsonl", docker=d).start()
+    run_cmd = next(c for c in d.calls if c[:2] == ["docker", "run"])
+    assert "--label" in run_cmd, run_cmd
+    assert run_cmd[run_cmd.index("--label") + 1] == "verdi.managed-sidecar=otlp-collector"
+
+
+def test_teardown_managed_sweeps_collectors_by_label_when_no_name():
+    """Default ``teardown_managed`` removes EVERY collector this kind owns (label
+    filter), never a bare shared name."""
+    d = _SweepDocker(["cid1", "cid2"])
+    teardown_managed(docker=d)
+    flat = [" ".join(c) for c in d.calls]
+    assert any(
+        "ps -aq --filter label=verdi.managed-sidecar=otlp-collector" in f for f in flat
+    ), flat
+    assert any("rm -f cid1" in f for f in flat)
+    assert any("rm -f cid2" in f for f in flat)
+
+
+def test_teardown_managed_collector_removes_exact_name_when_given(tmp_path):
+    """An explicit ``name=`` removes exactly that collector, with no label sweep."""
+    d = _SweepDocker([])
+    teardown_managed(docker=d, name="verdi-trace-collector-42-1")
+    flat = [" ".join(c) for c in d.calls]
+    assert any("rm -f verdi-trace-collector-42-1" in f for f in flat)
+    assert not any("--filter" in c for c in d.calls), "exact name must not sweep by label"
+
+
 # --- operator verbs (bench otlp up/down) -------------------------------------
 def test_bench_otlp_up_and_down(monkeypatch, tmp_path):
     from harness.cli import app
@@ -170,7 +233,8 @@ def test_bench_otlp_up_and_down(monkeypatch, tmp_path):
 
     r2 = CliRunner().invoke(app, ["otlp", "down"])
     assert r2.exit_code == 0, r2.output
-    assert torn.get("name") == MANAGED_COLLECTOR_NAME
+    # default `bench otlp down` sweeps by ownership label, not a bare shared name
+    assert torn.get("name") is None
     assert torn.get("keep_raw") is False
 
 
