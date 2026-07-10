@@ -237,6 +237,28 @@ def commit_rubric(spec_path, spec: ExperimentSpec) -> str:
     return _sha256_bytes(rubric_path.read_text(encoding="utf-8").encode("utf-8"))
 
 
+# The prose pre-registration companion file, hashed into the lock when present
+# [design: docs/design/mechanism-decomposition-program.md, rider]. Prose preregs
+# were previously unhashed (gitignored, mtimes forgeable — independent review
+# §3.7); committing the bytes makes post-lock edits detectable. Optional:
+# absence is honest (not every experiment carries prose) and never refuses.
+PREREG_FILENAME = "PRE-REGISTRATION.md"
+
+
+def commit_prereg(spec_path) -> Optional[str]:
+    """Preflight: commit the prose pre-registration's content hash, if present.
+
+    Bytes-hash (like ``spec_sha256``), not normalized text: the file is
+    instrument-side prose, never checked out cross-platform by the grader.
+    ``None`` when no ``PRE-REGISTRATION.md`` sits beside the spec — an honestly
+    absent prereg, omitted from the event rather than recorded as a sentinel.
+    """
+    prereg_path = Path(spec_path).parent / PREREG_FILENAME
+    if not prereg_path.is_file():
+        return None
+    return _sha256_bytes(prereg_path.read_bytes())
+
+
 def commit_tasks(spec: ExperimentSpec, task_dicts: Optional[list]) -> Optional[dict]:
     """Preflight: pin the task-content commitment [PL-7, D-6].
 
@@ -296,6 +318,7 @@ def lock_experiment(
         mde_kwargs=mde_kwargs,
     )
     rubric_sha256 = commit_rubric(spec_path, spec)    # 6. rubric commitment [D-P7-6]
+    prereg_sha256 = commit_prereg(spec_path)          # 6b. prereg commitment [rider]
     task_commitment = commit_tasks(spec, task_dicts)  # 7. task commitment [PL-7]
 
     # The mde payload the event embeds: today's keys, with the lock-stage
@@ -328,6 +351,7 @@ def lock_experiment(
             task_commitment=task_commitment,
             acknowledged_underpowered=ack_payload,
             rubric_sha256=rubric_sha256,
+            prereg_sha256=prereg_sha256,
         )
         # [ux-friction AC-6]: the lock event is durably appended, so every future
         # planner is now refused by check_single_lock regardless of this flock —
