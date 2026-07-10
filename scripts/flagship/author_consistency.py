@@ -374,8 +374,8 @@ def author_consistency(corpus_out, out, *, trial_image: str, workflow: str,
            .arm(grounded_arm, model=model, platform="claude_code", payload=payload)
            .arm(bare_arm, model=model, platform="claude_code", payload={})
            .judge(judge)
-           # corpus version 0.1.0: gw-r5b added [design: mechanism-decomposition piece 3]
-           .corpus("groundwork-v0", "0.1.0")
+           # corpus version 0.2.0: gw-r5/r5b holdout strengthened — red-on-starter
+           .corpus("groundwork-v0", "0.2.0")
            .repetitions(reps))
     gw.add_corpus_tasks(exp, task_dicts, ids=ids, image=trial_image)
     exp.run_config(_recon_run_config(bare_arm, grounded_arm))

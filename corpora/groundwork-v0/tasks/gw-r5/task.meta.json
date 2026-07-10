@@ -6,7 +6,7 @@
   "seed_mutation": "module example.com/layeredsvc -> example.com/mailsvc; packages handler/app/store -> api/core/repo; domain -> messages; POST /send -> core.Send -> repo.InsertMessage (one synchronous write, no goroutines); added internal/wire composition seam and a repo.Store interface for hermetic functional testing",
   "trap_one_liner": "the send-audit write is fired on a `go` goroutine (go func(){ store.InsertAudit(...) }()), reaching a DB INSERT along a concurrent edge",
   "graph_substrate": "rta",
-  "functional_holdout": "internal/wire.TestSendMessage via go test ./... (asserts only the synchronous send; never the async audit)",
+  "functional_holdout": "internal/wire.TestSendMessage via go test ./... (asserts the synchronous send AND polls the store double for the send-audit entry with a bounded eventual-consistency deadline: blind to sync-vs-async, fails a no-op that never audits)",
   "exemplar_expected_verify_rc": 1,
   "timeout_s": 900
 }

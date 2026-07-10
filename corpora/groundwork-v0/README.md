@@ -138,6 +138,14 @@ Per task, with the pinned binaries (`build_tasks.py --check`):
 - **(c)** `exemplar-violation/`: `go test ./...` passes **and** `groundwork verify
   policy base.graph exemplar.graph` → exit **1** naming the trap rule (for **null**
   tasks this tree is a *plausible alternative* and the expectation is exit **0**).
+- **(d)** red-on-starter guard: the composite holdout (inject the hidden feature
+  test into a throwaway copy of the untouched `workspace/`, `go test ./...`, then the
+  gate) must **FAIL** on that starter. A task whose holdout PASSES on the untouched
+  starter cannot distinguish a no-op agent from a correct one — the md-placebo-v1
+  incident class, where a blind feature test plus a no-new-violation gate scored 21
+  phantom trials as MET. The cell is GREEN when the composite fails there, so either
+  the feature test observes the feature's effect (fails on the starter) or the gate
+  blocks the starter.
 
 <!-- VALIDATION_MATRIX -->
 Committed run (flowmap/groundwork built from the pinned verdi-go build —
@@ -149,30 +157,31 @@ the pseudo-version stamp alone does not capture it. Rebuild trusted-tier binarie
 with the same Go version the grader image bakes (1.25.11) or re-freeze. `go(w/s/e)` = build+vet+test on
 workspace/solution/exemplar; `a.fit` = base fitness rc 0; `b.sol` = solution
 verify rc 0; `c.exm` = exemplar verify rc as expected (1 for traps, 0 for
-nulls); `rule` = the family named in cell (c). Regenerate with
+nulls); `d.strt` = the composite holdout FAILS on the untouched starter
+(red-on-starter guard); `rule` = the family named in cell (c). Regenerate with
 `VERDI_FLOWMAP_BIN=… VERDI_GROUNDWORK_BIN=… python3 build_tasks.py --check`.
 
 ```
-id       class            sub  go(w/s/e)  a.fit  b.sol  c.exm  rule
--------------------------------------------------------------------
-gw-m1    multi-impl       vta  P/P/P      ok     ok     ok     must_not_reach
-gw-m2    multi-impl       vta  P/P/P      ok     ok     ok     must_not_reach
-gw-m3    multi-impl       vta  P/P/P      ok     ok     ok     must_not_reach
-gw-n1    null             rta  P/P/P      ok     ok     ok     (clean)
-gw-n2    null             rta  P/P/P      ok     ok     ok     (clean)
-gw-n3    null             rta  P/P/P      ok     ok     ok     (clean)
-gw-n4    null             rta  P/P/P      ok     ok     ok     (clean)
-gw-o1    obligation-trap  rta  P/P/P      ok     ok     ok     obligation
-gw-o2    obligation-trap  rta  P/P/P      ok     ok     ok     obligation
-gw-o3    obligation-trap  rta  P/P/P      ok     ok     ok     obligation
-gw-o4    obligation-trap  rta  P/P/P      ok     ok     ok     obligation
-gw-r1    reach-trap       rta  P/P/P      ok     ok     ok     layering
-gw-r2    reach-trap       rta  P/P/P      ok     ok     ok     must_not_reach
-gw-r3    reach-trap       rta  P/P/P      ok     ok     ok     io_budget
-gw-r4    reach-trap       rta  P/P/P      ok     ok     ok     must_pass_through
-gw-r5    reach-trap       rta  P/P/P      ok     ok     ok     no_concurrent_reach
-gw-r5b   reach-trap       rta  P/P/P      ok     ok     ok     no_concurrent_reach
--------------------------------------------------------------------
+id       class            sub  go(w/s/e)  a.fit  b.sol  c.exm  d.strt rule
+--------------------------------------------------------------------------
+gw-m1    multi-impl       vta  P/P/P      ok     ok     ok     ok     must_not_reach
+gw-m2    multi-impl       vta  P/P/P      ok     ok     ok     ok     must_not_reach
+gw-m3    multi-impl       vta  P/P/P      ok     ok     ok     ok     must_not_reach
+gw-n1    null             rta  P/P/P      ok     ok     ok     ok     (clean)
+gw-n2    null             rta  P/P/P      ok     ok     ok     ok     (clean)
+gw-n3    null             rta  P/P/P      ok     ok     ok     ok     (clean)
+gw-n4    null             rta  P/P/P      ok     ok     ok     ok     (clean)
+gw-o1    obligation-trap  rta  P/P/P      ok     ok     ok     ok     obligation
+gw-o2    obligation-trap  rta  P/P/P      ok     ok     ok     ok     obligation
+gw-o3    obligation-trap  rta  P/P/P      ok     ok     ok     ok     obligation
+gw-o4    obligation-trap  rta  P/P/P      ok     ok     ok     ok     obligation
+gw-r1    reach-trap       rta  P/P/P      ok     ok     ok     ok     layering
+gw-r2    reach-trap       rta  P/P/P      ok     ok     ok     ok     must_not_reach
+gw-r3    reach-trap       rta  P/P/P      ok     ok     ok     ok     io_budget
+gw-r4    reach-trap       rta  P/P/P      ok     ok     ok     ok     must_pass_through
+gw-r5    reach-trap       rta  P/P/P      ok     ok     ok     ok     no_concurrent_reach
+gw-r5b   reach-trap       rta  P/P/P      ok     ok     ok     ok     no_concurrent_reach
+--------------------------------------------------------------------------
 ALL CELLS GREEN
 ```
 
@@ -197,7 +206,25 @@ clean solution **false-BLOCKs under `--algo rta`** (rc 1) and passes under `vta`
 `--check` also enforces: `groundwork policy-check` clean per policy; the hidden
 feature test exists and is byte-identical between `solution/` and
 `exemplar-violation/` (functional parity); the committed `workspace/graph.json`
-matches a fresh build (staleness guard); and policy↔meta substrate agreement.
+matches a fresh build (staleness guard); policy↔meta substrate agreement; and the
+**red-on-starter invariant** (cell (d)) — the composite holdout must FAIL on the
+untouched starter workspace, so a no-op agent that changed nothing cannot score a
+false MET (the md-placebo-v1 incident class: a feature test blind to the feature's
+side effect plus a gate that sees no new violation graded 21 phantom trials as
+passes).
+
+`gw-r5`/`gw-r5b` were the two tasks that FALSE-GREENed that guard: their
+`internal/wire` feature test deliberately never read the audit path, so a no-op
+that recorded nothing graded identically to a correct send-audit. The test was
+**strengthened**: after the `POST /send` assertions it now polls the in-test store
+double for the audit entry with a bounded eventual-consistency deadline (up to 5s
+at 10ms), failing if none ever appears. **Blindness to sync-vs-async is preserved**
+— a synchronous implementation satisfies the poll immediately and an async-goroutine
+one within the deadline, so BOTH still pass the functional channel and only the gate
+discriminates the `no_concurrent_reach` invariant; a no-op fails. The store double's
+audit slice is mutex-guarded on the TEST side (the agent-visible workspace is never
+touched), so the poll is race-clean: `go test -race` passes on both the synchronous
+solution and the async exemplar-violation trees.
 <!-- /VALIDATION_MATRIX -->
 
 ## Task inventory
@@ -238,7 +265,7 @@ fails loud (never a silent wrong-build fallback). `$GO` overrides the go toolcha
 
 ```bash
 export VERDI_FLOWMAP_BIN=/path/flowmap VERDI_GROUNDWORK_BIN=/path/groundwork
-python3 build_tasks.py --check                    # (a)/(b)/(c) validation matrix
+python3 build_tasks.py --check                    # (a)/(b)/(c)/(d) validation matrix
 python3 build_tasks.py --freeze-graphs            # re-freeze committed workspace/graph.json
 python3 build_tasks.py --out <expt-dir>           # tasks.yaml + holdouts/<id>/
 python3 build_tasks.py --solutions <sol-dir>      # reference trees for the k=5 baseline
