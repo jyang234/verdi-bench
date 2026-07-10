@@ -38,16 +38,17 @@ _REPO = Path(__file__).resolve().parents[1]
 _CORPUS = _REPO / "corpora" / "groundwork-v0"
 _BUILDER = _CORPUS / "build_tasks.py"
 
-# Expected inventory + class ratios (README): 5 reach, 4 obligation, 4 null, 3 multi.
+# Expected inventory + class ratios (README): 6 reach, 4 obligation, 4 null, 3 multi.
+# gw-r5b is the de-baited variant of gw-r5 [design: mechanism-decomposition piece 3].
 _EXPECTED_CLASS = {
     "gw-r1": "reach-trap", "gw-r2": "reach-trap", "gw-r3": "reach-trap",
-    "gw-r4": "reach-trap", "gw-r5": "reach-trap",
+    "gw-r4": "reach-trap", "gw-r5": "reach-trap", "gw-r5b": "reach-trap",
     "gw-o1": "obligation-trap", "gw-o2": "obligation-trap",
     "gw-o3": "obligation-trap", "gw-o4": "obligation-trap",
     "gw-n1": "null", "gw-n2": "null", "gw-n3": "null", "gw-n4": "null",
     "gw-m1": "multi-impl", "gw-m2": "multi-impl", "gw-m3": "multi-impl",
 }
-_EXPECTED_RATIOS = {"reach-trap": 5, "obligation-trap": 4, "null": 4, "multi-impl": 3}
+_EXPECTED_RATIOS = {"reach-trap": 6, "obligation-trap": 4, "null": 4, "multi-impl": 3}
 
 _BINARIES = bool(os.environ.get("VERDI_FLOWMAP_BIN") and os.environ.get("VERDI_GROUNDWORK_BIN"))
 _needs_binaries = pytest.mark.skipif(
@@ -74,7 +75,7 @@ bt = _load_builder()
 # --------------------------------------------------------------------------- #
 # fast hermetic subset (no binaries)
 # --------------------------------------------------------------------------- #
-def test_inventory_16_tasks_expected_classes():
+def test_inventory_17_tasks_expected_classes():
     got = {t["id"]: t["class"] for t in bt.discover_tasks()}
     assert got == _EXPECTED_CLASS
     assert Counter(got.values()) == _EXPECTED_RATIOS

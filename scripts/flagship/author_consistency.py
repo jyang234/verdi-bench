@@ -16,7 +16,7 @@ It reuses the shared corpus plumbing exactly the way ``author_pilot.py`` does
 (``_groundwork_lib``: corpus load, holdout copy, managed-proxy run.config; the
 two-arm build itself is inline here — the grounded payload is rung-dependent)
 and the flagship cost model's estimates (``costmodel``). Unlike
-the pilot — two experiments over subsets — the recon is ONE experiment over ALL 16
+the pilot — two experiments over subsets — the recon is ONE experiment over ALL 17
 tasks written directly AT ``--out``; it REFUSES loudly rather than silently subset
 a short corpus, and REFUSES (no partial write) when the projected spend overruns
 ``--ceiling``. Same posture as the pilot's calibration experiment: same payload
@@ -54,7 +54,7 @@ condition; the three historical rungs keep ``<tier>-grounded`` byte-identically.
 
 An OPTIONAL ``--tasks`` authors an EXPLICIT task-id subset (each validated against
 the corpus; unknown/empty refused loudly, no partial write); omitted, it authors all
-16 byte-identically. The corpus is still verified to be the full 16 either way.
+17 byte-identically. The corpus is still verified to be the full 17 either way.
 
     uv run python scripts/flagship/author_consistency.py \
         --corpus-out <build_tasks --out dir> --out runs/consistency/recon \
@@ -99,12 +99,12 @@ RECON_NAME = "groundwork-consistency-recon"
 # rides along so the same run.config stays valid if an OpenAI judge is ever added.
 ALLOWLIST = ["api.anthropic.com", "api.openai.com"]
 
-# The groundwork-v0 corpus task set, EXACTLY (5 reach / 4 obligation / 4 null / 3
-# multi-impl = 16; mirrors corpora/groundwork-v0/tasks/ and gw.CLASS_ORDER). The
+# The groundwork-v0 corpus task set, EXACTLY (6 reach / 4 obligation / 4 null / 3
+# multi-impl = 17; mirrors corpora/groundwork-v0/tasks/ and gw.CLASS_ORDER). The
 # recon runs ALL of them; a corpus that does not match this set is refused rather
 # than silently subset — an intentional change here is a deliberate design edit.
 EXPECTED_TASK_IDS = frozenset({
-    "gw-r1", "gw-r2", "gw-r3", "gw-r4", "gw-r5",         # reach-trap
+    "gw-r1", "gw-r2", "gw-r3", "gw-r4", "gw-r5", "gw-r5b",  # reach-trap (r5b: de-baited r5)
     "gw-o1", "gw-o2", "gw-o3", "gw-o4",                  # obligation-trap
     "gw-n1", "gw-n2", "gw-n3", "gw-n4",                  # null
     "gw-m1", "gw-m2", "gw-m3",                           # multi-impl
@@ -320,7 +320,7 @@ def author_consistency(corpus_out, out, *, trial_image: str, workflow: str,
     ``tasks=None`` (the default) authors the WHOLE validated corpus, byte-identical to
     today; a list authors ONLY that explicit subset (each id validated against the
     corpus, unknown/empty refused loudly — an explicit subset is not silent
-    subsetting). The corpus itself is still verified to be the full 16 either way."""
+    subsetting). The corpus itself is still verified to be the full 17 either way."""
     corpus_out, out = Path(corpus_out), Path(out)
     payload = grounded_payload_for(workflow)  # refuses an unknown rung before any write
     tier = derive_tier(model)  # refuses an underivable id before any write
@@ -340,8 +340,8 @@ def author_consistency(corpus_out, out, *, trial_image: str, workflow: str,
 
     task_dicts = gw.load_corpus_tasks(corpus_out)
     all_ids = sorted(d["id"] for d in task_dicts)
-    _assert_expected_corpus(all_ids)  # corpus integrity: the full 16 — no write yet
-    # An EXPLICIT --tasks subset (or all 16 when omitted); refuses an unknown/empty
+    _assert_expected_corpus(all_ids)  # corpus integrity: the full 17 — no write yet
+    # An EXPLICIT --tasks subset (or all 17 when omitted); refuses an unknown/empty
     # selection loudly, before any write.
     ids = _select_task_ids(all_ids, tasks)
 
@@ -373,7 +373,8 @@ def author_consistency(corpus_out, out, *, trial_image: str, workflow: str,
            .arm(grounded_arm, model=model, platform="claude_code", payload=payload)
            .arm(bare_arm, model=model, platform="claude_code", payload={})
            .judge(judge)
-           .corpus("groundwork-v0", "0.0.0")
+           # corpus version 0.1.0: gw-r5b added [design: mechanism-decomposition piece 3]
+           .corpus("groundwork-v0", "0.1.0")
            .repetitions(reps))
     gw.add_corpus_tasks(exp, task_dicts, ids=ids, image=trial_image)
     exp.run_config(_recon_run_config(bare_arm, grounded_arm))
@@ -440,7 +441,7 @@ def main() -> int:
     ap.add_argument("--tasks", default=None,
                     help="OPTIONAL comma-separated task-id subset to author (e.g. "
                          "gw-r1,gw-o2); each must exist in the corpus. Omitted authors "
-                         "ALL 16 (byte-identical). An explicit subset is not silent "
+                         "ALL 17 (byte-identical). An explicit subset is not silent "
                          "subsetting; an unknown id is refused with no partial write")
     args = ap.parse_args()
     tasks = None
