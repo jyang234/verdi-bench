@@ -217,7 +217,10 @@ _EVENT_SPECS: tuple[EventSpec, ...] = (
     EventSpec(
         EXPERIMENT_LOCKED,
         required=("spec_sha256", "spec_path", "seed", "mde", "attestation"),
-        omit_if_none=("task_commitment", "acknowledged_underpowered", "rubric_sha256"),
+        omit_if_none=(
+            "task_commitment", "acknowledged_underpowered", "rubric_sha256",
+            "prereg_sha256",
+        ),
     ),
     EventSpec(CHAIN_ANCHOR, required=("head_hash", "height")),
     # EVAL-4
@@ -378,6 +381,7 @@ def record_experiment_locked(
     task_commitment: Optional[dict] = None,
     acknowledged_underpowered: Optional[dict] = None,
     rubric_sha256: Optional[str] = None,
+    prereg_sha256: Optional[str] = None,
 ) -> dict:
     """Genesis lock event [AC-2, D004, D008]. ``attested_by``/``method`` nest
     under the ``attestation`` block.
@@ -386,8 +390,10 @@ def record_experiment_locked(
     corpus id/semver + a hash over the task content shas so run/grade can refuse
     post-lock task swaps [PL-7]; ``rubric_sha256`` (D-P7-6) commits the judging
     rubric's normalized-text hash so a post-lock rubric swap is detectable;
-    ``acknowledged_underpowered`` (PL-14) carries the
-    ``{mde, hypothesized_effect}`` acknowledgment inline on the lock event, so
+    ``prereg_sha256`` (mechanism-decomposition rider) commits the prose
+    PRE-REGISTRATION.md bytes so post-lock prereg edits are detectable; absent =
+    no prereg file existed at lock; ``acknowledged_underpowered`` (PL-14) carries
+    the ``{mde, hypothesized_effect}`` acknowledgment inline on the lock event, so
     the underpowered path stays one-operation-one-event.
     """
     return build_event(
@@ -402,6 +408,7 @@ def record_experiment_locked(
         task_commitment=task_commitment,
         acknowledged_underpowered=acknowledged_underpowered,
         rubric_sha256=rubric_sha256,
+        prereg_sha256=prereg_sha256,
     )
 
 

@@ -19,7 +19,16 @@ argv is IDENTICAL to rung 2 (the same ``--append-system-prompt`` text, reused
 verbatim), and enforcement is realized purely in arm-time FILESYSTEM: an
 ``$HOME/.claude/settings.json`` Stop hook runs the groundwork merge gate
 (``groundwork review``) in-loop and re-drives the model on a BLOCK — bounded, never
-trapping (see :data:`ENFORCEMENT_HOOK_PY`). With any other
+trapping (see :data:`ENFORCEMENT_HOOK_PY`). When the payload declares
+``workflow: placebo_gate`` it is the mechanism-decomposition PLACEBO
+(``docs/design/mechanism-decomposition-program.md``, piece 1): rung 3's exact
+Stop-hook machinery and byte-identical argv, but the hook runs NO gate and blocks
+with one static content-free reason (see :data:`PLACEBO_HOOK_PY`), isolating the
+gate's findings content from the forcing function. A payload that instead declares
+``system_prompt_extra: <key>`` is the PROMPT-ONLY treatment (``docs/design/mechanism-decomposition-program.md``,
+piece 2): a DISABLED plan carrying exactly one ``--append-system-prompt=<pre-registered text>``
+token — no tools, no MCP config, no hook, no filesystem writes — so the arm is otherwise
+byte-for-byte the control. With any other
 payload it does none of that and behaves byte-for-byte like the shipped official
 agent — **one image, both arms**, the asymmetry realized only here
 (``docs/usage-guide.md`` §9).
@@ -57,7 +66,10 @@ proven without a container (``tests/test_image_claude_code_groundwork.py``).
 
 Honesty note: like the official image, the real CLI is exercised only WITH keys
 and network; ``bench images verify`` proves plumbing (request in -> scorable log
-out), never intelligence. The pinned CLI version MUST support user-scope skills
+out), never intelligence. Exit code is NOT the whole contract: the CLI can exit 0
+while its result carries ``is_error: true`` (an in-band API error), so :func:`main`
+refuses that case too — an errored session must never flow to grading as a success.
+The pinned CLI version MUST support user-scope skills
 and ``--mcp-config`` (README "honesty notes") — the treatment arm's whole value
 depends on it, and it is NOT re-verified by the offline check.
 """
@@ -141,6 +153,14 @@ WORKFLOW_SYSTEM_PROMPTS = {
 # vs rung 2 is NONE; enforcement is realized purely in arm-time filesystem.
 ENFORCED_WORKFLOW = "ground_verify_enforced"
 
+# The mechanism-decomposition PLACEBO workflow [design:
+# docs/design/mechanism-decomposition-program.md, piece 1]. Same payload shape,
+# same rung-2 prompt text, same Stop-hook machinery as rung 3 — but the hook is
+# :data:`PLACEBO_HOOK_PY`: no gate run, no graph/policy inputs, one static
+# content-free block reason. The rung3-vs-placebo contrast isolates the gate's
+# FINDINGS CONTENT from the forcing function itself.
+PLACEBO_WORKFLOW = "placebo_gate"
+
 # Each known ``payload.workflow`` value → the :data:`WORKFLOW_SYSTEM_PROMPTS` key whose
 # text it delivers as ``--append-system-prompt``. Membership here is the known-workflow
 # set (an unknown value is refused loudly). The enforced rung reuses the ``ground_verify``
@@ -148,6 +168,23 @@ ENFORCED_WORKFLOW = "ground_verify_enforced"
 WORKFLOW_PROMPT_KEY = {
     "ground_verify": "ground_verify",
     ENFORCED_WORKFLOW: "ground_verify",
+    PLACEBO_WORKFLOW: "ground_verify",
+}
+
+# Prompt-only treatments, keyed by ``payload.system_prompt_extra`` [design:
+# docs/design/mechanism-decomposition-program.md, piece 2]. Delivered as one
+# ``--append-system-prompt=<text>`` token with NO tools, NO MCP config, NO hook,
+# NO filesystem writes — the arm is otherwise byte-for-byte the control. These
+# texts are PRE-REGISTERED TREATMENT DEFINITIONS: byte-stable, process-only
+# (they may point at an agent-visible file; they never name a tool, a workflow
+# step, a trap, or an expected answer). Registry membership is the known set —
+# an unknown value is refused loudly, and combining a prompt-only treatment
+# with tools/workflow is refused (it would blur which treatment ran).
+SYSTEM_PROMPT_EXTRAS = {
+    "policy_pointer": (
+        "This repository declares structural policy in `policy.json`; "
+        "your change must honor it."
+    ),
 }
 
 # The rung-3 enforcement Stop-hook script — a BYTE-STABLE, python3 stdlib-only module,
@@ -291,6 +328,65 @@ except Exception as exc:  # never crash the session: allow on any unexpected err
     sys.exit(0)
 '''
 
+# The placebo Stop-hook script — BYTE-STABLE, PART OF THE PRE-REGISTERED PLACEBO
+# TREATMENT DEFINITION: any edit here is a NEW pre-registration. Identical
+# machinery to ENFORCEMENT_HOOK_PY (rounds counter, MAX_ROUNDS, enforce log,
+# never traps) minus the gate: no subprocess, no graph, no policy — it blocks
+# every Stop attempt with ONE static, content-free reason until the budget is
+# exhausted, then allows. INVARIANT: the reason must never name a rule, a
+# finding, a verdict string, or any task property — content-free is the point.
+PLACEBO_HOOK_PY = r'''#!/usr/bin/env python3
+"""verdi placebo-gate Stop hook — PART OF THE PRE-REGISTERED PLACEBO TREATMENT
+DEFINITION; any edit here is a NEW pre-registration, never a casual change.
+
+The mechanism-decomposition control for rung-3 enforcement: the SAME bounded
+Stop-hook machinery (rounds counter, MAX_ROUNDS, enforce log, never traps),
+but it consults NO gate and reads NO inputs. It blocks every Stop attempt with
+one STATIC, content-free reason until the budget is exhausted, then allows.
+Any rescue this treatment produces is attributable to forced re-review alone,
+never to gate findings.
+"""
+import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROUNDS = os.path.join(HERE, "rounds")
+ENFORCE_LOG = "/workspace/artifacts/groundwork-enforce.jsonl"
+MAX_ROUNDS = 3
+REASON = "Review your changes for policy compliance before finishing."
+
+
+def log(record):
+    os.makedirs(os.path.dirname(ENFORCE_LOG), exist_ok=True)
+    with open(ENFORCE_LOG, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def main():
+    current = int(open(ROUNDS, encoding="utf-8").read().strip())
+    if current >= MAX_ROUNDS:
+        log({"round": current, "decision": "exhausted"})
+        sys.exit(0)
+    with open(ROUNDS, "w", encoding="utf-8") as fh:
+        fh.write(str(current + 1))
+    log({"round": current, "decision": "block", "findings": REASON})
+    print(json.dumps({"decision": "block", "reason": REASON}))
+    sys.exit(0)
+
+
+try:
+    main()
+except SystemExit:
+    raise
+except Exception as exc:  # never crash the session: allow on any unexpected error
+    try:
+        log({"round": -1, "decision": "hook_error", "detail": repr(exc)[-800:]})
+    except Exception:
+        pass
+    sys.exit(0)
+'''
+
 
 def groundwork_enabled(payload: Mapping) -> bool:
     """Is the groundwork treatment armed for this arm? [integration plan §4/§6].
@@ -358,7 +454,10 @@ class GroundworkPlan:
     that touches the filesystem. Keeping the plan declarative lets a test assert —
     without a container — that NO write lands under ``/workspace`` except the
     ``artifacts/`` mkdir (the rung-3 enforced arm's extra writes are ALL under
-    ``$HOME``), and that the argv delta is exactly ``--mcp-config`` (rung 1).
+    ``$HOME``), and that the argv delta is exactly ``--mcp-config`` (rung 1). A
+    disabled plan carries no argv delta EXCEPT a registered ``system_prompt_extra``,
+    which is a disabled plan carrying exactly one ``--append-system-prompt`` token
+    (``docs/design/mechanism-decomposition-program.md``, piece 2).
 
     * ``symlinks`` — ``(target, link)`` pairs exposing the staged binaries on PATH.
     * ``path_bin_dir`` — the writable dir holding those links, prepended to PATH.
@@ -400,7 +499,10 @@ def plan_groundwork(
     Control (``groundwork`` not in ``payload.tools``) returns the empty, disabled
     plan: no symlinks, no config, no skill, no extra CLI args — so :func:`apply_plan`
     is a no-op and :func:`cli_argv`/:func:`cli_env` reproduce the shipped agent
-    exactly. Treatment computes every path from ``home``/``workspace``/staging so a
+    exactly, EXCEPT a payload declaring a registered ``system_prompt_extra``, which is
+    a disabled plan carrying exactly one ``--append-system-prompt`` token — the
+    prompt-only treatment, exclusive of tools/workflow (``docs/design/mechanism-decomposition-program.md``,
+    piece 2). Treatment computes every path from ``home``/``workspace``/staging so a
     test can redirect them at tmp dirs and assert the /workspace rule. A treatment
     payload WITHOUT a ``workflow`` key is rung-1 availability (one
     ``--mcp-config`` token, byte-identical to the pre-rung-2 plan); with
@@ -411,7 +513,11 @@ def plan_groundwork(
     verbatim), PLUS arm-time-only enforcement writes under ``$HOME`` — the Stop-hook
     script, its ``rounds`` counter, ``$HOME/.claude/settings.json`` registering the
     hook, and the pristine base graph + policy preserved tamper-proof (see
-    :data:`ENFORCEMENT_HOOK_PY`). An invalid ``workflow`` — unknown value, or declared
+    :data:`ENFORCEMENT_HOOK_PY`). With ``workflow: placebo_gate`` it is the
+    mechanism-decomposition PLACEBO (``docs/design/mechanism-decomposition-program.md``,
+    piece 1): the SAME arm-time Stop-hook writes and byte-identical argv as rung 3, but
+    the hook is :data:`PLACEBO_HOOK_PY` (no gate, no inputs) and NO base graph/policy is
+    copied. An invalid ``workflow`` — unknown value, or declared
     without the groundwork tool — raises rather than running inert: a silently-inert
     instruction would fake a control arm (the instrument-bug class bug #5 belonged to).
 
@@ -435,6 +541,26 @@ def plan_groundwork(
                 f"unknown workflow {workflow!r}; known workflows: "
                 f"{sorted(WORKFLOW_PROMPT_KEY)}"
             )
+    extra = payload.get("system_prompt_extra")
+    if extra is not None:
+        if enabled or has_workflow:
+            raise ValueError(
+                f"payload declares system_prompt_extra {extra!r} alongside "
+                "groundwork tools/workflow — prompt-only treatments are "
+                "exclusive by definition; a combined arm would blur which "
+                "treatment ran"
+            )
+        if extra not in SYSTEM_PROMPT_EXTRAS:
+            raise ValueError(
+                f"unknown system_prompt_extra {extra!r}; known extras: "
+                f"{sorted(SYSTEM_PROMPT_EXTRAS)}"
+            )
+        return GroundworkPlan(
+            enabled=False,
+            cli_extra_args=(
+                f"--append-system-prompt={SYSTEM_PROMPT_EXTRAS[extra]}",
+            ),
+        )
     if not enabled:
         return GroundworkPlan(enabled=False)
 
@@ -471,26 +597,30 @@ def plan_groundwork(
     mkdirs = (bin_dir, os.path.dirname(skill_dst), artifacts)
     files = ((config_path, render_mcp_config(config)),)
     file_copies: tuple[tuple[str, str], ...] = ()
-    if workflow == ENFORCED_WORKFLOW:
-        # rung 3 = rung 2 + an enforcement Stop hook, realized PURELY in arm-time
-        # filesystem (all under $HOME; argv is byte-identical to rung 2). apply_plan
-        # runs BEFORE the CLI, so /workspace still holds the pristine BASE graph +
-        # graded policy — preserve them beside the hook so the in-loop gate cannot be
-        # defeated by editing /workspace/policy.json.
+    if workflow in (ENFORCED_WORKFLOW, PLACEBO_WORKFLOW):
+        # rung 3 / placebo = rung 2 + a Stop hook, realized PURELY in arm-time
+        # filesystem (all under $HOME; argv is byte-identical to rung 2). The
+        # ENFORCED hook needs the pristine BASE graph + graded policy preserved
+        # tamper-proof beside it; the PLACEBO hook consults nothing, so it gets
+        # no copies — an unread input staged anyway would blur the contrast.
         enforce_dir = os.path.join(home, "verdi-enforce")
         hook_script = os.path.join(enforce_dir, "stop_hook.py")
         settings_path = os.path.join(home, ".claude", "settings.json")
+        hook_source = (
+            ENFORCEMENT_HOOK_PY if workflow == ENFORCED_WORKFLOW else PLACEBO_HOOK_PY
+        )
         mkdirs = (*mkdirs, enforce_dir)
         files = (
             *files,
             (os.path.join(enforce_dir, "rounds"), "0"),
-            (hook_script, ENFORCEMENT_HOOK_PY),
+            (hook_script, hook_source),
             (settings_path, render_settings(hook_script)),
         )
-        file_copies = (
-            (os.path.join(workspace, GRAPH_NAME), os.path.join(enforce_dir, "base.graph.json")),
-            (os.path.join(workspace, POLICY_NAME), os.path.join(enforce_dir, "policy.json")),
-        )
+        if workflow == ENFORCED_WORKFLOW:
+            file_copies = (
+                (os.path.join(workspace, GRAPH_NAME), os.path.join(enforce_dir, "base.graph.json")),
+                (os.path.join(workspace, POLICY_NAME), os.path.join(enforce_dir, "policy.json")),
+            )
 
     return GroundworkPlan(
         enabled=True,
@@ -626,6 +756,16 @@ def main(log: AgentLog) -> None:
             result = parsed.get("result")
             tail = (result if isinstance(result, str) else (proc.stderr or "")).strip()[-400:]
             raise RuntimeError(f"claude-code CLI exited {proc.returncode}: {tail!r}")
+        if parsed.get("is_error"):
+            # The pinned CLI can exit 0 while reporting is_error: true (an API
+            # error surfaced in-band — observed live: ConnectionRefused with
+            # empty modelUsage). A trial whose session ENDED IN ERROR must not
+            # flow to grading as a success: raise so the engine fails the cell
+            # closed (trial_infra_failed, RN-15). The native log is already
+            # persisted above — forensics and telemetry survive the refusal.
+            result = parsed.get("result")
+            tail = (result if isinstance(result, str) else "").strip()[-400:]
+            raise RuntimeError(f"claude-code CLI reported is_error=true: {tail!r}")
         return
     if proc.returncode == 0:
         # Exited 0 without the JSON result contract: refuse to fabricate a log.

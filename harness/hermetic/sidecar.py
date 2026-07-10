@@ -29,6 +29,8 @@ pure hoist — the hermetic and OTLP suites plus the live docker e2es are the pi
 
 from __future__ import annotations
 
+import itertools
+import os
 import shutil
 import subprocess
 import tempfile
@@ -38,6 +40,27 @@ from typing import ClassVar, Optional
 # Absolute import (not ``from .docker import ...``): the AST seam sweep
 # (tests/test_eval4_seam.py) flags a bare module name ``docker`` in an import.
 from harness.hermetic.docker import DockerClient
+
+# The ownership label every managed sidecar container carries (incident 2026-07-10):
+# ``--label {SIDECAR_LABEL}=<kind>`` (kind = the subclass's ``_LABEL_VALUE``), so a
+# teardown sweeps by ownership — ``docker ps --filter label=…`` then ``rm -f`` each —
+# instead of by a shared name. Before this, a fixed global container name let ANY
+# lifecycle actor operate on a name it did not own: a concurrent e2e cleanup removed
+# a live harbor run's proxy (21/24 trials invalidated), and two concurrent runs would
+# kill each other's proxy via ``start()``'s stale-sweep.
+SIDECAR_LABEL = "verdi.managed-sidecar"
+
+# Deterministic per-process name suffix — pid + a monotonic counter, NO randomness or
+# wall-clock (the determinism directive). Two default sidecars in one process diverge
+# on the counter; two processes diverge on the pid. The container name is never
+# ledgered or hash-chained (it only rides runtime env, e.g. HTTP_PROXY), so a
+# pid-varying value cannot perturb any instrument output.
+_INSTANCE_COUNTER = itertools.count(1)
+
+
+def _instance_suffix() -> str:
+    """A unique, deterministic suffix for a managed sidecar's default name."""
+    return f"{os.getpid()}-{next(_INSTANCE_COUNTER)}"
 
 # The readiness *probe*, single-sourced: connect to the sidecar's port from inside
 # the container, retrying until it accepts — bounded by the host-side ``docker
@@ -55,8 +78,8 @@ _READINESS_TIMEOUT_S = 30
 
 def remove_managed_container(name: str, client: DockerClient) -> None:
     """Best-effort ``docker rm -f <name>`` — the container-removal step shared by
-    every managed sidecar's ``stop`` and the standalone ``bench <sidecar> down``
-    operator verbs (the names are constants, so a caller needs no live object).
+    every managed sidecar's ``stop`` and the ``--name`` escape hatch of the
+    standalone ``bench <sidecar> down`` operator verbs.
 
     Loud-free by design: a teardown that crashed because the container was already
     gone would leak the *other* resources the caller still means to remove.
@@ -65,6 +88,26 @@ def remove_managed_container(name: str, client: DockerClient) -> None:
         client.run(["docker", "rm", "-f", name], timeout_s=30)
     except (OSError, subprocess.SubprocessError):
         pass
+
+
+def remove_labeled_sidecars(label_value: str, client: DockerClient) -> None:
+    """Best-effort removal of EVERY container labeled ``{SIDECAR_LABEL}=<label_value>``
+    — the ownership sweep the default ``bench <sidecar> down`` uses so it cannot miss a
+    suffixed live sidecar nor remove an unrelated bare-name container (incident
+    2026-07-10). A label-filtered ``docker ps`` discovers the ids, then each is
+    force-removed. Loud-free (a failed discover leaves the other teardown steps intact).
+    """
+    try:
+        proc = client.run(
+            ["docker", "ps", "-aq", "--filter", f"label={SIDECAR_LABEL}={label_value}"],
+            timeout_s=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if proc.returncode != 0:
+        return
+    for cid in proc.stdout.split():
+        remove_managed_container(cid, client)
 
 
 class ManagedSidecar:
@@ -87,6 +130,10 @@ class ManagedSidecar:
     _DAEMON_UNAVAILABLE_MESSAGE: ClassVar[str]
     _LOG_PREFIX: ClassVar[str]
     _DEFAULT_LOG_BASENAME: ClassVar[str]
+    # The ownership-label value (the sidecar kind: "metering-proxy" / "otlp-collector"),
+    # stamped as ``--label {SIDECAR_LABEL}=<_LABEL_VALUE>`` and filtered on by the
+    # label sweep. A dedicated attribute — never parsed from ``_NOUN`` prose.
+    _LABEL_VALUE: ClassVar[str]
 
     def __init__(
         self,
@@ -114,6 +161,13 @@ class ManagedSidecar:
             self._logfile = Path(log_path)
             self._logdir = self._logfile.parent
 
+    @property
+    def name(self) -> str:
+        """This instance's container name (default: the subclass constant prefix +
+        a unique per-instance suffix). Read-only — the identity a caller needs for
+        exact teardown or an in-network address, without reaching into ``_name``."""
+        return self._name
+
     # --- context manager ------------------------------------------------------
     def __enter__(self):
         try:
@@ -138,7 +192,10 @@ class ManagedSidecar:
             raise self._ERROR_CLS(self._DAEMON_UNAVAILABLE_MESSAGE)
         self._logdir.mkdir(parents=True, exist_ok=True)
         self._logfile.touch(exist_ok=True)
-        # A stale container from a crashed prior run would collide on the name.
+        # Self-heal an explicit-name reuse: with instance-unique default names a
+        # collision is only ever with a crashed PRIOR run of this SAME name (an
+        # operator-passed name, or a re-``start`` of one object), never another live
+        # sidecar — so this sweep can no longer remove a name it does not own.
         self._remove_container()
         self._stand_up()
         self._await_ready()

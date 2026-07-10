@@ -22,7 +22,6 @@ import pytest
 
 from harness.hermetic.metering import (
     EGRESS_NETWORK,
-    MANAGED_PROXY_NAME,
     METERED_NETWORK,
     PROXY_BASE_IMAGE,
     MeteringProxy,
@@ -77,8 +76,9 @@ _UPSTREAM_SRC = textwrap.dedent(
 
 # A container on the metered net that CONNECTs through the proxy to one allowed
 # and one denied host, presenting the trial id as basic-auth userinfo (frozen
-# per-trial credential contract).
-_CLIENT_SRC = textwrap.dedent(
+# per-trial credential contract). The proxy host is the instance's UNIQUE name
+# (formatted in per-test), never a shared bare name (incident 2026-07-10).
+_CLIENT_SRC_TEMPLATE = textwrap.dedent(
     """
     import base64, socket
     def go(target, trial):
@@ -92,7 +92,7 @@ _CLIENT_SRC = textwrap.dedent(
     go("%s:%d", "%s")
     go("evil.example:443", "%s")
     """
-) % (MANAGED_PROXY_NAME, _ALLOWED_HOST, _UPSTREAM_PORT, _TRIAL, _TRIAL)
+)
 
 
 def _rm(*names: str) -> None:
@@ -138,11 +138,13 @@ def test_managed_proxy_stands_up_meters_and_tears_down(tmp_path):
     # custom basename on purpose: pins the F1 fail-open fix (the proxy must write
     # the operator's exact filename, not verdi.jsonl beside an empty custom file)
     log = tmp_path / "metering" / "custom-egress.jsonl"
-    _rm(_UPSTREAM, _CLIENT, MANAGED_PROXY_NAME)
+    proxy = MeteringProxy.managed([_ALLOWED_HOST], log_path=log)
+    _rm(_UPSTREAM, _CLIENT, proxy.name)
     try:
-        with MeteringProxy.managed([_ALLOWED_HOST], log_path=log) as cfg:
-            # readiness was probed (not slept): the proxy is addressable now.
-            assert cfg.proxy_url == f"http://{MANAGED_PROXY_NAME}:3128"
+        with proxy as cfg:
+            # readiness was probed (not slept): the proxy is addressable now, by
+            # THIS instance's unique name (never a shared bare name).
+            assert cfg.proxy_url == f"http://{proxy.name}:3128"
             assert cfg.log_path == str(log)
 
             # an upstream the proxy can reach, aliased on the egress network so the
@@ -155,10 +157,14 @@ def test_managed_proxy_stands_up_meters_and_tears_down(tmp_path):
             )
             _await_port(_UPSTREAM, _UPSTREAM_PORT)
 
-            # a trial-like container on the metered net drives one allow + one deny
+            # a trial-like container on the metered net drives one allow + one deny,
+            # dialing the proxy by its instance name
+            client_src = _CLIENT_SRC_TEMPLATE % (
+                proxy.name, _ALLOWED_HOST, _UPSTREAM_PORT, _TRIAL, _TRIAL
+            )
             proc = subprocess.run(
                 ["docker", "run", "--rm", "--name", _CLIENT, "--network", METERED_NETWORK,
-                 PROXY_BASE_IMAGE, "python3", "-c", _CLIENT_SRC],
+                 PROXY_BASE_IMAGE, "python3", "-c", client_src],
                 capture_output=True, text=True, timeout=60,
             )
             assert proc.returncode == 0, f"client failed: {proc.stderr}"
@@ -177,11 +183,11 @@ def test_managed_proxy_stands_up_meters_and_tears_down(tmp_path):
             _rm(_UPSTREAM)
 
         # teardown left nothing behind
-        assert not _container_exists(MANAGED_PROXY_NAME)
+        assert not _container_exists(proxy.name)
         assert not _network_exists(METERED_NETWORK)
         assert not _network_exists(EGRESS_NETWORK)
     finally:
-        _rm(_UPSTREAM, _CLIENT, MANAGED_PROXY_NAME)
+        _rm(_UPSTREAM, _CLIENT, proxy.name)
         subprocess.run(["docker", "network", "rm", EGRESS_NETWORK], capture_output=True)
         subprocess.run(["docker", "network", "rm", METERED_NETWORK], capture_output=True)
 
@@ -193,11 +199,12 @@ def test_managed_proxy_exposes_reverse_listeners(tmp_path):
     client's ``HEAD /`` preflight is answered 200 and an unprefixed request is denied
     (403 + a deny line attributed to trial ``-`` in the host-side JSONL)."""
     log = tmp_path / "metering" / "verdi.jsonl"
-    _rm(_REV_CLIENT, MANAGED_PROXY_NAME)
+    proxy = MeteringProxy.managed([_ALLOWED_HOST], log_path=log)
+    _rm(_REV_CLIENT, proxy.name)
     try:
-        with MeteringProxy.managed([_ALLOWED_HOST], log_path=log) as cfg:
+        with proxy as cfg:
             # the reverse endpoint uses the proxy's real metered-network IP, not name
-            ip = _metered_ip(MANAGED_PROXY_NAME)
+            ip = _metered_ip(proxy.name)
             assert ip, "proxy has no metered-network IP"
             assert cfg.reverse_endpoints == {_ALLOWED_HOST: f"http://{ip}:3129"}
 
@@ -219,10 +226,10 @@ def test_managed_proxy_exposes_reverse_listeners(tmp_path):
             # the preflight NEVER left the proxy — no line names it
             assert all(r.get("host") == _ALLOWED_HOST for r in records), records
 
-        assert not _container_exists(MANAGED_PROXY_NAME)
+        assert not _container_exists(proxy.name)
         assert not _network_exists(METERED_NETWORK)
         assert not _network_exists(EGRESS_NETWORK)
     finally:
-        _rm(_REV_CLIENT, MANAGED_PROXY_NAME)
+        _rm(_REV_CLIENT, proxy.name)
         subprocess.run(["docker", "network", "rm", EGRESS_NETWORK], capture_output=True)
         subprocess.run(["docker", "network", "rm", METERED_NETWORK], capture_output=True)

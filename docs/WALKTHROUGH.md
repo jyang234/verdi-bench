@@ -56,8 +56,9 @@ owner set out to test.
 7. [Part VII — The reach experiments: the definitive findings](#part-vii)
 8. [Part VIII — The adversarial review: what survived it](#part-viii)
 9. [Part IX — What we learned](#part-ix)
-10. [Appendix A — Glossary](#appendix-a)
-11. [Appendix B — Evidence map & reproduction](#appendix-b)
+10. [Part X — Addendum: the mechanism, decomposed](#part-x)
+11. [Appendix A — Glossary](#appendix-a)
+12. [Appendix B — Evidence map & reproduction](#appendix-b)
 
 ---
 
@@ -927,6 +928,147 @@ results, the most valuable thing either tool produced was the sentence:
 
 **"Here is exactly where it works — 0/17 → 16/17, at 2.3× cost, for weak
 models, on invariants the gate can see — and here is everywhere it doesn't."**
+
+---
+
+<a name="part-x"></a>
+## Part X — Addendum: the mechanism, decomposed (2026-07-10)
+
+Part IX ended with four specified follow-ups. Two days and **$7.38** later,
+three of them had run — a pre-registered mechanism-decomposition program
+(design: `docs/design/mechanism-decomposition-program.md`; full dossier:
+`runs/consistency/MD-REPORT.md`). This addendum reports what they did to the
+story you just read. Spoiler: the r5 rescue is real and now has an attributed
+mechanism — and the *baseline* it rescued from turns out to be mostly an
+artifact of our own prompt.
+
+One instrument upgrade came with it, closing Part VIII's provenance gap: the
+prose `PRE-REGISTRATION.md` is now sha256-hashed into each experiment's lock
+event (`prereg_sha256`), so a post-lock edit of the interpretation text is
+detectable. Every experiment below was locked that way.
+
+### X.1 The score, decomposed for real
+
+Part VIII's deepest finding — the holdout embeds the gate — rested on
+classifying recorded failure strings. The follow-up re-executed both halves of
+the fused holdout **separately** (the hidden feature tests; the gate) against
+all **678** preserved historical workspaces in the pinned grader image
+(`scripts/flagship/decompose_scores.py`). Result: the recomputed conjunction
+matches the recorded `binary_score` in **678/678 trials — zero mismatches** —
+and the channel table confirms the review by re-execution: every bare r2/r5
+failure was gate-channel with the functional channel green. The decomposed
+table (`runs/consistency/DECOMPOSITION.md`) is now a standing artifact; no
+future reader has to take "functional AND structural" on faith.
+
+### X.2 The placebo: what does a block *without* a map buy?
+
+> **Definition — placebo treatment.** A control that reproduces a treatment's
+> *form* while removing its hypothesized *content* — here, rung 3's exact
+> Stop-hook machinery (same tools staged, same prompt token, same 3-round
+> fail-open bound), except the hook runs no gate and blocks every Stop with
+> one static, content-free line: *"Review your changes for policy compliance
+> before finishing."* If the placebo rescues, the mechanism was "being forced
+> to look again," not the gate's findings.
+
+`md-placebo2`, gw-r5, 12 reps per arm, with pre-registered bound readings
+frozen at lock (≤2/12 → findings content is the ingredient; ≥9/12 → generic
+forcing suffices, headline rewritten; 3–8 → both contribute):
+
+| arm | pass | note |
+|---|:--:|---|
+| bare | 0/12 | the historical pattern, exactly (0/49 program-wide on this task) |
+| placebo | **5/12** | every trial: block ×3 → exhausted, uniformly |
+| *(historical enforced)* | *16/17* | the anchor |
+
+**The middle band triggered: both ingredients contribute.** A content-free
+block rescues ≈40% of trials (p = 0.019 vs bare); the gate's findings roughly
+double that (16/17 vs 5/12, p = 0.003). And the placebo is *more expensive*
+than the real thing — 4.7× bare per trial vs enforcement's 2.3× — because with
+no clean-exit signal it always burns all three rounds. A generic forcing
+function is strictly dominated: less effective, costlier. The map's content
+earns its keep; it just doesn't earn *all* of it.
+
+### X.3 The pointer: a null with a lesson inside
+
+`md-pointer` tested the cheapest conceivable treatment — one appended
+system-prompt line ("This repository declares structural policy in
+`policy.json`; your change must honor it."), no tools, no hook — on gw-r2 +
+gw-r5, 5 reps. Result: **0/10**, and 0/10 pointer sessions so much as
+*mention* the policy, indistinguishable from bare. The rung ladder gains a
+rung 1.5 that behaves like rungs 1 and 2: at this model tier, information
+without enforcement moves nothing — now shown even for the minimal case.
+
+The methodological lesson cost more than the experiment: our first
+manipulation check searched session transcripts for the prompt text, found it
+in 0/10, and briefly looked like non-delivery. Calibrating against rung-2
+history showed the CLI's transcripts **never record appended system prompts**
+— the "hits" in historical sessions were tool-call *residue* tracking the 56%
+adoption rate. Delivery was instead established at the shipped-artifact level
+(the pinned image, asked directly, maps the locked payload to an argv carrying
+the sentence verbatim). Moral: a manipulation check needs its own calibration,
+or it measures something else.
+
+### X.4 The de-bait: how much of 0-for-everything was our own prompt?
+
+Part IV disclosed that gw-r5's prompt *baits* the violation ("must not block
+or delay the send"). `md-debait` measured the bait: `gw-r5b` is byte-identical
+to gw-r5 except that one clause is gone (admitted to the corpus through the
+full curation cycle — k=5 docker baseline, signed approval, chain-anchored
+admit; corpus 0.1.0). Five reps per arm:
+
+- **bare: 4/5.** Against 0/49 on the baited prompt (p = 1.6×10⁻⁵). Un-steered,
+  haiku writes the synchronous audit naturally; the observed natural violation
+  rate is ~20% (1/5 — n=5, wide interval).
+- **enforced: 5/5, hook round-1 clean in all five** — the gate never fired,
+  because there was almost nothing to catch.
+
+This is the sharpest scope qualifier in the whole record: **"bare haiku NEVER
+passes r5" was a property of the baited prompt, not of the model or the task
+class.** The honest restatement of the headline: enforcement converts
+violations *when they occur*; the corpus made them occur ~100% of the time;
+un-steered, they occurred ~20% here.
+
+### X.5 The instrument catches itself, again
+
+In the Part V tradition, the program's first placebo run is in the record as
+labeled bug evidence (`runs/consistency/md-placebo/INVALIDATED.md`), not a
+result. A concurrently-running e2e test tore down the live metering proxy —
+it removes the proxy container *by its fixed global name* — after trial 2;
+the remaining 21/24 trials got `ConnectionRefused`, the CLI exited 0 with
+`is_error: true`, and the engine counted them successful. Untouched
+workspaces then **passed** gw-r5's holdout (the feature test is audit-blind
+by design; an unmodified graph trips no gate), producing "bare 11/12" — a
+number wildly better than 49 real trials ever produced. Per-trial model
+attestation (Part V's lesson, mechanized) caught it: 21 MISMATCH, empty
+`modelUsage`, $0.00 cost. Three instrument defects are now on file for their
+own reproduce-first fixes: the global proxy-name collision, the
+`is_error`-counted-as-success gap, and the deepest one — **on add-a-feature
+tasks, this holdout composition cannot distinguish "did nothing" from "did it
+right."** No historical result is affected (every historical trial is
+attested), but the blind spot is real and now documented.
+
+### X.6 The sentence, revised
+
+Part IX's honest one-sentence finding, updated with the mechanism and the
+base-rate-in-miniature:
+
+**At the haiku tier, a blocking in-loop gate converts policy-violating
+implementations into correct fixes where a content-free block rescues only
+~40% at higher cost, a policy pointer rescues nothing — and the violations
+themselves were induced ~5× above their natural rate by the corpus's own
+bait; the gate's content is real (≈0.42 → ≈0.94 on the baited task), and the
+demonstrated frequency of the problem it solves remains the property of the
+corpus, not the world.**
+
+What remains is what remained before, minus three items: the
+behavioral-oracle (`-race`) corpus and the real-world base-rate study are
+still the path from "real in-corpus" to "valuable in practice."
+
+**Addendum evidence map** — `md-placebo2` (24 trials, $4.46), `md-pointer`
+(20, $1.32), `md-debait` (10, $1.10), plus the invalidated `md-placebo`
+(~$0.50, bug evidence); all under `runs/consistency/`, all chain-verified,
+100% model-attested, prereg-hashed; decomposed channels re-executed with the
+same pinned grader digest as the original program; instrument code on PR #35.
 
 ---
 

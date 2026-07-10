@@ -1,0 +1,11 @@
+{
+  "service": "mailsvc",
+  "version": 1,
+  "substrate": "rta",
+  "no_concurrent_reach": [
+    {
+      "name": "no-concurrent-db-writes",
+      "to": ["boundary:db INSERT", "boundary:db UPDATE", "boundary:db DELETE"]
+    }
+  ]
+}

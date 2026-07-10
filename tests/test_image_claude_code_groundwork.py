@@ -56,6 +56,8 @@ _SHIPPED_CLI = ["claude", "--print", "--permission-mode", "bypassPermissions", "
 _AVAILABILITY = {"tools": ["groundwork"]}
 _TREATMENT = {"tools": ["groundwork"], "workflow": "ground_verify"}
 _ENFORCED = {"tools": ["groundwork"], "workflow": "ground_verify_enforced"}
+_PLACEBO = {"tools": ["groundwork"], "workflow": "placebo_gate"}
+_POINTER = {"system_prompt_extra": "policy_pointer"}
 
 
 def _load(module_name: str, path: Path):
@@ -492,6 +494,119 @@ def test_enforcement_hook_is_valid_python():
     compile(agent.ENFORCEMENT_HOOK_PY, "<enforcement_hook>", "exec")
 
 
+# --- placebo_gate: the mechanism-decomposition control ----------------------
+# [design: docs/design/mechanism-decomposition-program.md, piece 1] The placebo
+# arm is byte-identical to rung 3 EXCEPT the hook: same tools, same rung-2
+# prompt token, same rounds/settings machinery — but the hook runs NO gate and
+# blocks with ONE static, content-free reason. Any rescue it produces is
+# attributable to forced re-review alone.
+
+
+def test_placebo_plan_arms_static_hook_without_gate_inputs():
+    plan = agent.plan_groundwork(_PLACEBO, home="/h", workspace="/w")
+    files = dict(plan.files)
+    assert files["/h/verdi-enforce/rounds"] == "0"
+    assert files["/h/verdi-enforce/stop_hook.py"] == agent.PLACEBO_HOOK_PY
+    assert "/h/.claude/settings.json" in files
+    # the placebo reads no gate inputs: no tamper-proof base graph/policy copies
+    assert plan.file_copies == ()
+
+
+def test_placebo_argv_is_byte_identical_to_rung2_and_rung3():
+    args = {
+        wf: agent.plan_groundwork(p, home="/h", workspace="/w").cli_extra_args
+        for wf, p in (("r2", _TREATMENT), ("r3", _ENFORCED), ("placebo", _PLACEBO))
+    }
+    assert args["placebo"] == args["r2"] == args["r3"]
+
+
+def test_placebo_hook_is_valid_python_and_runs_no_gate():
+    compile(agent.PLACEBO_HOOK_PY, "stop_hook.py", "exec")
+    # structurally incapable of consulting the gate or the map
+    assert "subprocess" not in agent.PLACEBO_HOOK_PY
+    assert "/opt/groundwork/bin" not in agent.PLACEBO_HOOK_PY
+    assert "flowmap" not in agent.PLACEBO_HOOK_PY
+    assert "policy.json" not in agent.PLACEBO_HOOK_PY
+    assert "graph" not in agent.PLACEBO_HOOK_PY
+
+
+def test_placebo_block_reason_is_static_and_content_free():
+    assert (
+        "Review your changes for policy compliance before finishing."
+        in agent.PLACEBO_HOOK_PY
+    )
+    # never leaks rule names, findings vocabulary, or verdict strings
+    for token in ("must_not_reach", "no_concurrent_reach", "must_pass_through",
+                  "io_budget", "STRUCTURALLY", "new_violations"):
+        assert token not in agent.PLACEBO_HOOK_PY
+
+
+def test_placebo_without_groundwork_tool_raises():
+    with pytest.raises(ValueError, match="workflow"):
+        agent.plan_groundwork({"workflow": "placebo_gate"})
+
+
+# --- policy_pointer: the cheapest-possible treatment -------------------------
+# [design: docs/design/mechanism-decomposition-program.md, piece 2] Prompt-only:
+# one appended system-prompt line pointing at policy.json — no tools, no MCP
+# config, no hook, no filesystem writes. A rung below availability on the
+# integration ladder ("rung 1.5" if it works, a null that strengthens the
+# forcing-function story if it doesn't).
+
+
+def test_pointer_argv_is_control_plus_exactly_one_prompt_token():
+    plan = agent.plan_groundwork(_POINTER, home="/h", workspace="/w")
+    control = agent.plan_groundwork({}, home="/h", workspace="/w")
+    argv = agent.cli_argv("do the task", plan, "m1")
+    control_argv = agent.cli_argv("do the task", control, "m1")
+    delta = [t for t in argv if t not in control_argv]
+    assert delta == [
+        "--append-system-prompt=" + agent.SYSTEM_PROMPT_EXTRAS["policy_pointer"]
+    ]
+    assert not any(t.startswith("--mcp-config") for t in argv)
+
+
+def test_pointer_plan_is_otherwise_disabled_and_writes_nothing(tmp_path):
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+    workspace.mkdir()
+    plan = agent.plan_groundwork(_POINTER, home=str(home), workspace=str(workspace))
+    assert plan.enabled is False
+    assert plan.files == () and plan.copies == () and plan.file_copies == ()
+    assert plan.symlinks == () and plan.mkdirs == ()
+    agent.apply_plan(plan)  # must be a no-op
+    assert not home.exists()
+    assert list(workspace.iterdir()) == []
+    # env untouched: no bin dir prepended
+    assert agent.cli_env({"PATH": "/usr/bin"}, plan) == {"PATH": "/usr/bin"}
+
+
+def test_pointer_text_is_pinned_and_process_only():
+    text = agent.SYSTEM_PROMPT_EXTRAS["policy_pointer"]
+    assert text == (
+        "This repository declares structural policy in `policy.json`; "
+        "your change must honor it."
+    )
+    # names no tool, no workflow step, no task property
+    for token in ("mcp__", "groundwork", "flowmap", "verify"):
+        assert token not in text
+
+
+def test_pointer_combined_with_tools_or_workflow_raises():
+    with pytest.raises(ValueError, match="system_prompt_extra"):
+        agent.plan_groundwork(
+            {"system_prompt_extra": "policy_pointer", "tools": ["groundwork"]}
+        )
+    with pytest.raises(ValueError):
+        agent.plan_groundwork(
+            {"system_prompt_extra": "policy_pointer", "workflow": "ground_verify"}
+        )
+
+
+def test_unknown_system_prompt_extra_raises():
+    with pytest.raises(ValueError, match="unknown system_prompt_extra"):
+        agent.plan_groundwork({"system_prompt_extra": "not-a-registered-extra"})
+
+
 # --- main(): the CLI runs in JSON mode and persists the native result --------
 # The control arm is exercised here (payload {} → apply_plan is a no-op, no staged
 # binaries needed); the JSON-emission path is identical across arms, so this pins
@@ -582,6 +697,31 @@ def test_main_exit3_valid_json_persists_native_and_raises(gw_env, monkeypatch):
     assert "3" in str(ei.value)
     assert log_path.read_text(encoding="utf-8") == raw
     assert json.loads(log_path.read_text(encoding="utf-8"))["is_error"] is True
+
+
+def test_main_exit0_is_error_true_persists_native_and_raises(gw_env, monkeypatch):
+    """The pinned CLI can exit 0 while reporting ``is_error: true`` — an API error
+    surfaced IN-BAND (observed live: ConnectionRefused, empty modelUsage, cost 0).
+    Such a session ENDED IN ERROR and must not flow to grading as a success: main
+    persists the native log verbatim (evidence first) THEN raises, so the engine
+    fails the cell closed (trial_infra_failed, RN-15)."""
+    va, log_path = gw_env
+    err = {**_RESULT_JSON, "is_error": True,
+           "result": "API Error: Unable to connect to API (ConnectionRefused)"}
+    raw = json.dumps(err)
+    _mock_run(monkeypatch, stdout=raw, returncode=0)
+
+    with pytest.raises(RuntimeError, match="is_error"):
+        agent.main(va.AgentLog())
+    # the native evidence is persisted intact despite the refusal
+    assert log_path.read_text(encoding="utf-8") == raw
+    assert json.loads(log_path.read_text(encoding="utf-8"))["is_error"] is True
+
+    # guard the happy path: is_error absent (or falsey) must NOT raise. _RESULT_JSON
+    # ships is_error: False; a result dict OMITTING the key must also pass cleanly.
+    ok = {k: v for k, v in _RESULT_JSON.items() if k != "is_error"}
+    _mock_run(monkeypatch, stdout=json.dumps(ok), returncode=0)
+    agent.main(va.AgentLog())  # absent is_error → clean success, no raise
 
 
 def test_main_exit0_non_json_refuses_to_fabricate(gw_env, monkeypatch):

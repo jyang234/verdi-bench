@@ -369,3 +369,28 @@ def test_assert_lock_refuses_tampered_chain(tmp_path):
     # ... but the chain is broken at the successor, so assert_lock must refuse.
     with pytest.raises(ChainIntegrityError):
         assert_lock(spec, ledger)
+
+
+def test_lock_commits_prereg_sha_when_present(tmp_path):
+    """Design doc `mechanism-decomposition-program.md` rider: PRE-REGISTRATION.md
+    beside the spec is hashed into the lock event (bytes, like spec_sha256)."""
+    import hashlib
+
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    prereg = tmp_path / "PRE-REGISTRATION.md"
+    prereg.write_text("# H1: placebo <= 2/12 -> findings content is the mechanism\n",
+                      encoding="utf-8")
+    ledger = tmp_path / "ledger.ndjson"
+    lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
+    ev = find_events(ledger, events.EXPERIMENT_LOCKED)[0]
+    assert ev["prereg_sha256"] == hashlib.sha256(prereg.read_bytes()).hexdigest()
+
+
+def test_lock_omits_prereg_sha_when_absent(tmp_path):
+    """No prereg file -> the field is absent (omit-if-None), so historical
+    ledgers and prereg-less experiments render identically to today."""
+    spec = write_experiment_yaml(tmp_path / "experiment.yaml")
+    ledger = tmp_path / "ledger.ndjson"
+    lock_experiment(spec, ledger, ctx=ctx_for(tmp_path), **FAST)
+    ev = find_events(ledger, events.EXPERIMENT_LOCKED)[0]
+    assert "prereg_sha256" not in ev

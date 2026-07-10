@@ -1,0 +1,9 @@
+version: 1
+service: mailsvc
+
+# mailsvc is a strict api -> core -> repo service. Its base graph performs all
+# DB writes synchronously (no goroutines), so a write reached along a `go` edge
+# introduced on a branch is genuinely novel. database/sql is the built-in DB
+# boundary hint the effect labeler keys on.
+classify:
+  db: ["database/sql"]

@@ -2,7 +2,7 @@
 
 Corpus v0 for the verdi-go × verdi-bench flagship experiment
 (`docs/design/verdi-go-integration-plan.md`, Track A3 / §5–§6, decisions **D1**
-both-holdout-roles, **D3** stdlib-only). Sixteen closed-loop Go coding tasks. Each
+both-holdout-roles, **D3** stdlib-only). Seventeen closed-loop Go coding tasks. Each
 plants a **clean trap**: a realistic feature whose *natural* implementation trips
 exactly one architectural invariant that the `groundwork` gate enforces, while a
 disciplined implementation does not — and the tempting implementation is
@@ -20,14 +20,15 @@ its anti-cherry-pick posture (nulls kept in the tally).
 
 | class            | ids            | n | trap dimension |
 |------------------|----------------|---|----------------|
-| reach-trap       | `gw-r1`..`gw-r5` | 5 | natural impl writes on a read route / skips a layer / bypasses a waypoint / blows an I/O budget / writes from a goroutine |
+| reach-trap       | `gw-r1`..`gw-r5`, `gw-r5b` | 6 | natural impl writes on a read route / skips a layer / bypasses a waypoint / blows an I/O budget / writes from a goroutine (`gw-r5b` = the de-baited `gw-r5` variant) |
 | obligation-trap  | `gw-o1`..`gw-o4` | 4 | easy edit leaks a CFG exit (tx / semaphore / batch not released; publish not audit-dominated) |
 | null (mandatory) | `gw-n1`..`gw-n4` | 4 | none binds — measures false friction (over-abstention); anti-cherry-pick |
 | multi-impl residual | `gw-m1`..`gw-m3` | 3 | forbidden effect hidden behind interface dispatch; only VTA resolves the live impl (the postmortem's one untested residual) |
 
-Total **16** tasks (plan §5 target: 12–30 for v0). Every reach/obligation/multi
+Total **17** tasks (plan §5 target: 12–30 for v0). Every reach/obligation/multi
 trap spans a distinct `groundwork` invariant family so the corpus is not a single
-rule wearing sixteen costumes.
+rule wearing seventeen costumes (`gw-r5b` shares `gw-r5`'s family by design — the
+de-baited variant, added for the mechanism-decomposition program).
 
 ## Method
 
@@ -137,6 +138,14 @@ Per task, with the pinned binaries (`build_tasks.py --check`):
 - **(c)** `exemplar-violation/`: `go test ./...` passes **and** `groundwork verify
   policy base.graph exemplar.graph` → exit **1** naming the trap rule (for **null**
   tasks this tree is a *plausible alternative* and the expectation is exit **0**).
+- **(d)** red-on-starter guard: the composite holdout (inject the hidden feature
+  test into a throwaway copy of the untouched `workspace/`, `go test ./...`, then the
+  gate) must **FAIL** on that starter. A task whose holdout PASSES on the untouched
+  starter cannot distinguish a no-op agent from a correct one — the md-placebo-v1
+  incident class, where a blind feature test plus a no-new-violation gate scored 21
+  phantom trials as MET. The cell is GREEN when the composite fails there, so either
+  the feature test observes the feature's effect (fails on the starter) or the gate
+  blocks the starter.
 
 <!-- VALIDATION_MATRIX -->
 Committed run (flowmap/groundwork built from the pinned verdi-go build —
@@ -148,36 +157,48 @@ the pseudo-version stamp alone does not capture it. Rebuild trusted-tier binarie
 with the same Go version the grader image bakes (1.25.11) or re-freeze. `go(w/s/e)` = build+vet+test on
 workspace/solution/exemplar; `a.fit` = base fitness rc 0; `b.sol` = solution
 verify rc 0; `c.exm` = exemplar verify rc as expected (1 for traps, 0 for
-nulls); `rule` = the family named in cell (c). Regenerate with
+nulls); `d.strt` = the composite holdout FAILS on the untouched starter
+(red-on-starter guard); `rule` = the family named in cell (c). Regenerate with
 `VERDI_FLOWMAP_BIN=… VERDI_GROUNDWORK_BIN=… python3 build_tasks.py --check`.
 
 ```
-id       class            sub  go(w/s/e)  a.fit  b.sol  c.exm  rule
--------------------------------------------------------------------
-gw-m1    multi-impl       vta  P/P/P      ok     ok     ok     must_not_reach
-gw-m2    multi-impl       vta  P/P/P      ok     ok     ok     must_not_reach
-gw-m3    multi-impl       vta  P/P/P      ok     ok     ok     must_not_reach
-gw-n1    null             rta  P/P/P      ok     ok     ok     (clean)
-gw-n2    null             rta  P/P/P      ok     ok     ok     (clean)
-gw-n3    null             rta  P/P/P      ok     ok     ok     (clean)
-gw-n4    null             rta  P/P/P      ok     ok     ok     (clean)
-gw-o1    obligation-trap  rta  P/P/P      ok     ok     ok     obligation
-gw-o2    obligation-trap  rta  P/P/P      ok     ok     ok     obligation
-gw-o3    obligation-trap  rta  P/P/P      ok     ok     ok     obligation
-gw-o4    obligation-trap  rta  P/P/P      ok     ok     ok     obligation
-gw-r1    reach-trap       rta  P/P/P      ok     ok     ok     layering
-gw-r2    reach-trap       rta  P/P/P      ok     ok     ok     must_not_reach
-gw-r3    reach-trap       rta  P/P/P      ok     ok     ok     io_budget
-gw-r4    reach-trap       rta  P/P/P      ok     ok     ok     must_pass_through
-gw-r5    reach-trap       rta  P/P/P      ok     ok     ok     no_concurrent_reach
--------------------------------------------------------------------
+id       class            sub  go(w/s/e)  a.fit  b.sol  c.exm  d.strt rule
+--------------------------------------------------------------------------
+gw-m1    multi-impl       vta  P/P/P      ok     ok     ok     ok     must_not_reach
+gw-m2    multi-impl       vta  P/P/P      ok     ok     ok     ok     must_not_reach
+gw-m3    multi-impl       vta  P/P/P      ok     ok     ok     ok     must_not_reach
+gw-n1    null             rta  P/P/P      ok     ok     ok     ok     (clean)
+gw-n2    null             rta  P/P/P      ok     ok     ok     ok     (clean)
+gw-n3    null             rta  P/P/P      ok     ok     ok     ok     (clean)
+gw-n4    null             rta  P/P/P      ok     ok     ok     ok     (clean)
+gw-o1    obligation-trap  rta  P/P/P      ok     ok     ok     ok     obligation
+gw-o2    obligation-trap  rta  P/P/P      ok     ok     ok     ok     obligation
+gw-o3    obligation-trap  rta  P/P/P      ok     ok     ok     ok     obligation
+gw-o4    obligation-trap  rta  P/P/P      ok     ok     ok     ok     obligation
+gw-r1    reach-trap       rta  P/P/P      ok     ok     ok     ok     layering
+gw-r2    reach-trap       rta  P/P/P      ok     ok     ok     ok     must_not_reach
+gw-r3    reach-trap       rta  P/P/P      ok     ok     ok     ok     io_budget
+gw-r4    reach-trap       rta  P/P/P      ok     ok     ok     ok     must_pass_through
+gw-r5    reach-trap       rta  P/P/P      ok     ok     ok     ok     no_concurrent_reach
+gw-r5b   reach-trap       rta  P/P/P      ok     ok     ok     ok     no_concurrent_reach
+--------------------------------------------------------------------------
 ALL CELLS GREEN
 ```
+
+`gw-r5b`'s `workspace/`, `solution/`, and `exemplar-violation/` trees (and their
+committed graphs + policy) are **byte-identical** to `gw-r5`'s — only the neutral
+`prompt.md`, the task id, and the authoring note differ. The 17-task
+`--check` matrix above is a real execution (2026-07-10, pinned binaries
+`GROUNDWORK_REF=v0.0.0-20260707142329-7e8df2bb315a`): all cells green,
+`validate-tasks` 17 OK. `gw-r5b` was additionally admitted through the full
+curation cycle — k=5 docker flake baseline (clean) → signed curation approval
+→ chain-anchored `bench corpus admit` — recorded in the mechanism-decomposition
+program's corpus ledger and manifest (corpus semver 0.1.0).
 
 Specific rule ids named in cell (c): `gw-o1` `tx-must-close` · `gw-o2`
 `slot-must-release` · `gw-o3` `audit-before-publish` · `gw-o4` `batch-must-close`
 · `gw-r2`/`gw-m1`/`gw-m2`/`gw-m3` `read-route-stays-read-only` · `gw-r4`
-`writes-through-authorize` · `gw-r5` `no-concurrent-db-writes`. The multi-impl
+`writes-through-authorize` · `gw-r5`/`gw-r5b` `no-concurrent-db-writes`. The multi-impl
 residual is additionally confirmed on all three `gw-m*` tasks out-of-matrix: the
 clean solution **false-BLOCKs under `--algo rta`** (rc 1) and passes under `vta`
 (rc 0).
@@ -185,7 +206,25 @@ clean solution **false-BLOCKs under `--algo rta`** (rc 1) and passes under `vta`
 `--check` also enforces: `groundwork policy-check` clean per policy; the hidden
 feature test exists and is byte-identical between `solution/` and
 `exemplar-violation/` (functional parity); the committed `workspace/graph.json`
-matches a fresh build (staleness guard); and policy↔meta substrate agreement.
+matches a fresh build (staleness guard); policy↔meta substrate agreement; and the
+**red-on-starter invariant** (cell (d)) — the composite holdout must FAIL on the
+untouched starter workspace, so a no-op agent that changed nothing cannot score a
+false MET (the md-placebo-v1 incident class: a feature test blind to the feature's
+side effect plus a gate that sees no new violation graded 21 phantom trials as
+passes).
+
+`gw-r5`/`gw-r5b` were the two tasks that FALSE-GREENed that guard: their
+`internal/wire` feature test deliberately never read the audit path, so a no-op
+that recorded nothing graded identically to a correct send-audit. The test was
+**strengthened**: after the `POST /send` assertions it now polls the in-test store
+double for the audit entry with a bounded eventual-consistency deadline (up to 5s
+at 10ms), failing if none ever appears. **Blindness to sync-vs-async is preserved**
+— a synchronous implementation satisfies the poll immediately and an async-goroutine
+one within the deadline, so BOTH still pass the functional channel and only the gate
+discriminates the `no_concurrent_reach` invariant; a no-op fails. The store double's
+audit slice is mutex-guarded on the TEST side (the agent-visible workspace is never
+touched), so the poll is race-clean: `go test -race` passes on both the synchronous
+solution and the async exemplar-violation trees.
 <!-- /VALIDATION_MATRIX -->
 
 ## Task inventory
@@ -198,6 +237,7 @@ matches a fresh build (staleness guard); and policy↔meta substrate agreement.
 | gw-r3 | reach-trap | layeredsvc | `io_budget` | finalize writes a separate audit_log row on top of UPDATE invoices + INSERT receipts — 3 distinct write targets over the budget of 2 |
 | gw-r4 | reach-trap | layeredsvc | `must_pass_through` | DELETE /docs/{id} skips the `core.Service.Authorize` waypoint every other write passes through |
 | gw-r5 | reach-trap | layeredsvc | `no_concurrent_reach` | the send-audit INSERT fired on a `go` goroutine — a DB write along a concurrent edge |
+| gw-r5b | reach-trap | layeredsvc | `no_concurrent_reach` | de-baited `gw-r5`: same trap, policy, solution, and holdout; `prompt.md` omits the async-steering sentence (added for the mechanism-decomposition program, `docs/design/mechanism-decomposition-program.md` piece 3) |
 | gw-o1 | obligation-trap | obligsvc | `tx-must-close` | Transfer returns on the debit-error branch without releasing the transaction |
 | gw-o2 | obligation-trap | obligsvc | `slot-must-release` | Process returns on the validation-error branch without releasing the limiter slot |
 | gw-o3 | obligation-trap | obligsvc | `audit-before-publish` | Approve publishes before writing the audit entry (publish not audit-dominated) |
@@ -225,7 +265,7 @@ fails loud (never a silent wrong-build fallback). `$GO` overrides the go toolcha
 
 ```bash
 export VERDI_FLOWMAP_BIN=/path/flowmap VERDI_GROUNDWORK_BIN=/path/groundwork
-python3 build_tasks.py --check                    # (a)/(b)/(c) validation matrix
+python3 build_tasks.py --check                    # (a)/(b)/(c)/(d) validation matrix
 python3 build_tasks.py --freeze-graphs            # re-freeze committed workspace/graph.json
 python3 build_tasks.py --out <expt-dir>           # tasks.yaml + holdouts/<id>/
 python3 build_tasks.py --solutions <sol-dir>      # reference trees for the k=5 baseline
@@ -295,7 +335,10 @@ JSON, no timestamps).
 
 - **k=5 flake baseline — GREEN (ADVISORY).** All 16 reference solutions pass k=5/5
   through the real grade seam (`bench corpus baseline --runner local-exec` against
-  the `--solutions` trees). The `gw-r2` exemplar-violation QUARANTINES and a null
+  the `--solutions` trees; this committed run predates `gw-r5b`, which was baselined
+  separately on the trusted Docker tier — k=5 clean, then admitted — in the
+  mechanism-decomposition program, 2026-07-10). The
+  `gw-r2` exemplar-violation QUARANTINES and a null
   task's alternative implementation stays CLEAN through that same seam — so the gate
   bites in the harness path, not only in the builder's `--check`. The `flake_baseline`
   ledger event now records the **grader tier** (here `grader="local-exec"`) alongside
@@ -306,7 +349,8 @@ JSON, no timestamps).
   (pre-2026-07-07): a reader renders those `unrecorded`, never defaulted to `docker`,
   and old chains stay valid and chain-verify unchanged.
 - **`bench corpus validate-tasks` — CLEAN** on the emitted `tasks.yaml` (16/16 OK;
-  the write-side `TaskSpec` round-trips under `extra=forbid`).
+  the write-side `TaskSpec` round-trips under `extra=forbid`; the emit + re-validate
+  over all 17 tasks is the pending operator `--out` step).
 - **Holdout-leak checks — GREEN.** Feature tests live ONLY under `holdouts/<id>/`;
   no per-task canary reaches the agent-visible `tasks.yaml`; `policy.json` +
   `graph.json` ARE agent-visible (9c parity — intended, not a leak). Pinned by

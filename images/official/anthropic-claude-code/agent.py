@@ -19,6 +19,9 @@ Honesty note [refactor 03 §3]: the real CLI is exercised only WITH keys and
 network. ``verify`` proves the plumbing — request in, scorable log out — never
 intelligence. The native log is the CLI's OWN report, never a fabricated session; a
 CLI that exits 0 without that report gets no log rather than invented telemetry.
+Exit code is NOT the whole contract: the CLI can exit 0 while its result carries
+``is_error: true`` (an in-band API error), so :func:`main` also refuses that case —
+an errored session must never flow to grading as a success (see below).
 """
 
 from __future__ import annotations
@@ -93,6 +96,16 @@ def main(log: AgentLog) -> None:
             result = parsed.get("result")
             tail = (result if isinstance(result, str) else (proc.stderr or "")).strip()[-400:]
             raise RuntimeError(f"claude-code CLI exited {proc.returncode}: {tail!r}")
+        if parsed.get("is_error"):
+            # The pinned CLI can exit 0 while reporting is_error: true (an API
+            # error surfaced in-band — observed live: ConnectionRefused with
+            # empty modelUsage). A trial whose session ENDED IN ERROR must not
+            # flow to grading as a success: raise so the engine fails the cell
+            # closed (trial_infra_failed, RN-15). The native log is already
+            # persisted above — forensics and telemetry survive the refusal.
+            result = parsed.get("result")
+            tail = (result if isinstance(result, str) else "").strip()[-400:]
+            raise RuntimeError(f"claude-code CLI reported is_error=true: {tail!r}")
         return
     if proc.returncode == 0:
         # Exited 0 without the JSON result contract: refuse to fabricate a log.

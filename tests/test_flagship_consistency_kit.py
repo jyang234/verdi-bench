@@ -9,7 +9,7 @@ binary-built corpus; the schema/SDK build path is the real one.
 Covered:
 * author_consistency REFUSES over-ceiling (incl. at the DEFAULT reps/ceiling) and a
   short/mismatched corpus, with NO partial write; it writes the expected
-  arms/reps/model/cost_ceiling + all 16 holdouts, byte-deterministically;
+  arms/reps/model/cost_ceiling + all 17 holdouts, byte-deterministically;
 * attest_models classifies OK / MISMATCH / NO-NATIVE-LOG correctly over a synthetic
   experiment (hand-built ledger + artifacts), never skips a missing log, and its
   exit code is 0 iff every trial is OK. The [1m]-suffix and empty-modelUsage rules
@@ -33,10 +33,10 @@ import attest_models as am  # noqa: E402
 import author_consistency as ac  # noqa: E402
 import costmodel  # noqa: E402
 
-# The real groundwork-v0 corpus set (5 reach / 4 obligation / 4 null / 3 multi-impl).
+# The real groundwork-v0 corpus set (6 reach / 4 obligation / 4 null / 3 multi-impl).
 _CORPUS_TASKS = [
     ("gw-r1", "reach-trap"), ("gw-r2", "reach-trap"), ("gw-r3", "reach-trap"),
-    ("gw-r4", "reach-trap"), ("gw-r5", "reach-trap"),
+    ("gw-r4", "reach-trap"), ("gw-r5", "reach-trap"), ("gw-r5b", "reach-trap"),
     ("gw-o1", "obligation-trap"), ("gw-o2", "obligation-trap"),
     ("gw-o3", "obligation-trap"), ("gw-o4", "obligation-trap"),
     ("gw-n1", "null"), ("gw-n2", "null"), ("gw-n3", "null"), ("gw-n4", "null"),
@@ -72,23 +72,24 @@ def corpus_out(tmp_path: Path) -> Path:
 # --------------------------------------------------------------------------- #
 # author_consistency: projection, refusal, spec, determinism
 # --------------------------------------------------------------------------- #
-def test_recon_projection_is_16xrepsx2xhaiku():
+def test_recon_projection_matches_corpus_size():
+    n = len(ac.EXPECTED_TASK_IDS)  # the whole corpus (17), derived — no silent subset
     ch = costmodel.est_cost_per_trial("haiku")
-    d = ac.ReconDesign(n_tasks=16, reps=5, tier="haiku", cost_per_trial=ch, ceiling=35.0)
-    assert d.trials == 16 * 5 * 2 == 160
-    assert d.projected == round(160 * ch, 4) == 48.0
+    d = ac.ReconDesign(n_tasks=n, reps=5, tier="haiku", cost_per_trial=ch, ceiling=35.0)
+    assert d.trials == n * 5 * 2
+    assert d.projected == round(n * 5 * 2 * ch, 4)
     # the DEFAULT invocation (reps=5, ceiling=35) refuses on the conservative estimate.
     assert not d.fits
-    assert ac.ReconDesign(n_tasks=16, reps=3, tier="haiku", cost_per_trial=ch, ceiling=35.0).fits
+    assert ac.ReconDesign(n_tasks=n, reps=3, tier="haiku", cost_per_trial=ch, ceiling=35.0).fits
     # an unpriced tier has an honestly-UNKNOWN projection (None), which the ceiling
     # fence cannot judge (fits — the explicit-ceiling requirement is the guard).
-    u = ac.ReconDesign(n_tasks=16, reps=5, tier="sonnet", cost_per_trial=None, ceiling=50.0)
+    u = ac.ReconDesign(n_tasks=n, reps=5, tier="sonnet", cost_per_trial=None, ceiling=50.0)
     assert u.projected is None and u.fits
 
 
 def test_author_consistency_refuses_over_ceiling_at_defaults(corpus_out: Path, tmp_path: Path):
     out = tmp_path / "recon"
-    # defaults: reps=5 x 16 x 2 x $0.30 = $48.00 > default $35 ceiling → refuse.
+    # defaults: reps=5 x 17 x 2 x $0.30 = $51.00 > default $35 ceiling → refuse.
     with pytest.raises(costmodel.CeilingTooLowError):
         ac.author_consistency(corpus_out, out, trial_image="sha256:deadbeef",
                               workflow="availability", quiet=True)
@@ -104,7 +105,7 @@ def test_author_consistency_refuses_over_ceiling_explicit(corpus_out: Path, tmp_
 
 
 def test_author_consistency_refuses_short_corpus(tmp_path: Path):
-    short = _materialize_corpus(tmp_path / "short", _CORPUS_TASKS[:-1])  # 15 tasks
+    short = _materialize_corpus(tmp_path / "short", _CORPUS_TASKS[:-1])  # 16 tasks
     out = tmp_path / "recon"
     with pytest.raises(ac.ConsistencyRefusal):
         ac.author_consistency(short, out, trial_image="sha256:x", reps=1, ceiling=100.0,
@@ -118,7 +119,7 @@ def test_author_consistency_writes_expected_spec(corpus_out: Path, tmp_path: Pat
     out = tmp_path / "recon"
     r = ac.author_consistency(corpus_out, out, trial_image="sha256:deadbeef",
                               reps=3, ceiling=35.0, workflow="ground_verify", quiet=True)
-    assert (r.design.n_tasks, r.design.reps, r.design.trials) == (16, 3, 96)
+    assert (r.design.n_tasks, r.design.reps, r.design.trials) == (17, 3, 102)
 
     spec = ExperimentSpec.from_yaml(out / "experiment.yaml")
     by_name = {a.name: a for a in spec.arms}
@@ -136,7 +137,7 @@ def test_author_consistency_writes_expected_spec(corpus_out: Path, tmp_path: Pat
 
     import yaml
     task_ids = [t["id"] for t in yaml.safe_load((out / "tasks.yaml").read_text())["tasks"]]
-    assert sorted(task_ids) == sorted(ac.EXPECTED_TASK_IDS)  # ALL 16, no subset
+    assert sorted(task_ids) == sorted(ac.EXPECTED_TASK_IDS)  # ALL 17, no subset
     assert sorted(p.name for p in (out / "holdouts").iterdir()) == sorted(ac.EXPECTED_TASK_IDS)
     # managed-proxy run.config: both hosts, anthropic key per arm (mirrors the pilot).
     cfg = yaml.safe_load((out / "run.config.yaml").read_text())
@@ -223,6 +224,50 @@ def test_workflow_enforced_writes_enforced_payload(corpus_out: Path, tmp_path: P
 
 
 # --------------------------------------------------------------------------- #
+# mechanism-decomposition workflows [design: docs/design/
+# mechanism-decomposition-program.md]: placebo_gate + policy_pointer
+# --------------------------------------------------------------------------- #
+
+def test_mechanism_decomposition_payloads_exact():
+    assert ac.GROUNDED_PAYLOADS_BY_WORKFLOW["placebo_gate"] == {
+        "tools": ["groundwork"], "workflow": "placebo_gate"}
+    assert ac.GROUNDED_PAYLOADS_BY_WORKFLOW["policy_pointer"] == {
+        "system_prompt_extra": "policy_pointer"}
+
+
+def test_treatment_arm_suffix_per_workflow(corpus_out: Path, tmp_path: Path):
+    # historical rungs keep <tier>-grounded byte-identically; the new
+    # treatments get honest names — an arm labeled "grounded" that stages no
+    # tool (pointer) would be a mislabeled condition.
+    cases = {"ground_verify": "haiku-grounded", "placebo_gate": "haiku-placebo",
+             "policy_pointer": "haiku-pointer"}
+    for wf, arm in cases.items():
+        r = ac.author_consistency(
+            corpus_out, tmp_path / f"exp-{wf}", trial_image="sha256:t",
+            workflow=wf, reps=1, ceiling=35.0, quiet=True, tasks=["gw-r5"])
+        assert r.grounded_arm == arm, wf
+        assert r.bare_arm == "haiku-bare", wf
+
+
+def test_kit_payloads_are_armable_by_the_trial_agent():
+    """Parity fence: every payload the kit can author must be a payload the
+    trial image's plan_groundwork accepts — a kit entry the agent refuses
+    would fail every treated trial mid-run, after real spend on the bare arm."""
+    import importlib.util
+
+    img = _REPO / "images" / "reference" / "claude-code-groundwork" / "agent.py"
+    base = _REPO / "images" / "base"
+    if str(base) not in sys.path:
+        sys.path.insert(0, str(base))
+    spec = importlib.util.spec_from_file_location("_kit_parity_agent", img)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["_kit_parity_agent"] = mod
+    spec.loader.exec_module(mod)
+    for wf, payload in ac.GROUNDED_PAYLOADS_BY_WORKFLOW.items():
+        mod.plan_groundwork(dict(payload), home="/h", workspace="/w")  # must not raise
+
+
+# --------------------------------------------------------------------------- #
 # author_consistency: cross-model baseline (--model)
 # --------------------------------------------------------------------------- #
 def test_tier_derivation_and_refusal():
@@ -269,7 +314,7 @@ def test_non_haiku_model_writes_that_model_into_both_arms(corpus_out: Path, tmp_
     assert by_name["opus-bare"].payload == {}
     # a priced tier uses costmodel's matching constant — never guesswork.
     assert r.design.cost_per_trial == costmodel.est_cost_per_trial("opus")
-    assert r.design.projected == 48.0  # 16 x 1 x 2 x $1.50
+    assert r.design.projected == 51.0  # 17 x 1 x 2 x $1.50
     # NOTHING else varies across models: same seed, reps, task set, judge.
     assert opus.seed == haiku.seed
     assert opus.repetitions == haiku.repetitions
@@ -338,7 +383,7 @@ def test_tasks_unknown_id_refuses_no_partial_write(corpus_out: Path, tmp_path: P
 
 
 def test_tasks_empty_selection_refuses(corpus_out: Path, tmp_path: Path):
-    """An explicit but empty --tasks selection is refused (omit it to author all 16)."""
+    """An explicit but empty --tasks selection is refused (omit it to author all 17)."""
     out = tmp_path / "subset"
     with pytest.raises(ac.ConsistencyRefusal):
         ac.author_consistency(corpus_out, out, trial_image="sha256:x", reps=1,
@@ -346,9 +391,9 @@ def test_tasks_empty_selection_refuses(corpus_out: Path, tmp_path: Path):
     assert not out.exists()
 
 
-def test_tasks_omitted_authors_all_16_like_explicit_full_set(corpus_out: Path, tmp_path: Path):
-    """Omitting --tasks authors all 16, byte-identical to naming the full set
-    explicitly — the default path is an unchanged whole-corpus author."""
+def test_tasks_omitted_authors_all_like_explicit_full_set(corpus_out: Path, tmp_path: Path):
+    """Omitting --tasks authors the whole corpus (17), byte-identical to naming the
+    full set explicitly — the default path is an unchanged whole-corpus author."""
     ac.author_consistency(corpus_out, tmp_path / "default", trial_image="sha256:x",
                           reps=2, ceiling=35, workflow="availability", quiet=True)
     ac.author_consistency(corpus_out, tmp_path / "full", trial_image="sha256:x",

@@ -38,16 +38,17 @@ _REPO = Path(__file__).resolve().parents[1]
 _CORPUS = _REPO / "corpora" / "groundwork-v0"
 _BUILDER = _CORPUS / "build_tasks.py"
 
-# Expected inventory + class ratios (README): 5 reach, 4 obligation, 4 null, 3 multi.
+# Expected inventory + class ratios (README): 6 reach, 4 obligation, 4 null, 3 multi.
+# gw-r5b is the de-baited variant of gw-r5 [design: mechanism-decomposition piece 3].
 _EXPECTED_CLASS = {
     "gw-r1": "reach-trap", "gw-r2": "reach-trap", "gw-r3": "reach-trap",
-    "gw-r4": "reach-trap", "gw-r5": "reach-trap",
+    "gw-r4": "reach-trap", "gw-r5": "reach-trap", "gw-r5b": "reach-trap",
     "gw-o1": "obligation-trap", "gw-o2": "obligation-trap",
     "gw-o3": "obligation-trap", "gw-o4": "obligation-trap",
     "gw-n1": "null", "gw-n2": "null", "gw-n3": "null", "gw-n4": "null",
     "gw-m1": "multi-impl", "gw-m2": "multi-impl", "gw-m3": "multi-impl",
 }
-_EXPECTED_RATIOS = {"reach-trap": 5, "obligation-trap": 4, "null": 4, "multi-impl": 3}
+_EXPECTED_RATIOS = {"reach-trap": 6, "obligation-trap": 4, "null": 4, "multi-impl": 3}
 
 _BINARIES = bool(os.environ.get("VERDI_FLOWMAP_BIN") and os.environ.get("VERDI_GROUNDWORK_BIN"))
 _needs_binaries = pytest.mark.skipif(
@@ -74,7 +75,7 @@ bt = _load_builder()
 # --------------------------------------------------------------------------- #
 # fast hermetic subset (no binaries)
 # --------------------------------------------------------------------------- #
-def test_inventory_16_tasks_expected_classes():
+def test_inventory_17_tasks_expected_classes():
     got = {t["id"]: t["class"] for t in bt.discover_tasks()}
     assert got == _EXPECTED_CLASS
     assert Counter(got.values()) == _EXPECTED_RATIOS
@@ -122,6 +123,37 @@ def test_no_holdout_material_in_agent_visible_surface():
         # already in the raw feature test, else the leak scan would be vacuous.
         for _, content in tests:
             assert canary not in content, f"{tid}: canary present in raw feature test?"
+
+
+def test_r5_feature_test_reads_audit_path_without_unblinding():
+    """gw-r5 / gw-r5b's hidden feature test must OBSERVE the send-audit effect, so a
+    no-op agent that records nothing cannot false-MET on the composite holdout (the
+    md-placebo-v1 red-on-starter class). This is the hermetic guard against silently
+    reverting the strengthening; the binary-gated ``--check`` cell (d) proves the
+    behavior end to end. It must read the audit path with a BOUNDED eventual-
+    consistency poll — never a fixed sleep that would either flake or re-blind async —
+    and stay blind to sync-vs-async (no assertion on ordering / goroutine identity).
+    The two tasks' tests stay byte-identical (de-baited-variant discipline)."""
+    r5 = {t["id"]: t for t in bt.discover_tasks() if t["id"] in ("gw-r5", "gw-r5b")}
+    assert set(r5) == {"gw-r5", "gw-r5b"}
+    bodies = {}
+    for tid, t in r5.items():
+        tests = bt.feature_tests(t)
+        wire = [c for rel, c in tests if rel.endswith("internal/wire/feature_test.go")]
+        assert len(wire) == 1, f"{tid}: expected one hidden wire feature test, got {len(wire)}"
+        body = wire[0]
+        # reads the audit path (the whole point of the strengthening)
+        assert "auditCount" in body, f"{tid}: feature test no longer reads the audit path"
+        # bounded eventual-consistency poll, not a fixed sleep or unbounded loop
+        assert "deadline" in body and "time.Now().After(deadline)" in body, (
+            f"{tid}: audit read is not a bounded-deadline poll"
+        )
+        # race-clean: the test-side store double guards its state with a mutex
+        assert "sync.Mutex" in body, f"{tid}: store double is not mutex-guarded (race under -race)"
+        bodies[tid] = body
+    assert bodies["gw-r5"] == bodies["gw-r5b"], (
+        "gw-r5 and gw-r5b hidden feature tests must stay byte-identical"
+    )
 
 
 def test_task_meta_schema_and_substrate_agreement():

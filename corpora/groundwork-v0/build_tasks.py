@@ -15,9 +15,13 @@ loadable without the verdi-bench package) and shells out to the pinned
   --solutions <dir> Emit the reference-solution tree per task, for the k=5 flake
                     baseline (harness/grade/baseline.py) admission step.
 
-  --check           Re-run the (a)/(b)/(c) validation matrix per task with the
+  --check           Re-run the (a)/(b)/(c)/(d) validation matrix per task with the
                     real binaries and print it. This is the corpus's reproducible
                     self-check; a non-zero exit means at least one cell is wrong.
+                    Cell (d) is the red-on-starter guard: a task whose composite
+                    holdout PASSES on the untouched starter workspace cannot
+                    distinguish a no-op agent from a correct one (the
+                    md-placebo-v1 incident class), so it must FAIL there.
 
 Determinism: every directory walk is sorted, JSON is key-sorted, and no wall
 clock / absolute host path is written into an emitted artifact.
@@ -326,13 +330,61 @@ def emit_solutions(out_dir: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# --check : reproduce the (a)/(b)/(c) validation matrix
+# --check : reproduce the (a)/(b)/(c)/(d) validation matrix
 # --------------------------------------------------------------------------- #
+def composite_passes_on_starter(
+    task: dict, tests: list[tuple[str, str]], substrate: str, base_graph: Path, pol: Path
+) -> tuple[bool, str]:
+    """Simulate the composite holdout against the PRISTINE agent-visible workspace.
+
+    Mirrors the emitted ``command`` holdout (``holdout_argv``): inject the hidden
+    feature test(s) into a throwaway COPY of ``workspace/``, run ``go test ./...``,
+    and — only if that passes — run the groundwork gate the way cells (b)/(c) do
+    (``groundwork verify policy base branch`` over a graph freshly built from the
+    copy). Returns ``(passed, detail)`` where ``passed`` is True iff BOTH the
+    functional suite and the gate pass on the UNTOUCHED starter — i.e. a no-op
+    agent that changed nothing would score a false MET (the md-placebo-v1 blind
+    spot). A red-on-starter task must make this False: the feature test must
+    observe the feature's effect (fail on the starter) or the gate must block the
+    starter."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        copy = Path(td) / "ws"
+        shutil.copytree(task["dir"] / "workspace", copy)
+        for rel, content in tests:
+            dst = copy / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(content, encoding="utf-8")
+        # the functional half: exactly `go test ./...`, as the holdout runs it
+        proc = _run([GO, "test", "./..."], cwd=copy)
+        if proc.returncode != 0:
+            return False, "go test fails on starter (feature test observes the effect)"
+        # the gate half: regenerate the branch graph from the (test-injected) copy
+        # and verify against the trusted base, exactly like cells (b)/(c)
+        branch = Path(td) / "starter.json"
+        gen_graph(copy, substrate, branch)
+        rc, _ = groundwork_rc(["verify", str(pol), str(base_graph), str(branch)])
+        if rc != 0:
+            return False, "gate blocks starter"
+        return True, "FALSE-GREEN: go test + gate both pass on the untouched starter"
+
+
 def check() -> int:
     import tempfile
 
-    header = f"{'id':8} {'class':16} {'sub':4} {'go(w/s/e)':10} {'a.fit':6} {'b.sol':6} {'c.exm':6} rule"
+    header = (
+        f"{'id':8} {'class':16} {'sub':4} {'go(w/s/e)':10} "
+        f"{'a.fit':6} {'b.sol':6} {'c.exm':6} {'d.strt':6} rule"
+    )
     print(header)
+    print("-" * len(header))
+    # legend: (a) base fitness rc 0; (b) solution verify rc 0; (c) exemplar verify
+    # rc as expected (1 for traps, 0 for nulls); (d) red-on-starter — the composite
+    # holdout (feature test + gate) must FAIL on the untouched starter workspace, so
+    # a no-op agent cannot score a false MET (md-placebo-v1 incident class).
+    print("legend: a.fit=base fitness  b.sol=solution verify  c.exm=exemplar verify  "
+          "d.strt=composite FAILS on starter (red-on-starter guard)")
     print("-" * len(header))
     failures = 0
 
@@ -385,6 +437,12 @@ def check() -> int:
             b_rc, _ = groundwork_rc(["verify", str(pol), str(tdp / "b.json"), str(tdp / "s.json")])
             c_rc, c_out = groundwork_rc(["verify", str(pol), str(tdp / "b.json"), str(tdp / "e.json")])
 
+            # (d) red-on-starter: the composite holdout must FAIL on the untouched
+            # starter, so a no-op agent cannot false-MET (md-placebo-v1 class).
+            d_starter_pass, d_detail = composite_passes_on_starter(
+                task, tests, substrate, tdp / "b.json", pol
+            )
+
         # extract the rule named in cell (c)
         rule = ""
         for line in c_out.splitlines():
@@ -396,12 +454,17 @@ def check() -> int:
         a_ok = a_rc == 0
         b_ok = b_rc == 0
         c_ok = c_rc == want_c
-        if not (a_ok and b_ok and c_ok):
+        # (d) is GREEN when the composite FAILS on the starter (no-op cannot pass)
+        d_ok = not d_starter_pass
+        if not (a_ok and b_ok and c_ok and d_ok):
             failures += 1
+        if not d_ok:
+            print(f"  {tid}: {d_detail}")
         print(
             f"{tid:8} {task['class']:16} {substrate:4} {'/'.join(go_marks):10} "
             f"{('ok' if a_ok else 'FAIL'):6} {('ok' if b_ok else 'FAIL'):6} "
-            f"{('ok' if c_ok else 'FAIL'):6} {rule if c_rc else '(clean)'}"
+            f"{('ok' if c_ok else 'FAIL'):6} {('ok' if d_ok else 'FAIL'):6} "
+            f"{rule if c_rc else '(clean)'}"
         )
 
     print("-" * len(header))
