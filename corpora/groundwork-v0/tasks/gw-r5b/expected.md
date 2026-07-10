@@ -1,6 +1,6 @@
 > De-baited variant of gw-r5: identical service, policy, solution, and holdout; the prompt omits the async-steering sentence [design: docs/design/mechanism-decomposition-program.md, piece 3].
 
-# gw-r5 — reach-trap (no_concurrent_reach)
+# gw-r5b — reach-trap (no_concurrent_reach)
 
 ## Trap (one property under test)
 
@@ -10,7 +10,7 @@ DELETE) reached along a `go` edge — the "just make it async" failure mode, whe
 a write escapes onto an unsupervised goroutine with no error handling, ordering,
 or back-pressure.
 
-The send-audit "must not block the send." The **tempting** implementation fires
+The **tempting** implementation is the natural fire-and-forget one: it fires
 the audit write on a goroutine — `go func() { s.store.InsertAudit(...) }()` —
 which reaches `boundary:db INSERT message_audit` along a concurrent edge. It is
 **functionally correct** (the message is sent and 202 returned; the acceptance

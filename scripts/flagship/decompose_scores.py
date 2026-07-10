@@ -18,6 +18,11 @@ Ground rules:
     exit code is nonzero. A silent divergence would be a wrong instrument.
   * Workspaces are graded on a throwaway copy (mirroring DockerGradeRunner's
     fail-safe posture), network-less, holdouts mounted read-only.
+  * The gate half is re-executed WITHOUT the functional side-file injections the
+    fused command performs first, but under the corpus's RTA substrate those test
+    files do not enter the flowmap graph, so the gate verdict is unaffected — and
+    any divergence that would flip the fused AND is caught by the fused-vs-recorded
+    mismatch fence.
 
 Usage:
     VERDI_GRADER_IMAGE=<digest> uv run python scripts/flagship/decompose_scores.py \
@@ -67,6 +72,14 @@ def load_graded_trials(ledger_path) -> list[dict]:
     grades: dict[str, dict] = {}
     for line in Path(ledger_path).read_text(encoding="utf-8").splitlines():
         ev = json.loads(line)
+        kind = ev.get("event")
+        if kind in ("reused_trial", "reused_grade"):
+            raise ValueError(
+                f"ledger carries a {kind!r} event: this script does not decompose "
+                "reused trials — a control-reuse ledger would have those cells "
+                "silently absent from the decomposition. Decompose the source "
+                "experiment's own ledger instead."
+            )
         if ev.get("event") == "trial":
             tr = ev["trial_record"]
             trials[tr["trial_id"]] = {

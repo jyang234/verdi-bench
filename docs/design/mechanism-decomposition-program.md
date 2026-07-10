@@ -59,8 +59,10 @@ assertions already recorded in each grade event.
 Constraints:
 - **No ledger mutation.** Existing chains are immutable; the script emits an
   analysis artifact, not grade events. No grading-contract change.
-- Reuses `harness/grade/holdouts.py` execution machinery
-  (`CommandHoldout.execute` semantics) rather than reimplementing grading.
+- A standalone stdlib script that mirrors `DockerGradeRunner`'s isolation
+  posture (throwaway workspace copy, network-less container, holdouts mounted
+  read-only) rather than importing harness grading code — validated by the
+  0-mismatch fused-vs-recorded self-check.
 - Workspaces are resolved from each `trial` event's recorded
   `artifacts_path`, exactly as `grade_experiment` does.
 
@@ -159,8 +161,9 @@ How much of bare-haiku's 0/32 on r5 is trap engineering?
 ### Corpus — `corpora/groundwork-v0`
 
 - New checked-in task dir `tasks/gw-r5b/`; rebuild via `build_tasks.py`;
-  corpus version bumped (`groundwork-v0` → `groundwork-v0.1`) since the
-  task set is hash-committed. Existing 16 tasks byte-untouched.
+  corpus semver bumped (`0.0.0` → `0.1.0`) under the unchanged corpus id
+  `groundwork-v0`, since the task set is hash-committed. Existing 16 tasks
+  byte-untouched.
 
 ### Rider — hash `PRE-REGISTRATION.md` into the lock event
 

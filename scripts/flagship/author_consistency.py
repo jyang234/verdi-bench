@@ -90,8 +90,9 @@ DEFAULT_SEED = 1234
 # MODEL_HAIKU; --model swaps the tier for the cross-model baseline), so the only
 # declared difference is the payload (grounded carries the groundwork tool; bare is
 # the empty control). Grounded is arm_a (the paired delta is arm_a - arm_b), matching
-# the pilot's calibration experiment. Arm names are <tier>-bare / <tier>-grounded,
-# with the tier token derived from the model id — never guessed.
+# the pilot's calibration experiment. The bare arm is <tier>-bare and the treatment
+# arm is <tier>-<ARM_SUFFIX_BY_WORKFLOW[workflow]> (grounded for the historical
+# rungs), with the tier token derived from the model id — never guessed.
 RECON_NAME = "groundwork-consistency-recon"
 
 # Both model-API hosts on the metering allowlist, mirroring the pilot: the recon
